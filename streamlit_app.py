@@ -3,6 +3,17 @@ import streamlit as st
 
 from src.muni_data import load_all_ishares_munis, screen_munis
 
+NO_INDIVIDUAL_INCOME_TAX_STATES = {
+    "Alaska",
+    "Florida",
+    "Nevada",
+    "New Hampshire",
+    "South Dakota",
+    "Tennessee",
+    "Texas",
+    "Wyoming",
+}
+
 
 st.set_page_config(
     page_title="Municipal Bond Screener",
@@ -25,7 +36,6 @@ def load_data():
 with st.spinner("Loading and combining municipal bond ETF holdings..."):
     df, source_rows, etf_status, as_of = load_data()
 
-
 loaded_etfs = int((etf_status["Status"] == "OK").sum())
 failed_etfs = int((etf_status["Status"] != "OK").sum())
 
@@ -41,18 +51,16 @@ if failed_etfs:
         "Open Source Status below to see which ones."
     )
 
-
 with st.expander("Source status"):
     st.dataframe(
         etf_status.sort_values(["Status", "Ticker"]).reset_index(drop=True),
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
     )
 
-
 st.subheader("Filters")
 
-row1 = st.columns([1.2, 1.4, 1.0, 1.0, 1.0])
+row1 = st.columns([1.2, 1.6, 1.0, 1.0, 1.0])
 
 with row1[0]:
     cusip = st.text_input(
@@ -71,6 +79,7 @@ with row1[1]:
         "States",
         options=available_states,
         placeholder="All states",
+        help="Select one or multiple states. Leave blank for all states.",
     )
 
 with row1[2]:
@@ -101,7 +110,6 @@ with row1[4]:
         step=0.01,
         placeholder="No maximum",
     )
-
 
 row2 = st.columns(5)
 
@@ -157,21 +165,22 @@ with row2[4]:
         ],
     )
 
-
 row3 = st.columns(5)
 
 with row3[0]:
     use_maturity_from = st.checkbox("Minimum maturity")
     maturity_from = (
         st.date_input("Maturity from", key="maturity_from")
-        if use_maturity_from else None
+        if use_maturity_from
+        else None
     )
 
 with row3[1]:
     use_maturity_to = st.checkbox("Maximum maturity")
     maturity_to = (
         st.date_input("Maturity to", key="maturity_to")
-        if use_maturity_to else None
+        if use_maturity_to
+        else None
     )
 
 with row3[2]:
@@ -195,13 +204,22 @@ with row3[4]:
         help="Proxy only. Verify the official call schedule before purchase.",
     )
 
-
-row4 = st.columns([1, 1, 3])
+row4 = st.columns([1.25, 1, 1, 2.75])
 
 with row4[0]:
-    new_issue_only = st.checkbox("New issues")
+    no_state_income_tax_only = st.checkbox(
+        "No State Individual Income Tax",
+        help=(
+            "Alaska, Florida, Nevada, New Hampshire, South Dakota, Tennessee, "
+            "Texas, and Wyoming. Washington is excluded because it taxes "
+            "certain capital gains."
+        ),
+    )
 
 with row4[1]:
+    new_issue_only = st.checkbox("New issues")
+
+with row4[2]:
     new_issue_days = st.selectbox(
         "New issue window",
         [30, 60, 90, 180],
@@ -209,9 +227,21 @@ with row4[1]:
         disabled=not new_issue_only,
     )
 
+if no_state_income_tax_only:
+    st.caption(
+        "No-income-tax states: "
+        + ", ".join(sorted(NO_INDIVIDUAL_INCOME_TAX_STATES))
+        + ". Washington is intentionally excluded because it taxes certain capital gains."
+    )
+
+screen_df = (
+    df
+    if cusip or not no_state_income_tax_only
+    else df[df["State"].isin(NO_INDIVIDUAL_INCOME_TAX_STATES)].copy()
+)
 
 results = screen_munis(
-    df=df,
+    df=screen_df,
     cusip=cusip,
     states=states or None,
     purchase_face=purchase_face,
@@ -232,11 +262,9 @@ results = screen_munis(
     sort_by=sort_by,
 )
 
-
 st.divider()
 
 c1, c2 = st.columns([1, 4])
-
 with c1:
     st.metric("Matches", f"{len(results):,}")
 
@@ -246,7 +274,6 @@ with c2:
             f"CUSIP {cusip} was not found in the currently combined ETF universe. "
             "That does not mean the municipal bond does not exist."
         )
-
 
 display_columns = [
     "CUSIP",
@@ -268,12 +295,11 @@ display_columns = [
     "Annual Coupon Income ($)",
     "NonCallableProxy",
 ]
-
 display_columns = [c for c in display_columns if c in results.columns]
 
 st.dataframe(
     results[display_columns],
-    width="stretch",
+    use_container_width=True,
     height=650,
     hide_index=True,
     column_config={
@@ -288,7 +314,6 @@ st.dataframe(
 )
 
 csv = results.to_csv(index=False).encode("utf-8")
-
 st.download_button(
     "Download filtered CSV",
     data=csv,
