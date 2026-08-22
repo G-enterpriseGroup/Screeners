@@ -1,0 +1,443 @@
+name: Add State Income Tax Comparison Tab
+
+on:
+  push:
+    paths:
+      - '.github/workflows/add-state-income-tax-tab.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-streamlit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Add all-state tax comparison tab and byline
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('streamlit_app.py')
+          text = path.read_text(encoding='utf-8')
+
+          # Browser/app title.
+          text = text.replace(
+              'page_title="Municipal Bond Screeners",',
+              'page_title="Municipal Bond Screeners — by Raj",',
+              1,
+          )
+          text = text.replace(
+              'st.title("Municipal Bond Screeners")',
+              'st.title("Municipal Bond Screeners — by Raj")',
+              1,
+          )
+
+          # Add fixed all-50-state list once.
+          marker = '''NO_INDIVIDUAL_INCOME_TAX_STATES = {
+    "Alaska",
+    "Florida",
+    "Nevada",
+    "New Hampshire",
+    "South Dakota",
+    "Tennessee",
+    "Texas",
+    "Washington",
+    "Wyoming",
+}
+'''
+
+          states_block = marker + '''
+ALL_US_STATES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+    "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+    "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
+    "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota",
+    "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada",
+    "New Hampshire", "New Jersey", "New Mexico", "New York",
+    "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon",
+    "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+    "West Virginia", "Wisconsin", "Wyoming",
+]
+'''
+
+          if 'ALL_US_STATES = [' not in text:
+              if marker not in text:
+                  raise SystemExit('NIST state block not found')
+              text = text.replace(marker, states_block, 1)
+
+          state_function = r'''
+
+def render_state_income_tax_comparison(df):
+    st.subheader("State Income Tax // All 50 Munis vs U.S. Treasury")
+
+    st.markdown(
+        """
+        <div class="terminal-note">
+        FOR CLIENTS WHO LIVE IN A STATE WITH AN INCOME TAX.<br>
+        MUNICIPAL BONDS MAY BE SUBJECT TO THE CLIENT'S STATE INCOME TAX.<br>
+        U.S. TREASURY INTEREST IS EXEMPT FROM STATE AND LOCAL INCOME TAX.<br>
+        THIS SCREEN COMPARES THE AFTER-TAX YIELD OF A MUNI AGAINST THE CLOSEST TREASURY MATURITY.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    default_indiana = ALL_US_STATES.index("Indiana")
+    r1 = st.columns([1.25, 1.1, 1.1, 1.3, 1.5])
+
+    with r1[0]:
+        client_state = st.selectbox(
+            "Client state of residence",
+            options=ALL_US_STATES,
+            index=default_indiana,
+            key="state_tax_client_state",
+        )
+
+    with r1[1]:
+        state_tax_rate = st.number_input(
+            "Client state income tax rate (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=None,
+            step=0.01,
+            placeholder="e.g. 2.95",
+            key="state_tax_rate",
+            help="Enter the client's applicable marginal state income-tax rate. Local income tax is not included unless you add it here.",
+        )
+
+    with r1[2]:
+        federal_bracket = st.number_input(
+            "Client federal tax bracket (%)",
+            min_value=0.0,
+            max_value=60.0,
+            value=None,
+            step=0.1,
+            placeholder="e.g. 22",
+            key="state_tax_federal_rate",
+        )
+
+    with r1[3]:
+        default_target = (
+            pd.Timestamp.today().normalize() + pd.DateOffset(years=5)
+        ).date()
+        target_maturity = st.date_input(
+            "Client target maturity",
+            value=default_target,
+            key="state_tax_target_date",
+        )
+
+    with r1[4]:
+        muni_states = st.multiselect(
+            "Muni state(s) — all 50 states",
+            options=ALL_US_STATES,
+            placeholder="Blank = all 50 states",
+            key="state_tax_muni_states",
+        )
+
+    r2 = st.columns([1.4, 1.5, 1.3, 2.8])
+
+    with r2[0]:
+        ig_only = st.checkbox(
+            "Investment grade only",
+            value=False,
+            key="state_tax_ig_only",
+        )
+
+    with r2[1]:
+        home_state_exempt = st.checkbox(
+            "Apply home-state muni exemption",
+            value=False,
+            key="state_tax_home_exempt",
+            help=(
+                "OFF = treat the selected muni as state-taxable. ON = if the selected "
+                "muni is from the client's resident state, apply 0% state tax to that muni. "
+                "Verify the specific state's law and bond eligibility before relying on this."
+            ),
+        )
+
+    with r2[2]:
+        load_clicked = st.button(
+            "Load / Refresh Treasurys",
+            type="primary",
+            use_container_width=True,
+            key="state_tax_load_treasury",
+        )
+
+    if load_clicked:
+        with st.status("TREASURY ENGINE // CONNECTING", expanded=True) as status:
+            p = st.progress(10, text="Opening U.S. Treasury market data...")
+            try:
+                quotes, meta = load_treasury_market()
+                st.session_state["treasury_quotes"] = quotes
+                st.session_state["treasury_meta"] = meta
+                p.progress(100, text=f"READY • {len(quotes):,} Treasury rows")
+                status.update(
+                    label=f"TREASURY ENGINE // READY • {meta.get('source', 'SOURCE')}",
+                    state="complete",
+                    expanded=False,
+                )
+            except Exception as exc:
+                status.update(label="TREASURY ENGINE // ERROR", state="error", expanded=True)
+                st.error(f"Treasury data load failed: {exc}")
+
+    treasury_df = st.session_state.get("treasury_quotes")
+    treasury_meta = st.session_state.get("treasury_meta")
+
+    if treasury_df is None or treasury_meta is None:
+        st.info(
+            "Click **LOAD / REFRESH TREASURYS** once. This uses the same cached Treasury dataset as the NIST tab."
+        )
+        return
+
+    st.caption(
+        f"Treasury source: {treasury_meta.get('source', 'Unknown')} | "
+        f"Data as of: {treasury_meta.get('as_of', '')}. "
+        f"{treasury_meta.get('note', '')}"
+    )
+
+    muni_pool = df.copy()
+    if ig_only:
+        muni_pool = muni_pool[muni_pool["Investment Grade"].eq("Yes")].copy()
+
+    candidates = nearest_muni_candidates(
+        muni_pool,
+        target_maturity=target_maturity,
+        states=muni_states or None,
+        limit=50,
+    )
+
+    if candidates.empty:
+        st.warning("No usable municipal bonds were found near that maturity for the selected state filter.")
+        return
+
+    candidate_labels = []
+    for _, row in candidates.iterrows():
+        maturity_text = pd.Timestamp(row["Maturity"]).strftime("%Y-%m-%d")
+        ytw = float(row["Yield to Worst (%)"])
+        gap = int(row["Maturity Gap Days"])
+        candidate_labels.append(
+            f"{row['CUSIP']} | {maturity_text} | {row['State']} | "
+            f"YTW {ytw:.3f}% | gap {gap}d"
+        )
+
+    prior_choice = st.session_state.get("state_tax_muni_choice")
+    if prior_choice not in candidate_labels:
+        st.session_state["state_tax_muni_choice"] = candidate_labels[0]
+
+    chosen_label = st.selectbox(
+        "Closest muni candidates — choose the bond to compare",
+        options=candidate_labels,
+        key="state_tax_muni_choice",
+    )
+
+    muni = candidates.iloc[candidate_labels.index(chosen_label)]
+    treasury = nearest_treasury(
+        treasury_df,
+        target_maturity=pd.Timestamp(muni["Maturity"]),
+    )
+
+    if treasury is None:
+        st.warning("No usable Treasury quote was available for the selected muni maturity.")
+        return
+
+    treasury_gap = abs(
+        (pd.Timestamp(treasury["Maturity"]) - pd.Timestamp(muni["Maturity"])).days
+    )
+
+    st.markdown("### Municipal Match")
+    is_home_state = str(muni.get("State", "")) == client_state
+    state_exempt_applied = bool(home_state_exempt and is_home_state)
+
+    muni_view = pd.DataFrame([{
+        "CUSIP": muni["CUSIP"],
+        "Name": muni["Name"],
+        "Muni State": muni["State"],
+        "Client Residence": client_state,
+        "Maturity": pd.Timestamp(muni["Maturity"]).date(),
+        "Client Date Gap": int(muni["Maturity Gap Days"]),
+        "Price": muni.get("Price"),
+        "Coupon (%)": muni.get("Coupon (%)"),
+        "YTW (%)": muni.get("Yield to Worst (%)"),
+        "State Tax Treatment": (
+            "HOME-STATE EXEMPT" if state_exempt_applied else "STATE-TAXABLE"
+        ),
+        "Rating": muni.get("Rating"),
+        "Source ETFs": muni.get("Source ETFs"),
+    }])
+    st.dataframe(muni_view, use_container_width=True, hide_index=True)
+    render_copy_cusips([muni["CUSIP"]], "COPY SELECTED MUNI CUSIP")
+
+    st.markdown("### Treasury Match")
+    treasury_gross_yield = float(treasury["Asked Yield (%)"])
+    treasury_view = pd.DataFrame([{
+        "Type": treasury.get("Security Type"),
+        "Maturity": pd.Timestamp(treasury["Maturity"]).date(),
+        "Muni Date Gap": treasury_gap,
+        "Coupon (%)": treasury.get("Coupon (%)"),
+        "Bid": treasury.get("Bid"),
+        "Asked": treasury.get("Asked"),
+        "Asked Yield (%)": treasury_gross_yield,
+        "State Income Tax": "EXEMPT",
+        "Source": treasury.get("Source"),
+    }])
+    st.dataframe(treasury_view, use_container_width=True, hide_index=True)
+    st.link_button(
+        "OPEN WSJ TREASURY NOTES / BONDS / T-BILLS",
+        "https://www.wsj.com/market-data/bonds",
+        use_container_width=True,
+    )
+
+    if federal_bracket is None or state_tax_rate is None:
+        st.info(
+            "Enter both the client's **federal tax bracket** and **state income-tax rate** to calculate the winner."
+        )
+        return
+
+    muni_ytw = float(muni["Yield to Worst (%)"])
+    federal_rate = float(federal_bracket) / 100.0
+    state_rate = float(state_tax_rate) / 100.0
+    muni_state_rate_applied = 0.0 if state_exempt_applied else state_rate
+
+    muni_after_tax = muni_ytw * (1.0 - muni_state_rate_applied)
+    treasury_after_tax = treasury_gross_yield * (1.0 - federal_rate)
+    treasury_break_even_gross = (
+        muni_after_tax / (1.0 - federal_rate)
+        if federal_rate < 1.0
+        else float("inf")
+    )
+    spread_bps = (muni_after_tax - treasury_after_tax) * 100.0
+
+    if abs(spread_bps) < 0.05:
+        winner = "TIE"
+    elif spread_bps > 0:
+        winner = "MUNICIPAL"
+    else:
+        winner = "TREASURY"
+
+    st.subheader("State Income Tax Comparison")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Muni YTW", f"{muni_ytw:.3f}%")
+    c2.metric("Muni After-State-Tax Yield", f"{muni_after_tax:.3f}%")
+    c3.metric("Treasury Gross Yield", f"{treasury_gross_yield:.3f}%")
+    c4.metric("Treasury After-Federal-Tax Yield", f"{treasury_after_tax:.3f}%")
+
+    if winner == "MUNICIPAL":
+        winner_text = f"MUNICIPAL WINS // +{abs(spread_bps):.1f} BPS AFTER TAX"
+    elif winner == "TREASURY":
+        winner_text = f"TREASURY WINS // +{abs(spread_bps):.1f} BPS AFTER TAX"
+    else:
+        winner_text = "TIE // SAME AFTER-TAX YIELD"
+
+    st.markdown(
+        f'<div class="winner-box">{html.escape(winner_text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    treatment_text = (
+        "0.000% HOME-STATE EXEMPTION APPLIED"
+        if state_exempt_applied
+        else f"{float(state_tax_rate):.3f}% STATE TAX APPLIED"
+    )
+
+    st.markdown(
+        f"""
+        <div class="terminal-note">
+        CLIENT RESIDENCE = {html.escape(client_state)}<br>
+        MUNICIPAL STATE = {html.escape(str(muni['State']))}<br>
+        MUNI STATE TAX TREATMENT = {treatment_text}<br>
+        TREASURY STATE TAX = 0.000% (STATE/LOCAL INCOME-TAX EXEMPT)<br><br>
+
+        MUNI AFTER-TAX FORMULA = MUNI YTW × (1 − STATE TAX RATE APPLIED)<br>
+        VALUES: {muni_ytw:.3f}% × (1 − {muni_state_rate_applied * 100:.3f}%) = {muni_after_tax:.3f}%<br><br>
+
+        TREASURY AFTER-TAX FORMULA = TREASURY YIELD × (1 − FEDERAL TAX RATE)<br>
+        VALUES: {treasury_gross_yield:.3f}% × (1 − {float(federal_bracket):.1f}%) = {treasury_after_tax:.3f}%<br><br>
+
+        TREASURY GROSS YIELD NEEDED TO MATCH MUNI = {treasury_break_even_gross:.3f}%<br>
+        FORMULA: {muni_after_tax:.3f}% ÷ (1 − {float(federal_bracket):.1f}%) = {treasury_break_even_gross:.3f}%
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "Tax assumptions: municipal interest is treated as federally tax-exempt; Treasury interest is treated as federally taxable and state/local income-tax exempt. "
+        "Municipal state-tax treatment varies by state, issuer, residency, and bond type. The optional home-state exemption is a user-controlled assumption and should be verified before purchase. "
+        "AMT, local tax, deductions, special reciprocity rules, and territory-specific treatment are not modeled unless included in the entered state rate."
+    )
+
+    with st.expander("Show 50 closest municipal candidates"):
+        nearby_cols = [
+            "CUSIP", "Name", "State", "Maturity", "Maturity Gap Days",
+            "Price", "Coupon (%)", "Yield to Worst (%)", "Rating", "Source ETFs",
+        ]
+        nearby_cols = [c for c in nearby_cols if c in candidates.columns]
+        st.dataframe(candidates[nearby_cols], use_container_width=True, hide_index=True)
+        render_copy_cusips(
+            candidates["CUSIP"].dropna().tolist(),
+            "COPY 50 CANDIDATE CUSIPs",
+        )
+'''
+
+          insert_marker = '\nst.title("Municipal Bond Screeners — by Raj")\n'
+          if 'def render_state_income_tax_comparison(df):' not in text:
+              if insert_marker not in text:
+                  raise SystemExit('App title insertion marker not found')
+              text = text.replace(insert_marker, state_function + insert_marker, 1)
+
+          old_tabs = '''tab1, tab2 = st.tabs(
+    [
+        "MUNI SCREENER",
+        "TAX EXEMPT STATUS FOR NIST",
+    ]
+)
+'''
+          new_tabs = '''tab1, tab2, tab3 = st.tabs(
+    [
+        "MUNI SCREENER",
+        "TAX EXEMPT STATUS FOR NIST",
+        "STATE INCOME TAX // MUNI vs UST",
+    ]
+)
+'''
+          if old_tabs in text:
+              text = text.replace(old_tabs, new_tabs, 1)
+          elif 'tab1, tab2, tab3 = st.tabs(' not in text:
+              raise SystemExit('Existing tabs block not found')
+
+          old_tab2_end = '''with tab2:
+    render_tax_equivalent(df)
+
+st.caption(
+'''
+          new_tab2_end = '''with tab2:
+    render_tax_equivalent(df)
+
+with tab3:
+    render_state_income_tax_comparison(df)
+
+st.caption(
+'''
+          if old_tab2_end in text:
+              text = text.replace(old_tab2_end, new_tab2_end, 1)
+          elif 'with tab3:' not in text:
+              raise SystemExit('Tab render block not found')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Syntax check
+        run: python -m py_compile streamlit_app.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app.py
+          git commit -m "Add state income tax muni vs Treasury comparison"
+          git push
