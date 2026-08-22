@@ -1,0 +1,44 @@
+name: Fix Wyoming in NIST Dropdown
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-wyoming-nist.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix-wyoming:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Always show all nine NIST states
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('streamlit_app.py')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''    df_states = set(df["State"].dropna().astype(str).unique())
+    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES & df_states)
+'''
+          new = '''    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES)
+'''
+
+          if old not in text:
+              raise SystemExit('Expected NIST state-filter block not found.')
+
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Commit NIST dropdown fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app.py
+          git commit -m "Show all nine NIST states including Wyoming"
+          git push
