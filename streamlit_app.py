@@ -1,16 +1,25 @@
+import html
+import re
+import time
+from contextlib import redirect_stdout
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
 from src.muni_data import load_all_ishares_munis, screen_munis
 
-NO_INDIVIDUAL_INCOME_TAX_STATES = {
-    "Alaska", "Florida", "Nevada", "New Hampshire",
-    "South Dakota", "Tennessee", "Texas", "Wyoming",
-}
 
-ORANGE = "#FF8C00"
-BLACK = "#000000"
-DARK = "#0A0A0A"
+NO_INDIVIDUAL_INCOME_TAX_STATES = {
+    "Alaska",
+    "Florida",
+    "Nevada",
+    "New Hampshire",
+    "South Dakota",
+    "Tennessee",
+    "Texas",
+    "Wyoming",
+}
 
 st.set_page_config(
     page_title="Municipal Bond Screener",
@@ -19,37 +28,37 @@ st.set_page_config(
 )
 
 st.markdown(
-    f"""
+    """
     <style>
-    :root {{
-        --bb-orange: {ORANGE};
-        --bb-black: {BLACK};
-        --bb-dark: {DARK};
-    }}
+    :root {
+        --bb-orange: #FF8C00;
+        --bb-black: #000000;
+        --bb-dark: #0A0A0A;
+    }
 
     html, body, [data-testid="stAppViewContainer"],
-    [data-testid="stMain"], [data-testid="stMainBlockContainer"] {{
+    [data-testid="stMain"], [data-testid="stMainBlockContainer"] {
         background: var(--bb-black) !important;
-    }}
+    }
 
-    [data-testid="stHeader"] {{
+    [data-testid="stHeader"] {
         background: var(--bb-black) !important;
-    }}
+    }
 
-    .stApp {{
+    .stApp {
         background: var(--bb-black) !important;
         color: var(--bb-orange) !important;
-    }}
+    }
 
-    h1 {{
+    h1 {
         color: var(--bb-orange) !important;
         font-family: "Courier New", monospace !important;
         font-weight: 800 !important;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-    }}
+    }
 
-    h2, h3 {{
+    h2, h3 {
         background: var(--bb-orange) !important;
         color: var(--bb-black) !important;
         padding: 0.32rem 0.55rem !important;
@@ -58,67 +67,67 @@ st.markdown(
         font-weight: 900 !important;
         text-transform: uppercase;
         letter-spacing: 0.04em;
-    }}
+    }
 
-    p, label, .stCaption, [data-testid="stMarkdownContainer"] {{
+    p, label, .stCaption, [data-testid="stMarkdownContainer"] {
         color: var(--bb-orange) !important;
-    }}
+    }
 
-    [data-testid="stMetric"] {{
+    [data-testid="stMetric"] {
         background: var(--bb-black) !important;
         border: 1px solid var(--bb-orange) !important;
         border-radius: 0 !important;
         padding: 0.55rem 0.7rem !important;
-    }}
+    }
 
     [data-testid="stMetricLabel"] *,
-    [data-testid="stMetricValue"] * {{
+    [data-testid="stMetricValue"] * {
         color: var(--bb-orange) !important;
         font-family: "Courier New", monospace !important;
-    }}
+    }
 
     div[data-baseweb="input"] > div,
     div[data-baseweb="select"] > div,
-    div[data-baseweb="base-input"] {{
+    div[data-baseweb="base-input"] {
         background: var(--bb-black) !important;
         border-color: var(--bb-orange) !important;
         color: var(--bb-orange) !important;
         border-radius: 0 !important;
-    }}
+    }
 
-    input, textarea {{
+    input, textarea {
         color: var(--bb-orange) !important;
         -webkit-text-fill-color: var(--bb-orange) !important;
         caret-color: var(--bb-orange) !important;
         font-family: "Courier New", monospace !important;
-    }}
+    }
 
-    input::placeholder, textarea::placeholder {{
+    input::placeholder, textarea::placeholder {
         color: #A85C00 !important;
         opacity: 1 !important;
-    }}
+    }
 
-    div[data-baseweb="select"] span {{
+    div[data-baseweb="select"] span {
         color: var(--bb-orange) !important;
-    }}
+    }
 
-    div[data-baseweb="tag"] {{
+    div[data-baseweb="tag"] {
         background: var(--bb-orange) !important;
         border-radius: 0 !important;
-    }}
+    }
 
-    div[data-baseweb="tag"] span {{
+    div[data-baseweb="tag"] span {
         color: var(--bb-black) !important;
         font-weight: 800 !important;
-    }}
+    }
 
     [data-testid="stCheckbox"] label *,
-    [data-testid="stRadio"] label * {{
+    [data-testid="stRadio"] label * {
         color: var(--bb-orange) !important;
-    }}
+    }
 
     .stButton > button,
-    .stDownloadButton > button {{
+    .stDownloadButton > button {
         background: var(--bb-orange) !important;
         color: var(--bb-black) !important;
         border: 1px solid var(--bb-orange) !important;
@@ -126,81 +135,188 @@ st.markdown(
         font-family: "Courier New", monospace !important;
         font-weight: 900 !important;
         text-transform: uppercase;
-    }}
+    }
 
     .stButton > button *,
-    .stDownloadButton > button * {{
+    .stDownloadButton > button * {
         color: var(--bb-black) !important;
-    }}
+    }
 
     .stButton > button:hover,
-    .stDownloadButton > button:hover {{
+    .stDownloadButton > button:hover {
         background: #FFA733 !important;
         color: var(--bb-black) !important;
         border-color: #FFA733 !important;
-    }}
+    }
 
-    [data-testid="stExpander"] {{
+    [data-testid="stExpander"],
+    [data-testid="stStatusWidget"] {
         border: 1px solid var(--bb-orange) !important;
         border-radius: 0 !important;
         background: var(--bb-black) !important;
-    }}
+    }
 
     [data-testid="stExpander"] summary,
-    [data-testid="stExpander"] summary * {{
+    [data-testid="stExpander"] summary * {
         color: var(--bb-orange) !important;
         font-weight: 800 !important;
-    }}
+    }
 
-    [data-testid="stDataFrame"] {{
+    [data-testid="stDataFrame"] {
         border: 1px solid var(--bb-orange) !important;
         border-radius: 0 !important;
-    }}
+    }
 
-    [data-testid="stDataFrame"] [role="columnheader"] {{
+    [data-testid="stDataFrame"] [role="columnheader"] {
         background: var(--bb-orange) !important;
         color: var(--bb-black) !important;
         font-weight: 900 !important;
         border-color: var(--bb-black) !important;
-    }}
+    }
 
-    [data-testid="stDataFrame"] [role="columnheader"] * {{
+    [data-testid="stDataFrame"] [role="columnheader"] * {
         color: var(--bb-black) !important;
         font-weight: 900 !important;
-    }}
+    }
 
-    [data-testid="stDataFrame"] [role="gridcell"] {{
+    [data-testid="stDataFrame"] [role="gridcell"] {
         background: var(--bb-black) !important;
         color: var(--bb-orange) !important;
         border-color: #332000 !important;
-    }}
+    }
 
-    [data-testid="stDataFrame"] [role="gridcell"] * {{
+    [data-testid="stDataFrame"] [role="gridcell"] * {
         color: var(--bb-orange) !important;
-    }}
+    }
 
-    hr {{
+    [data-testid="stProgress"] > div > div > div > div {
+        background: var(--bb-orange) !important;
+    }
+
+    .processing-terminal {
+        border: 1px solid var(--bb-orange);
+        background: #030303;
+        margin: 0.25rem 0 0.45rem 0;
+        font-family: "Courier New", monospace;
+        box-shadow: inset 0 0 18px rgba(255, 140, 0, 0.08);
+    }
+
+    .processing-terminal-title {
+        background: var(--bb-orange);
+        color: var(--bb-black);
+        font-weight: 900;
+        padding: 4px 8px;
+        letter-spacing: 0.08em;
+        font-size: 0.78rem;
+    }
+
+    .processing-terminal pre {
+        color: var(--bb-orange) !important;
+        background: #030303 !important;
+        margin: 0 !important;
+        padding: 8px 10px !important;
+        min-height: 82px;
+        max-height: 190px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-family: "Courier New", monospace !important;
+        font-size: 0.78rem;
+        line-height: 1.35;
+    }
+
+    hr {
         border-color: var(--bb-orange) !important;
-    }}
+    }
 
-    [data-testid="stAlert"] {{
+    [data-testid="stAlert"] {
         background: var(--bb-dark) !important;
         border: 1px solid var(--bb-orange) !important;
         border-radius: 0 !important;
-    }}
+    }
 
-    [data-testid="stAlert"] * {{
+    [data-testid="stAlert"] * {
         color: var(--bb-orange) !important;
-    }}
+    }
 
-    ::selection {{
+    ::selection {
         background: var(--bb-orange);
         color: var(--bb-black);
-    }}
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+class ProcessingConsole:
+    """Turns the loader's print output into a small live Bloomberg-style console."""
+
+    def __init__(self, placeholder, progress_bar, max_lines=11):
+        self.placeholder = placeholder
+        self.progress_bar = progress_bar
+        self.max_lines = max_lines
+        self.lines = []
+        self.partial = ""
+        self.total_etfs = 0
+        self.completed_etfs = 0
+
+    def _render(self):
+        body = "\n".join(self.lines[-self.max_lines:])
+        self.placeholder.markdown(
+            (
+                '<div class="processing-terminal">'
+                '<div class="processing-terminal-title">PROCESSING LOG // DATA ENGINE</div>'
+                f"<pre>{html.escape(body)}</pre>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+    def _consume_line(self, line):
+        line = line.strip()
+        if not line:
+            return
+
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.lines.append(f"{stamp}  {line}")
+
+        discovered = re.search(r"Discovered\s+(\d+)\s+iShares muni ETFs", line)
+        if discovered:
+            self.total_etfs = int(discovered.group(1))
+            self.progress_bar.progress(
+                5,
+                text=f"Discovered {self.total_etfs} municipal ETF sources",
+            )
+
+        if "✓" in line or "✗" in line:
+            self.completed_etfs += 1
+            if self.total_etfs:
+                pct = 5 + int(88 * self.completed_etfs / self.total_etfs)
+                self.progress_bar.progress(
+                    min(pct, 93),
+                    text=(
+                        f"Processing ETF holdings "
+                        f"{self.completed_etfs}/{self.total_etfs}"
+                    ),
+                )
+
+        self._render()
+
+    def add(self, message):
+        self._consume_line(message)
+
+    def write(self, text):
+        self.partial += str(text)
+        while "\n" in self.partial:
+            line, self.partial = self.partial.split("\n", 1)
+            self._consume_line(line)
+        return len(str(text))
+
+    def flush(self):
+        if self.partial.strip():
+            self._consume_line(self.partial)
+        self.partial = ""
+
 
 st.title("Municipal Bond Screener")
 st.caption(
@@ -208,12 +324,68 @@ st.caption(
     "No API keys and no paid feed."
 )
 
-@st.cache_data(ttl="12h", show_spinner=False)
-def load_data():
-    return load_all_ishares_munis()
 
-with st.spinner("Loading and combining municipal bond ETF holdings..."):
-    df, source_rows, etf_status, as_of = load_data()
+@st.cache_data(ttl="12h", show_spinner=False)
+def load_data(_console=None):
+    # Leading underscore tells Streamlit not to hash the live UI console object.
+    if _console is None:
+        return load_all_ishares_munis()
+
+    with redirect_stdout(_console):
+        return load_all_ishares_munis()
+
+
+with st.status("DATA ENGINE // INITIALIZING", expanded=True) as loader_status:
+    progress_bar = st.progress(
+        0,
+        text="Checking the 12-hour municipal data cache...",
+    )
+    log_placeholder = st.empty()
+    console = ProcessingConsole(log_placeholder, progress_bar)
+    console.add("CACHE CHECK // looking for a recently processed muni universe")
+
+    started = time.perf_counter()
+
+    try:
+        df, source_rows, etf_status, as_of = load_data(_console=console)
+        console.flush()
+
+        elapsed = time.perf_counter() - started
+        loaded_now = int((etf_status["Status"] == "OK").sum())
+
+        if console.total_etfs == 0:
+            console.add(
+                f"CACHE HIT // restored {len(df):,} unique CUSIPs in {elapsed:.2f}s"
+            )
+        else:
+            console.add(
+                f"MERGE // deduplicated holdings into {len(df):,} unique CUSIPs"
+            )
+            console.add(
+                f"READY // {loaded_now} ETF sources loaded in {elapsed:.1f}s"
+            )
+
+        progress_bar.progress(
+            100,
+            text=f"READY • {len(df):,} unique municipal CUSIPs",
+        )
+
+        loader_status.update(
+            label=f"DATA ENGINE // READY • {len(df):,} CUSIPs",
+            state="complete",
+            expanded=False,
+        )
+
+    except Exception as exc:
+        console.flush()
+        console.add(f"ERROR // {type(exc).__name__}: {exc}")
+        loader_status.update(
+            label="DATA ENGINE // ERROR",
+            state="error",
+            expanded=True,
+        )
+        st.stop()
+
 
 loaded_etfs = int((etf_status["Status"] == "OK").sum())
 failed_etfs = int((etf_status["Status"] != "OK").sum())
@@ -249,7 +421,8 @@ with row1[0]:
     ).strip().upper()
 
 available_states = sorted(
-    x for x in df["State"].dropna().astype(str).unique()
+    x
+    for x in df["State"].dropna().astype(str).unique()
     if x and x != "Unknown"
 )
 
@@ -348,11 +521,19 @@ row3 = st.columns(5)
 
 with row3[0]:
     use_maturity_from = st.checkbox("Minimum maturity")
-    maturity_from = st.date_input("Maturity from", key="maturity_from") if use_maturity_from else None
+    maturity_from = (
+        st.date_input("Maturity from", key="maturity_from")
+        if use_maturity_from
+        else None
+    )
 
 with row3[1]:
     use_maturity_to = st.checkbox("Maximum maturity")
-    maturity_to = st.date_input("Maturity to", key="maturity_to") if use_maturity_to else None
+    maturity_to = (
+        st.date_input("Maturity to", key="maturity_to")
+        if use_maturity_to
+        else None
+    )
 
 with row3[2]:
     investment_grade_only = st.checkbox(
@@ -436,6 +617,7 @@ results = screen_munis(
 st.divider()
 
 c1, c2 = st.columns([1, 4])
+
 with c1:
     st.metric("Matches", f"{len(results):,}")
 
@@ -447,12 +629,26 @@ with c2:
         )
 
 display_columns = [
-    "CUSIP", "Name", "State", "Price", "Coupon (%)", "YTM (%)",
-    "Yield to Worst (%)", "Yield to Call (%)", "Maturity", "Rating",
-    "Investment Grade", "AMT Exempt", "Source ETFs", "Source Count",
-    "Purchase Face ($)", "Est. Principal Cost ($)",
-    "Annual Coupon Income ($)", "NonCallableProxy",
+    "CUSIP",
+    "Name",
+    "State",
+    "Price",
+    "Coupon (%)",
+    "YTM (%)",
+    "Yield to Worst (%)",
+    "Yield to Call (%)",
+    "Maturity",
+    "Rating",
+    "Investment Grade",
+    "AMT Exempt",
+    "Source ETFs",
+    "Source Count",
+    "Purchase Face ($)",
+    "Est. Principal Cost ($)",
+    "Annual Coupon Income ($)",
+    "NonCallableProxy",
 ]
+
 display_columns = [c for c in display_columns if c in results.columns]
 
 st.dataframe(
@@ -472,6 +668,7 @@ st.dataframe(
 )
 
 csv = results.to_csv(index=False).encode("utf-8")
+
 st.download_button(
     "Download filtered CSV",
     data=csv,
