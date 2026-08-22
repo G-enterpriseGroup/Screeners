@@ -1147,7 +1147,7 @@ if used_session_cache:
 tab1, tab2 = st.tabs(
     [
         "MUNI SCREENER",
-        "TAX EQUIVALENT // MUNI vs UST",
+        "TAX EXEMPT STATUS FOR NIST",
     ]
 )
 
