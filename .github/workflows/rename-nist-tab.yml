@@ -1,0 +1,40 @@
+name: Rename NIST Tab
+
+on:
+  push:
+    paths:
+      - '.github/workflows/rename-nist-tab.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  rename-tab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Rename only the second Streamlit tab
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('streamlit_app.py')
+          text = path.read_text(encoding='utf-8')
+          old = '"TAX EQUIVALENT // MUNI vs UST"'
+          new = '"TAX EXEMPT STATUS FOR NIST"'
+
+          if old not in text:
+              raise SystemExit('Old tab label not found; no file changed.')
+
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Commit tab-label change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app.py
+          git commit -m "Rename tax equivalent tab to NIST"
+          git push
