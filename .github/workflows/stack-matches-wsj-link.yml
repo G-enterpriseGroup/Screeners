@@ -1,0 +1,50 @@
+name: Stack Matches and Add WSJ Link
+
+on:
+  push:
+    paths:
+      - '.github/workflows/stack-matches-wsj-link.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-streamlit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Stack match sections and add WSJ link
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('streamlit_app.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_cols = '    mcol, tcol = st.columns(2)\n'
+          new_cols = '    mcol = st.container()\n    tcol = st.container()\n'
+
+          if old_cols not in text:
+              raise SystemExit('Match columns line not found')
+          text = text.replace(old_cols, new_cols, 1)
+
+          old_treasury_table = '''        st.dataframe(\n            treasury_view,\n            use_container_width=True,\n            hide_index=True,\n        )\n'''
+
+          new_treasury_table = '''        st.dataframe(\n            treasury_view,\n            use_container_width=True,\n            hide_index=True,\n        )\n        st.link_button(\n            \"OPEN WSJ TREASURY NOTES / BONDS / T-BILLS\",\n            \"https://www.wsj.com/market-data/bonds\",\n            use_container_width=True,\n        )\n'''
+
+          if old_treasury_table not in text:
+              raise SystemExit('Treasury dataframe block not found')
+          text = text.replace(old_treasury_table, new_treasury_table, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app.py
+          git commit -m "Stack muni and Treasury matches and add WSJ link"
+          git push
