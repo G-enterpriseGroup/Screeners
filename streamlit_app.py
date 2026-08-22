@@ -947,7 +947,8 @@ def render_tax_equivalent(df):
         ).days
     )
 
-    mcol, tcol = st.columns(2)
+    mcol = st.container()
+    tcol = st.container()
 
     with mcol:
         st.markdown("### Municipal Match")
@@ -990,6 +991,11 @@ def render_tax_equivalent(df):
             treasury_view,
             use_container_width=True,
             hide_index=True,
+        )
+        st.link_button(
+            "OPEN WSJ TREASURY NOTES / BONDS / T-BILLS",
+            "https://www.wsj.com/market-data/bonds",
+            use_container_width=True,
         )
 
     if federal_bracket is None:
