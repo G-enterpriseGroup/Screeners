@@ -23,7 +23,6 @@ jobs:
           path = Path('streamlit_app.py')
           text = path.read_text(encoding='utf-8')
 
-          # Browser/app title.
           text = text.replace(
               'page_title="Municipal Bond Screeners",',
               'page_title="Municipal Bond Screeners — by Raj",',
@@ -35,7 +34,6 @@ jobs:
               1,
           )
 
-          # Add fixed all-50-state list once.
           marker = '''NO_INDIVIDUAL_INCOME_TAX_STATES = {
     "Alaska",
     "Florida",
@@ -441,3 +439,5 @@ st.caption(
           git add streamlit_app.py
           git commit -m "Add state income tax muni vs Treasury comparison"
           git push
+
+# trigger existing workflow
