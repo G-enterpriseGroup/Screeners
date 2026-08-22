@@ -19,6 +19,7 @@ DEFAULT_HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/json,text/plain,*/*",
     "Accept-Language": "en-US,en;q=0.9",
+    "Referer": WSJ_TREASURY_URL,
 }
 
 
@@ -40,6 +41,14 @@ def _num(value):
 def _date(value):
     if value is None:
         return pd.NaT
+    if isinstance(value, (int, float)):
+        try:
+            if abs(value) > 10_000_000_000:
+                return pd.to_datetime(value, unit="ms", errors="coerce")
+            if abs(value) > 1_000_000_000:
+                return pd.to_datetime(value, unit="s", errors="coerce")
+        except Exception:
+            pass
     return pd.to_datetime(value, errors="coerce")
 
 
@@ -92,6 +101,138 @@ def _dedupe(rows):
     )
 
 
+def _flatten_dict(obj, prefix=""):
+    out = {}
+    if not isinstance(obj, dict):
+        return out
+
+    for key, value in obj.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten_dict(value, path))
+        elif isinstance(value, list):
+            if value and not isinstance(value[0], (dict, list)):
+                out[path] = value[0]
+        else:
+            out[path] = value
+    return out
+
+
+def _pick(flat, includes, prefer=()):
+    items = list(flat.items())
+    for pref in prefer:
+        for key, value in items:
+            low = key.lower()
+            if all(term in low for term in includes) and pref in low:
+                return value
+    for key, value in items:
+        low = key.lower()
+        if all(term in low for term in includes):
+            return value
+    return None
+
+
+def _parse_wsj_instruments(instruments, explicit_type, as_of):
+    rows = []
+
+    for item in instruments or []:
+        if not isinstance(item, dict):
+            continue
+
+        flat = _flatten_dict(item)
+
+        maturity_value = _pick(flat, ("matur",), prefer=("date", "formatted"))
+        yield_value = _pick(flat, ("yield",), prefer=("asked", "ask", "formatted"))
+        coupon_value = _pick(flat, ("coupon",), prefer=("rate", "formatted"))
+        bid_value = _pick(flat, ("bid",), prefer=("price", "formatted"))
+        asked_value = _pick(flat, ("ask",), prefer=("price", "formatted"))
+
+        maturity = _date(maturity_value)
+        yld = _num(yield_value)
+        coupon = _num(coupon_value)
+
+        if pd.isna(maturity) or yld is None or not (-5 <= yld <= 25):
+            continue
+
+        rows.append(
+            {
+                "Security Type": _security_type(
+                    coupon, maturity, as_of, explicit=explicit_type
+                ),
+                "Maturity": maturity,
+                "Coupon (%)": coupon,
+                "Bid": _num(bid_value),
+                "Asked": _num(asked_value),
+                "Asked Yield (%)": yld,
+                "Source": "WSJ U.S. Treasury Quotes",
+            }
+        )
+
+    return rows
+
+
+def _load_wsj_ajax(session, timeout):
+    """
+    WSJ historically exposes the two Treasury tabs through the same public
+    mdc_treasury JSON route used by the webpage:
+      id={"treasury":"BILLS"}
+      id={"treasury":"NOTES_AND_BONDS"}
+    """
+    groups = [
+        ("BILLS", "Treasury Bill"),
+        ("NOTES_AND_BONDS", "Treasury Note/Bond"),
+    ]
+    all_rows = []
+    errors = []
+    as_of = pd.Timestamp.today().normalize()
+
+    for group, explicit_type in groups:
+        try:
+            response = session.get(
+                WSJ_TREASURY_URL,
+                params={
+                    "id": json.dumps({"treasury": group}, separators=(",", ":")),
+                    "type": "mdc_treasury",
+                },
+                headers=DEFAULT_HEADERS,
+                timeout=timeout,
+            )
+
+            if response.status_code in {401, 403, 429}:
+                raise RuntimeError(
+                    f"WSJ blocked {group} request (HTTP {response.status_code})."
+                )
+            response.raise_for_status()
+
+            payload = response.json()
+            instruments = (
+                payload.get("data", {}).get("instruments", [])
+                if isinstance(payload, dict)
+                else []
+            )
+            rows = _parse_wsj_instruments(instruments, explicit_type, as_of)
+            if not rows:
+                raise RuntimeError(
+                    f"WSJ {group} endpoint returned no parseable Treasury rows."
+                )
+            all_rows.extend(rows)
+
+        except Exception as exc:
+            errors.append(f"{group}: {exc}")
+
+    types = set(r["Security Type"] for r in all_rows)
+    has_bills = any("Bill" in x for x in types)
+    has_notes_bonds = any("Note" in x or "Bond" in x for x in types)
+
+    if not (has_bills and has_notes_bonds):
+        raise RuntimeError(
+            "WSJ JSON Treasury feed was incomplete. "
+            + (" | ".join(errors) if errors else "")
+        )
+
+    return _dedupe(all_rows), errors
+
+
 def _extract_html_tables(soup, as_of):
     rows = []
 
@@ -100,7 +241,10 @@ def _extract_html_tables(soup, as_of):
         if not trs:
             continue
 
-        headers = [_clean_header(x.get_text(" ", strip=True)) for x in trs[0].find_all(["th", "td"])]
+        headers = [
+            _clean_header(x.get_text(" ", strip=True))
+            for x in trs[0].find_all(["th", "td"])
+        ]
         if not headers or not any("MATURITY" in h for h in headers):
             continue
         if not any("YIELD" in h for h in headers):
@@ -126,10 +270,15 @@ def _extract_html_tables(soup, as_of):
             for x in list(table.previous_siblings)[:4]
             if getattr(x, "get_text", None)
         )
-        explicit_type = "Treasury Bill" if "Treasury Bill" in context else "Treasury Note/Bond"
+        explicit_type = (
+            "Treasury Bill" if "Treasury Bill" in context else "Treasury Note/Bond"
+        )
 
         for tr in trs[1:]:
-            cells = [x.get_text(" ", strip=True) for x in tr.find_all(["th", "td"])]
+            cells = [
+                x.get_text(" ", strip=True)
+                for x in tr.find_all(["th", "td"])
+            ]
             if len(cells) <= max(maturity_i, yield_i):
                 continue
 
@@ -138,13 +287,27 @@ def _extract_html_tables(soup, as_of):
             if pd.isna(maturity) or yld is None:
                 continue
 
-            coupon = _num(cells[coupon_i]) if coupon_i is not None and coupon_i < len(cells) else None
-            bid = _num(cells[bid_i]) if bid_i is not None and bid_i < len(cells) else None
-            asked = _num(cells[asked_i]) if asked_i is not None and asked_i < len(cells) else None
+            coupon = (
+                _num(cells[coupon_i])
+                if coupon_i is not None and coupon_i < len(cells)
+                else None
+            )
+            bid = (
+                _num(cells[bid_i])
+                if bid_i is not None and bid_i < len(cells)
+                else None
+            )
+            asked = (
+                _num(cells[asked_i])
+                if asked_i is not None and asked_i < len(cells)
+                else None
+            )
 
             rows.append(
                 {
-                    "Security Type": _security_type(coupon, maturity, as_of, explicit_type),
+                    "Security Type": _security_type(
+                        coupon, maturity, as_of, explicit_type
+                    ),
                     "Maturity": maturity,
                     "Coupon (%)": coupon,
                     "Bid": bid,
@@ -175,123 +338,75 @@ def _extract_json_rows(soup, as_of):
         if not raw:
             continue
 
-        candidates = []
-        text = raw.strip()
-        if text.startswith("{") or text.startswith("["):
-            candidates.append(text)
-
-        for match in re.finditer(r'(\{[^<]{150,}?\})', raw, flags=re.S):
-            blob = match.group(1)
-            if "matur" in blob.lower() and "yield" in blob.lower():
-                candidates.append(blob)
-
-        for candidate in candidates[:8]:
+        if "window.__STATE__" in raw:
+            candidate = raw.replace("window.__STATE__ =", "", 1).strip()
+            if candidate.endswith(";"):
+                candidate = candidate[:-1]
             try:
                 payload = json.loads(candidate)
+                for item in _walk_json(payload):
+                    if not isinstance(item, dict):
+                        continue
+                    flat = _flatten_dict(item)
+                    maturity = _date(
+                        _pick(flat, ("matur",), prefer=("date", "formatted"))
+                    )
+                    yld = _num(
+                        _pick(flat, ("yield",), prefer=("asked", "ask", "formatted"))
+                    )
+                    if pd.isna(maturity) or yld is None:
+                        continue
+                    coupon = _num(
+                        _pick(flat, ("coupon",), prefer=("rate", "formatted"))
+                    )
+                    rows.append(
+                        {
+                            "Security Type": _security_type(coupon, maturity, as_of),
+                            "Maturity": maturity,
+                            "Coupon (%)": coupon,
+                            "Bid": _num(
+                                _pick(flat, ("bid",), prefer=("price", "formatted"))
+                            ),
+                            "Asked": _num(
+                                _pick(flat, ("ask",), prefer=("price", "formatted"))
+                            ),
+                            "Asked Yield (%)": yld,
+                            "Source": "WSJ U.S. Treasury Quotes",
+                        }
+                    )
             except Exception:
-                continue
-
-            for item in _walk_json(payload):
-                lower = {str(k).lower(): k for k in item.keys()}
-                mat_key = next((orig for low, orig in lower.items() if "matur" in low and "date" in low), None)
-                if mat_key is None:
-                    mat_key = next((orig for low, orig in lower.items() if "matur" in low), None)
-
-                yield_key = next(
-                    (
-                        orig for low, orig in lower.items()
-                        if "yield" in low and ("ask" in low or "asked" in low)
-                    ),
-                    None,
-                )
-                if yield_key is None:
-                    yield_key = next((orig for low, orig in lower.items() if "yield" in low), None)
-
-                if mat_key is None or yield_key is None:
-                    continue
-
-                maturity = _date(item.get(mat_key))
-                yld = _num(item.get(yield_key))
-                if pd.isna(maturity) or yld is None or not (-5 <= yld <= 25):
-                    continue
-
-                coupon_key = next((orig for low, orig in lower.items() if "coupon" in low), None)
-                bid_key = next((orig for low, orig in lower.items() if low == "bid" or "bidprice" in low), None)
-                ask_key = next(
-                    (
-                        orig for low, orig in lower.items()
-                        if low in {"ask", "asked"} or "askprice" in low or "askedprice" in low
-                    ),
-                    None,
-                )
-                type_key = next((orig for low, orig in lower.items() if "securitytype" in low or low == "type"), None)
-
-                coupon = _num(item.get(coupon_key)) if coupon_key else None
-
-                rows.append(
-                    {
-                        "Security Type": _security_type(
-                            coupon,
-                            maturity,
-                            as_of,
-                            item.get(type_key) if type_key else None,
-                        ),
-                        "Maturity": maturity,
-                        "Coupon (%)": coupon,
-                        "Bid": _num(item.get(bid_key)) if bid_key else None,
-                        "Asked": _num(item.get(ask_key)) if ask_key else None,
-                        "Asked Yield (%)": yld,
-                        "Source": "WSJ U.S. Treasury Quotes",
-                    }
-                )
-
-    return rows
-
-
-def _extract_text_rows(soup, as_of):
-    text = soup.get_text("\n", strip=True)
-    rows = []
-
-    pattern = re.compile(
-        r"(?P<maturity>\d{1,2}/\d{1,2}/\d{4})\s+"
-        r"(?P<coupon>\d+(?:\.\d+)?)\s+"
-        r"(?P<bid>\d+(?:\.\d+)?)\s+"
-        r"(?P<asked>\d+(?:\.\d+)?)\s+"
-        r"(?:[-+]?\d+(?:\.\d+)?|unch\.?)\s+"
-        r"(?P<yield>\d+(?:\.\d+)?)",
-        flags=re.I,
-    )
-
-    for m in pattern.finditer(text):
-        maturity = _date(m.group("maturity"))
-        coupon = _num(m.group("coupon"))
-        yld = _num(m.group("yield"))
-        if pd.isna(maturity) or yld is None or not (0 <= yld <= 20):
-            continue
-        rows.append(
-            {
-                "Security Type": _security_type(coupon, maturity, as_of),
-                "Maturity": maturity,
-                "Coupon (%)": coupon,
-                "Bid": _num(m.group("bid")),
-                "Asked": _num(m.group("asked")),
-                "Asked Yield (%)": yld,
-                "Source": "WSJ U.S. Treasury Quotes",
-            }
-        )
+                pass
 
     return rows
 
 
 def load_wsj_treasury_quotes(timeout=25):
     """
-    Best-effort parser for the public WSJ U.S. Treasury Quotes page.
+    WSJ-first loader.
 
-    It does not bypass authentication, CAPTCHAs, robots controls, or paywalls.
-    If WSJ returns a blocked/error response or only a JS 'Loading...' shell,
-    the caller can fall back to the official U.S. Treasury yield curve.
+    1) Try the public JSON route used by the Treasury Bills and Notes/Bonds tabs.
+    2) Try embedded page state / HTML.
+    3) Never bypass authentication, CAPTCHAs, access controls, or paywalls.
     """
     session = requests.Session()
+
+    try:
+        ajax_df, ajax_errors = _load_wsj_ajax(session, timeout)
+        if not ajax_df.empty:
+            return ajax_df, {
+                "source": "WSJ U.S. Treasury Quotes",
+                "source_url": WSJ_TREASURY_URL,
+                "as_of": pd.Timestamp.today().strftime("%Y-%m-%d"),
+                "fallback": False,
+                "note": (
+                    "WSJ Treasury Bills + Notes/Bonds public mdc_treasury feed; "
+                    "asked yield used for comparison."
+                ),
+                "warnings": ajax_errors,
+            }
+    except Exception as ajax_exc:
+        ajax_error = str(ajax_exc)
+
     response = session.get(
         WSJ_TREASURY_URL,
         headers=DEFAULT_HEADERS,
@@ -299,7 +414,9 @@ def load_wsj_treasury_quotes(timeout=25):
     )
 
     if response.status_code in {401, 403, 429}:
-        raise RuntimeError(f"WSJ blocked automated access (HTTP {response.status_code}).")
+        raise RuntimeError(
+            f"WSJ blocked automated access (HTTP {response.status_code})."
+        )
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -309,17 +426,21 @@ def load_wsj_treasury_quotes(timeout=25):
         r"([A-Z][a-z]+\s+\d{1,2},\s+\d{4})",
         soup.get_text(" ", strip=True),
     )
-    as_of = _date(date_match.group(2)) if date_match else pd.Timestamp.today().normalize()
+    as_of = (
+        _date(date_match.group(2))
+        if date_match
+        else pd.Timestamp.today().normalize()
+    )
 
     rows = []
     rows.extend(_extract_html_tables(soup, as_of))
     rows.extend(_extract_json_rows(soup, as_of))
-    rows.extend(_extract_text_rows(soup, as_of))
 
     df = _dedupe(rows)
     if df.empty:
         raise RuntimeError(
-            "WSJ page loaded, but its Treasury quote rows were not exposed in the returned HTML/JSON."
+            "WSJ Treasury feed/page did not expose a complete parseable quote set. "
+            f"JSON attempt: {ajax_error}"
         )
 
     return df, {
@@ -328,6 +449,7 @@ def load_wsj_treasury_quotes(timeout=25):
         "as_of": pd.Timestamp(as_of).strftime("%Y-%m-%d"),
         "fallback": False,
         "note": "Representative WSJ Treasury quotations; asked yield used for comparison.",
+        "warnings": [ajax_error] if ajax_error else [],
     }
 
 
@@ -370,8 +492,15 @@ def load_treasury_curve_fallback(timeout=25):
         first = table.find("tr")
         if not first:
             continue
-        hs = [_clean_header(x.get_text(" ", strip=True)) for x in first.find_all(["th", "td"])]
-        if hs and hs[0] == "DATE" and any(_tenor_months(h) is not None for h in hs[1:]):
+        hs = [
+            _clean_header(x.get_text(" ", strip=True))
+            for x in first.find_all(["th", "td"])
+        ]
+        if (
+            hs
+            and hs[0] == "DATE"
+            and any(_tenor_months(h) is not None for h in hs[1:])
+        ):
             chosen_table = table
             headers = hs
             break
@@ -381,7 +510,10 @@ def load_treasury_curve_fallback(timeout=25):
 
     observations = []
     for tr in chosen_table.find_all("tr")[1:]:
-        cells = [x.get_text(" ", strip=True) for x in tr.find_all(["th", "td"])]
+        cells = [
+            x.get_text(" ", strip=True)
+            for x in tr.find_all(["th", "td"])
+        ]
         if len(cells) < 2:
             continue
         d = _date(cells[0])
@@ -390,11 +522,17 @@ def load_treasury_curve_fallback(timeout=25):
         observations.append((d, cells))
 
     if not observations:
-        raise RuntimeError("Official Treasury yield-curve page returned no observations.")
+        raise RuntimeError(
+            "Official Treasury yield-curve page returned no observations."
+        )
 
-    observations = [x for x in observations if x[0].normalize() <= today]
+    observations = [
+        x for x in observations if x[0].normalize() <= today
+    ]
     if not observations:
-        raise RuntimeError("No Treasury curve observation exists on or before today.")
+        raise RuntimeError(
+            "No Treasury curve observation exists on or before today."
+        )
 
     obs_date, cells = max(observations, key=lambda x: x[0])
     rows = []
@@ -412,7 +550,11 @@ def load_treasury_curve_fallback(timeout=25):
         else:
             maturity = obs_date + pd.DateOffset(months=int(months))
 
-        security_type = "Treasury Bill Benchmark" if months <= 12 else "Treasury Note/Bond Benchmark"
+        security_type = (
+            "Treasury Bill Benchmark"
+            if months <= 12
+            else "Treasury Note/Bond Benchmark"
+        )
 
         rows.append(
             {
@@ -429,7 +571,9 @@ def load_treasury_curve_fallback(timeout=25):
 
     df = _dedupe(rows)
     if df.empty:
-        raise RuntimeError("Official Treasury yield-curve fallback produced no usable rows.")
+        raise RuntimeError(
+            "Official Treasury yield-curve fallback produced no usable rows."
+        )
 
     return df, {
         "source": "U.S. Treasury Daily Par Yield Curve",
@@ -437,16 +581,17 @@ def load_treasury_curve_fallback(timeout=25):
         "as_of": pd.Timestamp(obs_date).strftime("%Y-%m-%d"),
         "fallback": True,
         "note": (
-            "Fallback benchmark curve used because WSJ individual quote rows were unavailable. "
-            "Benchmark dates are synthetic tenor dates, not exact Treasury security maturities."
+            "Fallback benchmark curve used because WSJ individual quote rows "
+            "were unavailable. Benchmark dates are synthetic tenor dates, "
+            "not exact Treasury security maturities."
         ),
     }
 
 
 def load_treasury_quotes():
     """
-    WSJ first. If WSJ cannot be read without bypassing controls, use the official
-    Treasury par-yield curve so the comparison tool remains functional.
+    WSJ first. If WSJ cannot be read without bypassing controls, use the
+    official Treasury par-yield curve so the comparison tool remains functional.
     """
     wsj_error = None
     try:
@@ -465,12 +610,18 @@ def nearest_treasury(treasury_df, target_maturity):
 
     target = pd.Timestamp(target_maturity).normalize()
     work = treasury_df.copy()
-    work["Maturity"] = pd.to_datetime(work["Maturity"], errors="coerce")
-    work = work.dropna(subset=["Maturity", "Asked Yield (%)"]).copy()
+    work["Maturity"] = pd.to_datetime(
+        work["Maturity"], errors="coerce"
+    )
+    work = work.dropna(
+        subset=["Maturity", "Asked Yield (%)"]
+    ).copy()
     if work.empty:
         return None
 
-    work["Maturity Gap Days"] = (work["Maturity"] - target).abs().dt.days
+    work["Maturity Gap Days"] = (
+        work["Maturity"] - target
+    ).abs().dt.days
     work = work.sort_values(
         ["Maturity Gap Days", "Asked Yield (%)"],
         ascending=[True, False],
@@ -479,7 +630,12 @@ def nearest_treasury(treasury_df, target_maturity):
     return work.iloc[0]
 
 
-def nearest_muni_candidates(muni_df, target_maturity, states=None, limit=25):
+def nearest_muni_candidates(
+    muni_df,
+    target_maturity,
+    states=None,
+    limit=25,
+):
     target = pd.Timestamp(target_maturity).normalize()
     work = muni_df.copy()
 
@@ -488,11 +644,19 @@ def nearest_muni_candidates(muni_df, target_maturity, states=None, limit=25):
             states = [states]
         work = work[work["State"].isin(states)].copy()
 
-    work["Maturity"] = pd.to_datetime(work["Maturity"], errors="coerce")
-    work["Yield to Worst (%)"] = pd.to_numeric(work["Yield to Worst (%)"], errors="coerce")
-    work = work.dropna(subset=["Maturity", "Yield to Worst (%)"]).copy()
+    work["Maturity"] = pd.to_datetime(
+        work["Maturity"], errors="coerce"
+    )
+    work["Yield to Worst (%)"] = pd.to_numeric(
+        work["Yield to Worst (%)"], errors="coerce"
+    )
+    work = work.dropna(
+        subset=["Maturity", "Yield to Worst (%)"]
+    ).copy()
 
-    work["Maturity Gap Days"] = (work["Maturity"] - target).abs().dt.days
+    work["Maturity Gap Days"] = (
+        work["Maturity"] - target
+    ).abs().dt.days
     work = work.sort_values(
         ["Maturity Gap Days", "Yield to Worst (%)"],
         ascending=[True, False],
@@ -501,7 +665,11 @@ def nearest_muni_candidates(muni_df, target_maturity, states=None, limit=25):
     return work.head(int(limit)).reset_index(drop=True)
 
 
-def tax_equivalent_comparison(muni_yield, treasury_yield, federal_tax_rate):
+def tax_equivalent_comparison(
+    muni_yield,
+    treasury_yield,
+    federal_tax_rate,
+):
     """
     federal_tax_rate is a decimal (e.g., 0.37).
 
@@ -512,7 +680,9 @@ def tax_equivalent_comparison(muni_yield, treasury_yield, federal_tax_rate):
     """
     t = float(federal_tax_rate)
     if not (0 <= t < 1):
-        raise ValueError("Federal tax rate must be between 0% and less than 100%.")
+        raise ValueError(
+            "Federal tax rate must be between 0% and less than 100%."
+        )
 
     muni_yield = float(muni_yield)
     treasury_yield = float(treasury_yield)
@@ -520,10 +690,18 @@ def tax_equivalent_comparison(muni_yield, treasury_yield, federal_tax_rate):
     muni_after_tax = muni_yield
     treasury_after_tax = treasury_yield * (1 - t)
     muni_tey = muni_yield / (1 - t)
-    after_tax_spread_bps = (muni_after_tax - treasury_after_tax) * 100
+    after_tax_spread_bps = (
+        muni_after_tax - treasury_after_tax
+    ) * 100
 
-    winner = "MUNICIPAL" if muni_after_tax > treasury_after_tax else (
-        "TREASURY" if treasury_after_tax > muni_after_tax else "TIE"
+    winner = (
+        "MUNICIPAL"
+        if muni_after_tax > treasury_after_tax
+        else (
+            "TREASURY"
+            if treasury_after_tax > muni_after_tax
+            else "TIE"
+        )
     )
 
     return {
