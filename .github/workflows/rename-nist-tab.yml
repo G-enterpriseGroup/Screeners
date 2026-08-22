@@ -1,4 +1,4 @@
-name: Rename NIST Tab
+name: Fix NIST State Dropdown
 
 on:
   push:
@@ -9,32 +9,36 @@ permissions:
   contents: write
 
 jobs:
-  rename-tab:
+  fix-nist-states:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Rename only the second Streamlit tab
+      - name: Always show all nine NIST states
         run: |
           python - <<'PY'
           from pathlib import Path
 
           path = Path('streamlit_app.py')
           text = path.read_text(encoding='utf-8')
-          old = '"TAX EQUIVALENT // MUNI vs UST"'
-          new = '"TAX EXEMPT STATUS FOR NIST"'
+
+          old = '''    df_states = set(df["State"].dropna().astype(str).unique())
+    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES & df_states)
+'''
+          new = '''    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES)
+'''
 
           if old not in text:
-              raise SystemExit('Old tab label not found; no file changed.')
+              raise SystemExit('NIST state intersection block not found; no file changed.')
 
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
 
-      - name: Commit tab-label change
+      - name: Commit NIST state dropdown fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add streamlit_app.py
-          git commit -m "Rename tax equivalent tab to NIST"
+          git commit -m "Always show all nine NIST states"
           git push
