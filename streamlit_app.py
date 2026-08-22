@@ -2,7 +2,7 @@ import html
 import re
 import time
 from contextlib import redirect_stdout
-from datetime import date, datetime
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -66,7 +66,7 @@ st.markdown(
 
     h2, h3 {
         background:var(--bb-orange) !important;
-        color:var(--bb-black) !important;
+        color:#000 !important;
         padding:.32rem .55rem !important;
         border-radius:0 !important;
         font-family:"Courier New",monospace !important;
@@ -359,21 +359,11 @@ def _session_muni_cache_is_valid():
 
 
 def load_muni_universe():
-    """
-    The municipal loader is intentionally NOT decorated with st.cache_data.
-
-    The first load can update the live ProcessingConsole. Once complete, the
-    full data bundle is stored in st.session_state for 12 hours. Widget reruns
-    reuse that bundle and never replay Streamlit elements from a cached function.
-    """
     if _session_muni_cache_is_valid():
         return st.session_state[MUNI_SESSION_KEY], True
 
     with st.status("DATA ENGINE // INITIALIZING", expanded=True) as loader_status:
-        progress_bar = st.progress(
-            0,
-            text="Loading municipal ETF holdings...",
-        )
+        progress_bar = st.progress(0, text="Loading municipal ETF holdings...")
         log_placeholder = st.empty()
         console = ProcessingConsole(log_placeholder, progress_bar)
         console.add("SESSION CACHE MISS // starting municipal data engine")
@@ -426,6 +416,30 @@ def load_muni_universe():
 @st.cache_data(ttl="30m", show_spinner=False)
 def load_treasury_market():
     return load_treasury_quotes()
+
+
+def render_copy_cusips(cusips, title="COPY CUSIPs"):
+    clean = []
+    for value in cusips:
+        value = str(value).strip().upper()
+        if value and value not in clean:
+            clean.append(value)
+
+    if not clean:
+        return
+
+    with st.expander(f"{title} // {len(clean):,}"):
+        st.caption(
+            "Use the copy icon in either box. Left = one CUSIP per line; "
+            "right = comma-separated."
+        )
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**ONE PER LINE**")
+            st.code("\n".join(clean), language=None)
+        with right:
+            st.markdown("**COMMA-SEPARATED**")
+            st.code(", ".join(clean), language=None)
 
 
 def render_muni_screener(df, source_rows, etf_status, as_of):
@@ -630,10 +644,7 @@ def render_muni_screener(df, source_rows, etf_status, as_of):
         )
 
     with row4[1]:
-        new_issue_only = st.checkbox(
-            "New issues",
-            key="screen_new",
-        )
+        new_issue_only = st.checkbox("New issues", key="screen_new")
 
     with row4[2]:
         new_issue_days = st.selectbox(
@@ -730,6 +741,9 @@ def render_muni_screener(df, source_rows, etf_status, as_of):
         },
     )
 
+    if "CUSIP" in results.columns:
+        render_copy_cusips(results["CUSIP"].dropna().tolist(), "COPY FILTERED CUSIPs")
+
     csv = results.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download filtered CSV",
@@ -774,9 +788,12 @@ def render_tax_equivalent(df):
         )
 
     with in2:
+        default_target = (
+            pd.Timestamp.today().normalize() + pd.DateOffset(years=5)
+        ).date()
         target_maturity = st.date_input(
             "Client target maturity",
-            value=date.today().replace(year=date.today().year + 5),
+            value=default_target,
             key="tey_target_date",
         )
 
@@ -954,6 +971,7 @@ def render_tax_equivalent(df):
             use_container_width=True,
             hide_index=True,
         )
+        render_copy_cusips([muni["CUSIP"]], "COPY SELECTED MUNI CUSIP")
 
     with tcol:
         st.markdown("### Treasury Match")
@@ -1064,13 +1082,15 @@ def render_tax_equivalent(df):
             "Rating",
             "Source ETFs",
         ]
-        nearby_cols = [
-            c for c in nearby_cols if c in candidates.columns
-        ]
+        nearby_cols = [c for c in nearby_cols if c in candidates.columns]
         st.dataframe(
             candidates[nearby_cols],
             use_container_width=True,
             hide_index=True,
+        )
+        render_copy_cusips(
+            candidates["CUSIP"].dropna().tolist(),
+            "COPY 25 CANDIDATE CUSIPs",
         )
 
     with st.expander("Show Treasury dataset"):
@@ -1099,9 +1119,7 @@ with top_right:
         st.rerun()
 
 try:
-    (df, source_rows, etf_status, as_of), used_session_cache = (
-        load_muni_universe()
-    )
+    (df, source_rows, etf_status, as_of), used_session_cache = load_muni_universe()
 except Exception:
     st.stop()
 
