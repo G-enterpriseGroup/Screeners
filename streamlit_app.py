@@ -23,6 +23,7 @@ NO_INDIVIDUAL_INCOME_TAX_STATES = {
     "South Dakota",
     "Tennessee",
     "Texas",
+    "Washington",
     "Wyoming",
 }
 
@@ -622,8 +623,8 @@ def render_muni_screener(df, source_rows, etf_status, as_of):
             "No State Individual Income Tax",
             help=(
                 "Alaska, Florida, Nevada, New Hampshire, South Dakota, Tennessee, "
-                "Texas, and Wyoming. Washington is excluded because it taxes "
-                "certain capital gains."
+                "Texas, Washington, and Wyoming. Washington has a capital gains tax "
+                "on certain gains but no personal income tax on wages."
             ),
             key="screen_no_state_tax",
         )
@@ -645,9 +646,9 @@ def render_muni_screener(df, source_rows, etf_status, as_of):
 
     if no_state_income_tax_only:
         st.caption(
-            "No-income-tax states: "
+            "No-wage-income-tax states: "
             + ", ".join(sorted(NO_INDIVIDUAL_INCOME_TAX_STATES))
-            + ". Washington is intentionally excluded because it taxes certain capital gains."
+            + ". Washington has a separate capital gains tax on certain gains."
         )
 
     screen_df = (
@@ -748,16 +749,16 @@ def render_tax_equivalent(df):
         <div class="terminal-note">
         ENTER CLIENT FEDERAL MARGINAL TAX RATE + TARGET MATURITY.<br>
         THE TOOL FINDS THE NEAREST MUNI, THEN MATCHES THE CLOSEST TREASURY MATURITY.<br>
-        MUNI = YIELD-TO-WORST. TREASURY = WSJ ASKED YIELD WHEN WSJ QUOTES ARE AVAILABLE.
+        MUNI = YIELD-TO-WORST. TREASURY = WSJ ASKED YIELD WHEN WSJ QUOTES ARE AVAILABLE.<br>
+        TAX-EQUIVALENT YIELD = THE TAXABLE YIELD A TREASURY OR OTHER TAXABLE BOND WOULD NEED
+        TO MATCH THE MUNI'S FEDERALLY TAX-FREE YIELD.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    available_states = sorted(
-        x for x in df["State"].dropna().astype(str).unique()
-        if x and x != "Unknown"
-    )
+    df_states = set(df["State"].dropna().astype(str).unique())
+    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES & df_states)
 
     in1, in2, in3, in4 = st.columns([1.0, 1.2, 1.7, 1.1])
 
@@ -781,10 +782,13 @@ def render_tax_equivalent(df):
 
     with in3:
         tey_states = st.multiselect(
-            "Muni state(s)",
+            "Muni state(s) — no wage income tax only",
             options=available_states,
-            placeholder="All states",
-            help="Optional. Leave blank to search every state.",
+            placeholder="Select one or more of the 9 states",
+            help=(
+                "Available states: Alaska, Florida, Nevada, New Hampshire, South Dakota, "
+                "Tennessee, Texas, Washington, and Wyoming."
+            ),
             key="tey_states",
         )
 
@@ -992,8 +996,12 @@ def render_tax_equivalent(df):
         f"{comparison['Muni After-Tax Yield (%)']:.3f}%",
     )
     c2.metric(
-        "Muni Tax-Equivalent Yield",
+        "Taxable Yield Needed to Match Muni (TEY)",
         f"{comparison['Muni Tax-Equivalent Yield (%)']:.3f}%",
+        help=(
+            "The taxable yield a Treasury or other taxable bond would need to earn "
+            "before federal tax to equal the muni's federally tax-free yield."
+        ),
     )
     c3.metric(
         "Treasury Gross Yield",
@@ -1026,7 +1034,7 @@ def render_tax_equivalent(df):
     st.markdown(
         f"""
         <div class="terminal-note">
-        BREAK-EVEN TAXABLE YIELD = {comparison['Muni Tax-Equivalent Yield (%)']:.3f}%<br>
+        TAXABLE YIELD NEEDED TO MATCH MUNI (TEY) = {comparison['Muni Tax-Equivalent Yield (%)']:.3f}%<br>
         CLIENT FEDERAL RATE = {float(federal_bracket):.1f}%<br>
         FORMULA: MUNI TEY = MUNI YTW ÷ (1 − TAX RATE)<br>
         TREASURY AFTER-TAX = TREASURY YIELD × (1 − TAX RATE)
@@ -1036,10 +1044,11 @@ def render_tax_equivalent(df):
     )
 
     st.caption(
-        "This first TEY version uses federal tax only. U.S. Treasury interest is generally "
-        "exempt from state/local income tax, while state tax treatment of municipal interest "
-        "depends on the client's residence and issuing state. AMT and other client-specific "
-        "tax items are not included here."
+        "Because this tab only offers states with no tax on wage income, the comparison "
+        "focuses on federal tax. U.S. Treasury interest is federally taxable. Municipal "
+        "interest shown here is treated as federally tax-exempt for this calculation. "
+        "Washington has a separate capital gains tax on certain gains; AMT and other "
+        "client-specific tax items are not included."
     )
 
     with st.expander("Show 25 closest municipal candidates"):
