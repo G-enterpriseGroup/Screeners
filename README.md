@@ -1,12 +1,14 @@
 # Screeners
 
-A collection of market screeners. The first project is a **Multi-ETF Municipal Bond Screener** built from free, official ETF holdings data.
+A collection of Bloomberg-style market screeners. The first project is a **Multi-ETF Municipal Bond Screener** with a **Muni vs U.S. Treasury Tax-Equivalent Yield** comparison tab.
 
 ## Current master
 
-The master Jupyter version is `notebooks/muni_screener_multi_etf_multistate.ipynb`. The Streamlit app uses the same data/filters through `src/muni_data.py`.
+The master Jupyter version is `notebooks/muni_screener_multi_etf_multistate.ipynb`. The Streamlit app uses the same municipal data/filter engine through `src/muni_data.py` and Treasury comparison helpers through `src/treasury_data.py`.
 
-### Muni screener filters
+## Tab 1 — Muni Screener
+
+### Filters
 
 - Exact CUSIP lookup
 - **Multiple states at once**
@@ -24,7 +26,43 @@ The master Jupyter version is `notebooks/muni_screener_multi_etf_multistate.ipyn
 
 The no-state-individual-income-tax filter uses Alaska, Florida, Nevada, New Hampshire, South Dakota, Tennessee, Texas, and Wyoming. Washington is intentionally excluded because it taxes certain capital gains, matching the master notebook.
 
-## Data approach
+## Tab 2 — Tax Equivalent: Muni vs U.S. Treasury
+
+Enter:
+
+- Client federal marginal tax bracket (%)
+- Client target maturity date
+- Optional municipal state(s)
+- Optional investment-grade-only filter
+
+The app then:
+
+1. Finds the closest municipal maturities to the client's target date.
+2. Lets you choose among the 25 closest municipal candidates.
+3. Matches the selected muni to the closest Treasury maturity.
+4. Uses muni **Yield to Worst** for the municipal side.
+5. Uses WSJ **Asked Yield** when WSJ Treasury Bills / Notes & Bonds data are available.
+6. Calculates municipal tax-equivalent yield and Treasury after-tax yield.
+7. Shows which security wins after federal tax and by how many basis points.
+
+### Federal tax formulas
+
+```text
+Muni tax-equivalent yield = Muni YTW / (1 - federal tax rate)
+Treasury after-tax yield  = Treasury yield * (1 - federal tax rate)
+```
+
+The first version is intentionally federal-tax-focused. State/local tax treatment, AMT, and other client-specific tax items are not included in the winner calculation.
+
+### Treasury data
+
+`src/treasury_data.py` is **WSJ-first**. It attempts to read the Treasury Bills and Treasury Notes & Bonds quote feeds used by the WSJ Treasury market-data page. It does not bypass authentication, CAPTCHAs, access controls, or paywalls.
+
+If WSJ data are unavailable or its format changes, the app clearly switches to the official **U.S. Treasury Daily Par Yield Curve** as a fallback and labels the result as a benchmark rather than an exact individual Treasury issue quote.
+
+Treasury data are cached for 30 minutes so the app does not repeatedly request the source on every Streamlit rerun.
+
+## Municipal data approach
 
 No paid API and no API key are required. The loader discovers current iShares muni ETFs, downloads their official public holdings files, combines them, and deduplicates by CUSIP.
 
@@ -56,7 +94,8 @@ Screeners/
 │   └── config.toml
 ├── src/
 │   ├── __init__.py
-│   └── muni_data.py
+│   ├── muni_data.py
+│   └── treasury_data.py
 └── notebooks/
     └── muni_screener_multi_etf_multistate.ipynb
 ```
@@ -66,4 +105,5 @@ Screeners/
 - ETF holdings are not the full municipal-bond universe.
 - Source prices/yields are not guaranteed executable broker quotes.
 - `NonCallableProxy` is a screening proxy only.
-- Verify call schedules, tax treatment, AMT treatment, ratings, and official terms before purchase.
+- WSJ may change or restrict its public market-data format; the official Treasury curve fallback is therefore retained.
+- Verify call schedules, tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before purchase.
