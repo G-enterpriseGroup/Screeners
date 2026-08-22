@@ -2,12 +2,18 @@ import html
 import re
 import time
 from contextlib import redirect_stdout
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
 
 from src.muni_data import load_all_ishares_munis, screen_munis
+from src.treasury_data import (
+    load_treasury_quotes,
+    nearest_muni_candidates,
+    nearest_treasury,
+    tax_equivalent_comparison,
+)
 
 
 NO_INDIVIDUAL_INCOME_TAX_STATES = {
@@ -21,11 +27,13 @@ NO_INDIVIDUAL_INCOME_TAX_STATES = {
     "Wyoming",
 }
 
+
 st.set_page_config(
-    page_title="Municipal Bond Screener",
+    page_title="Municipal Bond Screeners",
     page_icon="📊",
     layout="wide",
 )
+
 
 st.markdown(
     """
@@ -34,6 +42,7 @@ st.markdown(
         --bb-orange: #FF8C00;
         --bb-black: #000000;
         --bb-dark: #0A0A0A;
+        --bb-dim: #A85C00;
     }
 
     html, body, [data-testid="stAppViewContainer"],
@@ -103,7 +112,7 @@ st.markdown(
     }
 
     input::placeholder, textarea::placeholder {
-        color: #A85C00 !important;
+        color: var(--bb-dim) !important;
         opacity: 1 !important;
     }
 
@@ -193,6 +202,26 @@ st.markdown(
         background: var(--bb-orange) !important;
     }
 
+    button[data-baseweb="tab"] {
+        border: 1px solid var(--bb-orange) !important;
+        border-radius: 0 !important;
+        color: var(--bb-orange) !important;
+        background: var(--bb-black) !important;
+        font-family: "Courier New", monospace !important;
+        font-weight: 900 !important;
+        padding-left: 16px !important;
+        padding-right: 16px !important;
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: var(--bb-black) !important;
+        background: var(--bb-orange) !important;
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] * {
+        color: var(--bb-black) !important;
+    }
+
     .processing-terminal {
         border: 1px solid var(--bb-orange);
         background: #030303;
@@ -224,6 +253,29 @@ st.markdown(
         line-height: 1.35;
     }
 
+    .winner-box {
+        background: var(--bb-orange);
+        color: var(--bb-black);
+        border: 2px solid var(--bb-orange);
+        padding: 10px 14px;
+        font-family: "Courier New", monospace;
+        font-size: 1.05rem;
+        font-weight: 900;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        margin: 0.5rem 0 1rem 0;
+    }
+
+    .terminal-note {
+        border: 1px solid var(--bb-orange);
+        padding: 8px 10px;
+        background: #030303;
+        color: var(--bb-orange);
+        font-family: "Courier New", monospace;
+        font-size: 0.82rem;
+        margin: 0.4rem 0;
+    }
+
     hr {
         border-color: var(--bb-orange) !important;
     }
@@ -249,8 +301,6 @@ st.markdown(
 
 
 class ProcessingConsole:
-    """Turns the loader's print output into a small live Bloomberg-style console."""
-
     def __init__(self, placeholder, progress_bar, max_lines=11):
         self.placeholder = placeholder
         self.progress_bar = progress_bar
@@ -294,10 +344,7 @@ class ProcessingConsole:
                 pct = 5 + int(88 * self.completed_etfs / self.total_etfs)
                 self.progress_bar.progress(
                     min(pct, 93),
-                    text=(
-                        f"Processing ETF holdings "
-                        f"{self.completed_etfs}/{self.total_etfs}"
-                    ),
+                    text=f"Processing ETF holdings {self.completed_etfs}/{self.total_etfs}",
                 )
 
         self._render()
@@ -318,21 +365,605 @@ class ProcessingConsole:
         self.partial = ""
 
 
-st.title("Municipal Bond Screener")
-st.caption(
-    "Free public-data screener built from official municipal-bond ETF holdings. "
-    "No API keys and no paid feed."
-)
-
-
 @st.cache_data(ttl="12h", show_spinner=False)
 def load_data(_console=None):
-    # Leading underscore tells Streamlit not to hash the live UI console object.
     if _console is None:
         return load_all_ishares_munis()
-
     with redirect_stdout(_console):
         return load_all_ishares_munis()
+
+
+@st.cache_data(ttl="30m", show_spinner=False)
+def load_treasury_market():
+    return load_treasury_quotes()
+
+
+def render_muni_screener(df, source_rows, etf_status, as_of):
+    loaded_etfs = int((etf_status["Status"] == "OK").sum())
+    failed_etfs = int((etf_status["Status"] != "OK").sum())
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Unique CUSIPs", f"{len(df):,}")
+    m2.metric("Raw ETF rows", f"{len(source_rows):,}")
+    m3.metric("ETFs loaded", f"{loaded_etfs:,}")
+    m4.metric("Latest source date", str(as_of))
+
+    if failed_etfs:
+        st.warning(
+            f"{failed_etfs} ETF source(s) failed to load. "
+            "Open Source Status below to see which ones."
+        )
+
+    with st.expander("Source status"):
+        st.dataframe(
+            etf_status.sort_values(["Status", "Ticker"]).reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Filters")
+
+    row1 = st.columns([1.2, 1.6, 1.0, 1.0, 1.0])
+
+    with row1[0]:
+        cusip = st.text_input(
+            "CUSIP",
+            placeholder="e.g. 107431KW7",
+            help="Exact CUSIP lookup overrides the other filters.",
+            key="screen_cusip",
+        ).strip().upper()
+
+    available_states = sorted(
+        x for x in df["State"].dropna().astype(str).unique()
+        if x and x != "Unknown"
+    )
+
+    with row1[1]:
+        states = st.multiselect(
+            "States",
+            options=available_states,
+            placeholder="All states",
+            help="Select one or multiple states. Leave blank for all states.",
+            key="screen_states",
+        )
+
+    with row1[2]:
+        purchase_face = st.number_input(
+            "Purchase face ($)",
+            min_value=1000,
+            max_value=10_000_000,
+            value=5000,
+            step=1000,
+            key="screen_face",
+        )
+
+    with row1[3]:
+        price_min = st.number_input(
+            "Price min",
+            min_value=0.0,
+            max_value=200.0,
+            value=None,
+            step=0.01,
+            placeholder="No minimum",
+            key="screen_price_min",
+        )
+
+    with row1[4]:
+        price_max = st.number_input(
+            "Price max",
+            min_value=0.0,
+            max_value=200.0,
+            value=None,
+            step=0.01,
+            placeholder="No maximum",
+            key="screen_price_max",
+        )
+
+    row2 = st.columns(5)
+
+    with row2[0]:
+        coupon_min = st.number_input(
+            "Coupon min (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=None,
+            step=0.01,
+            placeholder="No minimum",
+            key="screen_coupon_min",
+        )
+
+    with row2[1]:
+        coupon_max = st.number_input(
+            "Coupon max (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=None,
+            step=0.01,
+            placeholder="No maximum",
+            key="screen_coupon_max",
+        )
+
+    with row2[2]:
+        ytw_min = st.number_input(
+            "YTW min (%)",
+            min_value=-10.0,
+            max_value=50.0,
+            value=None,
+            step=0.01,
+            placeholder="No minimum",
+            key="screen_ytw_min",
+        )
+
+    with row2[3]:
+        ytw_max = st.number_input(
+            "YTW max (%)",
+            min_value=-10.0,
+            max_value=50.0,
+            value=None,
+            step=0.01,
+            placeholder="No maximum",
+            key="screen_ytw_max",
+        )
+
+    with row2[4]:
+        sort_by = st.selectbox(
+            "Sort",
+            [
+                "YTW: High → Low",
+                "Price: Low → High",
+                "Coupon: High → Low",
+                "Maturity: Soonest",
+                "ETF Coverage: High → Low",
+            ],
+            key="screen_sort",
+        )
+
+    row3 = st.columns(5)
+
+    with row3[0]:
+        use_maturity_from = st.checkbox("Minimum maturity", key="screen_use_mfrom")
+        maturity_from = (
+            st.date_input("Maturity from", key="screen_maturity_from")
+            if use_maturity_from else None
+        )
+
+    with row3[1]:
+        use_maturity_to = st.checkbox("Maximum maturity", key="screen_use_mto")
+        maturity_to = (
+            st.date_input("Maturity to", key="screen_maturity_to")
+            if use_maturity_to else None
+        )
+
+    with row3[2]:
+        investment_grade_only = st.checkbox(
+            "Investment grade",
+            help=(
+                "Uses investment-grade-only ETF/index eligibility as evidence. "
+                "It does not invent an exact agency rating."
+            ),
+            key="screen_ig",
+        )
+
+    with row3[3]:
+        amt_exempt_only = st.checkbox(
+            "AMT-exempt evidence",
+            help="Requires evidence from a source ETF/index identified as AMT-free.",
+            key="screen_amt",
+        )
+
+    with row3[4]:
+        non_callable_only = st.checkbox(
+            "Non-callable proxy",
+            help="Proxy only. Verify the official call schedule before purchase.",
+            key="screen_noncall",
+        )
+
+    row4 = st.columns([1.25, 1, 1, 2.75])
+
+    with row4[0]:
+        no_state_income_tax_only = st.checkbox(
+            "No State Individual Income Tax",
+            help=(
+                "Alaska, Florida, Nevada, New Hampshire, South Dakota, Tennessee, "
+                "Texas, and Wyoming. Washington is excluded because it taxes "
+                "certain capital gains."
+            ),
+            key="screen_no_state_tax",
+        )
+
+    with row4[1]:
+        new_issue_only = st.checkbox("New issues", key="screen_new")
+
+    with row4[2]:
+        new_issue_days = st.selectbox(
+            "New issue window",
+            [30, 60, 90, 180],
+            index=1,
+            disabled=not new_issue_only,
+            key="screen_new_days",
+        )
+
+    if no_state_income_tax_only:
+        st.caption(
+            "No-income-tax states: "
+            + ", ".join(sorted(NO_INDIVIDUAL_INCOME_TAX_STATES))
+            + ". Washington is intentionally excluded because it taxes certain capital gains."
+        )
+
+    screen_df = (
+        df if cusip or not no_state_income_tax_only
+        else df[df["State"].isin(NO_INDIVIDUAL_INCOME_TAX_STATES)].copy()
+    )
+
+    results = screen_munis(
+        df=screen_df,
+        cusip=cusip,
+        states=states or None,
+        purchase_face=purchase_face,
+        price_min=price_min,
+        price_max=price_max,
+        coupon_min=coupon_min,
+        coupon_max=coupon_max,
+        ytw_min=ytw_min,
+        ytw_max=ytw_max,
+        maturity_from=maturity_from,
+        maturity_to=maturity_to,
+        investment_grade_only=investment_grade_only,
+        amt_exempt_only=amt_exempt_only,
+        non_callable_only=non_callable_only,
+        new_issue_only=new_issue_only,
+        new_issue_days=new_issue_days,
+        as_of=as_of,
+        sort_by=sort_by,
+    )
+
+    st.divider()
+
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        st.metric("Matches", f"{len(results):,}")
+
+    with c2:
+        if cusip and results.empty:
+            st.info(
+                f"CUSIP {cusip} was not found in the currently combined ETF universe. "
+                "That does not mean the municipal bond does not exist."
+            )
+
+    display_columns = [
+        "CUSIP", "Name", "State", "Price", "Coupon (%)", "YTM (%)",
+        "Yield to Worst (%)", "Yield to Call (%)", "Maturity", "Rating",
+        "Investment Grade", "AMT Exempt", "Source ETFs", "Source Count",
+        "Purchase Face ($)", "Est. Principal Cost ($)",
+        "Annual Coupon Income ($)", "NonCallableProxy",
+    ]
+    display_columns = [c for c in display_columns if c in results.columns]
+
+    st.dataframe(
+        results[display_columns],
+        use_container_width=True,
+        height=650,
+        hide_index=True,
+        column_config={
+            "Price": st.column_config.NumberColumn(format="%.3f"),
+            "Coupon (%)": st.column_config.NumberColumn(format="%.3f%%"),
+            "YTM (%)": st.column_config.NumberColumn(format="%.3f%%"),
+            "Yield to Worst (%)": st.column_config.NumberColumn(format="%.3f%%"),
+            "Yield to Call (%)": st.column_config.NumberColumn(format="%.3f%%"),
+            "Est. Principal Cost ($)": st.column_config.NumberColumn(format="$%.2f"),
+            "Annual Coupon Income ($)": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
+
+    csv = results.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download filtered CSV",
+        data=csv,
+        file_name="muni_screen_results.csv",
+        mime="text/csv",
+        type="primary",
+        key="screen_download",
+    )
+
+
+def render_tax_equivalent(df):
+    st.subheader("Muni vs U.S. Treasury // After-Tax Yield")
+
+    st.markdown(
+        """
+        <div class="terminal-note">
+        ENTER CLIENT FEDERAL MARGINAL TAX RATE + TARGET MATURITY.<br>
+        THE TOOL FINDS THE NEAREST MUNI, THEN MATCHES THE CLOSEST TREASURY MATURITY.<br>
+        MUNI = YIELD-TO-WORST. TREASURY = WSJ ASKED YIELD WHEN WSJ QUOTES ARE AVAILABLE.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    available_states = sorted(
+        x for x in df["State"].dropna().astype(str).unique()
+        if x and x != "Unknown"
+    )
+
+    in1, in2, in3, in4 = st.columns([1.0, 1.2, 1.7, 1.1])
+
+    with in1:
+        federal_bracket = st.number_input(
+            "Client federal tax bracket (%)",
+            min_value=0.0,
+            max_value=60.0,
+            value=None,
+            step=0.1,
+            placeholder="e.g. 35",
+            key="tey_tax_rate",
+        )
+
+    with in2:
+        target_maturity = st.date_input(
+            "Client target maturity",
+            value=date.today().replace(year=date.today().year + 5),
+            key="tey_target_date",
+        )
+
+    with in3:
+        tey_states = st.multiselect(
+            "Muni state(s)",
+            options=available_states,
+            placeholder="All states",
+            help="Optional. Leave blank to search every state.",
+            key="tey_states",
+        )
+
+    with in4:
+        tey_ig_only = st.checkbox(
+            "Investment grade only",
+            value=False,
+            key="tey_ig_only",
+        )
+
+    b1, b2, _ = st.columns([1.3, 1.2, 3.5])
+
+    with b1:
+        load_clicked = st.button(
+            "Load / Refresh Treasurys",
+            type="primary",
+            use_container_width=True,
+            key="tey_load_treasury",
+        )
+
+    with b2:
+        if st.button(
+            "Clear Treasury Cache",
+            use_container_width=True,
+            key="tey_clear_treasury",
+        ):
+            load_treasury_market.clear()
+            st.session_state.pop("treasury_quotes", None)
+            st.session_state.pop("treasury_meta", None)
+            st.rerun()
+
+    if load_clicked:
+        with st.status("TREASURY ENGINE // CONNECTING", expanded=True) as status:
+            p = st.progress(10, text="Opening WSJ U.S. Treasury Quotes...")
+            try:
+                quotes, meta = load_treasury_market()
+                p.progress(80, text="Normalizing Treasury bills, notes and bonds...")
+                st.session_state["treasury_quotes"] = quotes
+                st.session_state["treasury_meta"] = meta
+                p.progress(100, text=f"READY • {len(quotes):,} Treasury rows")
+                status.update(
+                    label=f"TREASURY ENGINE // READY • {meta.get('source', 'SOURCE')}",
+                    state="complete",
+                    expanded=False,
+                )
+            except Exception as exc:
+                status.update(
+                    label="TREASURY ENGINE // ERROR",
+                    state="error",
+                    expanded=True,
+                )
+                st.error(f"Treasury data load failed: {exc}")
+
+    treasury_df = st.session_state.get("treasury_quotes")
+    treasury_meta = st.session_state.get("treasury_meta")
+
+    if treasury_df is None or treasury_meta is None:
+        st.info(
+            "Click **LOAD / REFRESH TREASURYS** once. The Treasury dataset is cached "
+            "for 30 minutes so the rest of the app stays fast."
+        )
+        return
+
+    source_name = treasury_meta.get("source", "Unknown")
+    source_date = treasury_meta.get("as_of", "")
+    source_note = treasury_meta.get("note", "")
+
+    if treasury_meta.get("fallback"):
+        st.warning(
+            "WSJ individual Treasury rows were not available to the server, so the official "
+            "U.S. Treasury daily par yield curve is being used as a fallback. The screen "
+            "labels this so it is not mistaken for an exact WSJ issue quote."
+        )
+
+    st.caption(
+        f"Treasury source: {source_name} | Data as of: {source_date}. {source_note}"
+    )
+
+    muni_pool = df.copy()
+    if tey_ig_only:
+        muni_pool = muni_pool[muni_pool["Investment Grade"].eq("Yes")].copy()
+
+    candidates = nearest_muni_candidates(
+        muni_pool,
+        target_maturity=target_maturity,
+        states=tey_states or None,
+        limit=25,
+    )
+
+    if candidates.empty:
+        st.warning("No usable municipal bonds were found near that maturity.")
+        return
+
+    candidate_labels = []
+    for _, row in candidates.iterrows():
+        maturity_text = pd.Timestamp(row["Maturity"]).strftime("%Y-%m-%d")
+        ytw = float(row["Yield to Worst (%)"])
+        gap = int(row["Maturity Gap Days"])
+        candidate_labels.append(
+            f"{row['CUSIP']} | {maturity_text} | {row['State']} | "
+            f"YTW {ytw:.3f}% | gap {gap}d"
+        )
+
+    chosen_label = st.selectbox(
+        "Closest muni candidates — choose the bond to compare",
+        options=candidate_labels,
+        index=0,
+        key="tey_muni_choice",
+    )
+    chosen_index = candidate_labels.index(chosen_label)
+    muni = candidates.iloc[chosen_index]
+
+    treasury = nearest_treasury(
+        treasury_df,
+        target_maturity=pd.Timestamp(muni["Maturity"]),
+    )
+
+    if treasury is None:
+        st.warning("No usable Treasury quote was available for the selected maturity.")
+        return
+
+    treasury_gap = abs(
+        (pd.Timestamp(treasury["Maturity"]) - pd.Timestamp(muni["Maturity"])).days
+    )
+
+    mcol, tcol = st.columns(2)
+
+    with mcol:
+        st.markdown("### Municipal Match")
+        muni_view = pd.DataFrame(
+            [{
+                "CUSIP": muni["CUSIP"],
+                "Name": muni["Name"],
+                "State": muni["State"],
+                "Maturity": pd.Timestamp(muni["Maturity"]).date(),
+                "Client Date Gap": int(muni["Maturity Gap Days"]),
+                "Price": muni.get("Price"),
+                "Coupon (%)": muni.get("Coupon (%)"),
+                "YTW (%)": muni.get("Yield to Worst (%)"),
+                "Rating": muni.get("Rating"),
+                "Source ETFs": muni.get("Source ETFs"),
+            }]
+        )
+        st.dataframe(muni_view, use_container_width=True, hide_index=True)
+
+    with tcol:
+        st.markdown("### Treasury Match")
+        treasury_view = pd.DataFrame(
+            [{
+                "Type": treasury.get("Security Type"),
+                "Maturity": pd.Timestamp(treasury["Maturity"]).date(),
+                "Muni Date Gap": treasury_gap,
+                "Coupon (%)": treasury.get("Coupon (%)"),
+                "Bid": treasury.get("Bid"),
+                "Asked": treasury.get("Asked"),
+                "Asked Yield (%)": treasury.get("Asked Yield (%)"),
+                "Source": treasury.get("Source"),
+            }]
+        )
+        st.dataframe(treasury_view, use_container_width=True, hide_index=True)
+
+    if federal_bracket is None:
+        st.info(
+            "Enter the client's **federal marginal tax bracket** above to calculate "
+            "the tax-equivalent and after-tax winner."
+        )
+        return
+
+    comparison = tax_equivalent_comparison(
+        muni_yield=float(muni["Yield to Worst (%)"]),
+        treasury_yield=float(treasury["Asked Yield (%)"]),
+        federal_tax_rate=float(federal_bracket) / 100.0,
+    )
+
+    st.subheader("Tax-Equivalent Comparison")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "Muni YTW / After-Tax",
+        f"{comparison['Muni After-Tax Yield (%)']:.3f}%",
+    )
+    c2.metric(
+        "Muni Tax-Equivalent Yield",
+        f"{comparison['Muni Tax-Equivalent Yield (%)']:.3f}%",
+    )
+    c3.metric(
+        "Treasury Gross Yield",
+        f"{float(treasury['Asked Yield (%)']):.3f}%",
+    )
+    c4.metric(
+        "Treasury After-Tax Yield",
+        f"{comparison['Treasury After-Tax Yield (%)']:.3f}%",
+    )
+
+    winner = comparison["Winner"]
+    spread = comparison["After-Tax Spread (bps)"]
+
+    if winner == "MUNICIPAL":
+        winner_text = f"MUNICIPAL WINS // +{abs(spread):.1f} BPS AFTER FEDERAL TAX"
+    elif winner == "TREASURY":
+        winner_text = f"TREASURY WINS // +{abs(spread):.1f} BPS AFTER FEDERAL TAX"
+    else:
+        winner_text = "TIE // SAME AFTER-TAX YIELD"
+
+    st.markdown(
+        f'<div class="winner-box">{html.escape(winner_text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div class="terminal-note">
+        BREAK-EVEN TAXABLE YIELD = {comparison['Muni Tax-Equivalent Yield (%)']:.3f}%<br>
+        CLIENT FEDERAL RATE = {float(federal_bracket):.1f}%<br>
+        FORMULA: MUNI TEY = MUNI YTW ÷ (1 − TAX RATE)<br>
+        TREASURY AFTER-TAX = TREASURY YIELD × (1 − TAX RATE)
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "This first TEY version uses federal tax only. U.S. Treasury interest is generally "
+        "exempt from state/local income tax, while state tax treatment of municipal interest "
+        "depends on the client's residence and issuing state. AMT and other client-specific "
+        "tax items are not included here."
+    )
+
+    with st.expander("Show 25 closest municipal candidates"):
+        nearby_cols = [
+            "CUSIP", "Name", "State", "Maturity", "Maturity Gap Days",
+            "Price", "Coupon (%)", "Yield to Worst (%)", "Rating", "Source ETFs",
+        ]
+        nearby_cols = [c for c in nearby_cols if c in candidates.columns]
+        st.dataframe(
+            candidates[nearby_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander("Show Treasury dataset"):
+        st.dataframe(
+            treasury_df.sort_values("Maturity"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+st.title("Municipal Bond Screeners")
+st.caption(
+    "Bloomberg-style municipal analytics using free public ETF holdings data, "
+    "plus a tax-equivalent muni-vs-Treasury comparison."
+)
 
 
 with st.status("DATA ENGINE // INITIALIZING", expanded=True) as loader_status:
@@ -387,299 +1018,20 @@ with st.status("DATA ENGINE // INITIALIZING", expanded=True) as loader_status:
         st.stop()
 
 
-loaded_etfs = int((etf_status["Status"] == "OK").sum())
-failed_etfs = int((etf_status["Status"] != "OK").sum())
+tab1, tab2 = st.tabs([
+    "MUNI SCREENER",
+    "TAX EQUIVALENT // MUNI vs UST",
+])
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Unique CUSIPs", f"{len(df):,}")
-m2.metric("Raw ETF rows", f"{len(source_rows):,}")
-m3.metric("ETFs loaded", f"{loaded_etfs:,}")
-m4.metric("Latest source date", str(as_of))
+with tab1:
+    render_muni_screener(df, source_rows, etf_status, as_of)
 
-if failed_etfs:
-    st.warning(
-        f"{failed_etfs} ETF source(s) failed to load. "
-        "Open Source Status below to see which ones."
-    )
+with tab2:
+    render_tax_equivalent(df)
 
-with st.expander("Source status"):
-    st.dataframe(
-        etf_status.sort_values(["Status", "Ticker"]).reset_index(drop=True),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-st.subheader("Filters")
-
-row1 = st.columns([1.2, 1.6, 1.0, 1.0, 1.0])
-
-with row1[0]:
-    cusip = st.text_input(
-        "CUSIP",
-        placeholder="e.g. 107431KW7",
-        help="Exact CUSIP lookup overrides the other filters.",
-    ).strip().upper()
-
-available_states = sorted(
-    x
-    for x in df["State"].dropna().astype(str).unique()
-    if x and x != "Unknown"
-)
-
-with row1[1]:
-    states = st.multiselect(
-        "States",
-        options=available_states,
-        placeholder="All states",
-        help="Select one or multiple states. Leave blank for all states.",
-    )
-
-with row1[2]:
-    purchase_face = st.number_input(
-        "Purchase face ($)",
-        min_value=1000,
-        max_value=10_000_000,
-        value=5000,
-        step=1000,
-    )
-
-with row1[3]:
-    price_min = st.number_input(
-        "Price min",
-        min_value=0.0,
-        max_value=200.0,
-        value=None,
-        step=0.01,
-        placeholder="No minimum",
-    )
-
-with row1[4]:
-    price_max = st.number_input(
-        "Price max",
-        min_value=0.0,
-        max_value=200.0,
-        value=None,
-        step=0.01,
-        placeholder="No maximum",
-    )
-
-row2 = st.columns(5)
-
-with row2[0]:
-    coupon_min = st.number_input(
-        "Coupon min (%)",
-        min_value=0.0,
-        max_value=20.0,
-        value=None,
-        step=0.01,
-        placeholder="No minimum",
-    )
-
-with row2[1]:
-    coupon_max = st.number_input(
-        "Coupon max (%)",
-        min_value=0.0,
-        max_value=20.0,
-        value=None,
-        step=0.01,
-        placeholder="No maximum",
-    )
-
-with row2[2]:
-    ytw_min = st.number_input(
-        "YTW min (%)",
-        min_value=-10.0,
-        max_value=50.0,
-        value=None,
-        step=0.01,
-        placeholder="No minimum",
-    )
-
-with row2[3]:
-    ytw_max = st.number_input(
-        "YTW max (%)",
-        min_value=-10.0,
-        max_value=50.0,
-        value=None,
-        step=0.01,
-        placeholder="No maximum",
-    )
-
-with row2[4]:
-    sort_by = st.selectbox(
-        "Sort",
-        [
-            "YTW: High → Low",
-            "Price: Low → High",
-            "Coupon: High → Low",
-            "Maturity: Soonest",
-            "ETF Coverage: High → Low",
-        ],
-    )
-
-row3 = st.columns(5)
-
-with row3[0]:
-    use_maturity_from = st.checkbox("Minimum maturity")
-    maturity_from = (
-        st.date_input("Maturity from", key="maturity_from")
-        if use_maturity_from
-        else None
-    )
-
-with row3[1]:
-    use_maturity_to = st.checkbox("Maximum maturity")
-    maturity_to = (
-        st.date_input("Maturity to", key="maturity_to")
-        if use_maturity_to
-        else None
-    )
-
-with row3[2]:
-    investment_grade_only = st.checkbox(
-        "Investment grade",
-        help=(
-            "Uses investment-grade-only ETF/index eligibility as evidence. "
-            "It does not invent an exact agency rating."
-        ),
-    )
-
-with row3[3]:
-    amt_exempt_only = st.checkbox(
-        "AMT-exempt evidence",
-        help="Requires evidence from a source ETF/index identified as AMT-free.",
-    )
-
-with row3[4]:
-    non_callable_only = st.checkbox(
-        "Non-callable proxy",
-        help="Proxy only. Verify the official call schedule before purchase.",
-    )
-
-row4 = st.columns([1.25, 1, 1, 2.75])
-
-with row4[0]:
-    no_state_income_tax_only = st.checkbox(
-        "No State Individual Income Tax",
-        help=(
-            "Alaska, Florida, Nevada, New Hampshire, South Dakota, Tennessee, "
-            "Texas, and Wyoming. Washington is excluded because it taxes "
-            "certain capital gains."
-        ),
-    )
-
-with row4[1]:
-    new_issue_only = st.checkbox("New issues")
-
-with row4[2]:
-    new_issue_days = st.selectbox(
-        "New issue window",
-        [30, 60, 90, 180],
-        index=1,
-        disabled=not new_issue_only,
-    )
-
-if no_state_income_tax_only:
-    st.caption(
-        "No-income-tax states: "
-        + ", ".join(sorted(NO_INDIVIDUAL_INCOME_TAX_STATES))
-        + ". Washington is intentionally excluded because it taxes certain capital gains."
-    )
-
-screen_df = (
-    df
-    if cusip or not no_state_income_tax_only
-    else df[df["State"].isin(NO_INDIVIDUAL_INCOME_TAX_STATES)].copy()
-)
-
-results = screen_munis(
-    df=screen_df,
-    cusip=cusip,
-    states=states or None,
-    purchase_face=purchase_face,
-    price_min=price_min,
-    price_max=price_max,
-    coupon_min=coupon_min,
-    coupon_max=coupon_max,
-    ytw_min=ytw_min,
-    ytw_max=ytw_max,
-    maturity_from=maturity_from,
-    maturity_to=maturity_to,
-    investment_grade_only=investment_grade_only,
-    amt_exempt_only=amt_exempt_only,
-    non_callable_only=non_callable_only,
-    new_issue_only=new_issue_only,
-    new_issue_days=new_issue_days,
-    as_of=as_of,
-    sort_by=sort_by,
-)
-
-st.divider()
-
-c1, c2 = st.columns([1, 4])
-
-with c1:
-    st.metric("Matches", f"{len(results):,}")
-
-with c2:
-    if cusip and results.empty:
-        st.info(
-            f"CUSIP {cusip} was not found in the currently combined ETF universe. "
-            "That does not mean the municipal bond does not exist."
-        )
-
-display_columns = [
-    "CUSIP",
-    "Name",
-    "State",
-    "Price",
-    "Coupon (%)",
-    "YTM (%)",
-    "Yield to Worst (%)",
-    "Yield to Call (%)",
-    "Maturity",
-    "Rating",
-    "Investment Grade",
-    "AMT Exempt",
-    "Source ETFs",
-    "Source Count",
-    "Purchase Face ($)",
-    "Est. Principal Cost ($)",
-    "Annual Coupon Income ($)",
-    "NonCallableProxy",
-]
-
-display_columns = [c for c in display_columns if c in results.columns]
-
-st.dataframe(
-    results[display_columns],
-    use_container_width=True,
-    height=650,
-    hide_index=True,
-    column_config={
-        "Price": st.column_config.NumberColumn(format="%.3f"),
-        "Coupon (%)": st.column_config.NumberColumn(format="%.3f%%"),
-        "YTM (%)": st.column_config.NumberColumn(format="%.3f%%"),
-        "Yield to Worst (%)": st.column_config.NumberColumn(format="%.3f%%"),
-        "Yield to Call (%)": st.column_config.NumberColumn(format="%.3f%%"),
-        "Est. Principal Cost ($)": st.column_config.NumberColumn(format="$%.2f"),
-        "Annual Coupon Income ($)": st.column_config.NumberColumn(format="$%.2f"),
-    },
-)
-
-csv = results.to_csv(index=False).encode("utf-8")
-
-st.download_button(
-    "Download filtered CSV",
-    data=csv,
-    file_name="muni_screen_results.csv",
-    mime="text/csv",
-    type="primary",
-)
 
 st.caption(
     "Important: ETF holdings do not cover every outstanding U.S. municipal bond. "
-    "Prices and yields are source/vendor values, not guaranteed executable broker quotes. "
-    "Non-callable, tax status, AMT treatment, and exact agency ratings should be verified "
-    "against official bond documents or a licensed security-master source before trading."
+    "Source prices/yields are not guaranteed executable broker quotes. Verify call schedules, "
+    "tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before trading."
 )
