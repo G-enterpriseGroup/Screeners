@@ -4,21 +4,202 @@ import streamlit as st
 from src.muni_data import load_all_ishares_munis, screen_munis
 
 NO_INDIVIDUAL_INCOME_TAX_STATES = {
-    "Alaska",
-    "Florida",
-    "Nevada",
-    "New Hampshire",
-    "South Dakota",
-    "Tennessee",
-    "Texas",
-    "Wyoming",
+    "Alaska", "Florida", "Nevada", "New Hampshire",
+    "South Dakota", "Tennessee", "Texas", "Wyoming",
 }
 
+ORANGE = "#FF8C00"
+BLACK = "#000000"
+DARK = "#0A0A0A"
 
 st.set_page_config(
     page_title="Municipal Bond Screener",
     page_icon="📊",
     layout="wide",
+)
+
+st.markdown(
+    f"""
+    <style>
+    :root {{
+        --bb-orange: {ORANGE};
+        --bb-black: {BLACK};
+        --bb-dark: {DARK};
+    }}
+
+    html, body, [data-testid="stAppViewContainer"],
+    [data-testid="stMain"], [data-testid="stMainBlockContainer"] {{
+        background: var(--bb-black) !important;
+    }}
+
+    [data-testid="stHeader"] {{
+        background: var(--bb-black) !important;
+    }}
+
+    .stApp {{
+        background: var(--bb-black) !important;
+        color: var(--bb-orange) !important;
+    }}
+
+    h1 {{
+        color: var(--bb-orange) !important;
+        font-family: "Courier New", monospace !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }}
+
+    h2, h3 {{
+        background: var(--bb-orange) !important;
+        color: var(--bb-black) !important;
+        padding: 0.32rem 0.55rem !important;
+        border-radius: 0 !important;
+        font-family: "Courier New", monospace !important;
+        font-weight: 900 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }}
+
+    p, label, .stCaption, [data-testid="stMarkdownContainer"] {{
+        color: var(--bb-orange) !important;
+    }}
+
+    [data-testid="stMetric"] {{
+        background: var(--bb-black) !important;
+        border: 1px solid var(--bb-orange) !important;
+        border-radius: 0 !important;
+        padding: 0.55rem 0.7rem !important;
+    }}
+
+    [data-testid="stMetricLabel"] *,
+    [data-testid="stMetricValue"] * {{
+        color: var(--bb-orange) !important;
+        font-family: "Courier New", monospace !important;
+    }}
+
+    div[data-baseweb="input"] > div,
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="base-input"] {{
+        background: var(--bb-black) !important;
+        border-color: var(--bb-orange) !important;
+        color: var(--bb-orange) !important;
+        border-radius: 0 !important;
+    }}
+
+    input, textarea {{
+        color: var(--bb-orange) !important;
+        -webkit-text-fill-color: var(--bb-orange) !important;
+        caret-color: var(--bb-orange) !important;
+        font-family: "Courier New", monospace !important;
+    }}
+
+    input::placeholder, textarea::placeholder {{
+        color: #A85C00 !important;
+        opacity: 1 !important;
+    }}
+
+    div[data-baseweb="select"] span {{
+        color: var(--bb-orange) !important;
+    }}
+
+    div[data-baseweb="tag"] {{
+        background: var(--bb-orange) !important;
+        border-radius: 0 !important;
+    }}
+
+    div[data-baseweb="tag"] span {{
+        color: var(--bb-black) !important;
+        font-weight: 800 !important;
+    }}
+
+    [data-testid="stCheckbox"] label *,
+    [data-testid="stRadio"] label * {{
+        color: var(--bb-orange) !important;
+    }}
+
+    .stButton > button,
+    .stDownloadButton > button {{
+        background: var(--bb-orange) !important;
+        color: var(--bb-black) !important;
+        border: 1px solid var(--bb-orange) !important;
+        border-radius: 0 !important;
+        font-family: "Courier New", monospace !important;
+        font-weight: 900 !important;
+        text-transform: uppercase;
+    }}
+
+    .stButton > button *,
+    .stDownloadButton > button * {{
+        color: var(--bb-black) !important;
+    }}
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {{
+        background: #FFA733 !important;
+        color: var(--bb-black) !important;
+        border-color: #FFA733 !important;
+    }}
+
+    [data-testid="stExpander"] {{
+        border: 1px solid var(--bb-orange) !important;
+        border-radius: 0 !important;
+        background: var(--bb-black) !important;
+    }}
+
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary * {{
+        color: var(--bb-orange) !important;
+        font-weight: 800 !important;
+    }}
+
+    [data-testid="stDataFrame"] {{
+        border: 1px solid var(--bb-orange) !important;
+        border-radius: 0 !important;
+    }}
+
+    [data-testid="stDataFrame"] [role="columnheader"] {{
+        background: var(--bb-orange) !important;
+        color: var(--bb-black) !important;
+        font-weight: 900 !important;
+        border-color: var(--bb-black) !important;
+    }}
+
+    [data-testid="stDataFrame"] [role="columnheader"] * {{
+        color: var(--bb-black) !important;
+        font-weight: 900 !important;
+    }}
+
+    [data-testid="stDataFrame"] [role="gridcell"] {{
+        background: var(--bb-black) !important;
+        color: var(--bb-orange) !important;
+        border-color: #332000 !important;
+    }}
+
+    [data-testid="stDataFrame"] [role="gridcell"] * {{
+        color: var(--bb-orange) !important;
+    }}
+
+    hr {{
+        border-color: var(--bb-orange) !important;
+    }}
+
+    [data-testid="stAlert"] {{
+        background: var(--bb-dark) !important;
+        border: 1px solid var(--bb-orange) !important;
+        border-radius: 0 !important;
+    }}
+
+    [data-testid="stAlert"] * {{
+        color: var(--bb-orange) !important;
+    }}
+
+    ::selection {{
+        background: var(--bb-orange);
+        color: var(--bb-black);
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.title("Municipal Bond Screener")
@@ -27,11 +208,9 @@ st.caption(
     "No API keys and no paid feed."
 )
 
-
 @st.cache_data(ttl="12h", show_spinner=False)
 def load_data():
     return load_all_ishares_munis()
-
 
 with st.spinner("Loading and combining municipal bond ETF holdings..."):
     df, source_rows, etf_status, as_of = load_data()
@@ -169,19 +348,11 @@ row3 = st.columns(5)
 
 with row3[0]:
     use_maturity_from = st.checkbox("Minimum maturity")
-    maturity_from = (
-        st.date_input("Maturity from", key="maturity_from")
-        if use_maturity_from
-        else None
-    )
+    maturity_from = st.date_input("Maturity from", key="maturity_from") if use_maturity_from else None
 
 with row3[1]:
     use_maturity_to = st.checkbox("Maximum maturity")
-    maturity_to = (
-        st.date_input("Maturity to", key="maturity_to")
-        if use_maturity_to
-        else None
-    )
+    maturity_to = st.date_input("Maturity to", key="maturity_to") if use_maturity_to else None
 
 with row3[2]:
     investment_grade_only = st.checkbox(
@@ -276,24 +447,11 @@ with c2:
         )
 
 display_columns = [
-    "CUSIP",
-    "Name",
-    "State",
-    "Price",
-    "Coupon (%)",
-    "YTM (%)",
-    "Yield to Worst (%)",
-    "Yield to Call (%)",
-    "Maturity",
-    "Rating",
-    "Investment Grade",
-    "AMT Exempt",
-    "Source ETFs",
-    "Source Count",
-    "Purchase Face ($)",
-    "Est. Principal Cost ($)",
-    "Annual Coupon Income ($)",
-    "NonCallableProxy",
+    "CUSIP", "Name", "State", "Price", "Coupon (%)", "YTM (%)",
+    "Yield to Worst (%)", "Yield to Call (%)", "Maturity", "Rating",
+    "Investment Grade", "AMT Exempt", "Source ETFs", "Source Count",
+    "Purchase Face ($)", "Est. Principal Cost ($)",
+    "Annual Coupon Income ($)", "NonCallableProxy",
 ]
 display_columns = [c for c in display_columns if c in results.columns]
 
