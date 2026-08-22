@@ -1,13 +1,16 @@
 # Screeners
 
-A collection of market screeners. The first screener is a **Municipal Bond Screener** built from free, official ETF holdings data.
+A collection of market screeners. The first project is a **Multi-ETF Municipal Bond Screener** built from free, official ETF holdings data.
 
-## Municipal Bond Screener
+## Current master
 
-The app combines municipal-bond ETF holdings, deduplicates bonds by CUSIP, and exposes filters for:
+The master Jupyter version is `notebooks/muni_screener_multi_etf_multistate.ipynb`. The Streamlit app uses the same data/filters through `src/muni_data.py`.
 
-- Exact CUSIP
-- State
+### Muni screener filters
+
+- Exact CUSIP lookup
+- **Multiple states at once**
+- **No State Individual Income Tax** filter
 - Purchase face value
 - Price min/max
 - Coupon min/max
@@ -17,91 +20,50 @@ The app combines municipal-bond ETF holdings, deduplicates bonds by CUSIP, and e
 - AMT-exempt evidence
 - Non-callable proxy
 - New issues
-- Sorting by YTW, price, coupon, maturity, or ETF coverage
+- Sort by YTW, price, coupon, maturity, or ETF coverage
 
-It also shows:
-
-- CUSIP
-- Bond name
-- State
-- Price
-- Coupon
-- YTM
-- YTW
-- YTC
-- Maturity
-- Investment-grade evidence
-- Rating basis
-- Source ETFs
-- Number of ETFs holding the bond
-- Estimated purchase cost
-- Annual coupon income
+The no-state-individual-income-tax filter uses Alaska, Florida, Nevada, New Hampshire, South Dakota, Tennessee, Texas, and Wyoming. Washington is intentionally excluded because it taxes certain capital gains, matching the master notebook.
 
 ## Data approach
 
-The project intentionally uses **no paid API and no API key**.
+No paid API and no API key are required. The loader discovers current iShares muni ETFs, downloads their official public holdings files, combines them, and deduplicates by CUSIP.
 
-It downloads official public holdings files from municipal-bond ETFs and merges them into one security universe. This materially increases coverage over using MUB alone, but it is **not the full U.S. municipal bond market**.
+ETF holdings materially expand coverage beyond MUB alone, but **do not represent the entire U.S. municipal bond market**.
 
 ### Rating limitation
 
-The free ETF holdings files generally do not expose a current S&P/Moody's/Fitch rating for each individual CUSIP.
+Free holdings files generally do not expose a current S&P/Moody's/Fitch rating for each CUSIP. Therefore:
 
-Therefore:
-
-- `Investment Grade = Yes` means the bond appears in an ETF/index whose eligibility rules establish investment-grade status.
-- `Rating = IG (>= BBB-/Baa3)` is a classification, **not an invented exact agency rating**.
+- `Investment Grade = Yes` means the bond appears in an investment-grade-only ETF/index.
+- `Rating = IG (>= BBB-/Baa3)` is an eligibility classification, not an invented exact agency rating.
 - Exact AAA / AA / A / BBB ratings should only be added when a legitimate per-CUSIP source is available.
 
-## Run locally
-
-```bash
-python -m venv .venv
-```
-
-Windows:
-
-```bash
-.venv\Scripts\activate
-```
-
-macOS/Linux:
-
-```bash
-source .venv/bin/activate
-```
-
-Install:
+## Run Streamlit locally
 
 ```bash
 pip install -r requirements.txt
-```
-
-Run:
-
-```bash
 streamlit run streamlit_app.py
 ```
 
-## Project structure
+## Structure
 
 ```text
-screeners/
+Screeners/
 ├── streamlit_app.py
 ├── requirements.txt
 ├── README.md
-├── .gitignore
 ├── .streamlit/
 │   └── config.toml
 ├── src/
+│   ├── __init__.py
 │   └── muni_data.py
 └── notebooks/
-    └── muni_screener_multi_etf_no_widgets.ipynb
+    └── muni_screener_multi_etf_multistate.ipynb
 ```
 
 ## Important limitations
 
-- ETF holdings are not the entire municipal-bond universe.
+- ETF holdings are not the full municipal-bond universe.
 - Source prices/yields are not guaranteed executable broker quotes.
 - `NonCallableProxy` is a screening proxy only.
 - Verify call schedules, tax treatment, AMT treatment, ratings, and official terms before purchase.
