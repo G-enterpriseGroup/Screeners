@@ -771,8 +771,7 @@ def render_tax_equivalent(df):
         unsafe_allow_html=True,
     )
 
-    df_states = set(df["State"].dropna().astype(str).unique())
-    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES & df_states)
+    available_states = sorted(NO_INDIVIDUAL_INCOME_TAX_STATES)
 
     in1, in2, in3, in4 = st.columns([1.0, 1.2, 1.7, 1.1])
 
