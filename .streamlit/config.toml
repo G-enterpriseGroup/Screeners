@@ -5,6 +5,10 @@ backgroundColor = "#000000"
 secondaryBackgroundColor = "#0A0A0A"
 textColor = "#FF8C00"
 font = "monospace"
+borderColor = "#FF8C00"
+dataframeBorderColor = "#FF8C00"
+dataframeHeaderBackgroundColor = "#FF8C00"
+showWidgetBorder = true
 
 [server]
 headless = true
