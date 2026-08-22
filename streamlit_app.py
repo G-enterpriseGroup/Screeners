@@ -1000,13 +1000,19 @@ def render_tax_equivalent(df):
         )
         return
 
+    muni_ytw = float(muni["Yield to Worst (%)"])
+    treasury_gross_yield = float(treasury["Asked Yield (%)"])
+    federal_rate_decimal = float(federal_bracket) / 100.0
+    after_tax_factor = 1.0 - federal_rate_decimal
+
     comparison = tax_equivalent_comparison(
-        muni_yield=float(muni["Yield to Worst (%)"]),
-        treasury_yield=float(treasury["Asked Yield (%)"]),
-        federal_tax_rate=float(federal_bracket) / 100.0,
+        muni_yield=muni_ytw,
+        treasury_yield=treasury_gross_yield,
+        federal_tax_rate=federal_rate_decimal,
     )
 
-    st.subheader("Tax-Equivalent Comparison")
+    st.subheader("Tax Exempt Status for NIST")
+    st.caption("NIST stands for No Income State Tax.")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(
@@ -1023,7 +1029,7 @@ def render_tax_equivalent(df):
     )
     c3.metric(
         "Treasury Gross Yield",
-        f"{float(treasury['Asked Yield (%)']):.3f}%",
+        f"{treasury_gross_yield:.3f}%",
     )
     c4.metric(
         "Treasury After-Tax Yield",
@@ -1053,9 +1059,15 @@ def render_tax_equivalent(df):
         f"""
         <div class="terminal-note">
         TAXABLE YIELD NEEDED TO MATCH MUNI (TEY) = {comparison['Muni Tax-Equivalent Yield (%)']:.3f}%<br>
-        CLIENT FEDERAL RATE = {float(federal_bracket):.1f}%<br>
+        CLIENT FEDERAL RATE = {float(federal_bracket):.1f}%<br><br>
+
         FORMULA: MUNI TEY = MUNI YTW ÷ (1 − TAX RATE)<br>
-        TREASURY AFTER-TAX = TREASURY YIELD × (1 − TAX RATE)
+        VALUES: {muni_ytw:.3f}% ÷ (1 − {float(federal_bracket):.1f}%) = {comparison['Muni Tax-Equivalent Yield (%)']:.3f}%<br>
+        SIMPLIFIED: {muni_ytw:.3f}% ÷ {after_tax_factor:.3f} = {comparison['Muni Tax-Equivalent Yield (%)']:.3f}%<br><br>
+
+        FORMULA: TREASURY AFTER-TAX = TREASURY YIELD × (1 − TAX RATE)<br>
+        VALUES: {treasury_gross_yield:.3f}% × (1 − {float(federal_bracket):.1f}%) = {comparison['Treasury After-Tax Yield (%)']:.3f}%<br>
+        SIMPLIFIED: {treasury_gross_yield:.3f}% × {after_tax_factor:.3f} = {comparison['Treasury After-Tax Yield (%)']:.3f}%
         </div>
         """,
         unsafe_allow_html=True,
