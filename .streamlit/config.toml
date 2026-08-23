@@ -9,7 +9,7 @@ baseRadius = "none"
 buttonRadius = "none"
 borderColor = "#FF8C00"
 dataframeBorderColor = "#FF8C00"
-dataframeHeaderBackgroundColor = "#FF8C00"
+dataframeHeaderBackgroundColor = "#000000"
 showWidgetBorder = true
 
 [server]
