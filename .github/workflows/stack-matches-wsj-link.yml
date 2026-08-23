@@ -1,4 +1,4 @@
-name: Fix Dataframe Borders
+name: Force Square Bloomberg UI
 
 on:
   push:
@@ -12,10 +12,9 @@ jobs:
   update-streamlit:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Fix all Streamlit dataframe borders
+      - name: Remove all rounded corners
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -23,42 +22,48 @@ jobs:
           path = Path('streamlit_app.py')
           text = path.read_text(encoding='utf-8')
 
-          old = '''    [data-testid="stDataFrame"] {
-        border:1px solid var(--bb-orange) !important;
+          marker = '''    hr {
+        border-color:var(--bb-orange) !important;
+    }
+'''
+
+          square_css = '''    hr {
+        border-color:var(--bb-orange) !important;
+    }
+
+    /* Bloomberg terminal: force hard square corners everywhere */
+    *, *::before, *::after {
+        border-radius:0 !important;
+    }
+
+    [data-baseweb],
+    [data-baseweb] > div,
+    [data-baseweb] > div > div,
+    [data-testid],
+    [data-testid] > div,
+    [data-testid] > div > div,
+    button,
+    input,
+    textarea,
+    select,
+    summary,
+    a[role="button"] {
         border-radius:0 !important;
     }
 '''
 
-          new = '''    [data-testid="stDataFrame"] {
-        border:1px solid var(--bb-orange) !important;
-        border-radius:0 !important;
-        box-sizing:border-box !important;
-        overflow:hidden !important;
-        outline:1px solid var(--bb-orange) !important;
-        outline-offset:-1px !important;
-        box-shadow:inset 0 0 0 1px var(--bb-orange) !important;
-    }
+          if 'Bloomberg terminal: force hard square corners everywhere' not in text:
+              if marker not in text:
+                  raise SystemExit('CSS marker not found')
+              text = text.replace(marker, square_css, 1)
 
-    [data-testid="stDataFrame"] > div,
-    [data-testid="stDataFrame"] [role="grid"] {
-        box-sizing:border-box !important;
-    }
-
-    [data-testid="stDataFrame"] [role="grid"] {
-        border-bottom:1px solid var(--bb-orange) !important;
-    }
-'''
-
-          if old not in text:
-              raise SystemExit('Original dataframe border CSS block not found')
-
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          path.write_text(text, encoding='utf-8')
           PY
 
-      - name: Commit changes
+      - name: Commit square-corner change
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add streamlit_app.py
-          git commit -m "Fix orange borders around all dataframes"
+          git commit -m "Force square Bloomberg UI corners" || exit 0
           git push
