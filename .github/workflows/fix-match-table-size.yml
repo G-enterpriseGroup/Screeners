@@ -1,0 +1,40 @@
+name: Fix Match Table Sizes
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-match-table-size.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-streamlit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make match tables equal height
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('streamlit_app.py')
+          t = p.read_text(encoding='utf-8')
+          old1 = '    st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, hide_index=True)\n'
+          new1 = '    st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=112, hide_index=True)\n'
+          old2 = '    st.dataframe(treasury_view, use_container_width=True, hide_index=True)\n'
+          new2 = '    st.dataframe(treasury_view, use_container_width=True, height=112, hide_index=True)\n'
+          if old1 not in t:
+              raise SystemExit('Municipal match dataframe line not found')
+          if old2 not in t:
+              raise SystemExit('Treasury match dataframe line not found')
+          t = t.replace(old1, new1, 1)
+          t = t.replace(old2, new2, 1)
+          p.write_text(t, encoding='utf-8')
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streamlit_app.py
+          git commit -m "Equalize municipal and Treasury match table heights"
+          git push
