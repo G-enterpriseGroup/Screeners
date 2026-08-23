@@ -38,3 +38,5 @@ jobs:
           git add streamlit_app.py
           git commit -m "Equalize municipal and Treasury match table heights"
           git push
+
+# trigger
