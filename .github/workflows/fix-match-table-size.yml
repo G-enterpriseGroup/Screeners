@@ -21,7 +21,6 @@ jobs:
           p = Path('streamlit_app.py')
           t = p.read_text(encoding='utf-8')
 
-          # Add a human-readable maturity-gap formatter.
           marker = '\ndef _render_stacked_matches(muni, treasury, treasury_gap, prefix, extra_muni=None):\n'
           helper = r'''
 
@@ -50,14 +49,11 @@ def _format_gap(days):
                   raise SystemExit('Stacked match function marker not found')
               t = t.replace(marker, helper + marker, 1)
 
-          # Candidate selector: replace cryptic `8d` with readable units.
           t = t.replace(
               'f"YTW {float(row[\'Yield to Worst (%)\']):.3f}% | gap {int(row[\'Maturity Gap Days\'])}d"',
               'f"YTW {float(row[\'Yield to Worst (%)\']):.3f}% | gap {_format_gap(row[\'Maturity Gap Days\'])}"',
               1,
           )
-
-          # Table values: show explicit units.
           t = t.replace(
               '"Client Date Gap": int(muni["Maturity Gap Days"]),',
               '"Client Date Gap": _format_gap(muni["Maturity Gap Days"]),',
@@ -68,8 +64,6 @@ def _format_gap(days):
               '"Muni Date Gap": _format_gap(treasury_gap),',
               1,
           )
-
-          # One header + one data row only; no extra blank filler row.
           t = t.replace(
               'st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=112, hide_index=True)',
               'st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=80, hide_index=True)',
@@ -91,3 +85,5 @@ def _format_gap(days):
           git add streamlit_app.py
           git commit -m "Remove blank match rows and format date gaps"
           git push
+
+# trigger 2
