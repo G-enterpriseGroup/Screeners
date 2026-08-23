@@ -13,30 +13,81 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Make match tables equal height
+      - name: Remove blank rows and format maturity gaps
         run: |
           python - <<'PY'
           from pathlib import Path
+
           p = Path('streamlit_app.py')
           t = p.read_text(encoding='utf-8')
-          old1 = '    st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, hide_index=True)\n'
-          new1 = '    st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=112, hide_index=True)\n'
-          old2 = '    st.dataframe(treasury_view, use_container_width=True, hide_index=True)\n'
-          new2 = '    st.dataframe(treasury_view, use_container_width=True, height=112, hide_index=True)\n'
-          if old1 not in t:
-              raise SystemExit('Municipal match dataframe line not found')
-          if old2 not in t:
-              raise SystemExit('Treasury match dataframe line not found')
-          t = t.replace(old1, new1, 1)
-          t = t.replace(old2, new2, 1)
+
+          # Add a human-readable maturity-gap formatter.
+          marker = '\ndef _render_stacked_matches(muni, treasury, treasury_gap, prefix, extra_muni=None):\n'
+          helper = r'''
+
+def _format_gap(days):
+    """Format a maturity-date gap in days/weeks/months/years."""
+    d = abs(int(days))
+    if d == 0:
+        return "0 days"
+    if d == 1:
+        return "1 day"
+    if d < 14:
+        return f"{d} days"
+    if d < 60:
+        weeks, rem = divmod(d, 7)
+        return f"{weeks} wk" + (f" {rem} d" if rem else "")
+    if d < 730:
+        months, rem = divmod(d, 30)
+        return f"{months} mo" + (f" {rem} d" if rem else "")
+    years, rem = divmod(d, 365)
+    months = rem // 30
+    return f"{years} yr" + (f" {months} mo" if months else "")
+'''
+
+          if 'def _format_gap(days):' not in t:
+              if marker not in t:
+                  raise SystemExit('Stacked match function marker not found')
+              t = t.replace(marker, helper + marker, 1)
+
+          # Candidate selector: replace cryptic `8d` with readable units.
+          t = t.replace(
+              'f"YTW {float(row[\'Yield to Worst (%)\']):.3f}% | gap {int(row[\'Maturity Gap Days\'])}d"',
+              'f"YTW {float(row[\'Yield to Worst (%)\']):.3f}% | gap {_format_gap(row[\'Maturity Gap Days\'])}"',
+              1,
+          )
+
+          # Table values: show explicit units.
+          t = t.replace(
+              '"Client Date Gap": int(muni["Maturity Gap Days"]),',
+              '"Client Date Gap": _format_gap(muni["Maturity Gap Days"]),',
+              1,
+          )
+          t = t.replace(
+              '"Muni Date Gap": treasury_gap,',
+              '"Muni Date Gap": _format_gap(treasury_gap),',
+              1,
+          )
+
+          # One header + one data row only; no extra blank filler row.
+          t = t.replace(
+              'st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=112, hide_index=True)',
+              'st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=80, hide_index=True)',
+              1,
+          )
+          t = t.replace(
+              'st.dataframe(treasury_view, use_container_width=True, height=112, hide_index=True)',
+              'st.dataframe(treasury_view, use_container_width=True, height=80, hide_index=True)',
+              1,
+          )
+
           p.write_text(t, encoding='utf-8')
           PY
+
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add streamlit_app.py
-          git commit -m "Equalize municipal and Treasury match table heights"
+          git commit -m "Remove blank match rows and format date gaps"
           git push
-
-# trigger
