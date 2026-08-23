@@ -687,7 +687,7 @@ def _render_stacked_matches(muni, treasury, treasury_gap, prefix, extra_muni=Non
     }
     if extra_muni:
         muni_row.update(extra_muni)
-    st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame([muni_row]), use_container_width=True, height=112, hide_index=True)
     render_copy_cusips([muni["CUSIP"]], f"COPY SELECTED MUNI CUSIP")
 
     st.markdown("### Treasury Match")
@@ -701,7 +701,7 @@ def _render_stacked_matches(muni, treasury, treasury_gap, prefix, extra_muni=Non
         "Asked Yield (%)": treasury.get("Asked Yield (%)"),
         "Source": treasury.get("Source"),
     }])
-    st.dataframe(treasury_view, use_container_width=True, hide_index=True)
+    st.dataframe(treasury_view, use_container_width=True, height=112, hide_index=True)
     st.link_button(
         "OPEN WSJ TREASURY NOTES / BONDS / T-BILLS",
         "https://www.wsj.com/market-data/bonds",
