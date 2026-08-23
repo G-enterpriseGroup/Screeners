@@ -1132,6 +1132,7 @@ def render_state_income_tax_comparison(df):
     with r2[0]:
         ig_only = st.checkbox(
             "Investment grade only",
+            value=True,
             key="state_ig",
         )
     with r2[1]:
