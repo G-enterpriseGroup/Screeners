@@ -1769,7 +1769,7 @@ def _price_ladder(current, entry, stop, target, put_wall, call_wall):
     values = [value for _, value, _ in levels]
     padding = max((max(values) - min(values)) * 0.14, current * 0.01, 0.25)
     figure.update_layout(
-        height=260,
+        height=220,
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
         font={"color": "#FF8C00", "family": "Courier New"},
@@ -1837,7 +1837,10 @@ def render_order_simulator():
 
     client = _etrade_client()
     account = _account_picker("orders_account") if client else None
-    symbol_col, fetch_col = st.columns([4.6, 1.4])
+    symbol_col, fetch_col = st.columns(
+        [4.6, 1.4],
+        vertical_alignment="bottom",
+    )
     with symbol_col:
         symbol = st.text_input(
             "Stock or ETF Symbol",
@@ -1845,8 +1848,6 @@ def render_order_simulator():
             key="order_symbol",
         ).strip().upper()
     with fetch_col:
-        st.write("")
-        st.write("")
         fetch_quote = st.button(
             "GET E*TRADE PRICE",
             type="primary",
@@ -1965,39 +1966,42 @@ def render_order_simulator():
             portfolio_total, _, _ = _balance_snapshot(_account_balance(client, account))
         except ETradeError as exc:
             st.warning(f"Portfolio value unavailable: {exc}")
-    portfolio_total = float(st.number_input(
-        "Portfolio Total Value",
-        min_value=0.0,
-        value=portfolio_total,
-        step=1000.0,
-        format="%.2f",
-        help="Uses E*TRADE totalAccountValue when connected; it remains editable for simulation.",
-    ))
-    risk_choice = st.radio(
-        "Portfolio Risk Per Trade",
-        ["0.5%", "1.0%", "Custom"],
-        horizontal=True,
-        key="risk_choice",
-    )
-    if risk_choice == "Custom":
-        risk_percent = float(st.number_input(
-            "Custom Risk %",
-            min_value=0.05,
-            max_value=10.0,
-            value=0.75,
-            step=0.05,
+    sizing_total, sizing_risk, sizing_quantity = st.columns([1.55, 1.25, 1.0])
+    with sizing_total:
+        portfolio_total = float(st.number_input(
+            "Portfolio Total Value",
+            min_value=0.0,
+            value=portfolio_total,
+            step=1000.0,
+            format="%.2f",
+            help="Uses E*TRADE totalAccountValue when connected; it remains editable for simulation.",
         ))
-    else:
-        risk_percent = float(risk_choice.rstrip("%"))
+    with sizing_risk:
+        risk_choice = st.selectbox(
+            "Portfolio Risk Per Trade",
+            ["0.5%", "1.0%", "Custom"],
+            key="risk_choice",
+        )
+        if risk_choice == "Custom":
+            risk_percent = float(st.number_input(
+                "Custom Risk %",
+                min_value=0.05,
+                max_value=10.0,
+                value=0.75,
+                step=0.05,
+            ))
+        else:
+            risk_percent = float(risk_choice.rstrip("%"))
 
     recommended_quantity = risk_sized_quantity(portfolio_total, risk_percent, entry, stop)
-    quantity = int(st.number_input(
-        "Quantity",
-        min_value=1,
-        value=max(1, recommended_quantity),
-        step=1,
-        help="Defaults to whole-share sizing for the selected 0.5% or 1% portfolio risk.",
-    ))
+    with sizing_quantity:
+        quantity = int(st.number_input(
+            "Quantity",
+            min_value=1,
+            value=max(1, recommended_quantity),
+            step=1,
+            help="Defaults to whole-share sizing for the selected 0.5% or 1% portfolio risk.",
+        ))
 
     try:
         metrics = calculate_trade_metrics(entry, stop, target, quantity, target_rr)
@@ -2383,7 +2387,9 @@ orders_tab, holdings_tab, muni_screeners_tab = st.tabs(
 )
 
 with orders_tab:
-    render_order_simulator()
+    orders_left, orders_center, orders_right = st.columns([1.4, 5.2, 1.4])
+    with orders_center:
+        render_order_simulator()
 
 with holdings_tab:
     render_etrade_holdings()
