@@ -214,15 +214,13 @@ def _find_key(value: Any, wanted: str) -> Any:
 
 
 def find_number(value: Any, *keys: str) -> float | None:
-    """Find the first usable numeric value under any case-insensitive key."""
-    wanted = {key.casefold() for key in keys}
-    for node in walk_dicts(value):
-        for key, child in node.items():
-            if str(key).casefold() in wanted:
-                try:
-                    return float(child)
-                except (TypeError, ValueError):
-                    continue
+    """Find the first usable numeric value, honoring the requested key priority."""
+    for key in keys:
+        child = _find_key(value, key)
+        try:
+            return float(child)
+        except (TypeError, ValueError):
+            continue
     return None
 
 
@@ -253,7 +251,7 @@ def quote_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def total_account_value(payload: dict[str, Any]) -> float | None:
-    return find_number(payload, "totalAccountValue", "accountBalance", "netAccountValue")
+    return find_number(payload, "totalAccountValue", "netAccountValue")
 
 
 def normalize_position(position: dict[str, Any]) -> dict[str, Any]:
@@ -266,9 +264,16 @@ def normalize_position(position: dict[str, Any]) -> dict[str, Any]:
     last_price = find_number(position, "lastTrade", "price", "marketPrice")
     market_value = find_number(position, "marketValue")
     total_cost = find_number(position, "totalCost")
+    day_gain = find_number(position, "daysGain")
+    day_gain_pct = find_number(position, "daysGainPct")
     total_gain = find_number(position, "totalGain")
     total_gain_pct = find_number(position, "totalGainPct")
     pct_portfolio = find_number(position, "pctOfPortfolio")
+    week_52_high = find_number(position, "week52High")
+    week_52_low = find_number(position, "week52Low")
+    from_52_week_high = None
+    if last_price is not None and week_52_high not in (None, 0):
+        from_52_week_high = (last_price / week_52_high - 1.0) * 100.0
     return {
         "Symbol": str(symbol),
         "Type": str(security_type),
@@ -277,8 +282,12 @@ def normalize_position(position: dict[str, Any]) -> dict[str, Any]:
         "Price Paid": price_paid,
         "Market Value": market_value,
         "Total Cost": total_cost,
+        "Day Gain/Loss": day_gain,
+        "Day Gain/Loss %": day_gain_pct,
         "Gain/Loss": total_gain,
         "Gain/Loss %": total_gain_pct,
         "% Portfolio": pct_portfolio,
+        "52W High": week_52_high,
+        "52W Low": week_52_low,
+        "% From 52W High": from_52_week_high,
     }
-
