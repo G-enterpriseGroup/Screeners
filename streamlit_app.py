@@ -181,6 +181,51 @@ st.markdown(
     .bb-negative { color:var(--bb-red) !important; }
     .bb-neutral { color:var(--bb-orange) !important; }
 
+    .bb-quote-strip {
+        display:grid;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        border:1px solid var(--bb-orange);
+        background:#000;
+        margin:.15rem 0 .25rem 0;
+        font-family:"Courier New",monospace;
+    }
+
+    .bb-quote-cell {
+        min-width:0;
+        padding:.38rem .58rem .34rem .58rem;
+        border-right:1px solid var(--bb-orange);
+    }
+
+    .bb-quote-cell:last-child { border-right:0; }
+
+    .bb-quote-label {
+        color:var(--bb-orange);
+        font-size:.73rem;
+        font-weight:700;
+        line-height:1.05;
+        text-transform:uppercase;
+    }
+
+    .bb-quote-value {
+        font-size:1.38rem;
+        font-weight:900;
+        line-height:1.15;
+        white-space:nowrap;
+    }
+
+    .bb-quote-detail {
+        font-size:.72rem;
+        line-height:1.05;
+        min-height:.76rem;
+        white-space:nowrap;
+    }
+
+    @media (max-width:850px) {
+        .bb-quote-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .bb-quote-cell:nth-child(2) { border-right:0; }
+        .bb-quote-cell:nth-child(-n+2) { border-bottom:1px solid var(--bb-orange); }
+    }
+
     div[data-baseweb="input"] > div,
     div[data-baseweb="select"] > div,
     div[data-baseweb="base-input"] {
@@ -1734,17 +1779,25 @@ def _balance_snapshot(payload):
 
 
 def _price_ladder(current, entry, stop, target, put_wall, call_wall):
-    levels = [
+    raw_levels = [
         ("STOP", stop, "#FF3B30"),
         ("ENTRY", entry, "#00A6FF"),
         ("CURRENT", current, "#FFFFFF"),
         ("TARGET", target, "#00D084"),
     ]
     if put_wall > 0:
-        levels.append(("PUT WALL", put_wall, "#B692F6"))
+        raw_levels.append(("PUT WALL", put_wall, "#B692F6"))
     if call_wall > 0:
-        levels.append(("CALL WALL", call_wall, "#FF8C00"))
-    levels.sort(key=lambda item: item[1])
+        raw_levels.append(("CALL WALL", call_wall, "#FF8C00"))
+    raw_levels.sort(key=lambda item: item[1])
+
+    levels = []
+    for label, value, color in raw_levels:
+        if levels and abs(value - levels[-1][1]) < 0.005:
+            prior_label, prior_value, prior_color = levels[-1]
+            levels[-1] = (f"{prior_label} / {label}", prior_value, prior_color)
+        else:
+            levels.append((label, value, color))
 
     figure = go.Figure()
     figure.add_trace(go.Scatter(
@@ -1755,34 +1808,37 @@ def _price_ladder(current, entry, stop, target, put_wall, call_wall):
         hoverinfo="skip",
         showlegend=False,
     ))
-    for label, value, color in levels:
+    label_positions = ["top center", "bottom center"]
+    for index, (label, value, color) in enumerate(levels):
         figure.add_trace(go.Scatter(
             x=[value],
             y=[0],
             mode="markers+text",
-            name=label,
             marker={"size": 16, "color": color},
             text=[f"{label}<br>${value:,.2f}"],
-            textposition="top center",
+            textposition=label_positions[index % 2],
+            textfont={"size": 10, "color": color, "family": "Courier New"},
+            cliponaxis=False,
             hovertemplate=f"{label}: ${value:,.2f}<extra></extra>",
+            showlegend=False,
         ))
     values = [value for _, value, _ in levels]
     padding = max((max(values) - min(values)) * 0.14, current * 0.01, 0.25)
     figure.update_layout(
-        height=220,
+        height=170,
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
         font={"color": "#FF8C00", "family": "Courier New"},
-        margin={"l": 20, "r": 20, "t": 55, "b": 25},
+        margin={"l": 22, "r": 22, "t": 25, "b": 25},
         xaxis={
-            "title": "PRICE",
-            "tickprefix": "$",
-            "gridcolor": "#3A2100",
+            "showticklabels": False,
+            "showgrid": False,
+            "zeroline": False,
             "range": [min(values) - padding, max(values) + padding],
         },
-        yaxis={"visible": False, "range": [-0.35, 0.45]},
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.03, "xanchor": "center", "x": 0.5},
+        yaxis={"visible": False, "range": [-0.30, 0.30]},
         hovermode="closest",
+        showlegend=False,
     )
     return figure
 
@@ -1810,6 +1866,62 @@ def _financial_metric(container, label, display_value, numeric_value, detail="")
             f'{detail_html}'
             '</div>'
         ),
+        unsafe_allow_html=True,
+    )
+
+
+def _quote_tone(value, positive_is_green=True):
+    if value is None or value == 0:
+        return "bb-neutral"
+    if not positive_is_green:
+        return "bb-neutral"
+    return "bb-positive" if value > 0 else "bb-negative"
+
+
+def _render_quote_strip(quote_data):
+    change = quote_data.get("change")
+    change_pct = quote_data.get("change_pct")
+    cells = [
+        (
+            "E*TRADE Last",
+            f"${quote_data['last']:,.2f}",
+            "bb-positive",
+            "—" if change is None else f"{change:+.2f}",
+            _quote_tone(change),
+        ),
+        (
+            "Bid",
+            "—" if quote_data.get("bid") is None else f"${quote_data['bid']:,.2f}",
+            "bb-neutral" if quote_data.get("bid") is None else "bb-positive",
+            "",
+            "bb-neutral",
+        ),
+        (
+            "Ask",
+            "—" if quote_data.get("ask") is None else f"${quote_data['ask']:,.2f}",
+            "bb-neutral" if quote_data.get("ask") is None else "bb-positive",
+            "",
+            "bb-neutral",
+        ),
+        (
+            "Change",
+            "—" if change_pct is None else f"{change_pct:+.2f}%",
+            _quote_tone(change_pct),
+            "",
+            "bb-neutral",
+        ),
+    ]
+    body = []
+    for label, value, value_tone, detail, detail_tone in cells:
+        body.append(
+            '<div class="bb-quote-cell">'
+            f'<div class="bb-quote-label">{html.escape(label)}</div>'
+            f'<div class="bb-quote-value {value_tone}">{html.escape(value)}</div>'
+            f'<div class="bb-quote-detail {detail_tone}">{html.escape(detail)}</div>'
+            '</div>'
+        )
+    st.markdown(
+        '<div class="bb-quote-strip">' + "".join(body) + '</div>',
         unsafe_allow_html=True,
     )
 
@@ -1870,19 +1982,7 @@ def render_order_simulator():
         else None
     )
     if quote_data:
-        q1, q2, q3, q4 = st.columns(4)
-        q1.metric("E*TRADE Last", f"${quote_data['last']:,.2f}", f"{quote_data['change'] or 0:+.2f}")
-        q2.metric("Bid", "—" if quote_data["bid"] is None else f"${quote_data['bid']:,.2f}")
-        q3.metric("Ask", "—" if quote_data["ask"] is None else f"${quote_data['ask']:,.2f}")
-        if quote_data["change_pct"] is None:
-            _financial_metric(q4, "Change", "—", 0)
-        else:
-            _financial_metric(
-                q4,
-                "Change",
-                f"{quote_data['change_pct']:+.2f}%",
-                float(quote_data["change_pct"]),
-            )
+        _render_quote_strip(quote_data)
         current = float(quote_data["last"])
         if quote_data.get("description"):
             st.caption(quote_data["description"])
@@ -2010,6 +2110,7 @@ def render_order_simulator():
         st.plotly_chart(
             _price_ladder(current, entry, stop, target, put_wall, call_wall),
             width="stretch",
+            config={"displayModeBar": False},
         )
         return
 
@@ -2048,6 +2149,7 @@ def render_order_simulator():
     st.plotly_chart(
         _price_ladder(current, entry, stop, target, put_wall, call_wall),
         width="stretch",
+        config={"displayModeBar": False},
     )
     w1, w2, w3, w4 = st.columns(4)
     _financial_metric(w1, "Entry vs Put Wall", f"${entry - put_wall:+,.2f}", entry - put_wall)
