@@ -180,6 +180,41 @@ class ETradeClient:
             {"detailFlag": "ALL"},
         )
 
+    def get_option_expirations(self, symbol: str) -> dict[str, Any]:
+        symbol = str(symbol).strip().upper()
+        if not symbol:
+            raise ETradeError("Enter a symbol first.")
+        return self._get(
+            "/v1/market/optionexpiredate",
+            {"symbol": symbol, "expiryType": "ALL"},
+        )
+
+    def get_option_chain(
+        self,
+        symbol: str,
+        expiry_year: int,
+        expiry_month: int,
+        expiry_day: int,
+        no_of_strikes: int = 100,
+    ) -> dict[str, Any]:
+        symbol = str(symbol).strip().upper()
+        if not symbol:
+            raise ETradeError("Enter a symbol first.")
+        return self._get(
+            "/v1/market/optionchains",
+            {
+                "symbol": symbol,
+                "expiryYear": int(expiry_year),
+                "expiryMonth": int(expiry_month),
+                "expiryDay": int(expiry_day),
+                "chainType": "CALLPUT",
+                "skipAdjusted": "true",
+                "optionCategory": "STANDARD",
+                "priceType": "ALL",
+                "noOfStrikes": int(no_of_strikes),
+            },
+        )
+
 
 def _as_list(value: Any) -> list[Any]:
     if value is None:
@@ -222,6 +257,106 @@ def find_number(value: Any, *keys: str) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def option_expiration_dates(payload: dict[str, Any]) -> list[tuple[int, int, int]]:
+    """Return option expirations as sorted (year, month, day) tuples."""
+    raw = _find_key(payload, "ExpirationDate")
+    dates: list[tuple[int, int, int]] = []
+    for item in _as_list(raw):
+        if not isinstance(item, dict):
+            continue
+        try:
+            dates.append((
+                int(item.get("year")),
+                int(item.get("month")),
+                int(item.get("day")),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(dates))
+
+
+def gamma_wall_summary(payload: dict[str, Any], spot: float) -> dict[str, Any]:
+    """Estimate call/put gamma walls from one E*TRADE option-chain expiry.
+
+    Exposure is approximated as gamma × open interest × 100 × spot² × 1%.
+    Puts are signed negative for display. If gamma is unavailable for the
+    entire side, open interest is used only as a fallback ranking measure.
+    """
+    try:
+        spot = float(spot)
+    except (TypeError, ValueError) as exc:
+        raise ETradeError("A usable underlying price is required for gamma walls.") from exc
+    if spot <= 0:
+        raise ETradeError("A positive underlying price is required for gamma walls.")
+
+    pairs = _as_list(_find_key(payload, "OptionPair"))
+    call_gex: dict[float, float] = {}
+    put_gex: dict[float, float] = {}
+    call_oi: dict[float, float] = {}
+    put_oi: dict[float, float] = {}
+
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        for side, signed_map, oi_map, sign in (
+            ("Call", call_gex, call_oi, 1.0),
+            ("Put", put_gex, put_oi, -1.0),
+        ):
+            option = pair.get(side) or pair.get(side.lower())
+            if not isinstance(option, dict):
+                continue
+            strike = find_number(option, "strikePrice", "strike")
+            open_interest = find_number(option, "openInterest")
+            greeks = (
+                option.get("OptionGreeks")
+                or option.get("optionGreeks")
+                or option.get("optionGreek")
+                or {}
+            )
+            gamma = find_number(greeks, "gamma") if isinstance(greeks, dict) else None
+            if strike is None or open_interest is None or open_interest < 0:
+                continue
+            strike = float(strike)
+            oi_map[strike] = oi_map.get(strike, 0.0) + float(open_interest)
+            if gamma is None or gamma < 0:
+                continue
+            exposure = float(gamma) * float(open_interest) * 100.0 * spot * spot * 0.01
+            signed_map[strike] = signed_map.get(strike, 0.0) + sign * exposure
+
+    method = "GAMMA×OI"
+    if call_gex:
+        call_wall, call_value = max(call_gex.items(), key=lambda item: item[1])
+    elif call_oi:
+        method = "OPEN INTEREST FALLBACK"
+        call_wall, call_value = max(call_oi.items(), key=lambda item: item[1])
+    else:
+        call_wall = call_value = None
+
+    if put_gex:
+        put_wall, put_value = min(put_gex.items(), key=lambda item: item[1])
+    elif put_oi:
+        method = "OPEN INTEREST FALLBACK"
+        put_wall, put_value = max(put_oi.items(), key=lambda item: item[1])
+        put_value = -float(put_value)
+    else:
+        put_wall = put_value = None
+
+    if call_wall is None or put_wall is None:
+        raise ETradeError(
+            "E*TRADE option chain did not contain enough open-interest/Greek data "
+            "to estimate both gamma walls."
+        )
+
+    return {
+        "call_wall": float(call_wall),
+        "put_wall": float(put_wall),
+        "call_exposure": float(call_value),
+        "put_exposure": float(put_value),
+        "method": method,
+        "contracts_seen": len(pairs),
+    }
 
 
 def quote_summary(payload: dict[str, Any]) -> dict[str, Any]:
