@@ -3,11 +3,13 @@ import math
 import re
 import time
 from contextlib import redirect_stdout
-from datetime import datetime
+from datetime import datetime, time as datetime_time, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.etrade_client import (
     ETradeClient,
@@ -58,6 +60,8 @@ MUNI_SESSION_KEY = "_muni_data_bundle"
 MUNI_SESSION_AT_KEY = "_muni_data_loaded_at"
 MUNI_TTL_SECONDS = 12 * 60 * 60
 DEFAULT_ETRADE_ACCOUNT_SUFFIX = "5474"
+ETRADE_INACTIVITY_SECONDS = 2 * 60 * 60
+ETRADE_TIMEZONE = ZoneInfo("America/New_York")
 
 
 st.set_page_config(
@@ -1439,6 +1443,112 @@ def _etrade_client():
     )
 
 
+def _touch_etrade_session():
+    now = time.time()
+    st.session_state["etrade_last_activity_at"] = now
+    token = st.session_state.get("etrade_access_token")
+    if token is not None:
+        token.setdefault("issued_at", now)
+
+
+def _calculate_etrade_expirations(issued_at, last_activity):
+    issued_et = datetime.fromtimestamp(issued_at, ETRADE_TIMEZONE)
+    midnight_et = datetime.combine(
+        issued_et.date() + timedelta(days=1),
+        datetime_time.min,
+        tzinfo=ETRADE_TIMEZONE,
+    )
+    inactivity_expiry = last_activity + ETRADE_INACTIVITY_SECONDS
+    hard_expiry = midnight_et.timestamp()
+    return min(inactivity_expiry, hard_expiry), hard_expiry, midnight_et
+
+
+def _etrade_expirations():
+    token = st.session_state.get("etrade_access_token") or {}
+    now = time.time()
+    issued_at = float(token.setdefault("issued_at", now))
+    last_activity = float(
+        st.session_state.setdefault("etrade_last_activity_at", issued_at)
+    )
+    return _calculate_etrade_expirations(issued_at, last_activity)
+
+
+def _render_etrade_session_timer(connected):
+    if not connected:
+        st.markdown(
+            '<div class="terminal-note">E*TRADE SESSION TIMER // NOT CONNECTED</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    expiry, hard_expiry, midnight_et = _etrade_expirations()
+    midnight_label = midnight_et.strftime("%I:%M %p ET").lstrip("0")
+    components.html(
+        f"""
+        <style>
+            html, body {{ margin:0; padding:0; background:#000; }}
+            .timer {{
+                height:54px; box-sizing:border-box; border:1px solid #FF8C00;
+                background:#030303; color:#FF8C00; padding:7px 11px;
+                font-family:'Courier New',monospace; display:flex;
+                align-items:center; justify-content:space-between; gap:16px;
+            }}
+            .title {{ font-size:12px; font-weight:900; letter-spacing:.06em; }}
+            .clock {{ font-size:24px; font-weight:900; color:#00D084; white-space:nowrap; }}
+            .detail {{ font-size:11px; color:#FF8C00; text-align:right; }}
+        </style>
+        <div class="timer">
+            <div>
+                <div class="title" id="title">E*TRADE API SESSION // ACTIVE</div>
+                <div class="detail">2-HOUR INACTIVITY LIMIT • HARD EXPIRY {midnight_label}</div>
+            </div>
+            <div class="clock" id="clock">--:--:--</div>
+        </div>
+        <script>
+            const expiry = {int(expiry * 1000)};
+            const hardExpiry = {int(hard_expiry * 1000)};
+            const clock = document.getElementById('clock');
+            const title = document.getElementById('title');
+            function tick() {{
+                const now = Date.now();
+                const remaining = Math.max(0, expiry - now);
+                if (now >= hardExpiry) {{
+                    clock.textContent = 'EXPIRED';
+                    clock.style.color = '#FF3B30';
+                    title.textContent = 'E*TRADE API SESSION // RECONNECT REQUIRED';
+                    return;
+                }}
+                if (remaining <= 0) {{
+                    clock.textContent = 'INACTIVE';
+                    clock.style.color = '#FF3B30';
+                    title.textContent = 'E*TRADE API SESSION // CLICK RENEW';
+                    return;
+                }}
+                const hours = Math.floor(remaining / 3600000);
+                const minutes = Math.floor((remaining % 3600000) / 60000);
+                const seconds = Math.floor((remaining % 60000) / 1000);
+                clock.textContent = [hours, minutes, seconds]
+                    .map(value => String(value).padStart(2, '0')).join(':');
+                if (remaining <= 10 * 60000) {{
+                    clock.style.color = '#FF3B30';
+                    title.textContent = 'E*TRADE API SESSION // RENEW NOW';
+                }} else if (remaining <= 30 * 60000) {{
+                    clock.style.color = '#FF8C00';
+                    title.textContent = 'E*TRADE API SESSION // EXPIRING SOON';
+                }} else {{
+                    clock.style.color = '#00D084';
+                    title.textContent = 'E*TRADE API SESSION // ACTIVE';
+                }}
+            }}
+            tick();
+            setInterval(tick, 1000);
+        </script>
+        """,
+        height=58,
+        scrolling=False,
+    )
+
+
 def _masked_account(value):
     value = str(value or "")
     return f"••••{value[-4:]}" if len(value) >= 4 else value
@@ -1456,6 +1566,7 @@ def _account_label(account):
 
 def _refresh_accounts(client):
     accounts = client.list_accounts()
+    _touch_etrade_session()
     st.session_state["etrade_accounts"] = accounts
     return accounts
 
@@ -1492,6 +1603,7 @@ def render_etrade_connection():
         f"READY // {environment.upper()}" if consumer_key and consumer_secret else "SETUP REQUIRED"
     )
 
+    _render_etrade_session_timer(connected)
     status_col, connect_col, renew_col, disconnect_col = st.columns([3.3, 1.7, 1.1, 1.2])
     with status_col:
         st.markdown(
@@ -1519,6 +1631,7 @@ def render_etrade_connection():
         if st.button("RENEW", width="stretch", disabled=not connected, key="etrade_renew"):
             try:
                 _etrade_client().renew()
+                _touch_etrade_session()
                 st.success("E*TRADE session renewed.")
             except ETradeError as exc:
                 st.error(str(exc))
@@ -1527,6 +1640,7 @@ def render_etrade_connection():
             for state_key in [
                 "etrade_access_token", "etrade_accounts", "etrade_request",
                 "etrade_holdings", "etrade_balances", "etrade_quote",
+                "etrade_last_activity_at",
             ]:
                 st.session_state.pop(state_key, None)
             st.rerun()
@@ -1572,7 +1686,9 @@ def render_etrade_connection():
                             verifier,
                             environment,
                         )
+                        token["issued_at"] = time.time()
                         st.session_state["etrade_access_token"] = token
+                        _touch_etrade_session()
                         st.session_state.pop("etrade_request", None)
                         _refresh_accounts(_etrade_client())
                         st.rerun()
@@ -1585,6 +1701,7 @@ def _account_balance(client, account, refresh=False):
     balances = st.session_state.setdefault("etrade_balances", {})
     if refresh or account_key not in balances:
         balances[account_key] = client.get_balance(account_key)
+        _touch_etrade_session()
     return balances[account_key]
 
 
@@ -1742,6 +1859,7 @@ def render_order_simulator():
         try:
             st.session_state["etrade_quote"] = quote_summary(client.get_quote(symbol))
             st.session_state["etrade_quote_symbol"] = symbol
+            _touch_etrade_session()
         except ETradeError as exc:
             st.error(str(exc))
 
@@ -2041,6 +2159,7 @@ def render_etrade_holdings():
             st.session_state.setdefault("etrade_holdings", {})[account_key] = (
                 client.get_portfolio(account_key)
             )
+            _touch_etrade_session()
         except ETradeError as exc:
             st.error(str(exc))
 
