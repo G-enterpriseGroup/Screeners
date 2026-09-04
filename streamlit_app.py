@@ -17,7 +17,9 @@ from src.etrade_client import (
     begin_authorization,
     complete_authorization,
     find_number,
+    gamma_wall_summary,
     normalize_position,
+    option_expiration_dates,
     quote_summary,
     total_account_value,
 )
@@ -1957,6 +1959,39 @@ def _financial_dataframe(frame, columns=None):
     return frame.style.map(color_value, subset=selected)
 
 
+def _load_etrade_gamma_walls(client, symbol, spot, target_dte=45):
+    expiration_tuples = option_expiration_dates(client.get_option_expirations(symbol))
+    today = datetime.now(ETRADE_TIMEZONE).date()
+    future_expirations = []
+    for year, month, day in expiration_tuples:
+        try:
+            expiry = datetime(year, month, day).date()
+        except ValueError:
+            continue
+        if expiry >= today:
+            future_expirations.append(expiry)
+    if not future_expirations:
+        raise ETradeError("E*TRADE returned no future option expirations.")
+
+    expiry = min(
+        future_expirations,
+        key=lambda value: abs((value - today).days - int(target_dte)),
+    )
+    chain = client.get_option_chain(
+        symbol,
+        expiry.year,
+        expiry.month,
+        expiry.day,
+        no_of_strikes=100,
+    )
+    walls = gamma_wall_summary(chain, spot)
+    walls["expiry"] = expiry.isoformat()
+    walls["dte"] = (expiry - today).days
+    walls["target_dte"] = int(target_dte)
+    return walls
+
+
+@st.fragment
 def render_order_simulator():
     st.subheader("Triggers – OCO Order Simulator")
     st.caption(
@@ -1976,6 +2011,7 @@ def render_order_simulator():
             value="XLF",
             key="order_symbol",
         ).strip().upper()
+    symbol_key = _safe_widget_key(symbol)
     with fetch_col:
         fetch_quote = st.button(
             "GET E*TRADE PRICE",
@@ -1987,9 +2023,30 @@ def render_order_simulator():
 
     if fetch_quote and client:
         try:
-            st.session_state["etrade_quote"] = quote_summary(client.get_quote(symbol))
+            quote_data_fresh = quote_summary(client.get_quote(symbol))
+            st.session_state["etrade_quote"] = quote_data_fresh
             st.session_state["etrade_quote_symbol"] = symbol
             _touch_etrade_session()
+
+            try:
+                wall_data_fresh = _load_etrade_gamma_walls(
+                    client,
+                    symbol,
+                    float(quote_data_fresh["last"]),
+                    target_dte=45,
+                )
+                st.session_state["etrade_gamma_walls"] = wall_data_fresh
+                st.session_state["etrade_gamma_walls_symbol"] = symbol
+                st.session_state.pop("etrade_gamma_walls_error", None)
+                st.session_state[f"order_put_wall_{symbol_key}"] = float(
+                    wall_data_fresh["put_wall"]
+                )
+                st.session_state[f"order_call_wall_{symbol_key}"] = float(
+                    wall_data_fresh["call_wall"]
+                )
+                _touch_etrade_session()
+            except ETradeError as wall_exc:
+                st.session_state["etrade_gamma_walls_error"] = str(wall_exc)
         except ETradeError as exc:
             st.error(str(exc))
 
@@ -2018,7 +2075,6 @@ def render_order_simulator():
 
     slider_min = max(0.01, math.floor(current * 0.50 * 100) / 100)
     slider_max = max(slider_min + 1.0, math.ceil(current * 1.50 * 100) / 100)
-    symbol_key = _safe_widget_key(symbol)
 
     st.markdown("**1 // PRIMARY ORDER**")
     entry = st.slider(
@@ -2054,22 +2110,40 @@ def render_order_simulator():
             key=f"target_{symbol_key}_{current:.2f}",
         )
 
+    wall_data = (
+        st.session_state.get("etrade_gamma_walls")
+        if st.session_state.get("etrade_gamma_walls_symbol") == symbol
+        else None
+    )
+    put_default = (
+        float(wall_data["put_wall"])
+        if wall_data
+        else round(current * 0.95, 2)
+    )
+    call_default = (
+        float(wall_data["call_wall"])
+        if wall_data
+        else round(current * 1.05, 2)
+    )
+
     put_col, call_col, rr_col = st.columns(3)
     with put_col:
         put_wall = float(st.number_input(
             "Put Wall",
             min_value=0.0,
-            value=round(current * 0.95, 2),
+            value=put_default,
             step=0.01,
             format="%.2f",
+            key=f"order_put_wall_{symbol_key}",
         ))
     with call_col:
         call_wall = float(st.number_input(
             "Call Wall",
             min_value=0.0,
-            value=round(current * 1.05, 2),
+            value=call_default,
             step=0.01,
             format="%.2f",
+            key=f"order_call_wall_{symbol_key}",
         ))
     with rr_col:
         target_rr = float(st.number_input(
@@ -2078,7 +2152,37 @@ def render_order_simulator():
             value=2.0,
             step=0.25,
             format="%.2f",
+            key=f"order_target_rr_{symbol_key}",
         ))
+
+    if wall_data:
+        st.caption(
+            "WALL SOURCE // E*TRADE OPTION CHAIN // "
+            f"{wall_data['dte']} DTE (45-DTE TARGET) // "
+            f"EXPIRY {wall_data['expiry']} // {wall_data['method']} ESTIMATE"
+        )
+    else:
+        st.caption("WALL SOURCE // MANUAL // click GET E*TRADE PRICE to attempt a 45-DTE wall estimate.")
+        wall_error = st.session_state.get("etrade_gamma_walls_error")
+        if wall_error:
+            st.warning(f"AUTO WALLS UNAVAILABLE // {wall_error}")
+
+    live_risk = entry - stop
+    live_reward = target - entry
+    live_rr = live_reward / live_risk if live_risk > 0 else 0.0
+    st.caption("LIVE SYNC // SLIDER CHANGES RECALCULATE THIS ORDER FRAGMENT AUTOMATICALLY")
+    l1, l2, l3, l4, l5, l6 = st.columns(6)
+    l1.metric("Entry", f"${entry:,.2f}")
+    _financial_metric(l2, "Stop", f"${stop:,.2f}", -abs(entry - stop))
+    _financial_metric(l3, "Target", f"${target:,.2f}", target - entry)
+    _financial_metric(l4, "Risk / Share", f"-${max(live_risk, 0):,.2f}", -max(live_risk, 0))
+    _financial_metric(l5, "Reward / Share", f"+${max(live_reward, 0):,.2f}", max(live_reward, 0))
+    _financial_metric(
+        l6,
+        "Live R:R",
+        "—" if live_risk <= 0 else f"{live_rr:.2f}:1",
+        live_rr - target_rr if live_risk > 0 else -1.0,
+    )
 
     portfolio_total = 0.0
     if client and account:
