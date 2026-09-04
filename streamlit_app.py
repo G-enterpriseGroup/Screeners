@@ -1853,22 +1853,41 @@ with holdings_tab:
     render_etrade_holdings()
 
 with muni_screeners_tab:
-    _, top_right = st.columns([5, 1])
-    with top_right:
-        if st.button(
-            "Refresh Muni Data",
+    load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
+    with load_col:
+        load_muni_clicked = st.button(
+            "LOAD MUNI SCREENERS",
+            type="primary",
+            key="load_muni_data",
+            width="stretch",
+        )
+    with refresh_col:
+        refresh_muni_clicked = st.button(
+            "REFRESH MUNI DATA",
             key="refresh_muni_data",
             width="stretch",
-        ):
-            st.session_state.pop(MUNI_SESSION_KEY, None)
-            st.session_state.pop(MUNI_SESSION_AT_KEY, None)
-            st.rerun()
+        )
+
+    if refresh_muni_clicked:
+        st.session_state.pop(MUNI_SESSION_KEY, None)
+        st.session_state.pop(MUNI_SESSION_AT_KEY, None)
 
     muni_bundle = None
-    try:
-        muni_bundle, used_session_cache = load_muni_universe()
-    except Exception as exc:
-        st.error(f"Municipal data load failed: {exc}")
+    should_load_munis = (
+        load_muni_clicked
+        or refresh_muni_clicked
+        or _session_muni_cache_is_valid()
+    )
+
+    if should_load_munis:
+        try:
+            muni_bundle, used_session_cache = load_muni_universe()
+        except Exception as exc:
+            st.error(f"Municipal data load failed: {exc}")
+    else:
+        st.info(
+            "Municipal data is paused. Select LOAD MUNI SCREENERS when you are ready."
+        )
 
     if muni_bundle is not None:
         df, source_rows, etf_status, as_of = muni_bundle
