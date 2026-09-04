@@ -1628,13 +1628,24 @@ def _account_picker(key):
     accounts = st.session_state.get("etrade_accounts", [])
     if not accounts:
         return None
+
     valid_indexes = range(len(accounts))
+    default_index = _default_account_index(accounts)
+    default_marker_key = f"_{key}_default_account_suffix"
+
+    # Migrate any already-open Streamlit session to the requested default account.
+    # After the one-time reset, a manual account change remains sticky for the session.
+    if st.session_state.get(default_marker_key) != DEFAULT_ETRADE_ACCOUNT_SUFFIX:
+        st.session_state.pop(key, None)
+        st.session_state[default_marker_key] = DEFAULT_ETRADE_ACCOUNT_SUFFIX
+
     if key in st.session_state and st.session_state[key] not in valid_indexes:
-        st.session_state.pop(key)
+        st.session_state.pop(key, None)
+
     selected = st.selectbox(
         "E*TRADE Account",
         valid_indexes,
-        index=_default_account_index(accounts),
+        index=default_index,
         format_func=lambda index: _account_label(accounts[index]),
         key=key,
     )
@@ -1685,7 +1696,9 @@ def render_etrade_connection():
             for state_key in [
                 "etrade_access_token", "etrade_accounts", "etrade_request",
                 "etrade_holdings", "etrade_balances", "etrade_quote",
-                "etrade_last_activity_at",
+                "etrade_last_activity_at", "orders_account", "holdings_account",
+                "_orders_account_default_account_suffix",
+                "_holdings_account_default_account_suffix",
             ]:
                 st.session_state.pop(state_key, None)
             st.rerun()
@@ -1878,15 +1891,19 @@ def _quote_tone(value, positive_is_green=True):
     return "bb-positive" if value > 0 else "bb-negative"
 
 
-def _render_quote_strip(quote_data):
+def _render_quote_strip(quote_data=None):
+    quote_data = quote_data or {}
+    last = quote_data.get("last")
     change = quote_data.get("change")
     change_pct = quote_data.get("change_pct")
     cells = [
         (
             "E*TRADE Last",
-            f"${quote_data['last']:,.2f}",
-            "bb-positive",
-            "—" if change is None else f"{change:+.2f}",
+            "—" if last is None else f"${last:,.2f}",
+            "bb-neutral" if last is None else _quote_tone(change),
+            "CLICK GET E*TRADE PRICE" if last is None else (
+                "—" if change is None else f"{change:+.2f}"
+            ),
             _quote_tone(change),
         ),
         (
@@ -1981,8 +1998,11 @@ def render_order_simulator():
         if st.session_state.get("etrade_quote_symbol") == symbol
         else None
     )
+    # Keep the quote strip visible at all times. Before a live quote is loaded it
+    # shows placeholders instead of disappearing, so the Bloomberg-style quote
+    # panel is always present in the Orders workspace.
+    _render_quote_strip(quote_data)
     if quote_data:
-        _render_quote_strip(quote_data)
         current = float(quote_data["last"])
         if quote_data.get("description"):
             st.caption(quote_data["description"])
