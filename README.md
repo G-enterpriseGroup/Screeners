@@ -1,6 +1,36 @@
 # Screeners
 
-A collection of Bloomberg-style market screeners. The first project is a **Multi-ETF Municipal Bond Screener** with a **Muni vs U.S. Treasury Tax-Equivalent Yield** comparison tab.
+A Bloomberg-style Streamlit terminal combining municipal-bond analytics with
+read-only E*TRADE account data and a Triggers–OCO trade simulator.
+
+## Top-level tabs
+
+- **Orders:** E*TRADE stock/ETF quote lookup, buy-limit entry, take-profit and
+  stop sliders, call/put walls, live reward:risk, and position sizing at 0.5%,
+  1%, or a custom percentage of total portfolio value.
+- **Holdings:** live E*TRADE balances and positions with CSV export.
+- **Muni Screeners:** contains all three original municipal tools unchanged:
+  Muni Screener, Tax Exempt Status for NIST, and State Income Tax Muni vs UST.
+
+The Orders tab is simulation-only. No preview-order or place-order API methods
+exist in the application.
+
+## E*TRADE setup
+
+The app uses E*TRADE OAuth 1.0a. Store credentials only in Streamlit Community
+Cloud under **App Settings → Secrets**:
+
+```toml
+[etrade]
+consumer_key = "YOUR_NEW_PRODUCTION_CONSUMER_KEY"
+consumer_secret = "YOUR_NEW_PRODUCTION_CONSUMER_SECRET"
+environment = "live"
+```
+
+Select **Connect E*TRADE**, approve the application on E*TRADE, and enter the
+verification code shown. E*TRADE access tokens expire at midnight US Eastern;
+a same-day inactive token can be reactivated with **Renew**. Access tokens are
+kept only in the private Streamlit session and are not written to GitHub.
 
 ## Current master
 

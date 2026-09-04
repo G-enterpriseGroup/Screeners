@@ -113,13 +113,13 @@ def infer_state(name):
 
 
 def to_num(series):
-    return pd.to_numeric(
+    cleaned = (
         series.astype(str)
         .str.replace(",", "", regex=False)
         .str.replace("%", "", regex=False)
-        .replace({"-": np.nan, "": np.nan, "nan": np.nan}),
-        errors="coerce",
     )
+    cleaned = cleaned.mask(cleaned.isin(["-", "", "nan"]), np.nan)
+    return pd.to_numeric(cleaned, errors="coerce")
 
 
 def _clean_ticker(text):

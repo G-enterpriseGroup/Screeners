@@ -1,13 +1,26 @@
 import html
+import math
 import re
 import time
 from contextlib import redirect_stdout
 from datetime import datetime
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
+from src.etrade_client import (
+    ETradeClient,
+    ETradeError,
+    begin_authorization,
+    complete_authorization,
+    find_number,
+    normalize_position,
+    quote_summary,
+    total_account_value,
+)
 from src.muni_data import load_all_ishares_munis, screen_munis
+from src.trade_math import calculate_trade_metrics, risk_sized_quantity
 from src.treasury_data import (
     load_treasury_quotes,
     nearest_muni_candidates,
@@ -47,7 +60,7 @@ MUNI_TTL_SECONDS = 12 * 60 * 60
 
 
 st.set_page_config(
-    page_title="Municipal Bond Screeners — by Raj",
+    page_title="MuniX Screen — by Raj",
     page_icon="📊",
     layout="wide",
 )
@@ -489,14 +502,14 @@ def render_treasury_loader(prefix):
         load_clicked = st.button(
             "Load / Refresh Treasurys",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key=f"{prefix}_load_treasury",
         )
 
     with c2:
         if st.button(
             "Clear Treasury Cache",
-            use_container_width=True,
+            width="stretch",
             key=f"{prefix}_clear_treasury",
         ):
             load_treasury_market.clear()
@@ -562,7 +575,7 @@ def render_muni_screener(df, source_rows, etf_status, as_of):
     with st.expander("Source status"):
         st.dataframe(
             etf_status.sort_values(["Status", "Ticker"]).reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -755,7 +768,7 @@ def render_muni_screener(df, source_rows, etf_status, as_of):
 
     st.dataframe(
         results[cols],
-        use_container_width=True,
+        width="stretch",
         height=650,
         hide_index=True,
     )
@@ -879,7 +892,7 @@ def _render_stacked_matches(
     st.link_button(
         "OPEN WSJ TREASURY NOTES / BONDS / T-BILLS",
         "https://www.wsj.com/market-data/bonds",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -1057,7 +1070,7 @@ def render_nist_comparison(df):
         cols = [c for c in cols if c in nearby.columns]
         st.dataframe(
             nearby[cols],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         render_copy_cusips(
@@ -1307,7 +1320,7 @@ def render_state_income_tax_comparison(df):
         cols = [c for c in cols if c in nearby.columns]
         st.dataframe(
             nearby[cols],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         render_copy_cusips(
@@ -1316,65 +1329,583 @@ def render_state_income_tax_comparison(df):
         )
 
 
-st.title("Municipal Bond Screeners — by Raj")
-st.caption(
-    "Bloomberg-style municipal analytics using free public ETF holdings data, "
-    "NIST tax-equivalent analysis, and all-state muni-vs-Treasury comparisons."
-)
-
-_, top_right = st.columns([5, 1])
-with top_right:
-    if st.button(
-        "Refresh Muni Data",
-        key="refresh_muni_data",
-        use_container_width=True,
-    ):
-        st.session_state.pop(MUNI_SESSION_KEY, None)
-        st.session_state.pop(MUNI_SESSION_AT_KEY, None)
-        st.rerun()
+def _secret_value(section, key, default=""):
+    try:
+        return str(st.secrets.get(section, {}).get(key, default)).strip()
+    except Exception:
+        return default
 
 
-try:
-    (df, source_rows, etf_status, as_of), used_session_cache = load_muni_universe()
-except Exception:
-    st.stop()
-
-
-if used_session_cache:
-    age_minutes = int(
-        (time.time() - st.session_state[MUNI_SESSION_AT_KEY]) / 60
-    )
-    st.caption(
-        f"DATA ENGINE // SESSION CACHE READY • {len(df):,} CUSIPs "
-        f"• loaded {age_minutes} min ago"
+def _etrade_credentials():
+    return (
+        _secret_value("etrade", "consumer_key"),
+        _secret_value("etrade", "consumer_secret"),
+        _secret_value("etrade", "environment", "live").lower(),
     )
 
 
-tab1, tab2, tab3 = st.tabs(
-    [
-        "MUNI SCREENER",
-        "TAX EXEMPT STATUS FOR NIST",
-        "STATE INCOME TAX // MUNI vs UST",
+def _etrade_client():
+    consumer_key, consumer_secret, environment = _etrade_credentials()
+    token = st.session_state.get("etrade_access_token")
+    if not consumer_key or not consumer_secret or not token:
+        return None
+    return ETradeClient(
+        consumer_key,
+        consumer_secret,
+        token["oauth_token"],
+        token["oauth_token_secret"],
+        environment,
+    )
+
+
+def _masked_account(value):
+    value = str(value or "")
+    return f"••••{value[-4:]}" if len(value) >= 4 else value
+
+
+def _account_label(account):
+    name = (
+        account.get("accountName")
+        or account.get("accountDesc")
+        or account.get("accountType")
+        or "ACCOUNT"
+    )
+    return f"{name} // {_masked_account(account.get('accountId'))}"
+
+
+def _refresh_accounts(client):
+    accounts = client.list_accounts()
+    st.session_state["etrade_accounts"] = accounts
+    return accounts
+
+
+def _account_picker(key):
+    accounts = st.session_state.get("etrade_accounts", [])
+    if not accounts:
+        return None
+    selected = st.selectbox(
+        "E*TRADE Account",
+        range(len(accounts)),
+        format_func=lambda index: _account_label(accounts[index]),
+        key=key,
+    )
+    return accounts[selected]
+
+
+def render_etrade_connection():
+    consumer_key, consumer_secret, environment = _etrade_credentials()
+    connected = _etrade_client() is not None
+    status_text = "CONNECTED" if connected else (
+        f"READY // {environment.upper()}" if consumer_key and consumer_secret else "SETUP REQUIRED"
+    )
+
+    status_col, connect_col, renew_col, disconnect_col = st.columns([3.3, 1.7, 1.1, 1.2])
+    with status_col:
+        st.markdown(
+            f'<div class="terminal-note">E*TRADE API // {html.escape(status_text)}</div>',
+            unsafe_allow_html=True,
+        )
+    with connect_col:
+        if st.button(
+            "CONNECT E*TRADE",
+            type="primary",
+            width="stretch",
+            disabled=not (consumer_key and consumer_secret),
+            key="etrade_connect",
+        ):
+            try:
+                request = begin_authorization(consumer_key, consumer_secret, environment)
+                st.session_state["etrade_request"] = {
+                    "oauth_token": request.oauth_token,
+                    "oauth_token_secret": request.oauth_token_secret,
+                    "authorization_url": request.authorization_url,
+                }
+            except ETradeError as exc:
+                st.error(str(exc))
+    with renew_col:
+        if st.button("RENEW", width="stretch", disabled=not connected, key="etrade_renew"):
+            try:
+                _etrade_client().renew()
+                st.success("E*TRADE session renewed.")
+            except ETradeError as exc:
+                st.error(str(exc))
+    with disconnect_col:
+        if st.button("DISCONNECT", width="stretch", disabled=not connected, key="etrade_disconnect"):
+            for state_key in [
+                "etrade_access_token", "etrade_accounts", "etrade_request",
+                "etrade_holdings", "etrade_balances", "etrade_quote",
+            ]:
+                st.session_state.pop(state_key, None)
+            st.rerun()
+
+    if not consumer_key or not consumer_secret:
+        st.warning(
+            "Add E*TRADE consumer_key and consumer_secret in Streamlit App Settings → Secrets. "
+            "Credentials are intentionally excluded from GitHub."
+        )
+
+    request = st.session_state.get("etrade_request")
+    if request and not connected:
+        with st.container(border=True):
+            st.subheader("Complete E*TRADE Authorization")
+            left, right = st.columns([1, 1.25])
+            with left:
+                st.link_button(
+                    "1 // OPEN E*TRADE LOGIN",
+                    request["authorization_url"],
+                    type="primary",
+                    width="stretch",
+                )
+                st.caption("Approve access and copy the verification code E*TRADE displays.")
+            with right:
+                verifier = st.text_input(
+                    "2 // Verification Code",
+                    placeholder="Enter the code shown by E*TRADE",
+                    max_chars=12,
+                    key="etrade_verifier",
+                )
+                if st.button(
+                    "VERIFY AND CONNECT",
+                    width="stretch",
+                    disabled=not verifier.strip(),
+                    key="etrade_verify",
+                ):
+                    try:
+                        token = complete_authorization(
+                            consumer_key,
+                            consumer_secret,
+                            request["oauth_token"],
+                            request["oauth_token_secret"],
+                            verifier,
+                            environment,
+                        )
+                        st.session_state["etrade_access_token"] = token
+                        st.session_state.pop("etrade_request", None)
+                        _refresh_accounts(_etrade_client())
+                        st.rerun()
+                    except ETradeError as exc:
+                        st.error(str(exc))
+
+
+def _account_balance(client, account, refresh=False):
+    account_key = str(account.get("accountIdKey", ""))
+    balances = st.session_state.setdefault("etrade_balances", {})
+    if refresh or account_key not in balances:
+        balances[account_key] = client.get_balance(account_key)
+    return balances[account_key]
+
+
+def _price_ladder(current, entry, stop, target, put_wall, call_wall):
+    levels = [
+        ("STOP", stop, "#FF3B30"),
+        ("ENTRY", entry, "#00A6FF"),
+        ("CURRENT", current, "#FFFFFF"),
+        ("TARGET", target, "#00D084"),
     ]
-)
+    if put_wall > 0:
+        levels.append(("PUT WALL", put_wall, "#B692F6"))
+    if call_wall > 0:
+        levels.append(("CALL WALL", call_wall, "#FF8C00"))
+    levels.sort(key=lambda item: item[1])
 
-with tab1:
-    render_muni_screener(
-        df,
-        source_rows,
-        etf_status,
-        as_of,
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(
+        x=[value for _, value, _ in levels],
+        y=[0] * len(levels),
+        mode="lines",
+        line={"color": "#7A4300", "width": 5},
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    for label, value, color in levels:
+        figure.add_trace(go.Scatter(
+            x=[value],
+            y=[0],
+            mode="markers+text",
+            name=label,
+            marker={"size": 16, "color": color},
+            text=[f"{label}<br>${value:,.2f}"],
+            textposition="top center",
+            hovertemplate=f"{label}: ${value:,.2f}<extra></extra>",
+        ))
+    values = [value for _, value, _ in levels]
+    padding = max((max(values) - min(values)) * 0.14, current * 0.01, 0.25)
+    figure.update_layout(
+        height=260,
+        paper_bgcolor="#000000",
+        plot_bgcolor="#000000",
+        font={"color": "#FF8C00", "family": "Courier New"},
+        margin={"l": 20, "r": 20, "t": 55, "b": 25},
+        xaxis={
+            "title": "PRICE",
+            "tickprefix": "$",
+            "gridcolor": "#3A2100",
+            "range": [min(values) - padding, max(values) + padding],
+        },
+        yaxis={"visible": False, "range": [-0.35, 0.45]},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.03, "xanchor": "center", "x": 0.5},
+        hovermode="closest",
+    )
+    return figure
+
+
+def _safe_widget_key(value):
+    return "".join(character for character in str(value) if character.isalnum()) or "SYMBOL"
+
+
+def render_order_simulator():
+    st.subheader("Triggers – OCO Order Simulator")
+    st.caption(
+        "BUY LIMIT → when filled, activates a take-profit LIMIT and STOP-MARKET exit. "
+        "SIMULATION ONLY // NO ORDER CAN BE TRANSMITTED."
     )
 
-with tab2:
-    render_nist_comparison(df)
+    client = _etrade_client()
+    account = _account_picker("orders_account") if client else None
+    symbol_col, fetch_col = st.columns([4.6, 1.4])
+    with symbol_col:
+        symbol = st.text_input(
+            "Stock or ETF Symbol",
+            value="XLF",
+            key="order_symbol",
+        ).strip().upper()
+    with fetch_col:
+        st.write("")
+        st.write("")
+        fetch_quote = st.button(
+            "GET E*TRADE PRICE",
+            type="primary",
+            width="stretch",
+            disabled=client is None,
+            key="fetch_order_quote",
+        )
 
-with tab3:
-    render_state_income_tax_comparison(df)
+    if fetch_quote and client:
+        try:
+            st.session_state["etrade_quote"] = quote_summary(client.get_quote(symbol))
+            st.session_state["etrade_quote_symbol"] = symbol
+        except ETradeError as exc:
+            st.error(str(exc))
+
+    quote_data = (
+        st.session_state.get("etrade_quote")
+        if st.session_state.get("etrade_quote_symbol") == symbol
+        else None
+    )
+    if quote_data:
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("E*TRADE Last", f"${quote_data['last']:,.2f}", f"{quote_data['change'] or 0:+.2f}")
+        q2.metric("Bid", "—" if quote_data["bid"] is None else f"${quote_data['bid']:,.2f}")
+        q3.metric("Ask", "—" if quote_data["ask"] is None else f"${quote_data['ask']:,.2f}")
+        q4.metric("Change", "—" if quote_data["change_pct"] is None else f"{quote_data['change_pct']:+.2f}%")
+        current = float(quote_data["last"])
+        if quote_data.get("description"):
+            st.caption(quote_data["description"])
+    else:
+        current = float(st.number_input(
+            "Current / Reference Price",
+            min_value=0.01,
+            value=60.00,
+            step=0.01,
+            format="%.2f",
+            help="Manual reference until E*TRADE is connected and a quote is loaded.",
+        ))
+
+    slider_min = max(0.01, math.floor(current * 0.50 * 100) / 100)
+    slider_max = max(slider_min + 1.0, math.ceil(current * 1.50 * 100) / 100)
+    symbol_key = _safe_widget_key(symbol)
+
+    st.markdown("**1 // PRIMARY ORDER**")
+    entry = st.slider(
+        "Buy Limit Price",
+        slider_min,
+        slider_max,
+        value=min(slider_max, max(slider_min, round(current * 0.995, 2))),
+        step=0.01,
+        format="$%.2f",
+        key=f"entry_{symbol_key}_{current:.2f}",
+    )
+
+    st.markdown("**2 // OCO EXITS ACTIVATED AFTER FILL**")
+    stop_col, target_col = st.columns(2)
+    with stop_col:
+        stop = st.slider(
+            "Stop-Market Trigger",
+            slider_min,
+            slider_max,
+            value=min(slider_max, max(slider_min, round(current * 0.97, 2))),
+            step=0.01,
+            format="$%.2f",
+            key=f"stop_{symbol_key}_{current:.2f}",
+        )
+    with target_col:
+        target = st.slider(
+            "Take-Profit Limit",
+            slider_min,
+            slider_max,
+            value=min(slider_max, max(slider_min, round(current * 1.05, 2))),
+            step=0.01,
+            format="$%.2f",
+            key=f"target_{symbol_key}_{current:.2f}",
+        )
+
+    put_col, call_col, rr_col = st.columns(3)
+    with put_col:
+        put_wall = float(st.number_input(
+            "Put Wall",
+            min_value=0.0,
+            value=round(current * 0.95, 2),
+            step=0.01,
+            format="%.2f",
+        ))
+    with call_col:
+        call_wall = float(st.number_input(
+            "Call Wall",
+            min_value=0.0,
+            value=round(current * 1.05, 2),
+            step=0.01,
+            format="%.2f",
+        ))
+    with rr_col:
+        target_rr = float(st.number_input(
+            "Target Reward : Risk",
+            min_value=0.25,
+            value=2.0,
+            step=0.25,
+            format="%.2f",
+        ))
+
+    portfolio_total = 0.0
+    if client and account:
+        try:
+            portfolio_total = float(total_account_value(_account_balance(client, account)) or 0.0)
+        except ETradeError as exc:
+            st.warning(f"Portfolio value unavailable: {exc}")
+    portfolio_total = float(st.number_input(
+        "Portfolio Total Value",
+        min_value=0.0,
+        value=portfolio_total,
+        step=1000.0,
+        format="%.2f",
+        help="Uses E*TRADE totalAccountValue when connected; it remains editable for simulation.",
+    ))
+    risk_choice = st.radio(
+        "Portfolio Risk Per Trade",
+        ["0.5%", "1.0%", "Custom"],
+        horizontal=True,
+        key="risk_choice",
+    )
+    if risk_choice == "Custom":
+        risk_percent = float(st.number_input(
+            "Custom Risk %",
+            min_value=0.05,
+            max_value=10.0,
+            value=0.75,
+            step=0.05,
+        ))
+    else:
+        risk_percent = float(risk_choice.rstrip("%"))
+
+    recommended_quantity = risk_sized_quantity(portfolio_total, risk_percent, entry, stop)
+    quantity = int(st.number_input(
+        "Quantity",
+        min_value=1,
+        value=max(1, recommended_quantity),
+        step=1,
+        help="Defaults to whole-share sizing for the selected 0.5% or 1% portfolio risk.",
+    ))
+
+    try:
+        metrics = calculate_trade_metrics(entry, stop, target, quantity, target_rr)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.plotly_chart(
+            _price_ladder(current, entry, stop, target, put_wall, call_wall),
+            width="stretch",
+        )
+        return
+
+    ratio_gap = metrics.reward_risk - target_rr
+    risk_budget = portfolio_total * risk_percent / 100.0
+    position_pct = metrics.position_value / portfolio_total * 100 if portfolio_total else 0.0
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Reward : Risk", f"{metrics.reward_risk:.2f}:1", f"{ratio_gap:+.2f}x vs {target_rr:.2f}:1")
+    c2.metric("Planned Loss", f"${metrics.max_loss:,.2f}", f"${metrics.risk_per_share:,.2f} / share", delta_color="inverse")
+    c3.metric("Planned Profit", f"${metrics.max_profit:,.2f}", f"${metrics.reward_per_share:,.2f} / share")
+    c4.metric("Risk-Sized Qty", f"{recommended_quantity:,}", f"${risk_budget:,.2f} budget")
+    c5.metric("Position Value", f"${metrics.position_value:,.2f}", f"{position_pct:.2f}% of portfolio")
+
+    if ratio_gap >= 0:
+        st.success(f"MEETS {target_rr:.2f}:1 TARGET BY {ratio_gap:.2f}x")
+    else:
+        shortfall = -metrics.reward_gap_per_share
+        st.warning(
+            f"SHORT BY {abs(ratio_gap):.2f}x / ${shortfall:,.2f} REWARD PER SHARE. "
+            f"EXACT {target_rr:.2f}:1 TARGET = ${metrics.target_for_target_rr:,.2f}; "
+            f"OR EXACT STOP = ${metrics.stop_for_target_rr:,.2f}."
+        )
+
+    st.plotly_chart(
+        _price_ladder(current, entry, stop, target, put_wall, call_wall),
+        width="stretch",
+    )
+    w1, w2, w3, w4 = st.columns(4)
+    w1.metric("Entry vs Put Wall", f"${entry - put_wall:+,.2f}")
+    w2.metric("Stop vs Put Wall", f"${stop - put_wall:+,.2f}")
+    w3.metric("Target vs Call Wall", f"${target - call_wall:+,.2f}")
+    w4.metric("Current vs Entry", f"${current - entry:+,.2f}")
+
+    st.subheader("Simulated E*TRADE Ticket")
+    ticket = pd.DataFrame([
+        {"Sequence": "1", "Action": "BUY", "Qty": quantity, "Symbol": symbol, "Price Type": "LIMIT", "Price": entry, "Condition": "PRIMARY"},
+        {"Sequence": "2A", "Action": "SELL", "Qty": quantity, "Symbol": symbol, "Price Type": "LIMIT", "Price": target, "Condition": "OCO AFTER FILL"},
+        {"Sequence": "2B", "Action": "SELL", "Qty": quantity, "Symbol": symbol, "Price Type": "STOP", "Price": stop, "Condition": "OCO AFTER FILL"},
+    ])
+    st.dataframe(ticket, hide_index=True, width="stretch")
+    st.caption(
+        "If 2A or 2B executes, the other exit is canceled. A stop-market order can fill below "
+        "its trigger during a gap. SIMULATION ONLY // NOTHING IS SENT TO E*TRADE."
+    )
 
 
+def render_etrade_holdings():
+    st.subheader("E*TRADE Holdings")
+    client = _etrade_client()
+    if not client:
+        st.info("Connect E*TRADE at the top of the page to retrieve holdings.")
+        return
+    if not st.session_state.get("etrade_accounts"):
+        try:
+            _refresh_accounts(client)
+        except ETradeError as exc:
+            st.error(str(exc))
+            return
+    account = _account_picker("holdings_account")
+    if not account:
+        st.info("No brokerage accounts were returned.")
+        return
+    account_key = str(account.get("accountIdKey", ""))
+    if st.button("REFRESH HOLDINGS + BALANCE", type="primary", key="refresh_holdings"):
+        try:
+            _account_balance(client, account, refresh=True)
+            st.session_state.setdefault("etrade_holdings", {})[account_key] = (
+                client.get_portfolio(account_key)
+            )
+        except ETradeError as exc:
+            st.error(str(exc))
+
+    balance = st.session_state.get("etrade_balances", {}).get(account_key)
+    holdings = st.session_state.get("etrade_holdings", {}).get(account_key)
+    if balance:
+        total = float(total_account_value(balance) or 0.0)
+        cash = float(find_number(balance, "cashAvailableForInvestment", "cashBuyingPower") or 0.0)
+        market_value = float(find_number(balance, "netMv", "netMarketValue") or 0.0)
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Total Account Value", f"${total:,.2f}")
+        b2.metric("Cash Available", f"${cash:,.2f}")
+        b3.metric("Net Market Value", f"${market_value:,.2f}")
+    if holdings is None:
+        st.info("Select REFRESH HOLDINGS + BALANCE to load current positions.")
+        return
+
+    normalized = pd.DataFrame(normalize_position(position) for position in holdings)
+    if normalized.empty:
+        st.info("No positions were returned for this account.")
+        return
+    st.dataframe(
+        normalized,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Last": st.column_config.NumberColumn(format="$%.2f"),
+            "Price Paid": st.column_config.NumberColumn(format="$%.2f"),
+            "Market Value": st.column_config.NumberColumn(format="$%.2f"),
+            "Total Cost": st.column_config.NumberColumn(format="$%.2f"),
+            "Gain/Loss": st.column_config.NumberColumn(format="$%.2f"),
+            "Gain/Loss %": st.column_config.NumberColumn(format="%.2f%%"),
+            "% Portfolio": st.column_config.NumberColumn(format="%.2f%%"),
+        },
+    )
+    st.download_button(
+        "DOWNLOAD HOLDINGS CSV",
+        normalized.to_csv(index=False).encode("utf-8"),
+        file_name="etrade_holdings.csv",
+        mime="text/csv",
+    )
+
+
+st.title("MuniX Screen — by Raj")
 st.caption(
-    "Important: ETF holdings do not cover every outstanding U.S. municipal bond. "
-    "Source prices/yields are not guaranteed executable broker quotes. Verify call schedules, "
-    "tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before trading."
+    "Bloomberg-style municipal analytics, E*TRADE holdings, and a live "
+    "Triggers–OCO risk simulator."
 )
+
+render_etrade_connection()
+
+orders_tab, holdings_tab, muni_screeners_tab = st.tabs(
+    ["ORDERS", "HOLDINGS", "MUNI SCREENERS"]
+)
+
+with orders_tab:
+    render_order_simulator()
+
+with holdings_tab:
+    render_etrade_holdings()
+
+with muni_screeners_tab:
+    _, top_right = st.columns([5, 1])
+    with top_right:
+        if st.button(
+            "Refresh Muni Data",
+            key="refresh_muni_data",
+            width="stretch",
+        ):
+            st.session_state.pop(MUNI_SESSION_KEY, None)
+            st.session_state.pop(MUNI_SESSION_AT_KEY, None)
+            st.rerun()
+
+    muni_bundle = None
+    try:
+        muni_bundle, used_session_cache = load_muni_universe()
+    except Exception as exc:
+        st.error(f"Municipal data load failed: {exc}")
+
+    if muni_bundle is not None:
+        df, source_rows, etf_status, as_of = muni_bundle
+
+        if used_session_cache:
+            age_minutes = int(
+                (time.time() - st.session_state[MUNI_SESSION_AT_KEY]) / 60
+            )
+            st.caption(
+                f"DATA ENGINE // SESSION CACHE READY • {len(df):,} CUSIPs "
+                f"• loaded {age_minutes} min ago"
+            )
+
+        tab1, tab2, tab3 = st.tabs(
+            [
+                "MUNI SCREENER",
+                "TAX EXEMPT STATUS FOR NIST",
+                "STATE INCOME TAX // MUNI vs UST",
+            ]
+        )
+
+        with tab1:
+            render_muni_screener(
+                df,
+                source_rows,
+                etf_status,
+                as_of,
+            )
+
+        with tab2:
+            render_nist_comparison(df)
+
+        with tab3:
+            render_state_income_tax_comparison(df)
+
+        st.caption(
+            "Important: ETF holdings do not cover every outstanding U.S. municipal bond. "
+            "Source prices/yields are not guaranteed executable broker quotes. Verify call schedules, "
+            "tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before trading."
+        )
