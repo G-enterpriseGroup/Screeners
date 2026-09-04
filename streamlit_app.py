@@ -57,6 +57,7 @@ ALL_US_STATES = [
 MUNI_SESSION_KEY = "_muni_data_bundle"
 MUNI_SESSION_AT_KEY = "_muni_data_loaded_at"
 MUNI_TTL_SECONDS = 12 * 60 * 60
+DEFAULT_ETRADE_ACCOUNT_SUFFIX = "5474"
 
 
 st.set_page_config(
@@ -74,6 +75,11 @@ st.markdown(
         --bb-black:#000000;
         --bb-dark:#0A0A0A;
         --bb-dim:#A85C00;
+        --bb-blue:#0068FF;
+        --bb-blue-hover:#2388FF;
+        --bb-blue-active:#0047B3;
+        --bb-green:#00D084;
+        --bb-red:#FF3B30;
     }
 
     html, body, .stApp,
@@ -118,9 +124,58 @@ st.markdown(
     }
 
     [data-testid="stMetric"] * {
-        color:var(--bb-orange) !important;
         font-family:"Courier New",monospace !important;
     }
+
+    [data-testid="stMetricLabel"] *,
+    [data-testid="stMetricDeltaDescription"] * {
+        color:var(--bb-orange) !important;
+    }
+
+    [data-testid="stMetricValue"] * {
+        color:var(--bb-green) !important;
+    }
+
+    [data-testid="stMetricDelta"] * {
+        color:var(--bb-green) !important;
+    }
+
+    [data-testid="stMetricDelta"]:has([data-testid="stMetricDeltaIcon-Down"]) * {
+        color:var(--bb-red) !important;
+    }
+
+    [data-testid="stMetricDelta"]:has([data-testid="stMetricDeltaIcon-Up"]) * {
+        color:var(--bb-green) !important;
+    }
+
+    .bb-number-card {
+        background:#000;
+        border:1px solid var(--bb-orange);
+        min-height:104px;
+        padding:.55rem .7rem;
+        font-family:"Courier New",monospace;
+    }
+
+    .bb-number-label {
+        color:var(--bb-orange) !important;
+        font-size:.88rem;
+        margin-bottom:.2rem;
+    }
+
+    .bb-number-value {
+        font-size:1.65rem;
+        font-weight:700;
+        line-height:1.25;
+    }
+
+    .bb-number-detail {
+        font-size:.82rem;
+        margin-top:.15rem;
+    }
+
+    .bb-positive { color:var(--bb-green) !important; }
+    .bb-negative { color:var(--bb-red) !important; }
+    .bb-neutral { color:var(--bb-orange) !important; }
 
     div[data-baseweb="input"] > div,
     div[data-baseweb="select"] > div,
@@ -163,18 +218,49 @@ st.markdown(
     .stButton > button,
     .stDownloadButton > button,
     .stLinkButton > a {
-        background:var(--bb-orange) !important;
-        color:#000 !important;
-        border:1px solid var(--bb-orange) !important;
+        background:var(--bb-blue) !important;
+        color:#FFF !important;
+        border:1px solid #66ADFF !important;
         font-family:"Courier New",monospace !important;
         font-weight:900 !important;
         text-transform:uppercase;
+        box-shadow:0 3px 0 #003579, 0 0 12px rgba(0,104,255,.30) !important;
+        transition:transform 70ms ease, background 70ms ease, box-shadow 70ms ease !important;
     }
 
     .stButton > button *,
     .stDownloadButton > button *,
     .stLinkButton > a * {
-        color:#000 !important;
+        color:#FFF !important;
+    }
+
+    .stButton > button:hover:not(:disabled),
+    .stDownloadButton > button:hover:not(:disabled),
+    .stLinkButton > a:hover {
+        background:var(--bb-blue-hover) !important;
+        border-color:#A8D2FF !important;
+        box-shadow:0 3px 0 #003579, 0 0 18px rgba(35,136,255,.55) !important;
+    }
+
+    .stButton > button:active:not(:disabled),
+    .stDownloadButton > button:active:not(:disabled),
+    .stLinkButton > a:active {
+        background:var(--bb-blue-active) !important;
+        transform:translateY(3px) scale(.99) !important;
+        box-shadow:inset 0 2px 5px rgba(0,0,0,.55), 0 0 8px rgba(0,104,255,.35) !important;
+    }
+
+    .stButton > button:focus-visible,
+    .stDownloadButton > button:focus-visible,
+    .stLinkButton > a:focus-visible {
+        outline:2px solid #FFF !important;
+        outline-offset:2px !important;
+    }
+
+    .stButton > button:disabled,
+    .stDownloadButton > button:disabled {
+        opacity:.45 !important;
+        box-shadow:none !important;
     }
 
     [data-testid="stExpander"],
@@ -210,12 +296,7 @@ st.markdown(
 
     [data-testid="stDataFrame"] [role="gridcell"] {
         background:#000 !important;
-        color:var(--bb-orange) !important;
         border-color:#7a4300 !important;
-    }
-
-    [data-testid="stDataFrame"] [role="gridcell"] * {
-        color:var(--bb-orange) !important;
     }
 
     /* Static one-row match tables: no filler rows, identical natural sizing. */
@@ -1379,13 +1460,25 @@ def _refresh_accounts(client):
     return accounts
 
 
+def _default_account_index(accounts):
+    for index, account in enumerate(accounts):
+        account_id = str(account.get("accountId", ""))
+        if account_id.endswith(DEFAULT_ETRADE_ACCOUNT_SUFFIX):
+            return index
+    return 0
+
+
 def _account_picker(key):
     accounts = st.session_state.get("etrade_accounts", [])
     if not accounts:
         return None
+    valid_indexes = range(len(accounts))
+    if key in st.session_state and st.session_state[key] not in valid_indexes:
+        st.session_state.pop(key)
     selected = st.selectbox(
         "E*TRADE Account",
-        range(len(accounts)),
+        valid_indexes,
+        index=_default_account_index(accounts),
         format_func=lambda index: _account_label(accounts[index]),
         key=key,
     )
@@ -1553,6 +1646,43 @@ def _safe_widget_key(value):
     return "".join(character for character in str(value) if character.isalnum()) or "SYMBOL"
 
 
+def _financial_metric(container, label, display_value, numeric_value, detail=""):
+    if numeric_value > 0:
+        tone = "bb-positive"
+    elif numeric_value < 0:
+        tone = "bb-negative"
+    else:
+        tone = "bb-neutral"
+    detail_html = (
+        f'<div class="bb-number-detail {tone}">{html.escape(str(detail))}</div>'
+        if detail else ""
+    )
+    container.markdown(
+        (
+            '<div class="bb-number-card">'
+            f'<div class="bb-number-label">{html.escape(str(label))}</div>'
+            f'<div class="bb-number-value {tone}">{html.escape(str(display_value))}</div>'
+            f'{detail_html}'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _financial_dataframe(frame, columns=None):
+    selected = columns or list(frame.select_dtypes(include="number").columns)
+    selected = [column for column in selected if column in frame.columns]
+    if not selected:
+        return frame
+
+    def color_value(value):
+        if pd.isna(value) or value == 0:
+            return "color: #FF8C00"
+        return "color: #00D084" if value > 0 else "color: #FF3B30"
+
+    return frame.style.map(color_value, subset=selected)
+
+
 def render_order_simulator():
     st.subheader("Triggers – OCO Order Simulator")
     st.caption(
@@ -1597,7 +1727,15 @@ def render_order_simulator():
         q1.metric("E*TRADE Last", f"${quote_data['last']:,.2f}", f"{quote_data['change'] or 0:+.2f}")
         q2.metric("Bid", "—" if quote_data["bid"] is None else f"${quote_data['bid']:,.2f}")
         q3.metric("Ask", "—" if quote_data["ask"] is None else f"${quote_data['ask']:,.2f}")
-        q4.metric("Change", "—" if quote_data["change_pct"] is None else f"{quote_data['change_pct']:+.2f}%")
+        if quote_data["change_pct"] is None:
+            _financial_metric(q4, "Change", "—", 0)
+        else:
+            _financial_metric(
+                q4,
+                "Change",
+                f"{quote_data['change_pct']:+.2f}%",
+                float(quote_data["change_pct"]),
+            )
         current = float(quote_data["last"])
         if quote_data.get("description"):
             st.caption(quote_data["description"])
@@ -1730,8 +1868,20 @@ def render_order_simulator():
     position_pct = metrics.position_value / portfolio_total * 100 if portfolio_total else 0.0
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Reward : Risk", f"{metrics.reward_risk:.2f}:1", f"{ratio_gap:+.2f}x vs {target_rr:.2f}:1")
-    c2.metric("Planned Loss", f"${metrics.max_loss:,.2f}", f"${metrics.risk_per_share:,.2f} / share", delta_color="inverse")
-    c3.metric("Planned Profit", f"${metrics.max_profit:,.2f}", f"${metrics.reward_per_share:,.2f} / share")
+    _financial_metric(
+        c2,
+        "Planned Loss",
+        f"-${metrics.max_loss:,.2f}",
+        -metrics.max_loss,
+        f"-${metrics.risk_per_share:,.2f} / share",
+    )
+    _financial_metric(
+        c3,
+        "Planned Profit",
+        f"+${metrics.max_profit:,.2f}",
+        metrics.max_profit,
+        f"+${metrics.reward_per_share:,.2f} / share",
+    )
     c4.metric("Risk-Sized Qty", f"{recommended_quantity:,}", f"${risk_budget:,.2f} budget")
     c5.metric("Position Value", f"${metrics.position_value:,.2f}", f"{position_pct:.2f}% of portfolio")
 
@@ -1750,10 +1900,10 @@ def render_order_simulator():
         width="stretch",
     )
     w1, w2, w3, w4 = st.columns(4)
-    w1.metric("Entry vs Put Wall", f"${entry - put_wall:+,.2f}")
-    w2.metric("Stop vs Put Wall", f"${stop - put_wall:+,.2f}")
-    w3.metric("Target vs Call Wall", f"${target - call_wall:+,.2f}")
-    w4.metric("Current vs Entry", f"${current - entry:+,.2f}")
+    _financial_metric(w1, "Entry vs Put Wall", f"${entry - put_wall:+,.2f}", entry - put_wall)
+    _financial_metric(w2, "Stop vs Put Wall", f"${stop - put_wall:+,.2f}", stop - put_wall)
+    _financial_metric(w3, "Target vs Call Wall", f"${target - call_wall:+,.2f}", target - call_wall)
+    _financial_metric(w4, "Current vs Entry", f"${current - entry:+,.2f}", current - entry)
 
     st.subheader("Simulated E*TRADE Ticket")
     ticket = pd.DataFrame([
@@ -1761,7 +1911,7 @@ def render_order_simulator():
         {"Sequence": "2A", "Action": "SELL", "Qty": quantity, "Symbol": symbol, "Price Type": "LIMIT", "Price": target, "Condition": "OCO AFTER FILL"},
         {"Sequence": "2B", "Action": "SELL", "Qty": quantity, "Symbol": symbol, "Price Type": "STOP", "Price": stop, "Condition": "OCO AFTER FILL"},
     ])
-    st.dataframe(ticket, hide_index=True, width="stretch")
+    st.dataframe(_financial_dataframe(ticket), hide_index=True, width="stretch")
     st.caption(
         "If 2A or 2B executes, the other exit is canceled. A stop-market order can fill below "
         "its trigger during a gap. SIMULATION ONLY // NOTHING IS SENT TO E*TRADE."
@@ -1813,7 +1963,7 @@ def render_etrade_holdings():
         st.info("No positions were returned for this account.")
         return
     st.dataframe(
-        normalized,
+        _financial_dataframe(normalized),
         hide_index=True,
         width="stretch",
         column_config={
