@@ -68,6 +68,8 @@ ETRADE_INACTIVITY_SECONDS = 2 * 60 * 60
 ETRADE_TIMEZONE = ZoneInfo("America/New_York")
 ETRADE_WALL_CACHE_SECONDS = 60
 ETRADE_EXPIRATION_CACHE_SECONDS = 6 * 60 * 60
+ETRADE_HOLDINGS_TICK_SECONDS = 5
+ETRADE_BALANCE_REFRESH_SECONDS = 30
 
 # SHA-256 only; the plaintext access code is intentionally never stored in GitHub.
 # This fallback can be overridden with [security].trade_access_code_sha256 in
@@ -1515,6 +1517,8 @@ def _clear_etrade_runtime(lock_access=False):
         "_orders_account_default_account_suffix",
         "_holdings_account_default_account_suffix",
         "_etrade_wall_cache", "_etrade_expiration_cache",
+        "etrade_holdings_last_refresh", "etrade_balance_last_refresh",
+        "etrade_holdings_refresh_error",
     ]:
         st.session_state.pop(state_key, None)
     if lock_access:
@@ -2486,6 +2490,24 @@ def _holdings_total_row(frame, label):
     }
 
 
+def _refresh_live_holdings(client, account, refresh_balance=False):
+    account_key = str(account.get("accountIdKey", ""))
+    now = time.time()
+
+    st.session_state.setdefault("etrade_holdings", {})[account_key] = (
+        client.get_portfolio(account_key)
+    )
+    st.session_state["etrade_holdings_last_refresh"] = now
+
+    if refresh_balance:
+        _account_balance(client, account, refresh=True)
+        st.session_state["etrade_balance_last_refresh"] = now
+
+    _touch_etrade_session()
+    st.session_state.pop("etrade_holdings_refresh_error", None)
+
+
+@st.fragment(run_every=f"{ETRADE_HOLDINGS_TICK_SECONDS}s")
 def render_etrade_holdings():
     st.subheader("E*TRADE Holdings")
     client = _etrade_client()
@@ -2503,15 +2525,85 @@ def render_etrade_holdings():
         st.info("No brokerage accounts were returned.")
         return
     account_key = str(account.get("accountIdKey", ""))
-    if st.button("REFRESH HOLDINGS + BALANCE", type="primary", key="refresh_holdings"):
+
+    live_col, interval_col, refresh_col = st.columns([1.3, 1.2, 1.4], vertical_alignment="bottom")
+    with live_col:
+        live_enabled = st.toggle(
+            "LIVE HOLDINGS",
+            value=True,
+            key="holdings_live_enabled",
+            help="Near-real-time polling. E*TRADE market-data entitlements determine quote timeliness.",
+        )
+    with interval_col:
+        refresh_seconds = int(st.selectbox(
+            "Refresh Every",
+            [5, 10, 15, 30],
+            index=1,
+            format_func=lambda value: f"{value} seconds",
+            key="holdings_refresh_seconds",
+        ))
+    with refresh_col:
+        manual_refresh = st.button(
+            "REFRESH NOW",
+            type="primary",
+            width="stretch",
+            key="refresh_holdings",
+        )
+
+    now = time.time()
+    last_holdings_refresh = float(
+        st.session_state.get("etrade_holdings_last_refresh", 0.0) or 0.0
+    )
+    last_balance_refresh = float(
+        st.session_state.get("etrade_balance_last_refresh", 0.0) or 0.0
+    )
+    holdings_missing = (
+        st.session_state.get("etrade_holdings", {}).get(account_key) is None
+    )
+    holdings_due = (
+        holdings_missing
+        or manual_refresh
+        or (
+            live_enabled
+            and now - last_holdings_refresh >= refresh_seconds
+        )
+    )
+    balance_due = (
+        manual_refresh
+        or not st.session_state.get("etrade_balances", {}).get(account_key)
+        or now - last_balance_refresh >= ETRADE_BALANCE_REFRESH_SECONDS
+    )
+
+    if holdings_due:
         try:
-            _account_balance(client, account, refresh=True)
-            st.session_state.setdefault("etrade_holdings", {})[account_key] = (
-                client.get_portfolio(account_key)
+            _refresh_live_holdings(
+                client,
+                account,
+                refresh_balance=balance_due,
             )
-            _touch_etrade_session()
+            last_holdings_refresh = float(
+                st.session_state.get("etrade_holdings_last_refresh", time.time())
+            )
         except ETradeError as exc:
-            st.error(str(exc))
+            st.session_state["etrade_holdings_refresh_error"] = str(exc)
+
+    status_age = max(0, int(time.time() - last_holdings_refresh)) if last_holdings_refresh else None
+    status_text = (
+        f"LIVE // refresh {refresh_seconds}s // last update {status_age}s ago"
+        if live_enabled and status_age is not None
+        else (
+            f"PAUSED // last update {status_age}s ago"
+            if status_age is not None
+            else "WAITING FOR FIRST SNAPSHOT"
+        )
+    )
+    st.caption(
+        "HOLDINGS DATA // " + status_text
+        + " // balance refresh 30s // fragment tick 5s"
+    )
+    refresh_error = st.session_state.get("etrade_holdings_refresh_error")
+    if refresh_error:
+        st.warning(f"LIVE REFRESH ERROR // {refresh_error}")
 
     balance = st.session_state.get("etrade_balances", {}).get(account_key)
     holdings = st.session_state.get("etrade_holdings", {}).get(account_key)
@@ -2523,7 +2615,7 @@ def render_etrade_holdings():
         b2.metric("Cash Available", f"${cash:,.2f}")
         b3.metric("Net Market Value", f"${market_value:,.2f}")
     if holdings is None:
-        st.info("Select REFRESH HOLDINGS + BALANCE to load current positions.")
+        st.info("Waiting for the first E*TRADE holdings snapshot.")
         return
 
     normalized = pd.DataFrame(normalize_position(position) for position in holdings)
@@ -2544,10 +2636,11 @@ def render_etrade_holdings():
     total_gain = normalized["Gain/Loss"].sum()
     day_gain = normalized["Day Gain/Loss"].sum()
     total_return = total_gain / total_cost * 100 if total_cost else 0.0
-    if not market_value:
-        market_value = total_market
-    if not total:
-        total = total_market + cash
+
+    # Portfolio values change with every holdings snapshot. Cash is refreshed
+    # less often because it normally changes only after account activity.
+    market_value = total_market
+    total = total_market + cash
     cash_pct = cash / total * 100 if total else 0.0
 
     pnl_values = normalized["Gain/Loss"].dropna()
