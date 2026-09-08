@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
+from src.bull_debit_ui import render_bull_debit_spread
 from src.etrade_client import (
     ETradeClient,
     ETradeError,
@@ -1606,6 +1607,7 @@ def _clear_etrade_runtime(lock_access=False):
         "_etrade_wall_cache", "_etrade_expiration_cache",
         "etrade_holdings_last_refresh", "etrade_balance_last_refresh",
         "etrade_holdings_refresh_error",
+        "_bull_chain_cache", "_bull_expiration_cache", "bull_spread_scan_result",
     ]:
         st.session_state.pop(state_key, None)
     if lock_access:
@@ -2977,8 +2979,8 @@ st.caption(
 
 render_etrade_connection()
 
-orders_tab, holdings_tab, muni_screeners_tab = st.tabs(
-    ["ORDERS", "HOLDINGS", "MUNI SCREENERS"]
+orders_tab, holdings_tab, bull_spread_tab, muni_screeners_tab = st.tabs(
+    ["ORDERS", "HOLDINGS", "BULL DEBIT SPREAD", "MUNI SCREENERS"]
 )
 
 with orders_tab:
@@ -2988,6 +2990,13 @@ with orders_tab:
 
 with holdings_tab:
     render_etrade_holdings()
+
+with bull_spread_tab:
+    render_bull_debit_spread(
+        _etrade_client(),
+        _touch_etrade_session,
+        timezone_name="America/New_York",
+    )
 
 with muni_screeners_tab:
     load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
