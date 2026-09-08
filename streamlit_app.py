@@ -2609,11 +2609,7 @@ def render_etrade_holdings():
     holdings = st.session_state.get("etrade_holdings", {}).get(account_key)
     total = cash = market_value = 0.0
     if balance:
-        total, cash, market_value = _balance_snapshot(balance)
-        b1, b2, b3 = st.columns(3)
-        b1.metric("Total Account Value", f"${total:,.2f}")
-        b2.metric("Cash Available", f"${cash:,.2f}")
-        b3.metric("Net Market Value", f"${market_value:,.2f}")
+        _, cash, _ = _balance_snapshot(balance)
     if holdings is None:
         st.info("Waiting for the first E*TRADE holdings snapshot.")
         return
@@ -2642,6 +2638,11 @@ def render_etrade_holdings():
     market_value = total_market
     total = total_market + cash
     cash_pct = cash / total * 100 if total else 0.0
+
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Live Account Value", f"${total:,.2f}")
+    b2.metric("Cash Available", f"${cash:,.2f}")
+    b3.metric("Live Market Value", f"${market_value:,.2f}")
 
     pnl_values = normalized["Gain/Loss"].dropna()
     winners = int((pnl_values > 0).sum())
