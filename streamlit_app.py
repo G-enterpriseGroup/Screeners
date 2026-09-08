@@ -70,6 +70,8 @@ ETRADE_WALL_CACHE_SECONDS = 60
 ETRADE_EXPIRATION_CACHE_SECONDS = 6 * 60 * 60
 ETRADE_HOLDINGS_TICK_SECONDS = 5
 ETRADE_BALANCE_REFRESH_SECONDS = 30
+APP_LOCK_MAX_ATTEMPTS = 5
+APP_LOCKOUT_SECONDS = 60
 
 # SHA-256 only; the plaintext access code is intentionally never stored in GitHub.
 # This fallback can be overridden with [security].trade_access_code_sha256 in
@@ -239,6 +241,73 @@ st.markdown(
         .bb-quote-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
         .bb-quote-cell:nth-child(2) { border-right:0; }
         .bb-quote-cell:nth-child(-n+2) { border-bottom:1px solid var(--bb-orange); }
+    }
+
+    .app-lock-shell {
+        min-height:72vh;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        padding:2rem 1rem;
+        font-family:"Courier New",monospace;
+    }
+
+    .app-lock-panel {
+        width:min(620px, 94vw);
+        border:1px solid var(--bb-orange);
+        background:#020202;
+        box-shadow:0 0 0 1px #3a2100 inset, 0 0 28px rgba(255,140,0,.10);
+    }
+
+    .app-lock-header {
+        background:var(--bb-orange);
+        color:#000 !important;
+        padding:.8rem 1rem;
+        font-size:1.25rem;
+        font-weight:900;
+        letter-spacing:.08em;
+        text-transform:uppercase;
+    }
+
+    .app-lock-body {
+        padding:1.25rem 1.35rem 1.35rem 1.35rem;
+    }
+
+    .app-lock-icon {
+        width:54px;
+        height:54px;
+        border:2px solid var(--bb-orange);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        margin:0 0 1rem 0;
+        font-size:1.55rem;
+        font-weight:900;
+        color:var(--bb-orange);
+    }
+
+    .app-lock-title {
+        color:var(--bb-orange) !important;
+        font-size:1.05rem;
+        font-weight:900;
+        letter-spacing:.05em;
+        margin-bottom:.45rem;
+    }
+
+    .app-lock-copy {
+        color:#c87400 !important;
+        font-size:.82rem;
+        line-height:1.45;
+        margin-bottom:.2rem;
+    }
+
+    .app-lock-status {
+        border-top:1px solid #3a2100;
+        margin-top:1rem;
+        padding-top:.75rem;
+        color:#8d5100 !important;
+        font-size:.72rem;
+        letter-spacing:.03em;
     }
 
     div[data-baseweb="input"] > div,
@@ -1502,6 +1571,24 @@ def _trade_access_unlocked():
     return bool(st.session_state.get("etrade_access_unlocked", False))
 
 
+def _app_lockout_remaining():
+    locked_until = float(st.session_state.get("app_locked_until", 0.0) or 0.0)
+    return max(0, int(math.ceil(locked_until - time.time())))
+
+
+def _record_failed_unlock():
+    attempts = int(st.session_state.get("app_unlock_failures", 0) or 0) + 1
+    st.session_state["app_unlock_failures"] = attempts
+    if attempts >= APP_LOCK_MAX_ATTEMPTS:
+        st.session_state["app_locked_until"] = time.time() + APP_LOCKOUT_SECONDS
+        st.session_state["app_unlock_failures"] = 0
+
+
+def _clear_unlock_failures():
+    st.session_state.pop("app_unlock_failures", None)
+    st.session_state.pop("app_locked_until", None)
+
+
 def _verify_trade_access_code(value):
     candidate = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
     return hmac.compare_digest(candidate, _trade_access_code_hash())
@@ -1524,6 +1611,70 @@ def _clear_etrade_runtime(lock_access=False):
     if lock_access:
         st.session_state.pop("etrade_access_unlocked", None)
         st.session_state.pop("etrade_access_code", None)
+
+
+def render_app_lock_screen():
+    remaining = _app_lockout_remaining()
+    st.markdown(
+        """
+        <div class="app-lock-shell">
+          <div class="app-lock-panel">
+            <div class="app-lock-header">MUNIX TERMINAL // SECURE ACCESS</div>
+            <div class="app-lock-body">
+              <div class="app-lock-icon">▣</div>
+              <div class="app-lock-title">FRAMEWORK LOCKED</div>
+              <div class="app-lock-copy">
+                Authentication is required before the terminal, E*TRADE connection,
+                holdings, orders, municipal screeners, or account data are rendered.
+              </div>
+              <div class="app-lock-status">
+                SESSION SECURITY // API CREDENTIALS REMAIN SERVER-SIDE // TERMINAL ACCESS DISABLED
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    gate_left, gate_center, gate_right = st.columns([1.6, 2.8, 1.6])
+    with gate_center:
+        access_code = st.text_input(
+            "Terminal Access Code",
+            type="password",
+            max_chars=32,
+            placeholder="Enter access code",
+            key="app_access_code",
+            disabled=remaining > 0,
+        )
+        unlock = st.button(
+            "UNLOCK TERMINAL",
+            type="primary",
+            width="stretch",
+            disabled=(remaining > 0 or not access_code),
+            key="app_unlock_terminal",
+        )
+
+        if remaining > 0:
+            st.error(f"SECURITY LOCKOUT // TRY AGAIN IN {remaining} SECONDS")
+        elif unlock:
+            if _verify_trade_access_code(access_code):
+                st.session_state["etrade_access_unlocked"] = True
+                st.session_state.pop("app_access_code", None)
+                _clear_unlock_failures()
+                st.rerun()
+            else:
+                _record_failed_unlock()
+                st.session_state.pop("app_access_code", None)
+                remaining_after = _app_lockout_remaining()
+                if remaining_after > 0:
+                    st.error(
+                        f"TOO MANY FAILED ATTEMPTS // LOCKED FOR {remaining_after} SECONDS"
+                    )
+                else:
+                    attempts = int(st.session_state.get("app_unlock_failures", 0) or 0)
+                    left = max(0, APP_LOCK_MAX_ATTEMPTS - attempts)
+                    st.error(f"INCORRECT ACCESS CODE // {left} ATTEMPTS REMAIN")
 
 
 def _etrade_client():
@@ -2813,6 +2964,10 @@ def render_etrade_holdings():
         mime="text/csv",
     )
 
+
+if not _trade_access_unlocked():
+    render_app_lock_screen()
+    st.stop()
 
 st.title("MuniX Screen — by Raj")
 st.caption(
