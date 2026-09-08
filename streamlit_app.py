@@ -82,7 +82,7 @@ DEFAULT_TRADE_ACCESS_CODE_SHA256 = (
 
 
 st.set_page_config(
-    page_title="MuniX Screen — by Raj",
+    page_title="Raj's Terminal",
     page_icon="📊",
     layout="wide",
 )
@@ -1619,7 +1619,7 @@ def render_app_lock_screen():
         """
         <div class="app-lock-shell">
           <div class="app-lock-panel">
-            <div class="app-lock-header">MUNIX TERMINAL // SECURE ACCESS</div>
+            <div class="app-lock-header">RAJ'S TERMINAL // SECURE ACCESS</div>
             <div class="app-lock-body">
               <div class="app-lock-icon">▣</div>
               <div class="app-lock-title">FRAMEWORK LOCKED</div>
@@ -2969,7 +2969,7 @@ if not _trade_access_unlocked():
     render_app_lock_screen()
     st.stop()
 
-st.title("MuniX Screen — by Raj")
+st.title("Raj's Terminal")
 st.caption(
     "Bloomberg-style municipal analytics, E*TRADE holdings, and a live "
     "Triggers–OCO risk simulator."
