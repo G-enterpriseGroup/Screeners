@@ -351,9 +351,12 @@ st.markdown(
 
     .stButton > button,
     .stDownloadButton > button,
-    .stLinkButton > a {
+    .stLinkButton > a,
+    .stFormSubmitButton > button,
+    [data-testid="stFormSubmitButton"] button {
         background:var(--bb-blue) !important;
         color:#FFF !important;
+        -webkit-text-fill-color:#FFF !important;
         border:1px solid #66ADFF !important;
         font-family:"Courier New",monospace !important;
         font-weight:900 !important;
@@ -364,13 +367,19 @@ st.markdown(
 
     .stButton > button *,
     .stDownloadButton > button *,
-    .stLinkButton > a * {
+    .stLinkButton > a *,
+    .stFormSubmitButton > button *,
+    [data-testid="stFormSubmitButton"] button * {
         color:#FFF !important;
+        -webkit-text-fill-color:#FFF !important;
+        opacity:1 !important;
     }
 
     .stButton > button:hover:not(:disabled),
     .stDownloadButton > button:hover:not(:disabled),
-    .stLinkButton > a:hover {
+    .stLinkButton > a:hover,
+    .stFormSubmitButton > button:hover:not(:disabled),
+    [data-testid="stFormSubmitButton"] button:hover:not(:disabled) {
         background:var(--bb-blue-hover) !important;
         border-color:#A8D2FF !important;
         box-shadow:0 3px 0 #003579, 0 0 18px rgba(35,136,255,.55) !important;
@@ -378,7 +387,9 @@ st.markdown(
 
     .stButton > button:active:not(:disabled),
     .stDownloadButton > button:active:not(:disabled),
-    .stLinkButton > a:active {
+    .stLinkButton > a:active,
+    .stFormSubmitButton > button:active:not(:disabled),
+    [data-testid="stFormSubmitButton"] button:active:not(:disabled) {
         background:var(--bb-blue-active) !important;
         transform:translateY(3px) scale(.99) !important;
         box-shadow:inset 0 2px 5px rgba(0,0,0,.55), 0 0 8px rgba(0,104,255,.35) !important;
@@ -386,13 +397,17 @@ st.markdown(
 
     .stButton > button:focus-visible,
     .stDownloadButton > button:focus-visible,
-    .stLinkButton > a:focus-visible {
+    .stLinkButton > a:focus-visible,
+    .stFormSubmitButton > button:focus-visible,
+    [data-testid="stFormSubmitButton"] button:focus-visible {
         outline:2px solid #FFF !important;
         outline-offset:2px !important;
     }
 
     .stButton > button:disabled,
-    .stDownloadButton > button:disabled {
+    .stDownloadButton > button:disabled,
+    .stFormSubmitButton > button:disabled,
+    [data-testid="stFormSubmitButton"] button:disabled {
         opacity:.45 !important;
         box-shadow:none !important;
     }
