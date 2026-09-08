@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import html
 import math
 import re
@@ -64,6 +66,15 @@ MUNI_TTL_SECONDS = 12 * 60 * 60
 DEFAULT_ETRADE_ACCOUNT_SUFFIX = "5474"
 ETRADE_INACTIVITY_SECONDS = 2 * 60 * 60
 ETRADE_TIMEZONE = ZoneInfo("America/New_York")
+ETRADE_WALL_CACHE_SECONDS = 60
+ETRADE_EXPIRATION_CACHE_SECONDS = 6 * 60 * 60
+
+# SHA-256 only; the plaintext access code is intentionally never stored in GitHub.
+# This fallback can be overridden with [security].trade_access_code_sha256 in
+# Streamlit Secrets without changing application code.
+DEFAULT_TRADE_ACCESS_CODE_SHA256 = (
+    "d740238f374425d95f71dcd05dd1486800f0887790b992b74ef41fbb5c8e1167"
+)
 
 
 st.set_page_config(
@@ -1476,7 +1487,47 @@ def _etrade_credentials():
     )
 
 
+def _trade_access_code_hash():
+    configured = _secret_value(
+        "security",
+        "trade_access_code_sha256",
+        DEFAULT_TRADE_ACCESS_CODE_SHA256,
+    ).lower()
+    return configured if re.fullmatch(r"[0-9a-f]{64}", configured) else DEFAULT_TRADE_ACCESS_CODE_SHA256
+
+
+def _trade_access_unlocked():
+    return bool(st.session_state.get("etrade_access_unlocked", False))
+
+
+def _verify_trade_access_code(value):
+    candidate = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    return hmac.compare_digest(candidate, _trade_access_code_hash())
+
+
+def _clear_etrade_runtime(lock_access=False):
+    for state_key in [
+        "etrade_access_token", "etrade_accounts", "etrade_request",
+        "etrade_holdings", "etrade_balances", "etrade_quote",
+        "etrade_quote_symbol", "etrade_last_activity_at",
+        "etrade_gamma_walls", "etrade_gamma_walls_symbol",
+        "etrade_gamma_walls_error", "orders_account", "holdings_account",
+        "_orders_account_default_account_suffix",
+        "_holdings_account_default_account_suffix",
+        "_etrade_wall_cache", "_etrade_expiration_cache",
+    ]:
+        st.session_state.pop(state_key, None)
+    if lock_access:
+        st.session_state.pop("etrade_access_unlocked", None)
+        st.session_state.pop("etrade_access_code", None)
+
+
 def _etrade_client():
+    # Defense in depth: even if another UI path accidentally calls this helper,
+    # no E*TRADE client can be created until this browser session unlocks access.
+    if not _trade_access_unlocked():
+        return None
+
     consumer_key, consumer_secret, environment = _etrade_credentials()
     token = st.session_state.get("etrade_access_token")
     if not consumer_key or not consumer_secret or not token:
@@ -1655,6 +1706,42 @@ def _account_picker(key):
 
 
 def render_etrade_connection():
+    if not _trade_access_unlocked():
+        st.markdown(
+            '<div class="terminal-note">E*TRADE API // LOCKED // ACCESS CODE REQUIRED</div>',
+            unsafe_allow_html=True,
+        )
+        gate_left, gate_right = st.columns([4.8, 1.2], vertical_alignment="bottom")
+        with gate_left:
+            access_code = st.text_input(
+                "Trade API Access Code",
+                type="password",
+                max_chars=32,
+                placeholder="Enter access code",
+                key="etrade_access_code",
+            )
+        with gate_right:
+            unlock = st.button(
+                "UNLOCK API",
+                type="primary",
+                width="stretch",
+                disabled=not access_code,
+                key="etrade_unlock_api",
+            )
+        if unlock:
+            if _verify_trade_access_code(access_code):
+                st.session_state["etrade_access_unlocked"] = True
+                st.session_state.pop("etrade_access_code", None)
+                st.success("Trade API access unlocked for this browser session.")
+                st.rerun()
+            else:
+                st.error("Incorrect trade API access code.")
+        st.caption(
+            "Market simulator remains usable while locked. E*TRADE credentials, "
+            "OAuth authorization, balances, holdings, quotes, and option chains stay disabled."
+        )
+        return
+
     consumer_key, consumer_secret, environment = _etrade_credentials()
     connected = _etrade_client() is not None
     status_text = "CONNECTED" if connected else (
@@ -1662,7 +1749,7 @@ def render_etrade_connection():
     )
 
     _render_etrade_session_timer(connected)
-    status_col, connect_col, renew_col, disconnect_col = st.columns([3.3, 1.7, 1.1, 1.2])
+    status_col, connect_col, renew_col, disconnect_col, lock_col = st.columns([2.8, 1.6, 1.0, 1.1, 0.9])
     with status_col:
         st.markdown(
             f'<div class="terminal-note">E*TRADE API // {html.escape(status_text)}</div>',
@@ -1695,14 +1782,11 @@ def render_etrade_connection():
                 st.error(str(exc))
     with disconnect_col:
         if st.button("DISCONNECT", width="stretch", disabled=not connected, key="etrade_disconnect"):
-            for state_key in [
-                "etrade_access_token", "etrade_accounts", "etrade_request",
-                "etrade_holdings", "etrade_balances", "etrade_quote",
-                "etrade_last_activity_at", "orders_account", "holdings_account",
-                "_orders_account_default_account_suffix",
-                "_holdings_account_default_account_suffix",
-            ]:
-                st.session_state.pop(state_key, None)
+            _clear_etrade_runtime(lock_access=True)
+            st.rerun()
+    with lock_col:
+        if st.button("LOCK", width="stretch", key="etrade_lock_api"):
+            _clear_etrade_runtime(lock_access=True)
             st.rerun()
 
     if not consumer_key or not consumer_secret:
@@ -1960,7 +2044,24 @@ def _financial_dataframe(frame, columns=None):
 
 
 def _load_etrade_gamma_walls(client, symbol, spot, target_dte=45):
-    expiration_tuples = option_expiration_dates(client.get_option_expirations(symbol))
+    symbol = str(symbol).strip().upper()
+    now = time.time()
+
+    # Expiration dates barely change intraday, so cache them for six hours.
+    expiration_cache = st.session_state.setdefault("_etrade_expiration_cache", {})
+    expiration_entry = expiration_cache.get(symbol)
+    if (
+        expiration_entry
+        and now - float(expiration_entry.get("loaded_at", 0)) < ETRADE_EXPIRATION_CACHE_SECONDS
+    ):
+        expiration_tuples = expiration_entry["dates"]
+    else:
+        expiration_tuples = option_expiration_dates(client.get_option_expirations(symbol))
+        expiration_cache[symbol] = {
+            "loaded_at": now,
+            "dates": expiration_tuples,
+        }
+
     today = datetime.now(ETRADE_TIMEZONE).date()
     future_expirations = []
     for year, month, day in expiration_tuples:
@@ -1977,6 +2078,18 @@ def _load_etrade_gamma_walls(client, symbol, spot, target_dte=45):
         future_expirations,
         key=lambda value: abs((value - today).days - int(target_dte)),
     )
+    wall_cache = st.session_state.setdefault("_etrade_wall_cache", {})
+    cache_key = f"{symbol}:{expiry.isoformat()}"
+    cached = wall_cache.get(cache_key)
+    if (
+        cached
+        and now - float(cached.get("loaded_at", 0)) < ETRADE_WALL_CACHE_SECONDS
+        and abs(float(cached.get("spot", spot)) - float(spot)) / max(float(spot), 0.01) < 0.0025
+    ):
+        walls = dict(cached["walls"])
+        walls["cached"] = True
+        return walls
+
     chain = client.get_option_chain(
         symbol,
         expiry.year,
@@ -1988,6 +2101,12 @@ def _load_etrade_gamma_walls(client, symbol, spot, target_dte=45):
     walls["expiry"] = expiry.isoformat()
     walls["dte"] = (expiry - today).days
     walls["target_dte"] = int(target_dte)
+    walls["cached"] = False
+    wall_cache[cache_key] = {
+        "loaded_at": now,
+        "spot": float(spot),
+        "walls": dict(walls),
+    }
     return walls
 
 
@@ -2156,10 +2275,11 @@ def render_order_simulator():
         ))
 
     if wall_data:
+        cache_label = "CACHED ≤60S" if wall_data.get("cached") else "FRESH"
         st.caption(
             "WALL SOURCE // E*TRADE OPTION CHAIN // "
             f"{wall_data['dte']} DTE (45-DTE TARGET) // "
-            f"EXPIRY {wall_data['expiry']} // {wall_data['method']} ESTIMATE"
+            f"EXPIRY {wall_data['expiry']} // {wall_data['method']} ESTIMATE // {cache_label}"
         )
     else:
         st.caption("WALL SOURCE // MANUAL // click GET E*TRADE PRICE to attempt a 45-DTE wall estimate.")
