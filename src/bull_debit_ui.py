@@ -160,8 +160,23 @@ def _render_results(result: dict) -> None:
     c3.metric("TOTAL SPREAD COST", _money(winner["Total Cost"]))
 
     st.markdown("**TOP QUALIFYING CANDIDATES // CHEAPEST FIRST**")
-    display = pd.DataFrame(candidates[:30])
+    display = pd.DataFrame(candidates[:30]).reset_index(drop=True)
+
+    cheapest_index = int(display["Total Cost"].idxmin())
+    highest_rr_index = int(display["Reward : Risk"].idxmax())
+
+    signals = []
+    for row_index in display.index:
+        tags = []
+        if row_index == cheapest_index:
+            tags.append("CHEAPEST")
+        if row_index == highest_rr_index:
+            tags.append("HIGHEST R:R")
+        signals.append(" + ".join(tags))
+    display.insert(0, "Signal", signals)
+
     display_columns = [
+        "Signal",
         "Expiration",
         "DTE",
         "Buy Call",
@@ -180,8 +195,34 @@ def _render_results(result: dict) -> None:
         "Short OI",
     ]
     display = display[[column for column in display_columns if column in display.columns]]
+
+    def highlight_candidate(row):
+        styles = [""] * len(row)
+        if row.name == highest_rr_index:
+            styles = [
+                "background-color:#00D084;color:#000000;font-weight:900;"
+            ] * len(row)
+        elif row.name == cheapest_index:
+            styles = [
+                "background-color:#0068FF;color:#FFFFFF;font-weight:900;"
+            ] * len(row)
+
+        rr_position = row.index.get_loc("Reward : Risk") if "Reward : Risk" in row.index else None
+        if rr_position is not None and row.name != highest_rr_index:
+            styles[rr_position] = (
+                "color:#00D084;font-weight:900;"
+                + styles[rr_position]
+            )
+        return styles
+
+    styled_display = display.style.apply(highlight_candidate, axis=1)
+
+    st.caption(
+        "TABLE HIGHLIGHTS // BLUE = CHEAPEST QUALIFYING SPREAD // "
+        "GREEN = HIGHEST REWARD:RISK // R:R VALUES ARE GREEN"
+    )
     st.dataframe(
-        display,
+        styled_display,
         hide_index=True,
         width="stretch",
         height=min(900, max(260, 35 * len(display) + 45)),
