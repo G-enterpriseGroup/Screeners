@@ -408,8 +408,17 @@ st.markdown(
     .stDownloadButton > button:disabled,
     .stFormSubmitButton > button:disabled,
     [data-testid="stFormSubmitButton"] button:disabled {
-        opacity:.45 !important;
+        opacity:.82 !important;
+        color:#FFF !important;
+        -webkit-text-fill-color:#FFF !important;
         box-shadow:none !important;
+    }
+
+    .stFormSubmitButton > button:disabled *,
+    [data-testid="stFormSubmitButton"] button:disabled * {
+        color:#FFF !important;
+        -webkit-text-fill-color:#FFF !important;
+        opacity:1 !important;
     }
 
     [data-testid="stExpander"],
