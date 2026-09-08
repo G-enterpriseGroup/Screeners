@@ -195,25 +195,28 @@ class ETradeClient:
         expiry_year: int,
         expiry_month: int,
         expiry_day: int,
-        no_of_strikes: int = 100,
+        no_of_strikes: int | None = 100,
+        chain_type: str = "CALLPUT",
     ) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
         if not symbol:
             raise ETradeError("Enter a symbol first.")
-        return self._get(
-            "/v1/market/optionchains",
-            {
-                "symbol": symbol,
-                "expiryYear": int(expiry_year),
-                "expiryMonth": int(expiry_month),
-                "expiryDay": int(expiry_day),
-                "chainType": "CALLPUT",
-                "skipAdjusted": "true",
-                "optionCategory": "STANDARD",
-                "priceType": "ALL",
-                "noOfStrikes": int(no_of_strikes),
-            },
-        )
+
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "expiryYear": int(expiry_year),
+            "expiryMonth": int(expiry_month),
+            "expiryDay": int(expiry_day),
+            "chainType": str(chain_type).upper(),
+            "includeWeekly": "true",
+            "skipAdjusted": "true",
+            "optionCategory": "STANDARD",
+            "priceType": "ALL",
+        }
+        if no_of_strikes is not None:
+            params["noOfStrikes"] = int(no_of_strikes)
+
+        return self._get("/v1/market/optionchains", params)
 
 
 def _as_list(value: Any) -> list[Any]:
