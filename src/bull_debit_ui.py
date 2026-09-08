@@ -293,18 +293,15 @@ def render_bull_debit_spread(client, touch_session, timezone_name: str = "Americ
                 )
             )
         with i3:
-            years_out = float(
-                st.number_input(
-                    "Minimum Years Out",
-                    min_value=0.0,
-                    max_value=5.0,
-                    value=1.0,
-                    step=0.25,
-                    format="%.2f",
-                    help="Only expirations on or after this horizon are scanned.",
-                    key="bull_years_out",
-                )
+            year_options = ["ALL YEARS"] + [f"{year} YEAR+" if year == 1 else f"{year} YEARS+" for year in range(1, 11)]
+            selected_years = st.selectbox(
+                "Minimum Years Out",
+                year_options,
+                index=1,
+                help="Choose ALL YEARS or require expirations at least this many full years out.",
+                key="bull_years_out_selector",
             )
+            years_out = 0.0 if selected_years == "ALL YEARS" else float(selected_years.split()[0])
         with i4:
             min_rr = float(
                 st.number_input(
