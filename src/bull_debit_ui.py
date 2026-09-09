@@ -11,16 +11,11 @@ import streamlit as st
 
 from src.bull_debit_spread import extract_call_rows, scan_bull_call_spreads
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
+from src.theme import BB_BLACK, BB_BLUE, BB_GREEN, BB_ORANGE, BB_RED
 
 
 CHAIN_CACHE_SECONDS = 5 * 60
 EXPIRATION_CACHE_SECONDS = 6 * 60 * 60
-
-BB_BLACK = "#000000"
-BB_RED = "#ff433d"
-BB_BLUE = "#0068ff"
-BB_GREEN = "#4af6c3"
-BB_ORANGE = "#fb8b1e"
 
 
 def _money(value: float) -> str:
