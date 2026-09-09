@@ -27,6 +27,7 @@ from src.etrade_client import (
     total_account_value,
 )
 from src.muni_data import load_all_ishares_munis, screen_munis
+from src.sector_data import sector_profile
 from src.trade_math import calculate_trade_metrics, risk_sized_quantity
 from src.treasury_data import (
     load_treasury_quotes,
@@ -71,6 +72,7 @@ ETRADE_WALL_CACHE_SECONDS = 60
 ETRADE_EXPIRATION_CACHE_SECONDS = 6 * 60 * 60
 ETRADE_HOLDINGS_TICK_SECONDS = 5
 ETRADE_BALANCE_REFRESH_SECONDS = 30
+SECTOR_PROFILE_CACHE_SECONDS = 24 * 60 * 60
 APP_LOCK_MAX_ATTEMPTS = 5
 APP_LOCKOUT_SECONDS = 60
 
@@ -93,15 +95,15 @@ st.markdown(
     """
     <style>
     :root {
-        --bb-orange:#FF8C00;
+        --bb-orange:#fb8b1e;
         --bb-black:#000000;
         --bb-dark:#0A0A0A;
-        --bb-dim:#A85C00;
+        --bb-dim:#fb8b1e;
         --bb-blue:#0068FF;
-        --bb-blue-hover:#2388FF;
-        --bb-blue-active:#0047B3;
-        --bb-green:#00D084;
-        --bb-red:#FF3B30;
+        --bb-blue-hover:#0068ff;
+        --bb-blue-active:#0068ff;
+        --bb-green:#4af6c3;
+        --bb-red:#ff433d;
     }
 
     html, body, .stApp,
@@ -257,7 +259,7 @@ st.markdown(
         width:min(620px, 94vw);
         border:1px solid var(--bb-orange);
         background:#020202;
-        box-shadow:0 0 0 1px #3a2100 inset, 0 0 28px rgba(255,140,0,.10);
+        box-shadow:0 0 0 1px #fb8b1e inset, 0 0 28px rgba(255,140,0,.10);
     }
 
     .app-lock-header {
@@ -296,17 +298,17 @@ st.markdown(
     }
 
     .app-lock-copy {
-        color:#c87400 !important;
+        color:#fb8b1e !important;
         font-size:.82rem;
         line-height:1.45;
         margin-bottom:.2rem;
     }
 
     .app-lock-status {
-        border-top:1px solid #3a2100;
+        border-top:1px solid #fb8b1e;
         margin-top:1rem;
         padding-top:.75rem;
-        color:#8d5100 !important;
+        color:#fb8b1e !important;
         font-size:.72rem;
         letter-spacing:.03em;
     }
@@ -454,7 +456,7 @@ st.markdown(
 
     [data-testid="stDataFrame"] [role="gridcell"] {
         background:#000 !important;
-        border-color:#7a4300 !important;
+        border-color:#fb8b1e !important;
     }
 
     /* Static one-row match tables: no filler rows, identical natural sizing. */
@@ -1632,6 +1634,7 @@ def _clear_etrade_runtime(lock_access=False):
         "etrade_holdings_last_refresh", "etrade_balance_last_refresh",
         "etrade_holdings_refresh_error",
         "_bull_chain_cache", "_bull_expiration_cache", "bull_spread_scan_result",
+        "_sector_profile_cache",
     ]:
         st.session_state.pop(state_key, None)
     if lock_access:
@@ -1767,14 +1770,14 @@ def _render_etrade_session_timer(connected):
         <style>
             html, body {{ margin:0; padding:0; background:#000; }}
             .timer {{
-                height:54px; box-sizing:border-box; border:1px solid #FF8C00;
-                background:#030303; color:#FF8C00; padding:7px 11px;
+                height:54px; box-sizing:border-box; border:1px solid #fb8b1e;
+                background:#030303; color:#fb8b1e; padding:7px 11px;
                 font-family:'Courier New',monospace; display:flex;
                 align-items:center; justify-content:space-between; gap:16px;
             }}
             .title {{ font-size:12px; font-weight:900; letter-spacing:.06em; }}
-            .clock {{ font-size:24px; font-weight:900; color:#00D084; white-space:nowrap; }}
-            .detail {{ font-size:11px; color:#FF8C00; text-align:right; }}
+            .clock {{ font-size:24px; font-weight:900; color:#4af6c3; white-space:nowrap; }}
+            .detail {{ font-size:11px; color:#fb8b1e; text-align:right; }}
         </style>
         <div class="timer">
             <div>
@@ -1793,13 +1796,13 @@ def _render_etrade_session_timer(connected):
                 const remaining = Math.max(0, expiry - now);
                 if (now >= hardExpiry) {{
                     clock.textContent = 'EXPIRED';
-                    clock.style.color = '#FF3B30';
+                    clock.style.color = '#ff433d';
                     title.textContent = 'E*TRADE API SESSION // RECONNECT REQUIRED';
                     return;
                 }}
                 if (remaining <= 0) {{
                     clock.textContent = 'INACTIVE';
-                    clock.style.color = '#FF3B30';
+                    clock.style.color = '#ff433d';
                     title.textContent = 'E*TRADE API SESSION // CLICK RENEW';
                     return;
                 }}
@@ -1809,13 +1812,13 @@ def _render_etrade_session_timer(connected):
                 clock.textContent = [hours, minutes, seconds]
                     .map(value => String(value).padStart(2, '0')).join(':');
                 if (remaining <= 10 * 60000) {{
-                    clock.style.color = '#FF3B30';
+                    clock.style.color = '#ff433d';
                     title.textContent = 'E*TRADE API SESSION // RENEW NOW';
                 }} else if (remaining <= 30 * 60000) {{
-                    clock.style.color = '#FF8C00';
+                    clock.style.color = '#fb8b1e';
                     title.textContent = 'E*TRADE API SESSION // EXPIRING SOON';
                 }} else {{
-                    clock.style.color = '#00D084';
+                    clock.style.color = '#4af6c3';
                     title.textContent = 'E*TRADE API SESSION // ACTIVE';
                 }}
             }}
@@ -2060,15 +2063,15 @@ def _balance_snapshot(payload):
 
 def _price_ladder(current, entry, stop, target, put_wall, call_wall):
     raw_levels = [
-        ("STOP", stop, "#FF3B30"),
-        ("ENTRY", entry, "#00A6FF"),
+        ("STOP", stop, "#ff433d"),
+        ("ENTRY", entry, "#0068ff"),
         ("CURRENT", current, "#FFFFFF"),
-        ("TARGET", target, "#00D084"),
+        ("TARGET", target, "#4af6c3"),
     ]
     if put_wall > 0:
-        raw_levels.append(("PUT WALL", put_wall, "#B692F6"))
+        raw_levels.append(("PUT WALL", put_wall, "#ff433d"))
     if call_wall > 0:
-        raw_levels.append(("CALL WALL", call_wall, "#FF8C00"))
+        raw_levels.append(("CALL WALL", call_wall, "#fb8b1e"))
     raw_levels.sort(key=lambda item: item[1])
 
     levels = []
@@ -2084,7 +2087,7 @@ def _price_ladder(current, entry, stop, target, put_wall, call_wall):
         x=[value for _, value, _ in levels],
         y=[0] * len(levels),
         mode="lines",
-        line={"color": "#7A4300", "width": 5},
+        line={"color": "#fb8b1e", "width": 5},
         hoverinfo="skip",
         showlegend=False,
     ))
@@ -2108,7 +2111,7 @@ def _price_ladder(current, entry, stop, target, put_wall, call_wall):
         height=170,
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
-        font={"color": "#FF8C00", "family": "Courier New"},
+        font={"color": "#fb8b1e", "family": "Courier New"},
         margin={"l": 22, "r": 22, "t": 25, "b": 25},
         xaxis={
             "showticklabels": False,
@@ -2218,8 +2221,8 @@ def _financial_dataframe(frame, columns=None):
 
     def color_value(value):
         if pd.isna(value) or value == 0:
-            return "color: #FF8C00"
-        return "color: #00D084" if value > 0 else "color: #FF3B30"
+            return "color: #fb8b1e"
+        return "color: #4af6c3" if value > 0 else "color: #ff433d"
 
     return frame.style.map(color_value, subset=selected)
 
@@ -2613,7 +2616,7 @@ def _holdings_chart(frame, value_column, title, allocation=False):
     colors = (
         ["#0068FF"] * len(chart_data)
         if allocation
-        else ["#00D084" if value >= 0 else "#FF3B30" for value in values]
+        else ["#4af6c3" if value >= 0 else "#ff433d" for value in values]
     )
     prefix = "$" if value_column != "% Portfolio" else ""
     suffix = "%" if value_column == "% Portfolio" else ""
@@ -2633,11 +2636,132 @@ def _holdings_chart(frame, value_column, title, allocation=False):
         height=max(310, min(560, 42 * len(chart_data) + 100)),
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
-        font={"color": "#FF8C00", "family": "Courier New"},
+        font={"color": "#fb8b1e", "family": "Courier New"},
         margin={"l": 20, "r": 80, "t": 55, "b": 30},
-        xaxis={"gridcolor": "#3A2100", "zerolinecolor": "#FF8C00"},
+        xaxis={"gridcolor": "#fb8b1e", "zerolinecolor": "#fb8b1e"},
         yaxis={"gridcolor": "#000000"},
         showlegend=False,
+    )
+    return figure
+
+
+def _sector_allocation_for_holdings(frame, force_refresh=False):
+    cache = st.session_state.setdefault("_sector_profile_cache", {})
+    now = time.time()
+    grouped = frame[["Symbol", "Type", "Market Value"]].copy()
+    grouped["Market Value"] = pd.to_numeric(grouped["Market Value"], errors="coerce")
+    grouped = (
+        grouped.dropna(subset=["Market Value"])
+        .groupby(["Symbol", "Type"], dropna=False, as_index=False)["Market Value"]
+        .sum()
+    )
+
+    exposure_by_sector = {}
+    mapped_value = 0.0
+    gross_value = 0.0
+    source_labels = set()
+    errors = []
+
+    for _, row in grouped.iterrows():
+        symbol = str(row.get("Symbol") or "").strip().upper()
+        security_type = str(row.get("Type") or "").strip().upper()
+        market_value = abs(float(row.get("Market Value") or 0.0))
+        if not symbol or market_value <= 0:
+            continue
+
+        gross_value += market_value
+        cache_key = f"{symbol}:{security_type}"
+        cached = cache.get(cache_key)
+        cache_valid = (
+            cached
+            and not force_refresh
+            and now - float(cached.get("loaded_at", 0.0)) < SECTOR_PROFILE_CACHE_SECONDS
+        )
+        if cache_valid:
+            profile = cached["profile"]
+        else:
+            profile = sector_profile(symbol, security_type)
+            cache[cache_key] = {"loaded_at": now, "profile": profile}
+
+        weights = profile.get("weights") or {"Other / Unclassified": 1.0}
+        source_labels.add(str(profile.get("source") or "fallback"))
+        if profile.get("error"):
+            errors.append(f"{symbol}: {profile['error']}")
+
+        usable_weight = 0.0
+        for sector, weight in weights.items():
+            try:
+                weight = float(weight)
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0:
+                continue
+            usable_weight += weight
+            exposure = market_value * weight
+            exposure_by_sector[str(sector)] = exposure_by_sector.get(str(sector), 0.0) + exposure
+            mapped_value += exposure
+
+        if usable_weight <= 0:
+            exposure_by_sector["Other / Unclassified"] = (
+                exposure_by_sector.get("Other / Unclassified", 0.0) + market_value
+            )
+            mapped_value += market_value
+
+    rows = [
+        {"Sector": sector, "Exposure": exposure}
+        for sector, exposure in exposure_by_sector.items()
+        if exposure > 0
+    ]
+    sector_frame = pd.DataFrame(rows)
+    if not sector_frame.empty:
+        sector_frame = sector_frame.sort_values("Exposure", ascending=False).reset_index(drop=True)
+        total_exposure = float(sector_frame["Exposure"].sum())
+        sector_frame["% Exposure"] = (
+            sector_frame["Exposure"] / total_exposure * 100 if total_exposure else 0.0
+        )
+
+    coverage = mapped_value / gross_value * 100 if gross_value else 0.0
+    return sector_frame, coverage, sorted(source_labels), errors
+
+
+def _sector_pie_chart(sector_frame):
+    if sector_frame is None or sector_frame.empty:
+        return None
+
+    palette = ["#4af6c3", "#0068ff", "#fb8b1e", "#ff433d"]
+    colors = [palette[index % len(palette)] for index in range(len(sector_frame))]
+    figure = go.Figure(
+        go.Pie(
+            labels=sector_frame["Sector"],
+            values=sector_frame["Exposure"],
+            hole=0.43,
+            sort=False,
+            marker={
+                "colors": colors,
+                "line": {"color": "#000000", "width": 2},
+            },
+            textinfo="label+percent",
+            textfont={"family": "Courier New", "size": 12},
+            hovertemplate="%{label}<br>Exposure: $%{value:,.2f}<br>%{percent}<extra></extra>",
+        )
+    )
+    figure.update_layout(
+        title="SECTOR EXPOSURE // LOOK-THROUGH WHERE AVAILABLE",
+        height=520,
+        paper_bgcolor="#000000",
+        plot_bgcolor="#000000",
+        font={"color": "#fb8b1e", "family": "Courier New"},
+        legend={"font": {"color": "#fb8b1e"}, "orientation": "v"},
+        margin={"l": 20, "r": 20, "t": 65, "b": 20},
+        annotations=[
+            {
+                "text": "SECTOR<br>EXPOSURE",
+                "x": 0.5,
+                "y": 0.5,
+                "showarrow": False,
+                "font": {"color": "#4af6c3", "size": 15, "family": "Courier New"},
+            }
+        ],
     )
     return figure
 
