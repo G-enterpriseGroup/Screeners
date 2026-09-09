@@ -2821,13 +2821,17 @@ def render_etrade_holdings():
         except ETradeError as exc:
             st.error(str(exc))
             return
+
     account = _account_picker("holdings_account")
     if not account:
         st.info("No brokerage accounts were returned.")
         return
     account_key = str(account.get("accountIdKey", ""))
 
-    live_col, interval_col, refresh_col = st.columns([1.3, 1.2, 1.4], vertical_alignment="bottom")
+    live_col, interval_col, refresh_col = st.columns(
+        [1.3, 1.2, 1.4],
+        vertical_alignment="bottom",
+    )
     with live_col:
         live_enabled = st.toggle(
             "LIVE HOLDINGS",
@@ -2836,13 +2840,15 @@ def render_etrade_holdings():
             help="Near-real-time polling. E*TRADE market-data entitlements determine quote timeliness.",
         )
     with interval_col:
-        refresh_seconds = int(st.selectbox(
-            "Refresh Every",
-            [5, 10, 15, 30],
-            index=1,
-            format_func=lambda value: f"{value} seconds",
-            key="holdings_refresh_seconds",
-        ))
+        refresh_seconds = int(
+            st.selectbox(
+                "Refresh Every",
+                [5, 10, 15, 30],
+                index=1,
+                format_func=lambda value: f"{value} seconds",
+                key="holdings_refresh_seconds",
+            )
+        )
     with refresh_col:
         manual_refresh = st.button(
             "REFRESH NOW",
@@ -2864,10 +2870,7 @@ def render_etrade_holdings():
     holdings_due = (
         holdings_missing
         or manual_refresh
-        or (
-            live_enabled
-            and now - last_holdings_refresh >= refresh_seconds
-        )
+        or (live_enabled and now - last_holdings_refresh >= refresh_seconds)
     )
     balance_due = (
         manual_refresh
@@ -2888,7 +2891,11 @@ def render_etrade_holdings():
         except ETradeError as exc:
             st.session_state["etrade_holdings_refresh_error"] = str(exc)
 
-    status_age = max(0, int(time.time() - last_holdings_refresh)) if last_holdings_refresh else None
+    status_age = (
+        max(0, int(time.time() - last_holdings_refresh))
+        if last_holdings_refresh
+        else None
+    )
     status_text = (
         f"LIVE // refresh {refresh_seconds}s // last update {status_age}s ago"
         if live_enabled and status_age is not None
@@ -2899,109 +2906,101 @@ def render_etrade_holdings():
         )
     )
     st.caption(
-        "HOLDINGS DATA // " + status_text
+        "HOLDINGS DATA // "
+        + status_text
         + " // balance refresh 30s // fragment tick 5s"
     )
+
     refresh_error = st.session_state.get("etrade_holdings_refresh_error")
     if refresh_error:
         st.warning(f"LIVE REFRESH ERROR // {refresh_error}")
 
     balance = st.session_state.get("etrade_balances", {}).get(account_key)
     holdings = st.session_state.get("etrade_holdings", {}).get(account_key)
-    total = cash = market_value = 0.0
+    cash = 0.0
     if balance:
         _, cash, _ = _balance_snapshot(balance)
+
     if holdings is None:
         st.info("Waiting for the first E*TRADE holdings snapshot.")
         return
 
-    normalized = pd.DataFrame(normalize_position(position) for position in holdings)
+    normalized = pd.DataFrame(
+        normalize_position(position) for position in holdings
+    )
     if normalized.empty:
         st.info("No positions were returned for this account.")
         return
 
     numeric_columns = [
-        "Quantity", "Last", "Price Paid", "Market Value", "Total Cost",
-        "Day Gain/Loss", "Day Gain/Loss %", "Gain/Loss", "Gain/Loss %",
-        "% Portfolio", "52W High", "52W Low", "% From 52W High",
+        "Quantity",
+        "Last",
+        "Price Paid",
+        "Market Value",
+        "Total Cost",
+        "Day Gain/Loss",
+        "Day Gain/Loss %",
+        "Gain/Loss",
+        "Gain/Loss %",
+        "% Portfolio",
+        "52W High",
+        "52W Low",
+        "% From 52W High",
     ]
     for column in numeric_columns:
-        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        normalized[column] = pd.to_numeric(
+            normalized[column],
+            errors="coerce",
+        )
 
     total_market = normalized["Market Value"].sum()
     total_cost = normalized["Total Cost"].sum()
     total_gain = normalized["Gain/Loss"].sum()
     day_gain = normalized["Day Gain/Loss"].sum()
-    total_return = total_gain / total_cost * 100 if total_cost else 0.0
-
-    # Portfolio values change with every holdings snapshot. Cash is refreshed
-    # less often because it normally changes only after account activity.
+    total_return = (
+        total_gain / total_cost * 100
+        if total_cost
+        else 0.0
+    )
     market_value = total_market
     total = total_market + cash
     cash_pct = cash / total * 100 if total else 0.0
-
-    b1, b2, b3 = st.columns(3)
-    b1.metric("Live Account Value", f"${total:,.2f}")
-    b2.metric("Cash Available", f"${cash:,.2f}")
-    b3.metric("Live Market Value", f"${market_value:,.2f}")
 
     pnl_values = normalized["Gain/Loss"].dropna()
     winners = int((pnl_values > 0).sum())
     losers = int((pnl_values < 0).sum())
     decided_positions = winners + losers
-    win_rate = winners / decided_positions * 100 if decided_positions else 0.0
+    win_rate = (
+        winners / decided_positions * 100
+        if decided_positions
+        else 0.0
+    )
 
     allocation = normalized[["Symbol", "Market Value"]].copy()
-    allocation = allocation[allocation["Market Value"] > 0].sort_values("Market Value", ascending=False)
-    largest_symbol = str(allocation.iloc[0]["Symbol"]) if not allocation.empty else "—"
-    largest_pct = allocation.iloc[0]["Market Value"] / total * 100 if total and not allocation.empty else 0.0
-    top_three_pct = allocation.head(3)["Market Value"].sum() / total * 100 if total else 0.0
-
-    st.subheader("Portfolio Trader Analysis")
-    a1, a2, a3, a4, a5 = st.columns(5)
-    a1.metric("Total Cost", f"${total_cost:,.2f}")
-    _financial_metric(a2, "Unrealized P&L", f"${total_gain:+,.2f}", total_gain)
-    _financial_metric(a3, "Total Return", f"{total_return:+.2f}%", total_return)
-    _financial_metric(a4, "Day P&L", f"${day_gain:+,.2f}", day_gain)
-    a5.metric("Cash Allocation", f"{cash_pct:.2f}%", f"${cash:,.2f}")
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Positions", f"{len(normalized):,}")
-    c2.metric("Winners / Losers", f"{winners} / {losers}")
-    c3.metric("Win Rate", f"{win_rate:.1f}%")
-    c4.metric("Largest Position", largest_symbol, f"{largest_pct:.2f}% of account")
-    c5.metric("Top 3 Concentration", f"{top_three_pct:.2f}%")
-
-    if largest_pct >= 25:
-        st.warning(
-            f"CONCENTRATION FLAG // {largest_symbol} is {largest_pct:.2f}% of total account value."
-        )
-    elif largest_pct >= 15:
-        st.info(
-            f"CONCENTRATION WATCH // {largest_symbol} is {largest_pct:.2f}% of total account value."
-        )
-
-    chart_frame = normalized.copy()
-    if total:
-        chart_frame["% Portfolio"] = chart_frame["Market Value"] / total * 100
-    allocation_chart = _holdings_chart(
-        chart_frame,
-        "% Portfolio",
-        "POSITION ALLOCATION",
-        allocation=True,
+    allocation = allocation[
+        allocation["Market Value"] > 0
+    ].sort_values(
+        "Market Value",
+        ascending=False,
     )
-    pnl_chart = _holdings_chart(
-        chart_frame,
-        "Gain/Loss",
-        "UNREALIZED P&L LEADERS / LAGGARDS",
+    largest_symbol = (
+        str(allocation.iloc[0]["Symbol"])
+        if not allocation.empty
+        else "—"
     )
-    chart_left, chart_right = st.columns(2)
-    if allocation_chart is not None:
-        chart_left.plotly_chart(allocation_chart, width="stretch", key="holdings_allocation_chart")
-    if pnl_chart is not None:
-        chart_right.plotly_chart(pnl_chart, width="stretch", key="holdings_pnl_chart")
+    largest_pct = (
+        allocation.iloc[0]["Market Value"] / total * 100
+        if total and not allocation.empty
+        else 0.0
+    )
+    top_three_pct = (
+        allocation.head(3)["Market Value"].sum() / total * 100
+        if total
+        else 0.0
+    )
 
-    st.subheader("Position Controls")
+    st.markdown("**HOLDINGS TABLE // PRIMARY VIEW**")
+
     f1, f2, f3, f4 = st.columns([1.4, 1.4, 1.2, 1.1])
     with f1:
         symbol_search = st.text_input(
@@ -3012,26 +3011,48 @@ def render_etrade_holdings():
     with f2:
         selected_types = st.multiselect(
             "Security Type",
-            sorted(normalized["Type"].dropna().astype(str).unique()),
+            sorted(
+                normalized["Type"]
+                .dropna()
+                .astype(str)
+                .unique()
+            ),
             key="holdings_type_filter",
         )
     with f3:
         pnl_filter = st.selectbox(
             "P&L Filter",
-            ["All Positions", "Winners", "Losers", "Breakeven"],
+            [
+                "All Positions",
+                "Winners",
+                "Losers",
+                "Breakeven",
+            ],
             key="holdings_pnl_filter",
         )
     with f4:
         sort_direction = st.selectbox(
             "Direction",
-            ["Descending", "Ascending"],
+            [
+                "Descending",
+                "Ascending",
+            ],
             key="holdings_sort_direction",
         )
 
     sort_options = [
-        "Market Value", "Gain/Loss", "Gain/Loss %", "Day Gain/Loss",
-        "Day Gain/Loss %", "% Portfolio", "% From 52W High", "Last",
-        "Price Paid", "Quantity", "Symbol", "Type",
+        "Market Value",
+        "Gain/Loss",
+        "Gain/Loss %",
+        "Day Gain/Loss",
+        "Day Gain/Loss %",
+        "% Portfolio",
+        "% From 52W High",
+        "Last",
+        "Price Paid",
+        "Quantity",
+        "Symbol",
+        "Type",
     ]
     sort_by = st.selectbox(
         "Sort Positions By",
@@ -3042,16 +3063,27 @@ def render_etrade_holdings():
     filtered = normalized.copy()
     if symbol_search:
         filtered = filtered[
-            filtered["Symbol"].astype(str).str.upper().str.contains(symbol_search, regex=False)
+            filtered["Symbol"]
+            .astype(str)
+            .str.upper()
+            .str.contains(symbol_search, regex=False)
         ]
     if selected_types:
-        filtered = filtered[filtered["Type"].isin(selected_types)]
+        filtered = filtered[
+            filtered["Type"].isin(selected_types)
+        ]
     if pnl_filter == "Winners":
-        filtered = filtered[filtered["Gain/Loss"] > 0]
+        filtered = filtered[
+            filtered["Gain/Loss"] > 0
+        ]
     elif pnl_filter == "Losers":
-        filtered = filtered[filtered["Gain/Loss"] < 0]
+        filtered = filtered[
+            filtered["Gain/Loss"] < 0
+        ]
     elif pnl_filter == "Breakeven":
-        filtered = filtered[filtered["Gain/Loss"].fillna(0) == 0]
+        filtered = filtered[
+            filtered["Gain/Loss"].fillna(0) == 0
+        ]
 
     filtered = filtered.sort_values(
         sort_by,
@@ -3059,20 +3091,41 @@ def render_etrade_holdings():
         na_position="last",
         kind="stable",
     ).reset_index(drop=True)
-    is_filtered = bool(symbol_search or selected_types or pnl_filter != "All Positions")
-    total_label = "FILTERED TOTAL" if is_filtered else "PORTFOLIO TOTAL"
-    total_row = pd.DataFrame([_holdings_total_row(filtered, total_label)])
-    display_frame = pd.concat([filtered, total_row], ignore_index=True)
+
+    is_filtered = bool(
+        symbol_search
+        or selected_types
+        or pnl_filter != "All Positions"
+    )
+    total_label = (
+        "FILTERED TOTAL"
+        if is_filtered
+        else "PORTFOLIO TOTAL"
+    )
+    total_row = pd.DataFrame(
+        [_holdings_total_row(filtered, total_label)]
+    )
+    display_frame = pd.concat(
+        [filtered, total_row],
+        ignore_index=True,
+    )
 
     st.caption(
-        "Use the controls above for persistent sorting; column headers can also be clicked. "
-        "The total row is calculated from the positions currently shown."
+        "The holdings table stays first. "
+        "All portfolio cards, graphs, sector visuals, "
+        "and analytics are rendered below it."
     )
     st.dataframe(
         _financial_dataframe(display_frame),
         hide_index=True,
         width="stretch",
-        height=min(900, max(260, 36 * len(display_frame) + 42)),
+        height=min(
+            900,
+            max(
+                260,
+                36 * len(display_frame) + 42,
+            ),
+        ),
         column_config={
             "Last": st.column_config.NumberColumn(format="$%.2f"),
             "Price Paid": st.column_config.NumberColumn(format="$%.2f"),
@@ -3089,15 +3142,103 @@ def render_etrade_holdings():
         },
     )
 
+    st.subheader("Portfolio Trader Analysis")
+
+    b1, b2, b3 = st.columns(3)
+    b1.metric(
+        "Live Account Value",
+        "$" + f"{total:,.2f}",
+    )
+    b2.metric(
+        "Cash Available",
+        "$" + f"{cash:,.2f}",
+    )
+    b3.metric(
+        "Live Market Value",
+        "$" + f"{market_value:,.2f}",
+    )
+
+    a1, a2, a3, a4, a5 = st.columns(5)
+    a1.metric(
+        "Total Cost",
+        "$" + f"{total_cost:,.2f}",
+    )
+    _financial_metric(
+        a2,
+        "Unrealized P&L",
+        "$" + f"{total_gain:+,.2f}",
+        total_gain,
+    )
+    _financial_metric(
+        a3,
+        "Total Return",
+        f"{total_return:+.2f}%",
+        total_return,
+    )
+    _financial_metric(
+        a4,
+        "Day P&L",
+        "$" + f"{day_gain:+,.2f}",
+        day_gain,
+    )
+    a5.metric(
+        "Cash Allocation",
+        f"{cash_pct:.2f}%",
+        "$" + f"{cash:,.2f}",
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric(
+        "Positions",
+        f"{len(normalized):,}",
+    )
+    c2.metric(
+        "Winners / Losers",
+        f"{winners} / {losers}",
+    )
+    c3.metric(
+        "Win Rate",
+        f"{win_rate:.1f}%",
+    )
+    c4.metric(
+        "Largest Position",
+        largest_symbol,
+        f"{largest_pct:.2f}% of account",
+    )
+    c5.metric(
+        "Top 3 Concentration",
+        f"{top_three_pct:.2f}%",
+    )
+
+    if largest_pct >= 25:
+        st.warning(
+            f"CONCENTRATION FLAG // {largest_symbol} is "
+            f"{largest_pct:.2f}% of total account value."
+        )
+    elif largest_pct >= 15:
+        st.info(
+            f"CONCENTRATION WATCH // {largest_symbol} is "
+            f"{largest_pct:.2f}% of total account value."
+        )
+
     st.markdown("**TOTALS // POSITIONS SHOWN**")
     t1, t2, t3, t4 = st.columns(4)
-    visible_totals = _holdings_total_row(filtered, total_label)
-    t1.metric("Market Value", f"${visible_totals['Market Value']:,.2f}")
-    t2.metric("Total Cost", f"${visible_totals['Total Cost']:,.2f}")
+    visible_totals = _holdings_total_row(
+        filtered,
+        total_label,
+    )
+    t1.metric(
+        "Market Value",
+        "$" + f"{visible_totals['Market Value']:,.2f}",
+    )
+    t2.metric(
+        "Total Cost",
+        "$" + f"{visible_totals['Total Cost']:,.2f}",
+    )
     _financial_metric(
         t3,
         "Unrealized P&L",
-        f"${visible_totals['Gain/Loss']:+,.2f}",
+        "$" + f"{visible_totals['Gain/Loss']:+,.2f}",
         visible_totals["Gain/Loss"],
     )
     _financial_metric(
@@ -3107,12 +3248,124 @@ def render_etrade_holdings():
         visible_totals["Gain/Loss %"],
     )
 
-    st.download_button(
-        "DOWNLOAD HOLDINGS CSV",
-        display_frame.to_csv(index=False).encode("utf-8"),
-        file_name="etrade_holdings.csv",
-        mime="text/csv",
+    download_col, sector_refresh_col, _ = st.columns(
+        [1.45, 1.55, 2.5]
     )
+    with download_col:
+        st.download_button(
+            "DOWNLOAD HOLDINGS CSV",
+            display_frame.to_csv(index=False).encode("utf-8"),
+            file_name="etrade_holdings.csv",
+            mime="text/csv",
+        )
+    with sector_refresh_col:
+        force_sector_refresh = st.button(
+            "REFRESH SECTOR MAP",
+            key="refresh_sector_map",
+            width="stretch",
+        )
+        if force_sector_refresh:
+            st.session_state.pop(
+                "_sector_profile_cache",
+                None,
+            )
+
+    st.subheader("Portfolio Visual Analytics")
+
+    (
+        sector_frame,
+        sector_coverage,
+        sector_sources,
+        sector_errors,
+    ) = _sector_allocation_for_holdings(
+        normalized,
+        force_refresh=force_sector_refresh,
+    )
+
+    sector_chart = _sector_pie_chart(
+        sector_frame
+    )
+    if sector_chart is not None:
+        st.plotly_chart(
+            sector_chart,
+            width="stretch",
+            key="holdings_sector_pie_chart",
+            config={
+                "displayModeBar": False,
+            },
+        )
+        st.caption(
+            "SECTOR MAP // gross market-value exposure // "
+            "ETF/fund positions use look-through sector weights "
+            "when Yahoo Finance provides them // "
+            f"mapping coverage {sector_coverage:.1f}% // sources: "
+            + (
+                ", ".join(sector_sources)
+                if sector_sources
+                else "fallback"
+            )
+        )
+        st.dataframe(
+            sector_frame,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Exposure": st.column_config.NumberColumn(
+                    format="$%.2f"
+                ),
+                "% Exposure": st.column_config.NumberColumn(
+                    format="%.2f%%"
+                ),
+            },
+        )
+    else:
+        st.info(
+            "Sector exposure could not be mapped "
+            "for the current holdings."
+        )
+
+    if sector_errors:
+        with st.expander("SECTOR MAP WARNINGS"):
+            for error in sector_errors[:20]:
+                st.warning(error)
+
+    chart_frame = normalized.copy()
+    if total:
+        chart_frame["% Portfolio"] = (
+            chart_frame["Market Value"] / total * 100
+        )
+
+    allocation_chart = _holdings_chart(
+        chart_frame,
+        "% Portfolio",
+        "POSITION ALLOCATION",
+        allocation=True,
+    )
+    pnl_chart = _holdings_chart(
+        chart_frame,
+        "Gain/Loss",
+        "UNREALIZED P&L LEADERS / LAGGARDS",
+    )
+
+    chart_left, chart_right = st.columns(2)
+    if allocation_chart is not None:
+        chart_left.plotly_chart(
+            allocation_chart,
+            width="stretch",
+            key="holdings_allocation_chart",
+            config={
+                "displayModeBar": False,
+            },
+        )
+    if pnl_chart is not None:
+        chart_right.plotly_chart(
+            pnl_chart,
+            width="stretch",
+            key="holdings_pnl_chart",
+            config={
+                "displayModeBar": False,
+            },
+        )
 
 
 if not _trade_access_unlocked():
