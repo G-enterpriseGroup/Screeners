@@ -16,9 +16,39 @@ from src.etrade_client import ETradeError, option_expiration_dates, quote_summar
 CHAIN_CACHE_SECONDS = 5 * 60
 EXPIRATION_CACHE_SECONDS = 6 * 60 * 60
 
+BB_BLACK = "#000000"
+BB_RED = "#ff433d"
+BB_BLUE = "#0068ff"
+BB_GREEN = "#4af6c3"
+BB_ORANGE = "#fb8b1e"
+
 
 def _money(value: float) -> str:
     return "$" + f"{float(value):,.2f}"
+
+
+def _signed_metric(container, label: str, display_value: str, numeric_value: float, detail: str = "") -> None:
+    color = BB_GREEN if numeric_value > 0 else BB_RED if numeric_value < 0 else BB_ORANGE
+    detail_html = (
+        '<div style="font-size:.78rem;margin-top:.12rem;color:' + color + ';font-weight:700;">'
+        + str(detail)
+        + "</div>"
+        if detail
+        else ""
+    )
+    container.markdown(
+        '<div style="background:' + BB_BLACK + ';border:1px solid ' + BB_ORANGE
+        + ';padding:.55rem .7rem;min-height:104px;font-family:Courier New,monospace;">'
+        + '<div style="color:' + BB_ORANGE + ';font-size:.88rem;margin-bottom:.2rem;">'
+        + str(label)
+        + "</div>"
+        + '<div style="color:' + color + ';font-size:1.65rem;font-weight:900;line-height:1.25;">'
+        + str(display_value)
+        + "</div>"
+        + detail_html
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _expirations(client, symbol: str, touch_session):
@@ -105,8 +135,8 @@ def _render_results(result: dict) -> None:
     p1, p2, p3, p4, p5, p6 = st.columns(6)
     p1.metric("Natural Debit", _money(winner["Natural Debit"]))
     p2.metric("Mid Debit", _money(winner["Mid Debit"]))
-    p3.metric("Max Profit", "+" + _money(winner["Max Profit"]))
-    p4.metric("Max Loss", "-" + _money(winner["Max Loss"]))
+    _signed_metric(p3, "Max Profit", "+" + _money(winner["Max Profit"]), winner["Max Profit"])
+    _signed_metric(p4, "Max Loss", "-" + _money(winner["Max Loss"]), -winner["Max Loss"])
     p5.metric("Max Contracts", f"{winner['Max Contracts / Budget']:,}", "within budget")
     p6.metric("Budget Deployment", _money(winner["Budget Deployment"]))
 
@@ -200,17 +230,17 @@ def _render_results(result: dict) -> None:
         styles = [""] * len(row)
         if row.name == highest_rr_index:
             styles = [
-                "background-color:#00D084;color:#000000;font-weight:900;"
+                "background-color:#4af6c3;color:#000000;font-weight:900;"
             ] * len(row)
         elif row.name == cheapest_index:
             styles = [
-                "background-color:#0068FF;color:#FFFFFF;font-weight:900;"
+                "background-color:#0068ff;color:#FFFFFF;font-weight:900;"
             ] * len(row)
 
         rr_position = row.index.get_loc("Reward : Risk") if "Reward : Risk" in row.index else None
         if rr_position is not None and row.name != highest_rr_index:
             styles[rr_position] = (
-                "color:#00D084;font-weight:900;"
+                "color:#4af6c3;font-weight:900;"
                 + styles[rr_position]
             )
         return styles
