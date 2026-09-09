@@ -29,6 +29,7 @@ from src.etrade_client import (
 from src.muni_data import load_all_ishares_munis, screen_munis
 from src.sector_data import sector_profile
 from src.trade_math import calculate_trade_metrics, risk_sized_quantity
+from src.theme import BB_BLACK, BB_BLUE, BB_GREEN, BB_ORANGE, BB_RED, CHART_COLORWAY
 from src.treasury_data import (
     load_treasury_quotes,
     nearest_muni_candidates,
@@ -97,9 +98,9 @@ st.markdown(
     :root {
         --bb-orange:#fb8b1e;
         --bb-black:#000000;
-        --bb-dark:#0A0A0A;
+        --bb-dark:#000000;
         --bb-dim:#fb8b1e;
-        --bb-blue:#0068FF;
+        --bb-blue:#0068ff;
         --bb-blue-hover:#0068ff;
         --bb-blue-active:#0068ff;
         --bb-green:#4af6c3;
@@ -2109,9 +2110,9 @@ def _price_ladder(current, entry, stop, target, put_wall, call_wall):
     padding = max((max(values) - min(values)) * 0.14, current * 0.01, 0.25)
     figure.update_layout(
         height=170,
-        paper_bgcolor="#000000",
-        plot_bgcolor="#000000",
-        font={"color": "#fb8b1e", "family": "Courier New"},
+        paper_bgcolor=BB_BLACK,
+        plot_bgcolor=BB_BLACK,
+        font={"color": BB_ORANGE, "family": "Courier New"},
         margin={"l": 22, "r": 22, "t": 25, "b": 25},
         xaxis={
             "showticklabels": False,
@@ -2616,7 +2617,7 @@ def _holdings_chart(frame, value_column, title, allocation=False):
     colors = (
         ["#0068FF"] * len(chart_data)
         if allocation
-        else ["#4af6c3" if value >= 0 else "#ff433d" for value in values]
+        else [BB_GREEN if value >= 0 else BB_RED for value in values]
     )
     prefix = "$" if value_column != "% Portfolio" else ""
     suffix = "%" if value_column == "% Portfolio" else ""
@@ -2728,8 +2729,7 @@ def _sector_pie_chart(sector_frame):
     if sector_frame is None or sector_frame.empty:
         return None
 
-    palette = ["#4af6c3", "#0068ff", "#fb8b1e", "#ff433d"]
-    colors = [palette[index % len(palette)] for index in range(len(sector_frame))]
+    colors = [CHART_COLORWAY[index % len(CHART_COLORWAY)] for index in range(len(sector_frame))]
     figure = go.Figure(
         go.Pie(
             labels=sector_frame["Sector"],
@@ -2738,7 +2738,7 @@ def _sector_pie_chart(sector_frame):
             sort=False,
             marker={
                 "colors": colors,
-                "line": {"color": "#000000", "width": 2},
+                "line": {"color": BB_BLACK, "width": 2},
             },
             textinfo="label+percent",
             textfont={"family": "Courier New", "size": 12},
@@ -2751,7 +2751,7 @@ def _sector_pie_chart(sector_frame):
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
         font={"color": "#fb8b1e", "family": "Courier New"},
-        legend={"font": {"color": "#fb8b1e"}, "orientation": "v"},
+        legend={"font": {"color": BB_ORANGE}, "orientation": "v"},
         margin={"l": 20, "r": 20, "t": 65, "b": 20},
         annotations=[
             {
@@ -2759,7 +2759,7 @@ def _sector_pie_chart(sector_frame):
                 "x": 0.5,
                 "y": 0.5,
                 "showarrow": False,
-                "font": {"color": "#4af6c3", "size": 15, "family": "Courier New"},
+                "font": {"color": BB_GREEN, "size": 15, "family": "Courier New"},
             }
         ],
     )
