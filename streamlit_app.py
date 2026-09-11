@@ -31,7 +31,7 @@ from src.session_persistence import (
     restore_etrade_session,
     save_etrade_session,
 )
-from src.tab_order import render_tab_order_editor
+from src.tab_bar import render_terminal_tab_bar
 
 
 # Preserve references to the core implementations before installing the
@@ -164,17 +164,14 @@ render_etrade_connection()
 _persist_active_etrade_session()
 _render_cache_status()
 
-# Real drag-and-drop tab ordering. The sortable strip writes the user's order
-# to a process-memory preference vault and the actual Streamlit tabs are then
-# created in that exact order on the same rerun.
-tab_order = render_tab_order_editor(_trade_access_code_hash())
-tab_containers = st.tabs(tab_order)
-tab_by_name = dict(zip(tab_order, tab_containers))
+# These ARE the terminal tabs: click to open; drag left/right to reorder.
+# Order and active tab are persisted in server memory and browser localStorage.
+tab_order, active_tab = render_terminal_tab_bar(_trade_access_code_hash())
 
-with tab_by_name["HOLDINGS"]:
+if active_tab == "HOLDINGS":
     render_etrade_holdings()
 
-with tab_by_name["RISK SIZING"]:
+elif active_tab == "RISK SIZING":
     render_risk_sizing(
         _etrade_client(),
         account_picker=_account_picker,
@@ -184,14 +181,14 @@ with tab_by_name["RISK SIZING"]:
         touch_session=_touch_etrade_session,
     )
 
-with tab_by_name["BULL DEBIT SPREAD"]:
+elif active_tab == "BULL DEBIT SPREAD":
     render_bull_debit_spread(
         _etrade_client(),
         _touch_etrade_session,
         timezone_name="America/New_York",
     )
 
-with tab_by_name["MUNI SCREENERS"]:
+elif active_tab == "MUNI SCREENERS":
     load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
     with load_col:
         load_muni_clicked = st.button(
@@ -268,7 +265,7 @@ with tab_by_name["MUNI SCREENERS"]:
             "tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before trading."
         )
 
-with tab_by_name["ORDERS"]:
+elif active_tab == "ORDERS":
     orders_left, orders_center, orders_right = st.columns([1.4, 5.2, 1.4])
     with orders_center:
         render_order_simulator()
