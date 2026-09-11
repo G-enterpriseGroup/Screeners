@@ -1,0 +1,278 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000000;
+      color: #fb8b1e;
+      font-family: "Courier New", monospace;
+      overflow: hidden;
+    }
+
+    #tabs {
+      display: flex;
+      align-items: stretch;
+      gap: 2px;
+      width: 100%;
+      min-height: 42px;
+      border-bottom: 1px solid #fb8b1e;
+      background: #000000;
+      box-sizing: border-box;
+      padding: 0 0 1px 0;
+      user-select: none;
+    }
+
+    .tab {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid transparent;
+      border-bottom: 0;
+      background: #000000;
+      color: #fb8b1e;
+      font: 900 14px/1 "Courier New", monospace;
+      letter-spacing: .015em;
+      white-space: nowrap;
+      cursor: grab;
+      box-sizing: border-box;
+    }
+
+    .tab:hover {
+      background: #111111;
+      border-color: #fb8b1e;
+      color: #ffffff;
+    }
+
+    .tab.active {
+      background: #fb8b1e;
+      color: #000000;
+      border-color: #fb8b1e;
+    }
+
+    .tab.dragging {
+      opacity: .48;
+      background: #0068ff;
+      color: #ffffff;
+      border-color: #66adff;
+      cursor: grabbing;
+    }
+
+    .tab.drop-before::before,
+    .tab.drop-after::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      width: 3px;
+      background: #4af6c3;
+    }
+
+    .tab.drop-before::before { left: -2px; }
+    .tab.drop-after::after { right: -2px; }
+
+    .drag-hint {
+      margin-left: auto;
+      align-self: center;
+      color: #8d8d8d;
+      font: 700 11px/1 "Courier New", monospace;
+      padding: 0 8px 0 12px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    @media (max-width: 900px) {
+      .tab { padding: 0 9px; font-size: 12px; }
+      .drag-hint { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="tabs"></div>
+
+  <script>
+    function sendMessageToStreamlitClient(type, data) {
+      const outData = Object.assign({
+        isStreamlitMessage: true,
+        type: type,
+      }, data);
+      window.parent.postMessage(outData, "*");
+    }
+
+    function init() {
+      sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+    }
+
+    function setFrameHeight(height) {
+      sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: height });
+    }
+
+    function sendDataToPython(value) {
+      sendMessageToStreamlitClient("streamlit:setComponentValue", {
+        value: value,
+        dataType: "json",
+      });
+    }
+
+    let tabs = [];
+    let active = "";
+    let storageKey = "raj-terminal-tabs-v1";
+    let draggedIndex = null;
+    let dragDidMove = false;
+    let storageChecked = false;
+
+    function cleanOrder(candidate, allowed) {
+      if (!Array.isArray(candidate)) return [...allowed];
+      const out = [];
+      candidate.forEach((item) => {
+        if (allowed.includes(item) && !out.includes(item)) out.push(item);
+      });
+      allowed.forEach((item) => {
+        if (!out.includes(item)) out.push(item);
+      });
+      return out;
+    }
+
+    function stateSignature(order, selected) {
+      return JSON.stringify({ order: order, active: selected });
+    }
+
+    function persist() {
+      try {
+        localStorage.setItem(storageKey, stateSignature(tabs, active));
+      } catch (_) {}
+    }
+
+    function emit(action) {
+      persist();
+      sendDataToPython({ order: tabs, active: active, action: action });
+    }
+
+    function clearDropMarkers() {
+      document.querySelectorAll(".tab").forEach((el) => {
+        el.classList.remove("drop-before", "drop-after");
+      });
+    }
+
+    function render() {
+      const root = document.getElementById("tabs");
+      root.innerHTML = "";
+
+      tabs.forEach((label, index) => {
+        const button = document.createElement("div");
+        button.className = "tab" + (label === active ? " active" : "");
+        button.textContent = label;
+        button.draggable = true;
+        button.dataset.index = String(index);
+        button.title = "Click to open. Drag left or right to reorder.";
+
+        button.addEventListener("click", () => {
+          if (dragDidMove) {
+            dragDidMove = false;
+            return;
+          }
+          if (active !== label) {
+            active = label;
+            render();
+            emit("select");
+          }
+        });
+
+        button.addEventListener("dragstart", (event) => {
+          draggedIndex = index;
+          dragDidMove = false;
+          button.classList.add("dragging");
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", label);
+        });
+
+        button.addEventListener("dragover", (event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          clearDropMarkers();
+          const rect = button.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          button.classList.add(before ? "drop-before" : "drop-after");
+        });
+
+        button.addEventListener("drop", (event) => {
+          event.preventDefault();
+          if (draggedIndex === null) return;
+
+          const rect = button.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          let targetIndex = index + (before ? 0 : 1);
+          const next = [...tabs];
+          const [moved] = next.splice(draggedIndex, 1);
+          if (draggedIndex < targetIndex) targetIndex -= 1;
+          targetIndex = Math.max(0, Math.min(targetIndex, next.length));
+          next.splice(targetIndex, 0, moved);
+
+          const changed = stateSignature(next, active) !== stateSignature(tabs, active);
+          tabs = next;
+          dragDidMove = changed;
+          draggedIndex = null;
+          clearDropMarkers();
+          render();
+          if (changed) emit("reorder");
+        });
+
+        button.addEventListener("dragend", () => {
+          draggedIndex = null;
+          clearDropMarkers();
+          document.querySelectorAll(".tab").forEach((el) => el.classList.remove("dragging"));
+        });
+
+        root.appendChild(button);
+      });
+
+      const hint = document.createElement("div");
+      hint.className = "drag-hint";
+      hint.textContent = "DRAG TABS TO REORDER";
+      root.appendChild(hint);
+
+      window.setTimeout(() => setFrameHeight(Math.max(44, root.scrollHeight + 2)), 0);
+    }
+
+    function onDataFromPython(event) {
+      if (event.data.type !== "streamlit:render") return;
+      const args = event.data.args || {};
+      const allowed = Array.isArray(args.tabs) ? args.tabs.map(String) : [];
+      storageKey = String(args.storage_key || "raj-terminal-tabs-v1");
+      tabs = cleanOrder(allowed, allowed);
+      active = allowed.includes(args.active) ? String(args.active) : (allowed[0] || "");
+
+      if (!storageChecked) {
+        storageChecked = true;
+        try {
+          const raw = localStorage.getItem(storageKey);
+          if (raw) {
+            const saved = JSON.parse(raw);
+            const savedOrder = cleanOrder(saved.order, allowed);
+            const savedActive = allowed.includes(saved.active) ? saved.active : active;
+            if (stateSignature(savedOrder, savedActive) !== stateSignature(tabs, active)) {
+              tabs = savedOrder;
+              active = savedActive;
+              render();
+              emit("restore");
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+
+      render();
+    }
+
+    window.addEventListener("message", onDataFromPython);
+    window.addEventListener("load", () => setFrameHeight(46));
+    init();
+  </script>
+</body>
+</html>
