@@ -25,7 +25,7 @@ from src.etrade_data_cache import (
     clear_session_cache,
 )
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
-from src.risk_sizing_ui_v6 import render_risk_sizing
+from src.risk_sizing_ui_5pct_stable import render_risk_sizing
 from src.session_persistence import (
     clear_etrade_session,
     restore_etrade_session,
