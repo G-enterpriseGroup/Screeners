@@ -13,17 +13,42 @@ from typing import Callable
 import streamlit as st
 
 
+class _ColumnProxy:
+    """Pass-through Streamlit column that removes stale 'Live' metric wording."""
+
+    def __init__(self, column):
+        self._column = column
+
+    def __enter__(self):
+        self._column.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._column.__exit__(exc_type, exc_value, traceback)
+
+    def __getattr__(self, name):
+        return getattr(self._column, name)
+
+    def metric(self, label, *args, **kwargs):
+        label = {
+            "Live Account Value": "Account Value",
+            "Live Market Value": "Market Value",
+        }.get(str(label), label)
+        return self._column.metric(label, *args, **kwargs)
+
+
 def build_manual_holdings_renderer(core_renderer: Callable):
     """Return the holdings renderer with live polling removed from the UI/data path."""
-    core_body = getattr(core_renderer, "__wrapped__", core_renderer)
+    raw_body = getattr(core_renderer, "__wrapped__", None)
+    core_body = raw_body or core_renderer
 
-    @st.fragment
-    def render_manual_holdings():
+    def _run_snapshot_body():
         original_toggle = st.toggle
         original_selectbox = st.selectbox
         original_button = st.button
         original_caption = st.caption
         original_warning = st.warning
+        original_columns = st.columns
 
         def snapshot_toggle(label, *args, **kwargs):
             if kwargs.get("key") == "holdings_live_enabled":
@@ -32,8 +57,8 @@ def build_manual_holdings_renderer(core_renderer: Callable):
 
         def snapshot_selectbox(label, options, *args, **kwargs):
             if kwargs.get("key") == "holdings_refresh_seconds":
-                # The core body still expects a value, but this setting is hidden
-                # and live refresh is disabled above.
+                # The legacy body still expects a value, but live refresh is
+                # disabled and this selector is intentionally not rendered.
                 return 30
             return original_selectbox(label, options, *args, **kwargs)
 
@@ -66,11 +91,21 @@ def build_manual_holdings_renderer(core_renderer: Callable):
             text = str(body).replace("LIVE REFRESH ERROR //", "REFRESH ERROR //")
             return original_warning(text, *args, **kwargs)
 
+        def snapshot_columns(spec, *args, **kwargs):
+            # The first three-column control row in the legacy renderer was
+            # LIVE toggle / interval / refresh. Collapse it into one full-width
+            # manual refresh button while keeping the body assignment intact.
+            if isinstance(spec, (list, tuple)) and list(spec) == [1.3, 1.2, 1.4]:
+                spec = [0.001, 0.001, 1.0]
+            columns = original_columns(spec, *args, **kwargs)
+            return [_ColumnProxy(column) for column in columns]
+
         st.toggle = snapshot_toggle
         st.selectbox = snapshot_selectbox
         st.button = snapshot_button
         st.caption = snapshot_caption
         st.warning = snapshot_warning
+        st.columns = snapshot_columns
         try:
             return core_body()
         finally:
@@ -79,5 +114,11 @@ def build_manual_holdings_renderer(core_renderer: Callable):
             st.button = original_button
             st.caption = original_caption
             st.warning = original_warning
+            st.columns = original_columns
 
-    return render_manual_holdings
+    # If Streamlit exposes the original function behind @st.fragment, wrap that
+    # body in a non-timed fragment. Otherwise call the existing renderer while
+    # still forcing live_enabled=False; no E*TRADE polling occurs in either path.
+    if raw_body is not None:
+        return st.fragment(_run_snapshot_body)
+    return _run_snapshot_body
