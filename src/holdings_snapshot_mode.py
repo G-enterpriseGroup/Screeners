@@ -12,13 +12,11 @@ from typing import Callable
 
 import streamlit as st
 
-from src.stockanalysis_portfolio_v2 import render_stockanalysis_portfolio
+from src.stockanalysis_portfolio_v3 import render_stockanalysis_portfolio
+from src.terminal_number_format import comma_column_config
 from src.visual_safety import install_streamlit_visual_safety
 
 
-# This module is imported by the terminal entrypoint before any tab renders, so
-# installing here gives every Plotly chart (Holdings, Risk Sizing, Orders, etc.)
-# the same anti-clipping and responsive-layout guardrails.
 install_streamlit_visual_safety()
 
 
@@ -71,6 +69,7 @@ def build_manual_holdings_renderer(core_renderer: Callable):
         original_caption = st.caption
         original_warning = st.warning
         original_columns = st.columns
+        original_dataframe = st.dataframe
 
         def snapshot_toggle(label, *args, **kwargs):
             if kwargs.get("key") == "holdings_live_enabled":
@@ -79,8 +78,6 @@ def build_manual_holdings_renderer(core_renderer: Callable):
 
         def snapshot_selectbox(label, options, *args, **kwargs):
             if kwargs.get("key") == "holdings_refresh_seconds":
-                # The legacy body still expects a value, but live refresh is
-                # disabled and this selector is intentionally not rendered.
                 return 30
             return original_selectbox(label, options, *args, **kwargs)
 
@@ -123,13 +120,19 @@ def build_manual_holdings_renderer(core_renderer: Callable):
             return original_warning(text, *args, **kwargs)
 
         def snapshot_columns(spec, *args, **kwargs):
-            # The first three-column control row in the legacy renderer was
-            # LIVE toggle / interval / refresh. Collapse it into one full-width
-            # manual refresh button while keeping the body assignment intact.
             if isinstance(spec, (list, tuple)) and list(spec) == [1.3, 1.2, 1.4]:
                 spec = [0.001, 0.001, 1.0]
             columns = original_columns(spec, *args, **kwargs)
             return [_ColumnProxy(column) for column in columns]
+
+        def snapshot_dataframe(data=None, *args, **kwargs):
+            # Keep values numeric/sortable while displaying commas everywhere
+            # in Holdings. Existing explicit column configs always win.
+            kwargs["column_config"] = comma_column_config(
+                data,
+                kwargs.get("column_config"),
+            )
+            return original_dataframe(data, *args, **kwargs)
 
         st.toggle = snapshot_toggle
         st.selectbox = snapshot_selectbox
@@ -137,6 +140,7 @@ def build_manual_holdings_renderer(core_renderer: Callable):
         st.caption = snapshot_caption
         st.warning = snapshot_warning
         st.columns = snapshot_columns
+        st.dataframe = snapshot_dataframe
         result = None
         try:
             result = core_body()
@@ -147,10 +151,8 @@ def build_manual_holdings_renderer(core_renderer: Callable):
             st.caption = original_caption
             st.warning = original_warning
             st.columns = original_columns
+            st.dataframe = original_dataframe
 
-        # Keep the user's requested visual rule: the holdings table and legacy
-        # portfolio analytics render first; StockAnalysis sector/industry maps
-        # are appended below them, never above the holdings table.
         render_stockanalysis_portfolio(
             "holdings_account",
             key_prefix="holdings_stockanalysis",
@@ -159,9 +161,6 @@ def build_manual_holdings_renderer(core_renderer: Callable):
         )
         return result
 
-    # If Streamlit exposes the original function behind @st.fragment, wrap that
-    # body in a non-timed fragment. Otherwise call the existing renderer while
-    # still forcing live_enabled=False; no E*TRADE polling occurs in either path.
     if raw_body is not None:
         return st.fragment(_run_snapshot_body)
     return _run_snapshot_body
