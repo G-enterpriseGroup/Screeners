@@ -37,6 +37,19 @@ class _ColumnProxy:
         return self._column.metric(label, *args, **kwargs)
 
 
+def _age_text(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "unknown age"
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s old"
+    if seconds < 3600:
+        return f"{seconds // 60}m old"
+    if seconds < 86400:
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m old"
+    return f"{seconds // 86400}d {(seconds % 86400) // 3600}h old"
+
+
 def build_manual_holdings_renderer(core_renderer: Callable):
     """Return the holdings renderer with live polling removed from the UI/data path."""
     raw_body = getattr(core_renderer, "__wrapped__", None)
@@ -64,8 +77,9 @@ def build_manual_holdings_renderer(core_renderer: Callable):
 
         def snapshot_button(label, *args, **kwargs):
             if kwargs.get("key") == "refresh_holdings":
+                offline = bool(st.session_state.get("_etrade_offline_mode", False))
                 return original_button(
-                    "REFRESH HOLDINGS + BALANCE",
+                    "RELOAD CACHED HOLDINGS" if offline else "REFRESH HOLDINGS + BALANCE",
                     *args,
                     **kwargs,
                 )
@@ -74,17 +88,25 @@ def build_manual_holdings_renderer(core_renderer: Callable):
         def snapshot_caption(body, *args, **kwargs):
             text = str(body)
             if text.startswith("HOLDINGS DATA //"):
-                refreshed_at = float(
-                    st.session_state.get("etrade_holdings_last_refresh", 0.0) or 0.0
-                )
-                if refreshed_at:
-                    age = max(0, int(time.time() - refreshed_at))
+                offline = bool(st.session_state.get("_etrade_offline_mode", False))
+                event = st.session_state.get("_etrade_offline_last_event") or {}
+                if offline:
                     text = (
-                        "HOLDINGS SNAPSHOT // MANUAL REFRESH ONLY // "
-                        f"last refresh {age}s ago"
+                        "HOLDINGS SNAPSHOT // OFFLINE CACHE // "
+                        f"source snapshot {_age_text(event.get('age'))} // NOT LIVE"
                     )
                 else:
-                    text = "HOLDINGS SNAPSHOT // MANUAL REFRESH ONLY"
+                    refreshed_at = float(
+                        st.session_state.get("etrade_holdings_last_refresh", 0.0) or 0.0
+                    )
+                    if refreshed_at:
+                        age = max(0, int(time.time() - refreshed_at))
+                        text = (
+                            "HOLDINGS SNAPSHOT // MANUAL REFRESH ONLY // "
+                            f"last refresh {age}s ago"
+                        )
+                    else:
+                        text = "HOLDINGS SNAPSHOT // MANUAL REFRESH ONLY"
             return original_caption(text, *args, **kwargs)
 
         def snapshot_warning(body, *args, **kwargs):
