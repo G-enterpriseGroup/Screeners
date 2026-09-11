@@ -77,27 +77,36 @@ _BASE_RENDER_RISK_SIZING = render_risk_sizing
 
 
 def _render_compact_terminal_css() -> None:
-    """Reduce dead space and make dropdowns visually distinct."""
+    """Reduce dead space while preserving the existing text and typography."""
     st.markdown(
         """
         <style>
+        /* Metric/quote cards: keep the same text, remove the empty vertical box area. */
         .rs-card {
-            min-height:76px !important;
-            padding:.34rem .50rem !important;
+            min-height:0 !important;
+            height:auto !important;
+            padding:.24rem .48rem !important;
+            margin:0 !important;
+            box-sizing:border-box !important;
         }
-        .rs-card-head { gap:.28rem !important; }
+        .rs-card-head {
+            gap:.28rem !important;
+            min-height:15px !important;
+            margin:0 !important;
+        }
         .rs-card-label {
             font-size:.70rem !important;
             line-height:1.05 !important;
+            margin:0 !important;
         }
         .rs-card-value {
             font-size:1.18rem !important;
-            margin-top:.06rem !important;
+            margin:.04rem 0 0 0 !important;
             line-height:1.08 !important;
         }
         .rs-card-detail {
             font-size:.64rem !important;
-            margin-top:.05rem !important;
+            margin:.04rem 0 0 0 !important;
             line-height:1.05 !important;
         }
         .rs-help {
@@ -111,16 +120,40 @@ def _render_compact_terminal_css() -> None:
             width:300px !important;
         }
 
+        /* Streamlit wraps each HTML card in extra blocks; collapse those wrappers too. */
+        [data-testid="stMarkdownContainer"]:has(.rs-card),
+        [data-testid="stMarkdownContainer"]:has(.rs-card) > div,
+        [data-testid="stMarkdownContainer"]:has(.rs-card) p {
+            margin-top:0 !important;
+            margin-bottom:0 !important;
+            padding-top:0 !important;
+            padding-bottom:0 !important;
+        }
+        [data-testid="stHorizontalBlock"]:has(.rs-card) {
+            gap:.65rem !important;
+            margin-top:.12rem !important;
+            margin-bottom:.12rem !important;
+        }
+
+        /* Inputs stay readable but use less height. */
         [data-testid="stNumberInput"] input,
         [data-testid="stTextInput"] input {
             min-height:34px !important;
             height:34px !important;
+            padding-top:.2rem !important;
+            padding-bottom:.2rem !important;
         }
         [data-testid="stNumberInput"] button {
             min-height:34px !important;
             height:34px !important;
         }
+        [data-testid="stNumberInput"],
+        [data-testid="stTextInput"],
+        [data-testid="stSelectbox"] {
+            margin-bottom:.10rem !important;
+        }
 
+        /* Dropdowns stay visually distinct from normal fields. */
         [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
             background:#0068ff !important;
             border-color:#fb8b1e !important;
