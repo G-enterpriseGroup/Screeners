@@ -13,6 +13,13 @@ from typing import Callable
 import streamlit as st
 
 from src.stockanalysis_portfolio import render_stockanalysis_portfolio
+from src.visual_safety import install_streamlit_visual_safety
+
+
+# This module is imported by the terminal entrypoint before any tab renders, so
+# installing here gives every Plotly chart (Holdings, Risk Sizing, Orders, etc.)
+# the same anti-clipping and responsive-layout guardrails.
+install_streamlit_visual_safety()
 
 
 class _ColumnProxy:
