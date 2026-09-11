@@ -2,14 +2,17 @@
 
 This adapter keeps the full v2 Crown risk-sizing engine, but promotes E*TRADE's
 actual cash balance into the main metric row. It intentionally does NOT use
-cashAvailableForInvestment, cashBuyingPower, or marginBuyingPower because those
-can reflect purchasing power rather than cash actually held in the account.
+cashAvailableForInvestment, cashBuyingPower, marginBuyingPower, or day-trading
+buying power because those can reflect credit/purchasing power rather than cash
+actually held in the account.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+
+import streamlit as st
 
 from src.etrade_client import find_number
 
@@ -37,15 +40,24 @@ _OLD_ROOM_BLOCK = '''    _metric_box(
 
 _NEW_ROOM_BLOCK = _OLD_ROOM_BLOCK + '''    cash_pct = cash_available / investable_assets * 100.0 if investable_assets else 0.0
     cash_tone = "positive" if cash_available >= 0 else "negative"
+    cash_source = st.session_state.get("_risk_true_cash_source", "UNAVAILABLE")
+    cash_fields = st.session_state.get("_risk_true_cash_fields", {})
+    raw_cash_text = ", ".join(
+        f"{name}={_money(value)}"
+        for name, value in cash_fields.items()
+        if value is not None
+    ) or "No cash-only E*TRADE field was returned."
     _metric_box(
         s6,
         "CASH BALANCE",
         _money(cash_available),
         cash_tone,
-        f"{cash_pct:.2f}% OF ACCOUNT",
+        f"{cash_pct:.2f}% OF ACCOUNT // {cash_source}",
         help_text=(
-            f"E*TRADE TRUE CASH: {_money(cash_available)}. Source priority = Computed.cashBalance, then netCash / moneyMktBalance fallback. "
-            "This card intentionally EXCLUDES cashAvailableForInvestment, cashBuyingPower, marginBuyingPower, and day-trading buying power so margin purchasing power is not shown as cash."
+            f"E*TRADE TRUE CASH: {_money(cash_available)}. FIELD USED: {cash_source}. "
+            f"RAW CASH-ONLY FIELDS: {raw_cash_text}. "
+            "The selector prefers a meaningful non-zero cashBalance; if E*TRADE returns cashBalance=0, it automatically checks netCash, then moneyMktBalance, then settledCashForInvestment. "
+            "It intentionally EXCLUDES cashAvailableForInvestment, cashBuyingPower, marginBuyingPower, totalAvailableForWithdrawal, and day-trading buying power so margin credit is never labeled as cash."
         ),
     )
 '''
@@ -61,29 +73,105 @@ exec(compile(_SOURCE, str(_V2_PATH), "exec"), globals())
 _BASE_RENDER_RISK_SIZING = render_risk_sizing
 
 
+def _walk_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_dicts(child)
+
+
+def _section(payload: dict[str, Any], *names: str) -> dict[str, Any]:
+    wanted = {str(name).casefold() for name in names}
+    for node in _walk_dicts(payload):
+        for key, child in node.items():
+            if str(key).casefold() in wanted and isinstance(child, dict):
+                return child
+    return {}
+
+
+def _number(section: dict[str, Any], key: str) -> float | None:
+    if not isinstance(section, dict):
+        return None
+    wanted = str(key).casefold()
+    for actual_key, value in section.items():
+        if str(actual_key).casefold() != wanted:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _true_cash_fields(payload: dict[str, Any]) -> dict[str, float | None]:
+    """Extract only cash-balance fields from E*TRADE's balance response.
+
+    E*TRADE's JSON/XML examples use a Computed object while the schema labels it
+    ComputedBalance. We support both explicitly and keep the Cash sweep object
+    separate so buying-power fields can never be mistaken for cash.
+    """
+    computed = _section(payload, "Computed", "ComputedBalance", "computedBalance")
+    cash_section = _section(payload, "Cash", "cash")
+
+    fields = {
+        "cashBalance": _number(computed, "cashBalance"),
+        "netCash": _number(computed, "netCash"),
+        "moneyMktBalance": _number(cash_section, "moneyMktBalance"),
+        "settledCashForInvestment": _number(computed, "settledCashForInvestment"),
+        "unSettledCashForInvestment": _number(computed, "unSettledCashForInvestment"),
+    }
+
+    # Defensive fallback for response-shape changes. Still restrict the search
+    # to cash-only field names; never search buying-power fields here.
+    for key in list(fields):
+        if fields[key] is None:
+            fields[key] = find_number(payload, key)
+    return fields
+
+
+def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, float | None]]:
+    """Choose E*TRADE's best actual-cash field without letting a zero block fallback.
+
+    The previous implementation treated cashBalance=0 as a final answer because
+    zero is a valid number. Some live margin-account responses expose 0 in that
+    field while netCash or the sweep balance carries the actual cash amount.
+    We therefore prefer the first *meaningful non-zero* cash-only value, while
+    preserving a real zero when every cash-only field is zero/missing.
+    """
+    fields = _true_cash_fields(payload)
+    priority = (
+        "cashBalance",
+        "netCash",
+        "moneyMktBalance",
+        "settledCashForInvestment",
+    )
+
+    for key in priority:
+        value = fields.get(key)
+        if value is not None and abs(float(value)) >= 0.005:
+            return float(value), key, fields
+
+    for key in priority:
+        value = fields.get(key)
+        if value is not None:
+            return float(value), key, fields
+
+    return 0.0, "NO CASH FIELD RETURNED", fields
+
+
 def _true_cash_snapshot(
     payload: dict[str, Any],
     base_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
 ) -> tuple[float, float, float]:
-    """Return total account value, real cash balance, and market value.
-
-    E*TRADE documents cashBalance as the current cash balance. We deliberately
-    avoid all buying-power fields here so a margin account cannot inflate the
-    displayed cash figure.
-    """
+    """Return total account value, actual cash balance, and market value."""
     total, _, market_value = base_snapshot(payload)
-
-    cash = find_number(payload, "cashBalance")
-    if cash is None:
-        cash = find_number(payload, "netCash")
-    if cash is None:
-        cash = find_number(payload, "moneyMktBalance")
-    if cash is None:
-        # settledCashForInvestment is conservative and still excludes margin
-        # buying power, so it is a safe last-resort cash-only fallback.
-        cash = find_number(payload, "settledCashForInvestment")
-
-    return float(total or 0.0), float(cash or 0.0), float(market_value or 0.0)
+    cash, source, fields = _select_true_cash(payload)
+    st.session_state["_risk_true_cash_source"] = source
+    st.session_state["_risk_true_cash_fields"] = fields
+    return float(total or 0.0), float(cash), float(market_value or 0.0)
 
 
 def render_risk_sizing(
