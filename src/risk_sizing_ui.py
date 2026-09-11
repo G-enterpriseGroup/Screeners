@@ -53,6 +53,8 @@ def _normalized_holdings(raw_holdings: list[dict[str, Any]]) -> pd.DataFrame:
             possible = str(row.get("Symbol") or "").strip().upper()
             if len(possible) == 9 and possible.isalnum():
                 cusip = possible
+        # CUSIP remains internal for classification only. It is intentionally
+        # not repeated in the dashboard when the bond symbol already is its CUSIP.
         row["CUSIP"] = cusip
         rows.append(row)
     return pd.DataFrame(rows)
@@ -317,48 +319,111 @@ def render_risk_sizing(
     if full_position_risk_pct < 1.0 or full_position_risk_pct > 2.0:
         st.warning("CROWN RISK RANGE FLAG // the guide's stated 1.00 risk cap is 1% to 2% of the tactical sleeve.")
 
+    tactical_usage_pct = (
+        summary["tactical_value"] / summary["target_tactical_dollars"] * 100.0
+        if summary["target_tactical_dollars"] > 0
+        else 0.0
+    )
+
     s1, s2, s3, s4, s5 = st.columns(5)
     _metric_box(s1, "INVESTABLE ASSETS", _money(summary["investable_assets"]), "blue")
     _metric_box(s2, "TARGET TACTICAL SLEEVE", _money(summary["target_tactical_dollars"]), "neutral", _percent(tactical_sleeve_pct))
     current_tone = "negative" if summary["tactical_value"] > summary["target_tactical_dollars"] else "positive"
-    _metric_box(s3, "CURRENT TACTICAL", _money(summary["tactical_value"]), current_tone, _percent(summary["tactical_pct_of_assets"]))
+    _metric_box(
+        s3,
+        "CURRENT TACTICAL",
+        _money(summary["tactical_value"]),
+        current_tone,
+        f"{tactical_usage_pct:.1f}% OF SLEEVE",
+    )
     _metric_box(s4, "LONG-TERM / STRUCTURAL", _money(summary["long_term_value"]), "positive")
     room_tone = "positive" if summary["target_room"] >= 0 else "negative"
     _metric_box(s5, "TACTICAL ROOM", _money(summary["target_room"]), room_tone)
 
+    # Keep the risk-book table decision-focused. CUSIP and security type remain
+    # available internally for classification, but duplicating them on screen
+    # adds noise (especially when a bond symbol already is the CUSIP).
+    view = classified.copy()
+    view["Market Value"] = pd.to_numeric(view["Market Value"], errors="coerce").fillna(0.0)
+    view["Gain/Loss"] = pd.to_numeric(view["Gain/Loss"], errors="coerce").fillna(0.0)
+    view["Gain/Loss %"] = pd.to_numeric(view["Gain/Loss %"], errors="coerce").fillna(0.0)
+    view["% Account"] = (
+        view["Market Value"].abs() / investable_assets * 100.0
+        if investable_assets > 0
+        else 0.0
+    )
+    view["% Tactical Sleeve"] = 0.0
+    tactical_mask = view["Sleeve"].astype(str).eq("TACTICAL")
+    if summary["target_tactical_dollars"] > 0:
+        view.loc[tactical_mask, "% Tactical Sleeve"] = (
+            view.loc[tactical_mask, "Market Value"].abs()
+            / summary["target_tactical_dollars"]
+            * 100.0
+        )
+    view.loc[~tactical_mask, "% Tactical Sleeve"] = float("nan")
+
+    sleeve_rank = {"TACTICAL": 0, "LONG-TERM": 1}
+    view["_sleeve_rank"] = view["Sleeve"].map(sleeve_rank).fillna(2)
+    view = view.sort_values(
+        ["_sleeve_rank", "Market Value"],
+        ascending=[True, False],
+        kind="stable",
+    )
+
     view_columns = [
         "Sleeve",
         "Symbol",
-        "Type",
-        "CUSIP",
         "Gain/Loss %",
-        "Market Value",
         "Gain/Loss",
-        "Sleeve Rule",
+        "Market Value",
+        "% Account",
+        "% Tactical Sleeve",
     ]
-    view = classified[[column for column in view_columns if column in classified.columns]].copy()
+    view = view[view_columns].reset_index(drop=True)
 
-    def style_sleeve(row):
-        sleeve = str(row.get("Sleeve", ""))
-        if sleeve == "LONG-TERM":
-            return ["color:" + BB_GREEN + ";font-weight:900;" if col == "Sleeve" else "" for col in row.index]
-        return ["color:" + BB_ORANGE + ";font-weight:900;" if col == "Sleeve" else "" for col in row.index]
+    def style_risk_book(row):
+        styles = [""] * len(row)
+        for idx, column in enumerate(row.index):
+            value = row.get(column)
+            if column == "Sleeve":
+                styles[idx] = (
+                    "color:" + BB_GREEN + ";font-weight:900;"
+                    if str(value) == "LONG-TERM"
+                    else "color:" + BB_ORANGE + ";font-weight:900;"
+                )
+            elif column in {"Gain/Loss %", "Gain/Loss"}:
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    numeric = 0.0
+                if numeric > 0:
+                    styles[idx] = "color:" + BB_GREEN + ";font-weight:900;"
+                elif numeric < 0:
+                    styles[idx] = "color:" + BB_RED + ";font-weight:900;"
+            elif column == "% Tactical Sleeve" and pd.notna(value):
+                styles[idx] = "color:" + BB_BLUE + ";font-weight:900;"
+        return styles
 
+    st.caption(
+        "RISK BOOK // tactical positions first // P&L red/green // % ACCOUNT shows portfolio weight // "
+        "% TACTICAL SLEEVE shows how much of your tactical budget each tactical position consumes."
+    )
     st.dataframe(
-        view.style.apply(style_sleeve, axis=1),
+        view.style.apply(style_risk_book, axis=1),
         hide_index=True,
         width="stretch",
         height=min(700, max(250, 34 * len(view) + 42)),
         column_config={
             "Gain/Loss %": st.column_config.NumberColumn(format="%.2f%%"),
-            "Market Value": st.column_config.NumberColumn(format="$%.2f"),
             "Gain/Loss": st.column_config.NumberColumn(format="$%.2f"),
+            "Market Value": st.column_config.NumberColumn(format="$%.2f"),
+            "% Account": st.column_config.NumberColumn(format="%.2f%%"),
+            "% Tactical Sleeve": st.column_config.NumberColumn(format="%.2f%%"),
         },
     )
     st.caption(
-        "RAJ CLASSIFICATION // bonds or positions carrying a CUSIP are LONG-TERM regardless of P&L; "
-        f"other positions >= {gain_threshold:.2f}% gain are LONG-TERM; below that threshold are TACTICAL. "
-        "This classification rule is your custom rule, not a Crown Macro rule."
+        "CLASSIFICATION // bonds stay LONG-TERM internally using bond/CUSIP metadata; "
+        f"other positions at or above {gain_threshold:.2f}% gain are LONG-TERM; below are TACTICAL."
     )
 
     st.markdown("**2 // SIZE THE NEXT TRADE**")
@@ -375,35 +440,38 @@ def render_risk_sizing(
             type="primary",
             width="stretch",
             key="risk_pull_quote",
-            disabled=not ticker,
         )
 
+    quote_key = "risk_quote_data"
     if load_quote:
         try:
-            quote = quote_summary(client.get_quote(ticker))
-            st.session_state["risk_quote"] = quote
+            quote_data = quote_summary(client.get_quote(ticker))
+            st.session_state[quote_key] = quote_data
             st.session_state["risk_quote_symbol"] = ticker
-            if quote.get("last"):
-                st.session_state["risk_entry_price"] = float(quote["last"])
             touch_session()
         except ETradeError as exc:
             st.error(str(exc))
 
-    quote = (
-        st.session_state.get("risk_quote")
-        if st.session_state.get("risk_quote_symbol") == ticker
-        else None
-    )
-    if quote:
-        q1, q2, q3, q4 = st.columns(4)
-        _metric_box(q1, "LAST", _money(quote.get("last") or 0.0), "positive")
-        _metric_box(q2, "BID", _money(quote.get("bid") or 0.0), "neutral")
-        _metric_box(q3, "ASK", _money(quote.get("ask") or 0.0), "neutral")
-        change = float(quote.get("change") or 0.0)
-        _metric_box(q4, "CHANGE", ("+" if change > 0 else "") + _money(change), "positive" if change > 0 else "negative" if change < 0 else "neutral")
+    quote_data = st.session_state.get(quote_key)
+    if st.session_state.get("risk_quote_symbol") != ticker:
+        quote_data = None
 
-    input1, input2, input3 = st.columns(3)
-    with input1:
+    if quote_data:
+        q1, q2, q3, q4 = st.columns(4)
+        _metric_box(q1, "LAST", _money(quote_data.get("last") or 0.0), "positive")
+        _metric_box(q2, "BID", _money(quote_data.get("bid") or 0.0), "blue")
+        _metric_box(q3, "ASK", _money(quote_data.get("ask") or 0.0), "blue")
+        change = float(quote_data.get("change") or 0.0)
+        _metric_box(q4, "CHANGE", f"{change:+.2f}", "positive" if change >= 0 else "negative")
+
+    structure_col, multiplier_col = st.columns(2)
+    with structure_col:
+        trade_structure = st.selectbox(
+            "Trade Structure",
+            ["STOCK / ETF", "DEFINED-RISK OPTION SPREAD"],
+            key="risk_trade_structure",
+        )
+    with multiplier_col:
         size_multiplier = float(
             st.selectbox(
                 "Crown Size Multiplier",
@@ -413,102 +481,65 @@ def render_risk_sizing(
                 key="risk_size_multiplier",
             )
         )
-    with input2:
-        risk_model = st.selectbox(
-            "Risk Model",
-            ["STOCK / ETF — STOP BASED", "DEFINED-RISK OPTION SPREAD — MAX LOSS"],
-            key="risk_model",
-        )
-    with input3:
-        entry_default = float((quote or {}).get("last") or 100.0)
-        if "risk_entry_price" not in st.session_state:
-            st.session_state["risk_entry_price"] = entry_default
-        entry_price = float(
-            st.number_input(
-                "Entry Price",
-                min_value=0.01,
-                step=0.01,
-                format="%.2f",
-                key="risk_entry_price",
-            )
-        )
 
-    budgets = crown_risk_budget(
+    risk_budget = crown_risk_budget(
         investable_assets,
         tactical_sleeve_pct,
         full_position_risk_pct,
         size_multiplier,
     )
 
-    r1, r2, r3, r4 = st.columns(4)
-    _metric_box(r1, "TACTICAL SLEEVE", _money(budgets["tactical_sleeve"]), "blue")
-    _metric_box(r2, "1.00 RISK BUDGET", _money(budgets["full_risk_budget"]), "neutral")
-    _metric_box(r3, "SELECTED SIZE", f"{size_multiplier:.2f}", "positive")
-    _metric_box(r4, "MAX DOLLAR RISK", _money(budgets["selected_risk_budget"]), "positive")
+    r1, r2, r3 = st.columns(3)
+    _metric_box(r1, "1.00 RISK BUDGET", _money(risk_budget["full_risk_budget"]), "neutral")
+    _metric_box(r2, "SELECTED SIZE", f"{size_multiplier:.2f}", "blue")
+    _metric_box(r3, "MAX DOLLAR RISK", _money(risk_budget["selected_risk_budget"]), "positive")
 
-    if risk_model.startswith("STOCK"):
-        stop_col, enabled_col = st.columns([2.2, 1.0], vertical_alignment="bottom")
-        with enabled_col:
-            use_stop = st.toggle(
-                "Use Stop Loss",
-                value=True,
-                key="risk_use_stop",
+    if trade_structure == "STOCK / ETF":
+        default_entry = float(quote_data.get("last") or 100.0) if quote_data else 100.0
+        e1, e2 = st.columns(2)
+        with e1:
+            entry_price = float(
+                st.number_input(
+                    "Entry Price",
+                    min_value=0.01,
+                    value=default_entry,
+                    step=0.01,
+                    format="%.2f",
+                    key="risk_entry_price",
+                )
             )
-        with stop_col:
-            stop_default = max(0.01, round(entry_price * 0.95, 2))
-            if "risk_stop_price" not in st.session_state:
-                st.session_state["risk_stop_price"] = stop_default
+        with e2:
             stop_price = float(
                 st.number_input(
                     "Stop Loss",
-                    min_value=0.01,
+                    min_value=0.0,
+                    value=max(0.01, default_entry * 0.95),
                     step=0.01,
                     format="%.2f",
                     key="risk_stop_price",
-                    disabled=not use_stop,
                 )
             )
 
-        if use_stop:
-            try:
-                sized = stock_position_size(
-                    entry_price,
-                    stop_price,
-                    budgets["selected_risk_budget"],
-                )
-                x1, x2, x3, x4, x5 = st.columns(5)
-                _metric_box(x1, "RISK / SHARE", _money(sized["risk_per_share"]), "negative")
-                _metric_box(x2, "MAX SHARES", f"{sized['shares']:,}", "positive")
-                _metric_box(x3, "POSITION NOTIONAL", _money(sized["notional"]), "blue")
-                _metric_box(x4, "ACTUAL STOP RISK", _money(sized["actual_risk"]), "negative")
-                _metric_box(x5, "UNUSED RISK", _money(sized["unused_risk_budget"]), "neutral")
-
-                projected_tactical = summary["tactical_value"] + sized["notional"]
-                projected_pct = projected_tactical / investable_assets * 100 if investable_assets else 0.0
-                if projected_tactical > summary["target_tactical_dollars"]:
-                    st.warning(
-                        "TACTICAL SLEEVE CAP // this stock notional would put the custom tactical "
-                        f"classification at approximately {projected_pct:.2f}% of investable assets, "
-                        f"above the selected {tactical_sleeve_pct:.1f}% sleeve."
-                    )
-                else:
-                    st.success(
-                        "RISK CHECK PASSED // calculated whole-share size stays within the selected "
-                        "Crown-style dollar risk budget."
-                    )
-            except ValueError as exc:
-                st.error(str(exc))
-        else:
-            st.info(
-                "NO STOP ENTERED // Crown's stock/futures quantity calculation needs a stop distance. "
-                "The maximum dollar risk budget above is still valid, but share quantity is not calculated."
+        try:
+            sized = stock_position_size(
+                entry_price,
+                stop_price,
+                risk_budget["selected_risk_budget"],
             )
+            p1, p2, p3, p4, p5 = st.columns(5)
+            _metric_box(p1, "RISK / SHARE", _money(sized["risk_per_share"]), "negative")
+            _metric_box(p2, "MAX SHARES", f"{sized['shares']:,}", "positive")
+            _metric_box(p3, "POSITION NOTIONAL", _money(sized["notional"]), "blue")
+            _metric_box(p4, "ACTUAL STOP RISK", _money(sized["actual_risk"]), "negative")
+            _metric_box(p5, "UNUSED RISK", _money(sized["unused_risk_budget"]), "neutral")
+        except ValueError as exc:
+            st.warning(str(exc))
 
     else:
         max_loss_per_spread = float(
             st.number_input(
-                "Max Loss per Spread",
-                min_value=1.0,
+                "Maximum Loss per Spread",
+                min_value=0.01,
                 value=300.0,
                 step=25.0,
                 format="%.2f",
@@ -518,50 +549,19 @@ def render_risk_sizing(
         try:
             sized = defined_risk_contracts(
                 max_loss_per_spread,
-                budgets["selected_risk_budget"],
+                risk_budget["selected_risk_budget"],
             )
-            x1, x2, x3, x4 = st.columns(4)
-            _metric_box(x1, "MAX LOSS / SPREAD", _money(sized["max_loss_per_spread"]), "negative")
-            _metric_box(x2, "MAX WHOLE SPREADS", f"{sized['contracts']:,}", "positive")
-            _metric_box(x3, "ACTUAL MAX RISK", _money(sized["actual_risk"]), "negative")
-            _metric_box(x4, "UNUSED RISK", _money(sized["unused_risk_budget"]), "neutral")
-            if sized["contracts"] == 0:
-                st.warning("RISK BUDGET TOO SMALL // one spread would exceed the selected dollar-risk budget.")
+            p1, p2, p3, p4 = st.columns(4)
+            _metric_box(p1, "MAX LOSS / SPREAD", _money(sized["max_loss_per_spread"]), "negative")
+            _metric_box(p2, "MAX SPREADS", f"{sized['contracts']:,}", "positive")
+            _metric_box(p3, "ACTUAL MAX RISK", _money(sized["actual_risk"]), "negative")
+            _metric_box(p4, "UNUSED RISK", _money(sized["unused_risk_budget"]), "neutral")
         except ValueError as exc:
-            st.error(str(exc))
+            st.warning(str(exc))
 
-    st.markdown("**3 // SIZE LADDER FOR THIS PORTFOLIO**")
-    ladder_rows = []
-    for multiplier in CROWN_SIZE_MULTIPLIERS:
-        row_budget = crown_risk_budget(
-            investable_assets,
-            tactical_sleeve_pct,
-            full_position_risk_pct,
-            multiplier,
-        )
-        ladder_rows.append(
-            {
-                "Crown Size": f"{multiplier:.2f}",
-                "Dollar Risk": row_budget["selected_risk_budget"],
-                "% of 1.00": multiplier * 100.0,
-            }
-        )
-    ladder = pd.DataFrame(ladder_rows)
-    st.dataframe(
-        ladder,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Dollar Risk": st.column_config.NumberColumn(format="$%.2f"),
-            "% of 1.00": st.column_config.NumberColumn(format="%.0f%%"),
-        },
+    st.caption(
+        "RISK ENGINE // size is limited by the selected Crown-style dollar-risk budget. "
+        "For stocks/ETFs, risk = shares x distance to stop. For defined-risk spreads, max loss is the risk."
     )
 
     _render_crown_reference()
-
-    st.caption(
-        "SOURCE IMPLEMENTATION // Crown Macro Education guide supplied by the user. Crown mechanics: "
-        "10-20% tactical sleeve; 1.00 risks 1-2% of the tactical sleeve; stock/futures size is worked "
-        "backward from stop distance; defined-risk option spreads use max loss as risk. Raj's 5% "
-        "long-term/tactical P&L classification is a separate custom portfolio rule. Educational analytics only."
-    )
