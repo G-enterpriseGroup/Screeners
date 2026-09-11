@@ -28,6 +28,7 @@ MIN_PRINTED_PCT = 3.0
 MAX_VISIBLE_SLICES = 12
 LEGEND_WRAP_CHARS = 18
 LEGEND_MAX_LINES = 3
+DONUT_HOLE = 0.47  # 5 percentage points thicker than the prior 0.52 hole.
 
 
 def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
@@ -140,6 +141,9 @@ def _safe_donut(
             "borderwidth": 0,
         }
 
+    # Always calculate the annotation from the exact Plotly pie domain so the
+    # center label stays mathematically centered even though the two charts use
+    # mirrored legend layouts.
     center_x = (pie_domain["x"][0] + pie_domain["x"][1]) / 2
     center_y = (pie_domain["y"][0] + pie_domain["y"][1]) / 2
     safe_height = max(500, min(650, 390 + len(chart) * 20))
@@ -149,7 +153,7 @@ def _safe_donut(
             labels=display_labels,
             values=values,
             customdata=full_labels,
-            hole=0.52,
+            hole=DONUT_HOLE,
             sort=False,
             domain=pie_domain,
             marker={"colors": colors, "line": {"color": BB_BLACK, "width": 2}},
@@ -192,8 +196,11 @@ def _safe_donut(
                 "y": center_y,
                 "xref": "paper",
                 "yref": "paper",
+                "xanchor": "center",
+                "yanchor": "middle",
                 "showarrow": False,
                 "align": "center",
+                "width": 110,
                 "font": {"color": BB_GREEN, "size": 12, "family": "Courier New"},
             }
         ],
@@ -288,14 +295,14 @@ def render_stockanalysis_portfolio(
 
     # Preserve Raj's preferred original visual: two donuts on one row with the
     # legends flanking the pair. Each legend lives inside its own Plotly paper
-    # region and wraps long labels, preventing the clipping seen previously.
+    # region and wraps long labels, preventing clipping.
     left, right = st.columns(2, gap="small")
     with left:
         _render_chart_panel(
             sector_frame,
             "Sector",
             "SECTOR EXPOSURE",
-            f"{key_prefix}_sector_{account_key}_v4",
+            f"{key_prefix}_sector_{account_key}_v5",
             legend_side="left",
         )
     with right:
@@ -303,7 +310,7 @@ def render_stockanalysis_portfolio(
             industry_frame,
             "Industry",
             "INDUSTRY EXPOSURE",
-            f"{key_prefix}_industry_{account_key}_v4",
+            f"{key_prefix}_industry_{account_key}_v5",
             legend_side="right",
         )
 
