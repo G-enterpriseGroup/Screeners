@@ -18,7 +18,7 @@ if _CORE_MARKER not in _CORE_SOURCE:
 _CORE_DEFINITIONS = _CORE_SOURCE.split(_CORE_MARKER, 1)[0]
 exec(compile(_CORE_DEFINITIONS, str(_CORE_PATH), "exec"), globals())
 
-from src.risk_sizing_ui import render_risk_sizing
+from src.risk_sizing_ui_v2 import render_risk_sizing
 
 
 if not _trade_access_unlocked():
