@@ -1,15 +1,19 @@
 [theme]
 base = "dark"
-primaryColor = "#FF8C00"
+primaryColor = "#fb8b1e"
 backgroundColor = "#000000"
 secondaryBackgroundColor = "#0A0A0A"
-textColor = "#FF8C00"
+# Streamlit derives dataframe-header text from textColor. Use black here so
+# native Glide dataframe headers are black on Bloomberg orange. Raj's Terminal
+# CSS keeps normal application text orange, and src.theme explicitly restores
+# orange/default financial colors inside dataframe body cells.
+textColor = "#000000"
 font = "monospace"
 baseRadius = "none"
 buttonRadius = "none"
-borderColor = "#FF8C00"
-dataframeBorderColor = "#FF8C00"
-dataframeHeaderBackgroundColor = "#000000"
+borderColor = "#fb8b1e"
+dataframeBorderColor = "#fb8b1e"
+dataframeHeaderBackgroundColor = "#fb8b1e"
 showWidgetBorder = true
 
 [server]
