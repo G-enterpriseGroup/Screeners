@@ -1,18 +1,19 @@
 """Visual-safe StockAnalysis portfolio charts for Raj's Terminal.
 
 Design goals:
-- sector and industry stay side by side on normal desktop widths
-- Plotly owns only the donut; long labels are rendered in a separate HTML legend
-  below each chart so SVG clipping cannot cut them off
-- Streamlit columns retain their normal responsive behavior on narrow screens
-- tiny slices are grouped into Other so labels remain readable
-- percentages are printed only when there is enough room inside the slice
-- full detailed exposure remains available in an expander
+- preserve the original Bloomberg-style side-by-side look Raj preferred
+- sector legend lives to the LEFT of its donut; industry legend lives to the RIGHT
+- legends are kept INSIDE each Plotly canvas so they cannot be cut off by Streamlit columns
+- long legend labels are wrapped before Plotly renders them
+- tiny slices are grouped into Other and tiny percentage text is suppressed
+- chart height grows with legend density
+- full ungrouped exposure remains available in an expander
 """
 
 from __future__ import annotations
 
 import html
+import textwrap
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -25,6 +26,8 @@ from src.theme import BB_BLACK, BB_GREEN, BB_ORANGE, CHART_COLORWAY
 MIN_SLICE_PCT = 2.0
 MIN_PRINTED_PCT = 3.0
 MAX_VISIBLE_SLICES = 12
+LEGEND_WRAP_CHARS = 18
+LEGEND_MAX_LINES = 3
 
 
 def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
@@ -68,31 +71,97 @@ def _chart_colors(count: int) -> list[str]:
     return [CHART_COLORWAY[index % len(CHART_COLORWAY)] for index in range(max(0, count))]
 
 
-def _safe_donut(chart: pd.DataFrame, label_column: str, title: str, colors: list[str]) -> go.Figure:
+def _wrap_legend_label(value: object) -> str:
+    """Wrap long Plotly legend text so it stays inside a half-width panel."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "—"
+
+    chunks = textwrap.wrap(
+        raw,
+        width=LEGEND_WRAP_CHARS,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [raw]
+
+    if len(chunks) > LEGEND_MAX_LINES:
+        chunks = chunks[:LEGEND_MAX_LINES]
+        last = chunks[-1].rstrip()
+        if not last.endswith("…"):
+            chunks[-1] = (last[:-1] if len(last) >= LEGEND_WRAP_CHARS else last) + "…"
+
+    return "<br>".join(html.escape(chunk) for chunk in chunks)
+
+
+def _safe_donut(
+    chart: pd.DataFrame,
+    label_column: str,
+    title: str,
+    colors: list[str],
+    *,
+    legend_side: str,
+) -> go.Figure:
+    """Create a mirrored donut/legend layout that cannot spill outside its column."""
+    full_labels = [str(value) for value in chart[label_column].tolist()]
+    display_labels = [_wrap_legend_label(value) for value in full_labels]
     values = chart["Exposure"].tolist()
     percents = chart["% Exposure"].tolist()
-    text = [f"{value:.1f}%" if value >= MIN_PRINTED_PCT else "" for value in percents]
+    inside_text = [
+        f"{value:.1f}%" if float(value) >= MIN_PRINTED_PCT else ""
+        for value in percents
+    ]
 
-    # Long category names are deliberately NOT put in Plotly's legend. The
-    # external HTML legend below the chart can wrap naturally and can never be
-    # clipped by Plotly's SVG viewport.
+    if legend_side == "left":
+        pie_domain = {"x": [0.38, 0.98], "y": [0.08, 0.92]}
+        legend = {
+            "x": 0.01,
+            "xanchor": "left",
+            "y": 0.50,
+            "yanchor": "middle",
+            "orientation": "v",
+            "font": {"color": BB_ORANGE, "family": "Courier New", "size": 10},
+            "itemsizing": "constant",
+            "tracegroupgap": 2,
+            "bgcolor": BB_BLACK,
+            "borderwidth": 0,
+        }
+    else:
+        pie_domain = {"x": [0.02, 0.62], "y": [0.08, 0.92]}
+        legend = {
+            "x": 0.66,
+            "xanchor": "left",
+            "y": 0.50,
+            "yanchor": "middle",
+            "orientation": "v",
+            "font": {"color": BB_ORANGE, "family": "Courier New", "size": 10},
+            "itemsizing": "constant",
+            "tracegroupgap": 2,
+            "bgcolor": BB_BLACK,
+            "borderwidth": 0,
+        }
+
+    center_x = (pie_domain["x"][0] + pie_domain["x"][1]) / 2
+    center_y = (pie_domain["y"][0] + pie_domain["y"][1]) / 2
+    safe_height = max(500, min(650, 390 + len(chart) * 20))
+
     figure = go.Figure(
         go.Pie(
-            labels=chart[label_column],
+            labels=display_labels,
             values=values,
-            hole=0.53,
+            customdata=full_labels,
+            hole=0.52,
             sort=False,
-            domain={"x": [0.08, 0.92], "y": [0.05, 0.93]},
+            domain=pie_domain,
             marker={"colors": colors, "line": {"color": BB_BLACK, "width": 2}},
-            text=text,
+            text=inside_text,
             textinfo="text",
             textposition="inside",
             insidetextorientation="horizontal",
-            textfont={"family": "Courier New", "size": 12},
+            textfont={"family": "Courier New", "size": 11},
             hovertemplate=(
-                "%{label}<br>Exposure: $%{value:,.2f}<br>Portfolio: %{percent}<extra></extra>"
+                "%{customdata}<br>Exposure: $%{value:,.2f}<br>Portfolio: %{percent}<extra></extra>"
             ),
-            showlegend=False,
+            showlegend=True,
         )
     )
 
@@ -101,84 +170,35 @@ def _safe_donut(chart: pd.DataFrame, label_column: str, title: str, colors: list
             "text": title,
             "x": 0.5,
             "xanchor": "center",
-            "y": 0.98,
+            "y": 0.985,
             "yanchor": "top",
-            "font": {"family": "Courier New", "size": 20, "color": BB_ORANGE},
+            "font": {"family": "Courier New", "size": 19, "color": BB_ORANGE},
             "automargin": True,
         },
-        height=430,
+        height=safe_height,
         autosize=True,
         paper_bgcolor=BB_BLACK,
         plot_bgcolor=BB_BLACK,
-        font={"color": BB_ORANGE, "family": "Courier New", "size": 12},
-        showlegend=False,
-        uniformtext_minsize=10,
+        font={"color": BB_ORANGE, "family": "Courier New", "size": 11},
+        showlegend=True,
+        legend=legend,
+        uniformtext_minsize=9,
         uniformtext_mode="hide",
-        margin={"l": 18, "r": 18, "t": 62, "b": 24, "autoexpand": True},
+        margin={"l": 14, "r": 14, "t": 68, "b": 34, "autoexpand": True},
         annotations=[
             {
                 "text": "PORTFOLIO<br>EXPOSURE",
-                "x": 0.5,
-                "y": 0.49,
+                "x": center_x,
+                "y": center_y,
                 "xref": "paper",
                 "yref": "paper",
                 "showarrow": False,
                 "align": "center",
-                "font": {"color": BB_GREEN, "size": 13, "family": "Courier New"},
+                "font": {"color": BB_GREEN, "size": 12, "family": "Courier New"},
             }
         ],
     )
     return figure
-
-
-def _legend_html(chart: pd.DataFrame, label_column: str, colors: list[str]) -> str:
-    """Two-column wrapping legend that lives outside Plotly's clip region."""
-    items: list[str] = []
-    for index, row in chart.iterrows():
-        color = colors[index % len(colors)] if colors else BB_ORANGE
-        label = html.escape(str(row[label_column]))
-        pct = float(row["% Exposure"] or 0.0)
-        exposure = float(row["Exposure"] or 0.0)
-        items.append(
-            "<div style='display:grid;grid-template-columns:12px minmax(0,1fr) auto;"
-            "align-items:start;column-gap:.42rem;min-width:0;padding:.18rem 0;'>"
-            f"<span style='width:10px;height:10px;background:{color};margin-top:.24rem;display:block;'></span>"
-            "<span style='min-width:0;color:#fb8b1e;font-family:Courier New,monospace;"
-            "font-size:.78rem;line-height:1.25;white-space:normal;overflow-wrap:anywhere;word-break:normal;'>"
-            f"{label}</span>"
-            "<span style='color:#4af6c3;font-family:Courier New,monospace;font-size:.76rem;"
-            "line-height:1.25;white-space:nowrap;text-align:right;' "
-            f"title='${exposure:,.2f}'>{pct:.1f}%</span>"
-            "</div>"
-        )
-
-    return (
-        "<div style='border-top:1px solid #fb8b1e;margin-top:-.15rem;padding:.48rem .18rem .12rem .18rem;'>"
-        "<div style='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));"
-        "column-gap:.85rem;row-gap:.06rem;width:100%;min-width:0;'>"
-        + "".join(items)
-        + "</div></div>"
-    )
-
-
-def _render_chart_panel(frame: pd.DataFrame, label_column: str, title: str, key: str) -> None:
-    if frame is None or frame.empty:
-        st.info(f"No {label_column.lower()} exposure could be mapped.")
-        return
-
-    chart = _chart_frame(frame, label_column)
-    colors = _chart_colors(len(chart))
-    st.plotly_chart(
-        _safe_donut(chart, label_column, title, colors),
-        width="stretch",
-        config={
-            "displayModeBar": False,
-            "responsive": True,
-            "displaylogo": False,
-        },
-        key=key,
-    )
-    st.markdown(_legend_html(chart, label_column, colors), unsafe_allow_html=True)
 
 
 def _detail_table(frame: pd.DataFrame, label_column: str) -> None:
@@ -195,6 +215,38 @@ def _detail_table(frame: pd.DataFrame, label_column: str) -> None:
             "Exposure": st.column_config.NumberColumn(format="$%.2f"),
             "% Exposure": st.column_config.NumberColumn(format="%.2f%%"),
         },
+    )
+
+
+def _render_chart_panel(
+    frame: pd.DataFrame,
+    label_column: str,
+    title: str,
+    key: str,
+    *,
+    legend_side: str,
+) -> None:
+    if frame is None or frame.empty:
+        st.info(f"No {label_column.lower()} exposure could be mapped.")
+        return
+
+    chart = _chart_frame(frame, label_column)
+    colors = _chart_colors(len(chart))
+    st.plotly_chart(
+        _safe_donut(
+            chart,
+            label_column,
+            title,
+            colors,
+            legend_side=legend_side,
+        ),
+        width="stretch",
+        config={
+            "displayModeBar": False,
+            "responsive": True,
+            "displaylogo": False,
+        },
+        key=key,
     )
 
 
@@ -234,24 +286,25 @@ def render_stockanalysis_portfolio(
             key=f"{key_prefix}_classification_{account_key}",
         )
 
-    # Streamlit columns are responsive and wrap on narrow viewports. On desktop
-    # the requested sector/industry pair remains side by side. Each Plotly chart
-    # is width='stretch' so it follows the actual column width instead of using a
-    # fixed canvas that can overflow its parent.
-    left, right = st.columns(2, gap="medium")
+    # Preserve Raj's preferred original visual: two donuts on one row with the
+    # legends flanking the pair. Each legend lives inside its own Plotly paper
+    # region and wraps long labels, preventing the clipping seen previously.
+    left, right = st.columns(2, gap="small")
     with left:
         _render_chart_panel(
             sector_frame,
             "Sector",
             "SECTOR EXPOSURE",
-            f"{key_prefix}_sector_{account_key}_v3",
+            f"{key_prefix}_sector_{account_key}_v4",
+            legend_side="left",
         )
     with right:
         _render_chart_panel(
             industry_frame,
             "Industry",
             "INDUSTRY EXPOSURE",
-            f"{key_prefix}_industry_{account_key}_v3",
+            f"{key_prefix}_industry_{account_key}_v4",
+            legend_side="right",
         )
 
     with st.expander("FULL SECTOR + INDUSTRY BREAKDOWN"):
@@ -261,9 +314,8 @@ def render_stockanalysis_portfolio(
         _detail_table(industry_frame, "Industry")
 
     st.caption(
-        "VISUAL RULE // charts stay side by side on normal desktop widths; long legend text lives outside the "
-        "Plotly SVG so it wraps instead of clipping. Slices below 2% are grouped into Other on the pie and the "
-        "full ungrouped exposure remains in the breakdown. ETF NOTE // StockAnalysis reports ETF Asset Class/Category "
-        "rather than one company Industry. The industry pie therefore groups ETFs by StockAnalysis ETF Category. "
-        "Sector pie uses ETF sector look-through when available; otherwise it falls back to the ETF asset class."
+        "VISUAL RULE // charts stay side by side on desktop with mirrored legends. Long legend names wrap inside "
+        "their own chart panel, slices below 2% are grouped into Other, and percentages below 3% are hover/legend "
+        "only. The full ungrouped exposure remains available in the breakdown above. ETF NOTE // StockAnalysis "
+        "reports ETF Asset Class/Category rather than one company Industry."
     )
