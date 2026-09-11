@@ -1,13 +1,16 @@
 """Shared process-memory cache for Raj's Terminal E*TRADE reads.
 
-The cache is intentionally server-memory only: nothing is written to GitHub,
-browser storage, or disk. Entries are namespaced by a SHA-256 digest of the
-active OAuth token so data from different E*TRADE sessions cannot share keys.
+Two cache layers are used:
 
-This cache sits beneath every terminal tab. A quote fetched in Orders can be
-reused by Risk Sizing or Bull Debit Spread; holdings/balances loaded in one tab
-can be reused by the others. The process-local cache also survives a browser
-refresh while the Streamlit process and OAuth session remain alive.
+1. A short-TTL OAuth-session cache for normal fast tab switching.
+2. A last-known-good offline snapshot vault keyed by Raj's Terminal access-code
+   hash. This allows Holdings/Risk Sizing/quotes/options that were previously
+   loaded to remain readable when E*TRADE cannot be reached or the OAuth token
+   is unavailable.
+
+Both layers are SERVER MEMORY ONLY. Brokerage data is never written to GitHub,
+browser localStorage, or disk. A Streamlit process restart/redeploy clears the
+vault by design.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from typing import Any, Callable
 
 import streamlit as st
 
+from src.etrade_client import ETradeError
+
 
 # Deliberately short for price-sensitive data and long for static metadata.
 CACHE_TTLS = {
@@ -31,10 +36,14 @@ CACHE_TTLS = {
     "option_chain": 5 * 60,
 }
 
-# Old expired objects are pruned eventually even if that exact key is never
-# requested again. This prevents large option-chain scans from growing memory.
+# Normal OAuth cache retention.
 CACHE_RETENTION_SECONDS = 24 * 60 * 60
 MAX_ENTRIES_PER_SESSION = 500
+
+# Last-known-good snapshots intentionally outlive the normal TTLs so the
+# terminal remains useful during a temporary E*TRADE outage/token problem.
+OFFLINE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+MAX_OFFLINE_ENTRIES = 750
 
 
 @st.cache_resource
@@ -42,6 +51,14 @@ def _cache_vault() -> dict[str, Any]:
     return {
         "entries": {},
         "stats": {},
+        "lock": threading.RLock(),
+    }
+
+
+@st.cache_resource
+def _offline_vault() -> dict[str, Any]:
+    return {
+        "entries": {},
         "lock": threading.RLock(),
     }
 
@@ -65,7 +82,7 @@ def _stats(namespace: str) -> dict[str, int]:
     vault = _cache_vault()
     return vault["stats"].setdefault(
         namespace,
-        {"hits": 0, "misses": 0, "api_calls": 0},
+        {"hits": 0, "misses": 0, "api_calls": 0, "stale_fallbacks": 0},
     )
 
 
@@ -89,6 +106,112 @@ def _prune_locked(namespace: str, now: float) -> None:
     overflow = len(namespace_keys) - MAX_ENTRIES_PER_SESSION
     for key in namespace_keys[:overflow]:
         entries.pop(key, None)
+
+
+def _prune_offline_locked(vault_key: str, now: float) -> None:
+    vault = _offline_vault()
+    entries = vault["entries"]
+    keys = [key for key in entries if key[0] == str(vault_key)]
+
+    for key in keys:
+        loaded_at = float(entries[key].get("loaded_at", 0.0) or 0.0)
+        if now - loaded_at > OFFLINE_RETENTION_SECONDS:
+            entries.pop(key, None)
+
+    keys = [key for key in entries if key[0] == str(vault_key)]
+    if len(keys) <= MAX_OFFLINE_ENTRIES:
+        return
+
+    keys.sort(key=lambda key: float(entries[key].get("loaded_at", 0.0) or 0.0))
+    overflow = len(keys) - MAX_OFFLINE_ENTRIES
+    for key in keys[:overflow]:
+        entries.pop(key, None)
+
+
+def _offline_store(
+    vault_key: str | None,
+    resource_type: str,
+    resource_key: str,
+    value: Any,
+    *,
+    loaded_at: float | None = None,
+) -> None:
+    if not vault_key:
+        return
+    now = float(loaded_at or time.time())
+    vault = _offline_vault()
+    key = (str(vault_key), str(resource_type), str(resource_key))
+    with vault["lock"]:
+        _prune_offline_locked(str(vault_key), now)
+        vault["entries"][key] = {
+            "loaded_at": now,
+            "value": _copy(value),
+        }
+
+
+def _offline_get(
+    vault_key: str | None,
+    resource_type: str,
+    resource_key: str,
+) -> dict[str, Any] | None:
+    if not vault_key:
+        return None
+    now = time.time()
+    vault = _offline_vault()
+    key = (str(vault_key), str(resource_type), str(resource_key))
+    with vault["lock"]:
+        _prune_offline_locked(str(vault_key), now)
+        entry = vault["entries"].get(key)
+        return _copy(entry) if entry else None
+
+
+def offline_snapshot_available(vault_key: str | None) -> bool:
+    if not vault_key:
+        return False
+    now = time.time()
+    vault = _offline_vault()
+    with vault["lock"]:
+        _prune_offline_locked(str(vault_key), now)
+        return any(key[0] == str(vault_key) for key in vault["entries"])
+
+
+def offline_snapshot_status(vault_key: str | None) -> dict[str, Any]:
+    """Return age/resource summary for the access-code-scoped offline vault."""
+    if not vault_key:
+        return {"available": False, "entries": 0, "newest_age": None, "oldest_age": None, "resources": {}}
+    now = time.time()
+    vault = _offline_vault()
+    with vault["lock"]:
+        _prune_offline_locked(str(vault_key), now)
+        matches = [
+            (key, entry)
+            for key, entry in vault["entries"].items()
+            if key[0] == str(vault_key)
+        ]
+    if not matches:
+        return {"available": False, "entries": 0, "newest_age": None, "oldest_age": None, "resources": {}}
+
+    ages = [max(0.0, now - float(entry.get("loaded_at", 0.0) or 0.0)) for _, entry in matches]
+    resources: dict[str, int] = {}
+    for key, _ in matches:
+        resources[key[1]] = resources.get(key[1], 0) + 1
+    return {
+        "available": True,
+        "entries": len(matches),
+        "newest_age": min(ages),
+        "oldest_age": max(ages),
+        "resources": resources,
+    }
+
+
+def clear_offline_snapshot(vault_key: str | None) -> None:
+    """Explicit helper only; normal disconnect intentionally keeps last-known data."""
+    if not vault_key:
+        return
+    vault = _offline_vault()
+    with vault["lock"]:
+        for key in [key for key in vault["entries"] if key[0] == str(vault_key)]:
+            vault["entries"].pop(key, None)
 
 
 def clear_session_cache(token: dict[str, Any] | None) -> None:
@@ -122,7 +245,7 @@ def invalidate_session_cache(
 def cache_stats(token: dict[str, Any] | None) -> dict[str, int]:
     namespace = session_namespace(token)
     if not namespace:
-        return {"hits": 0, "misses": 0, "api_calls": 0, "entries": 0}
+        return {"hits": 0, "misses": 0, "api_calls": 0, "stale_fallbacks": 0, "entries": 0}
     vault = _cache_vault()
     with vault["lock"]:
         values = dict(_stats(namespace))
@@ -132,12 +255,94 @@ def cache_stats(token: dict[str, Any] | None) -> dict[str, int]:
     return values
 
 
+def _mark_offline_event(resource_type: str, loaded_at: float, reason: str) -> None:
+    age = max(0.0, time.time() - float(loaded_at or 0.0))
+    st.session_state["_etrade_offline_mode"] = True
+    st.session_state["_etrade_offline_last_event"] = {
+        "resource": str(resource_type),
+        "loaded_at": float(loaded_at or 0.0),
+        "age": age,
+        "reason": str(reason),
+    }
+
+
+class OfflineETradeClient:
+    """Read-only ETradeClient-compatible view over last-known-good snapshots."""
+
+    is_offline = True
+
+    def __init__(self, vault_key: str) -> None:
+        self._vault_key = str(vault_key)
+
+    def _read(self, resource_type: str, resource_key: str) -> Any:
+        entry = _offline_get(self._vault_key, resource_type, resource_key)
+        if not entry:
+            raise ETradeError(
+                f"No cached {resource_type.replace('_', ' ')} snapshot is available yet. "
+                "Reconnect E*TRADE once to seed this data."
+            )
+        _mark_offline_event(resource_type, float(entry.get("loaded_at", 0.0) or 0.0), "E*TRADE unavailable")
+        return _copy(entry.get("value"))
+
+    def cache_age(self, resource_type: str, resource_key: str = "") -> float | None:
+        entry = _offline_get(self._vault_key, resource_type, resource_key)
+        if not entry:
+            return None
+        return max(0.0, time.time() - float(entry.get("loaded_at", 0.0) or 0.0))
+
+    def renew(self) -> None:
+        raise ETradeError("Offline snapshot mode cannot renew E*TRADE. Reconnect when E*TRADE is available.")
+
+    def list_accounts(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        return self._read("accounts", "all")
+
+    def get_balance(self, account_id_key: str, force_refresh: bool = False) -> dict[str, Any]:
+        return self._read("balance", str(account_id_key))
+
+    def get_portfolio(self, account_id_key: str, force_refresh: bool = False) -> list[dict[str, Any]]:
+        return self._read("portfolio", str(account_id_key))
+
+    def get_quote(self, symbol: str, force_refresh: bool = False) -> dict[str, Any]:
+        return self._read("quote", str(symbol).strip().upper())
+
+    def get_option_expirations(self, symbol: str, force_refresh: bool = False) -> dict[str, Any]:
+        return self._read("option_expirations", str(symbol).strip().upper())
+
+    def get_option_chain(
+        self,
+        symbol: str,
+        expiry_year: int,
+        expiry_month: int,
+        expiry_day: int,
+        no_of_strikes: int | None = 100,
+        chain_type: str = "CALLPUT",
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        symbol = str(symbol).strip().upper()
+        chain_type = str(chain_type).upper()
+        strikes_key = "ALL" if no_of_strikes is None else str(int(no_of_strikes))
+        resource_key = (
+            f"{symbol}:{int(expiry_year):04d}-{int(expiry_month):02d}-{int(expiry_day):02d}:"
+            f"{chain_type}:{strikes_key}"
+        )
+        return self._read("option_chain", resource_key)
+
+
 class CachedETradeClient:
     """Transparent ETradeClient-compatible cache shared by every terminal tab."""
 
-    def __init__(self, client: Any, token: dict[str, Any] | None) -> None:
+    is_offline = False
+
+    def __init__(
+        self,
+        client: Any,
+        token: dict[str, Any] | None,
+        *,
+        offline_key: str | None = None,
+    ) -> None:
         self._client = client
         self._namespace = session_namespace(token)
+        self._offline_key = str(offline_key or "")
 
     def _manual_force(self, resource_type: str) -> bool:
         """Honor explicit user refresh buttons while normal reruns use cache."""
@@ -157,7 +362,19 @@ class CachedETradeClient:
         force_refresh: bool = False,
     ) -> Any:
         if not self._namespace:
-            return loader()
+            # Even in the unusual no-namespace case, seed the offline vault if
+            # the underlying call succeeds.
+            try:
+                value = loader()
+            except Exception:
+                offline_entry = _offline_get(self._offline_key, resource_type, resource_key)
+                if offline_entry:
+                    _mark_offline_event(resource_type, offline_entry["loaded_at"], "live request failed")
+                    return _copy(offline_entry.get("value"))
+                raise
+            _offline_store(self._offline_key, resource_type, resource_key, value)
+            st.session_state["_etrade_offline_mode"] = False
+            return value
 
         ttl = int(CACHE_TTLS[resource_type])
         now = time.time()
@@ -165,9 +382,11 @@ class CachedETradeClient:
         vault = _cache_vault()
         force_refresh = bool(force_refresh or self._manual_force(resource_type))
 
+        stale_entry = None
         with vault["lock"]:
             _prune_locked(self._namespace, now)
             entry = vault["entries"].get(key)
+            stale_entry = _copy(entry) if entry is not None else None
             if not force_refresh and entry is not None:
                 age = now - float(entry.get("loaded_at", 0.0) or 0.0)
                 if age < ttl:
@@ -176,12 +395,32 @@ class CachedETradeClient:
                         "resource": resource_type,
                         "hit": True,
                         "age": max(0.0, age),
+                        "stale": False,
                     }
+                    st.session_state["_etrade_offline_mode"] = False
                     return _copy(entry.get("value"))
             _stats(self._namespace)["misses"] += 1
 
-        # Never hold the shared lock during a network request.
-        value = loader()
+        # Never hold the shared lock during a network request. If E*TRADE is
+        # unreachable, prefer a stale/last-known snapshot over a dead screen.
+        try:
+            value = loader()
+        except Exception:
+            fallback = stale_entry or _offline_get(self._offline_key, resource_type, resource_key)
+            if fallback is None:
+                raise
+            loaded_at = float(fallback.get("loaded_at", 0.0) or 0.0)
+            with vault["lock"]:
+                _stats(self._namespace)["stale_fallbacks"] += 1
+            _mark_offline_event(resource_type, loaded_at, "live E*TRADE request failed")
+            st.session_state["_etrade_cache_last_event"] = {
+                "resource": resource_type,
+                "hit": True,
+                "age": max(0.0, time.time() - loaded_at),
+                "stale": True,
+            }
+            return _copy(fallback.get("value"))
+
         loaded_at = time.time()
         with vault["lock"]:
             vault["entries"][key] = {
@@ -193,7 +432,16 @@ class CachedETradeClient:
                 "resource": resource_type,
                 "hit": False,
                 "age": 0.0,
+                "stale": False,
             }
+        _offline_store(
+            self._offline_key,
+            resource_type,
+            str(resource_key),
+            value,
+            loaded_at=loaded_at,
+        )
+        st.session_state["_etrade_offline_mode"] = False
         return _copy(value)
 
     def cache_age(self, resource_type: str, resource_key: str = "") -> float | None:
@@ -202,7 +450,10 @@ class CachedETradeClient:
         with vault["lock"]:
             entry = vault["entries"].get(key)
             if not entry:
-                return None
+                offline_entry = _offline_get(self._offline_key, resource_type, resource_key)
+                if not offline_entry:
+                    return None
+                return max(0.0, time.time() - float(offline_entry.get("loaded_at", 0.0) or 0.0))
             return max(0.0, time.time() - float(entry.get("loaded_at", 0.0) or 0.0))
 
     def invalidate(self, *resource_types: str) -> None:
