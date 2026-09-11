@@ -12,7 +12,7 @@ from typing import Callable
 
 import streamlit as st
 
-from src.stockanalysis_portfolio import render_stockanalysis_portfolio
+from src.stockanalysis_portfolio_v2 import render_stockanalysis_portfolio
 from src.visual_safety import install_streamlit_visual_safety
 
 
