@@ -22,6 +22,7 @@ from src.etrade_data_cache import (
     CACHE_TTLS,
     CachedETradeClient,
     OfflineETradeClient,
+    _offline_get,
     _offline_store,
     cache_stats,
     clear_session_cache,
@@ -149,23 +150,18 @@ def _restore_active_etrade_session_after_unlock():
 
 
 def _seed_offline_from_session_state():
-    """Immediately preserve any portfolio snapshot already present in this session.
-
-    This catches holdings/balances loaded before the new offline-vault feature
-    was deployed, so a currently visible prior portfolio can become the fallback
-    without requiring another API request first.
-    """
+    """Preserve any old session snapshot without overwriting its true timestamp."""
     vault_key = _trade_access_code_hash()
     now = time.time()
     accounts = st.session_state.get("etrade_accounts") or []
-    if accounts:
+    if accounts and _offline_get(vault_key, "accounts", "all") is None:
         _offline_store(vault_key, "accounts", "all", accounts, loaded_at=now)
 
     holdings_loaded_at = float(
         st.session_state.get("etrade_holdings_last_refresh", now) or now
     )
     for account_key, value in (st.session_state.get("etrade_holdings") or {}).items():
-        if value is not None:
+        if value is not None and _offline_get(vault_key, "portfolio", str(account_key)) is None:
             _offline_store(
                 vault_key,
                 "portfolio",
@@ -178,7 +174,7 @@ def _seed_offline_from_session_state():
         st.session_state.get("etrade_balance_last_refresh", now) or now
     )
     for account_key, value in (st.session_state.get("etrade_balances") or {}).items():
-        if value is not None:
+        if value is not None and _offline_get(vault_key, "balance", str(account_key)) is None:
             _offline_store(
                 vault_key,
                 "balance",
@@ -199,6 +195,28 @@ def _cache_age_text(seconds):
     if seconds < 86400:
         return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
     return f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
+
+
+def _portfolio_snapshot_age():
+    """Age of the freshest actual holdings snapshot, not metadata like accounts."""
+    vault_key = _trade_access_code_hash()
+    accounts_entry = _offline_get(vault_key, "accounts", "all")
+    accounts = st.session_state.get("etrade_accounts") or (
+        (accounts_entry or {}).get("value") or []
+    )
+    ages = []
+    now = time.time()
+    for account in accounts:
+        account_key = str(account.get("accountIdKey", ""))
+        if not account_key:
+            continue
+        entry = _offline_get(vault_key, "portfolio", account_key)
+        if entry:
+            ages.append(max(0.0, now - float(entry.get("loaded_at", 0.0) or 0.0)))
+    if ages:
+        return min(ages)
+    status = offline_snapshot_status(vault_key)
+    return status.get("newest_age")
 
 
 def _render_cache_status():
@@ -224,7 +242,7 @@ def _render_cache_status():
         resources = offline.get("resources") or {}
         st.caption(
             "LAST-KNOWN E*TRADE VAULT // SERVER-MEMORY ONLY // "
-            f"NEWEST {_cache_age_text(offline.get('newest_age'))} AGO // "
+            f"PORTFOLIO SNAPSHOT {_cache_age_text(_portfolio_snapshot_age())} AGO // "
             f"HOLDINGS {resources.get('portfolio', 0)} // "
             f"BALANCES {resources.get('balance', 0)} // "
             f"QUOTES {resources.get('quote', 0)} // "
@@ -240,10 +258,10 @@ def _render_offline_snapshot_notice():
     if not using_offline and not fallback_event:
         return
 
-    age = status.get("newest_age")
+    age = _portfolio_snapshot_age()
     st.warning(
         "E*TRADE OFFLINE SNAPSHOT MODE // live E*TRADE is unavailable, so Raj's Terminal is using "
-        f"your last-known cached brokerage data (newest snapshot {_cache_age_text(age)} ago). "
+        f"your last-known cached brokerage data (portfolio snapshot {_cache_age_text(age)} ago). "
         "Cached holdings, balances, prior quotes, option expirations, and option chains remain readable. "
         "Values may be stale until E*TRADE reconnects."
     )
