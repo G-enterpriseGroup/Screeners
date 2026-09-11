@@ -1,16 +1,18 @@
 """Visual-safe StockAnalysis portfolio charts for Raj's Terminal.
 
-This renderer keeps the classification logic from stockanalysis_portfolio.py but
-uses a layout designed for dense portfolios:
-- sector and industry charts render one-per-row at full terminal width
-- tiny slices are grouped into Other so legends remain readable
-- percentages stay inside slices only
-- the donut reserves a dedicated right-side legend area
-- chart height grows with the number of legend entries
+Design goals:
+- sector and industry stay side by side on normal desktop widths
+- Plotly owns only the donut; long labels are rendered in a separate HTML legend
+  below each chart so SVG clipping cannot cut them off
+- Streamlit columns retain their normal responsive behavior on narrow screens
+- tiny slices are grouped into Other so labels remain readable
+- percentages are printed only when there is enough room inside the slice
 - full detailed exposure remains available in an expander
 """
 
 from __future__ import annotations
+
+import html
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +23,7 @@ from src.theme import BB_BLACK, BB_GREEN, BB_ORANGE, CHART_COLORWAY
 
 
 MIN_SLICE_PCT = 2.0
+MIN_PRINTED_PCT = 3.0
 MAX_VISIBLE_SLICES = 12
 
 
@@ -38,18 +41,20 @@ def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
     total = float(work["Exposure"].sum())
     work["% Exposure"] = work["Exposure"] / total * 100 if total else 0.0
 
-    major = work[(work["% Exposure"] >= MIN_SLICE_PCT)].head(MAX_VISIBLE_SLICES).copy()
+    major = work[work["% Exposure"] >= MIN_SLICE_PCT].head(MAX_VISIBLE_SLICES).copy()
     major_indexes = set(major.index.tolist())
     tail = work[~work.index.isin(major_indexes)]
 
     if not tail.empty:
         other_value = float(tail["Exposure"].sum())
         other_row = pd.DataFrame(
-            [{
-                label_column: f"Other (<{MIN_SLICE_PCT:.0f}% each)",
-                "Exposure": other_value,
-                "% Exposure": other_value / total * 100 if total else 0.0,
-            }]
+            [
+                {
+                    label_column: f"Other (<{MIN_SLICE_PCT:.0f}% each)",
+                    "Exposure": other_value,
+                    "% Exposure": other_value / total * 100 if total else 0.0,
+                }
+            ]
         )
         major = pd.concat([major, other_row], ignore_index=True)
 
@@ -59,27 +64,25 @@ def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
     return major
 
 
-def _safe_donut(frame: pd.DataFrame, label_column: str, title: str) -> go.Figure:
-    chart = _chart_frame(frame, label_column)
+def _chart_colors(count: int) -> list[str]:
+    return [CHART_COLORWAY[index % len(CHART_COLORWAY)] for index in range(max(0, count))]
+
+
+def _safe_donut(chart: pd.DataFrame, label_column: str, title: str, colors: list[str]) -> go.Figure:
     values = chart["Exposure"].tolist()
     percents = chart["% Exposure"].tolist()
-    text = [f"{value:.1f}%" if value >= 3.0 else "" for value in percents]
-    colors = [CHART_COLORWAY[index % len(CHART_COLORWAY)] for index in range(len(chart))]
+    text = [f"{value:.1f}%" if value >= MIN_PRINTED_PCT else "" for value in percents]
 
-    # The pie owns only ~62% of horizontal figure space. The remainder is a
-    # dedicated legend lane, which prevents long StockAnalysis categories from
-    # being chopped off at the right edge.
-    pie_domain = {"x": [0.02, 0.62], "y": [0.06, 0.94]}
-    center_x = sum(pie_domain["x"]) / 2
-    center_y = sum(pie_domain["y"]) / 2
-
+    # Long category names are deliberately NOT put in Plotly's legend. The
+    # external HTML legend below the chart can wrap naturally and can never be
+    # clipped by Plotly's SVG viewport.
     figure = go.Figure(
         go.Pie(
             labels=chart[label_column],
             values=values,
-            hole=0.52,
+            hole=0.53,
             sort=False,
-            domain=pie_domain,
+            domain={"x": [0.08, 0.92], "y": [0.05, 0.93]},
             marker={"colors": colors, "line": {"color": BB_BLACK, "width": 2}},
             text=text,
             textinfo="text",
@@ -89,11 +92,10 @@ def _safe_donut(frame: pd.DataFrame, label_column: str, title: str) -> go.Figure
             hovertemplate=(
                 "%{label}<br>Exposure: $%{value:,.2f}<br>Portfolio: %{percent}<extra></extra>"
             ),
+            showlegend=False,
         )
     )
 
-    legend_count = max(1, len(chart))
-    safe_height = max(500, min(720, 360 + legend_count * 28))
     figure.update_layout(
         title={
             "text": title,
@@ -102,32 +104,22 @@ def _safe_donut(frame: pd.DataFrame, label_column: str, title: str) -> go.Figure
             "y": 0.98,
             "yanchor": "top",
             "font": {"family": "Courier New", "size": 20, "color": BB_ORANGE},
+            "automargin": True,
         },
-        height=safe_height,
+        height=430,
         autosize=True,
         paper_bgcolor=BB_BLACK,
         plot_bgcolor=BB_BLACK,
         font={"color": BB_ORANGE, "family": "Courier New", "size": 12},
-        showlegend=True,
-        legend={
-            "x": 0.66,
-            "xanchor": "left",
-            "y": 0.5,
-            "yanchor": "middle",
-            "orientation": "v",
-            "font": {"color": BB_ORANGE, "family": "Courier New", "size": 11},
-            "itemsizing": "constant",
-            "tracegroupgap": 4,
-            "bgcolor": BB_BLACK,
-        },
+        showlegend=False,
         uniformtext_minsize=10,
         uniformtext_mode="hide",
-        margin={"l": 28, "r": 28, "t": 72, "b": 42, "autoexpand": True},
+        margin={"l": 18, "r": 18, "t": 62, "b": 24, "autoexpand": True},
         annotations=[
             {
                 "text": "PORTFOLIO<br>EXPOSURE",
-                "x": center_x,
-                "y": center_y,
+                "x": 0.5,
+                "y": 0.49,
                 "xref": "paper",
                 "yref": "paper",
                 "showarrow": False,
@@ -137,6 +129,56 @@ def _safe_donut(frame: pd.DataFrame, label_column: str, title: str) -> go.Figure
         ],
     )
     return figure
+
+
+def _legend_html(chart: pd.DataFrame, label_column: str, colors: list[str]) -> str:
+    """Two-column wrapping legend that lives outside Plotly's clip region."""
+    items: list[str] = []
+    for index, row in chart.iterrows():
+        color = colors[index % len(colors)] if colors else BB_ORANGE
+        label = html.escape(str(row[label_column]))
+        pct = float(row["% Exposure"] or 0.0)
+        exposure = float(row["Exposure"] or 0.0)
+        items.append(
+            "<div style='display:grid;grid-template-columns:12px minmax(0,1fr) auto;"
+            "align-items:start;column-gap:.42rem;min-width:0;padding:.18rem 0;'>"
+            f"<span style='width:10px;height:10px;background:{color};margin-top:.24rem;display:block;'></span>"
+            "<span style='min-width:0;color:#fb8b1e;font-family:Courier New,monospace;"
+            "font-size:.78rem;line-height:1.25;white-space:normal;overflow-wrap:anywhere;word-break:normal;'>"
+            f"{label}</span>"
+            "<span style='color:#4af6c3;font-family:Courier New,monospace;font-size:.76rem;"
+            "line-height:1.25;white-space:nowrap;text-align:right;' "
+            f"title='${exposure:,.2f}'>{pct:.1f}%</span>"
+            "</div>"
+        )
+
+    return (
+        "<div style='border-top:1px solid #fb8b1e;margin-top:-.15rem;padding:.48rem .18rem .12rem .18rem;'>"
+        "<div style='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));"
+        "column-gap:.85rem;row-gap:.06rem;width:100%;min-width:0;'>"
+        + "".join(items)
+        + "</div></div>"
+    )
+
+
+def _render_chart_panel(frame: pd.DataFrame, label_column: str, title: str, key: str) -> None:
+    if frame is None or frame.empty:
+        st.info(f"No {label_column.lower()} exposure could be mapped.")
+        return
+
+    chart = _chart_frame(frame, label_column)
+    colors = _chart_colors(len(chart))
+    st.plotly_chart(
+        _safe_donut(chart, label_column, title, colors),
+        width="stretch",
+        config={
+            "displayModeBar": False,
+            "responsive": True,
+            "displaylogo": False,
+        },
+        key=key,
+    )
+    st.markdown(_legend_html(chart, label_column, colors), unsafe_allow_html=True)
 
 
 def _detail_table(frame: pd.DataFrame, label_column: str) -> None:
@@ -163,7 +205,7 @@ def render_stockanalysis_portfolio(
     title: str = "SECTOR + INDUSTRY EXPOSURE",
     show_classification_table: bool = True,
 ) -> None:
-    """Render full-width sector and industry analytics with no visual clipping."""
+    """Render responsive side-by-side sector and industry analytics."""
     frame, account_key = _portfolio_rows(account_state_key)
     if frame.empty:
         return
@@ -192,27 +234,24 @@ def render_stockanalysis_portfolio(
             key=f"{key_prefix}_classification_{account_key}",
         )
 
-    # One chart per row. The previous two-column layout was too narrow for a
-    # large industry legend and caused the exact clipping shown in the user's
-    # screenshot. Full width is intentionally preferred over compactness here.
-    if sector_frame.empty:
-        st.info("No sector exposure could be mapped.")
-    else:
-        st.plotly_chart(
-            _safe_donut(sector_frame, "Sector", "SECTOR EXPOSURE"),
-            width="stretch",
-            config={"displayModeBar": False, "responsive": True, "displaylogo": False},
-            key=f"{key_prefix}_sector_{account_key}_v2",
+    # Streamlit columns are responsive and wrap on narrow viewports. On desktop
+    # the requested sector/industry pair remains side by side. Each Plotly chart
+    # is width='stretch' so it follows the actual column width instead of using a
+    # fixed canvas that can overflow its parent.
+    left, right = st.columns(2, gap="medium")
+    with left:
+        _render_chart_panel(
+            sector_frame,
+            "Sector",
+            "SECTOR EXPOSURE",
+            f"{key_prefix}_sector_{account_key}_v3",
         )
-
-    if industry_frame.empty:
-        st.info("No industry exposure could be mapped.")
-    else:
-        st.plotly_chart(
-            _safe_donut(industry_frame, "Industry", "INDUSTRY EXPOSURE"),
-            width="stretch",
-            config={"displayModeBar": False, "responsive": True, "displaylogo": False},
-            key=f"{key_prefix}_industry_{account_key}_v2",
+    with right:
+        _render_chart_panel(
+            industry_frame,
+            "Industry",
+            "INDUSTRY EXPOSURE",
+            f"{key_prefix}_industry_{account_key}_v3",
         )
 
     with st.expander("FULL SECTOR + INDUSTRY BREAKDOWN"):
@@ -222,9 +261,9 @@ def render_stockanalysis_portfolio(
         _detail_table(industry_frame, "Industry")
 
     st.caption(
-        "VISUAL RULE // slices below 2% are grouped into Other on the pie so labels and legends never collide. "
-        "The full ungrouped exposure is preserved in the breakdown above. ETF NOTE // StockAnalysis reports ETF "
-        "Asset Class/Category rather than one company Industry. The industry pie therefore groups ETFs by "
-        "StockAnalysis ETF Category. Sector pie uses ETF sector look-through when available; otherwise it falls "
-        "back to the ETF asset class."
+        "VISUAL RULE // charts stay side by side on normal desktop widths; long legend text lives outside the "
+        "Plotly SVG so it wraps instead of clipping. Slices below 2% are grouped into Other on the pie and the "
+        "full ungrouped exposure remains in the breakdown. ETF NOTE // StockAnalysis reports ETF Asset Class/Category "
+        "rather than one company Industry. The industry pie therefore groups ETFs by StockAnalysis ETF Category. "
+        "Sector pie uses ETF sector look-through when available; otherwise it falls back to the ETF asset class."
     )
