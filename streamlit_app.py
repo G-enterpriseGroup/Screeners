@@ -22,6 +22,7 @@ from src.etrade_data_cache import (
     CACHE_TTLS,
     CachedETradeClient,
     OfflineETradeClient,
+    _offline_store,
     cache_stats,
     clear_session_cache,
     offline_snapshot_available,
@@ -147,6 +148,46 @@ def _restore_active_etrade_session_after_unlock():
     return True
 
 
+def _seed_offline_from_session_state():
+    """Immediately preserve any portfolio snapshot already present in this session.
+
+    This catches holdings/balances loaded before the new offline-vault feature
+    was deployed, so a currently visible prior portfolio can become the fallback
+    without requiring another API request first.
+    """
+    vault_key = _trade_access_code_hash()
+    now = time.time()
+    accounts = st.session_state.get("etrade_accounts") or []
+    if accounts:
+        _offline_store(vault_key, "accounts", "all", accounts, loaded_at=now)
+
+    holdings_loaded_at = float(
+        st.session_state.get("etrade_holdings_last_refresh", now) or now
+    )
+    for account_key, value in (st.session_state.get("etrade_holdings") or {}).items():
+        if value is not None:
+            _offline_store(
+                vault_key,
+                "portfolio",
+                str(account_key),
+                value,
+                loaded_at=holdings_loaded_at,
+            )
+
+    balance_loaded_at = float(
+        st.session_state.get("etrade_balance_last_refresh", now) or now
+    )
+    for account_key, value in (st.session_state.get("etrade_balances") or {}).items():
+        if value is not None:
+            _offline_store(
+                vault_key,
+                "balance",
+                str(account_key),
+                value,
+                loaded_at=balance_loaded_at,
+            )
+
+
 def _cache_age_text(seconds):
     if seconds is None:
         return "UNKNOWN"
@@ -223,6 +264,10 @@ _restore_active_etrade_session_after_unlock()
 if not _trade_access_unlocked():
     render_app_lock_screen()
     st.stop()
+
+# Capture any already-loaded portfolio data before connection controls or tab
+# renderers have a chance to clear/replace session values.
+_seed_offline_from_session_state()
 
 st.title("Raj's Terminal")
 st.caption(
