@@ -1,0 +1,356 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bb-black:#000000;
+      --bb-orange:#fb8b1e;
+      --bb-blue:#0068ff;
+      --bb-green:#4af6c3;
+    }
+    html, body {
+      margin:0;
+      padding:0;
+      background:var(--bb-black);
+      color:var(--bb-orange);
+      font-family:"Courier New",monospace;
+      overflow:hidden;
+    }
+    #tabs {
+      display:flex;
+      align-items:stretch;
+      gap:2px;
+      width:100%;
+      min-height:42px;
+      border-bottom:1px solid var(--bb-orange);
+      background:var(--bb-black);
+      box-sizing:border-box;
+      user-select:none;
+      -webkit-user-select:none;
+    }
+    .tab {
+      position:relative;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-height:40px;
+      padding:0 14px;
+      border:1px solid transparent;
+      border-bottom:0;
+      background:var(--bb-black);
+      color:var(--bb-orange);
+      font:900 14px/1 "Courier New",monospace;
+      white-space:nowrap;
+      cursor:grab;
+      box-sizing:border-box;
+      touch-action:pan-y;
+    }
+    .tab:hover {
+      border-color:var(--bb-orange);
+      background:#111111;
+      color:#ffffff;
+    }
+    .tab.active {
+      background:var(--bb-orange) !important;
+      color:var(--bb-black) !important;
+      border-color:var(--bb-orange) !important;
+    }
+    .tab.dragging {
+      background:var(--bb-blue) !important;
+      color:#ffffff !important;
+      border-color:#66adff !important;
+      opacity:.78;
+      cursor:grabbing;
+      z-index:5;
+    }
+    .tab.drop-before::before,
+    .tab.drop-after::after {
+      content:"";
+      position:absolute;
+      top:3px;
+      bottom:3px;
+      width:4px;
+      background:var(--bb-green);
+      box-shadow:0 0 8px rgba(74,246,195,.8);
+      pointer-events:none;
+    }
+    .tab.drop-before::before { left:-3px; }
+    .tab.drop-after::after { right:-3px; }
+    .hint {
+      margin-left:auto;
+      align-self:center;
+      padding:0 8px 0 12px;
+      color:#777777;
+      font:700 10px/1 "Courier New",monospace;
+      white-space:nowrap;
+      pointer-events:none;
+    }
+    body.dragging, body.dragging * { cursor:grabbing !important; }
+    @media (max-width:900px) {
+      .tab { padding:0 9px; font-size:12px; }
+      .hint { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="tabs"></div>
+  <script>
+    function post(type, data) {
+      window.parent.postMessage(Object.assign({isStreamlitMessage:true, type:type}, data), "*");
+    }
+    function ready() { post("streamlit:componentReady", {apiVersion:1}); }
+    function height(px) { post("streamlit:setFrameHeight", {height:px}); }
+    function send(value) { post("streamlit:setComponentValue", {value:value, dataType:"json"}); }
+
+    let tabs = [];
+    let active = "";
+    let storageKey = "raj-terminal-tabs-v3";
+    let storageHydrated = false;
+    let interaction = null;
+    let queuedServerArgs = null;
+    let awaitingAck = null;
+    let eventId = 0;
+
+    const DRAG_THRESHOLD = 10;
+    const ACK_TIMEOUT_MS = 3000;
+
+    function signature(order, selected) {
+      return JSON.stringify({order:order, active:selected});
+    }
+
+    function cleanOrder(candidate, allowed) {
+      const out = [];
+      if (Array.isArray(candidate)) {
+        candidate.forEach((item) => {
+          const text = String(item);
+          if (allowed.includes(text) && !out.includes(text)) out.push(text);
+        });
+      }
+      allowed.forEach((item) => { if (!out.includes(item)) out.push(item); });
+      return out;
+    }
+
+    function persist() {
+      try { localStorage.setItem(storageKey, signature(tabs, active)); } catch (_) {}
+    }
+
+    function emit(action) {
+      eventId += 1;
+      persist();
+      awaitingAck = {
+        signature: signature(tabs, active),
+        sentAt: Date.now(),
+      };
+      send({order:[...tabs], active:active, action:action, event_id:eventId});
+    }
+
+    function clearMarkers() {
+      document.querySelectorAll(".tab").forEach((el) => {
+        el.classList.remove("drop-before", "drop-after", "dragging");
+      });
+      document.body.classList.remove("dragging");
+    }
+
+    function elements() { return Array.from(document.querySelectorAll(".tab")); }
+
+    function insertionIndex(clientX, sourceIndex) {
+      const els = elements();
+      let insertion = els.length;
+      for (let i = 0; i < els.length; i += 1) {
+        const rect = els[i].getBoundingClientRect();
+        if (clientX < rect.left + rect.width / 2) {
+          insertion = i;
+          break;
+        }
+      }
+      if (sourceIndex < insertion) insertion -= 1;
+      return Math.max(0, Math.min(insertion, tabs.length - 1));
+    }
+
+    function showInsertion(clientX) {
+      const els = elements();
+      els.forEach((el) => el.classList.remove("drop-before", "drop-after"));
+      if (!els.length) return;
+      for (let i = 0; i < els.length; i += 1) {
+        const rect = els[i].getBoundingClientRect();
+        if (clientX < rect.left + rect.width / 2) {
+          els[i].classList.add("drop-before");
+          return;
+        }
+      }
+      els[els.length - 1].classList.add("drop-after");
+    }
+
+    function render() {
+      const root = document.getElementById("tabs");
+      root.innerHTML = "";
+
+      tabs.forEach((label, index) => {
+        const el = document.createElement("div");
+        el.className = "tab" + (label === active ? " active" : "");
+        el.textContent = label;
+        el.setAttribute("role", "tab");
+        el.setAttribute("aria-selected", label === active ? "true" : "false");
+        el.setAttribute("tabindex", "0");
+        el.title = "Click to open. Drag horizontally to reorder.";
+
+        el.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 || interaction) return;
+          interaction = {
+            pointerId:event.pointerId,
+            index:index,
+            label:label,
+            startX:event.clientX,
+            startY:event.clientY,
+            dragging:false,
+            element:el,
+          };
+          try { el.setPointerCapture(event.pointerId); } catch (_) {}
+        });
+
+        el.addEventListener("pointermove", (event) => {
+          if (!interaction || event.pointerId !== interaction.pointerId) return;
+          const dx = event.clientX - interaction.startX;
+          const dy = event.clientY - interaction.startY;
+          if (!interaction.dragging && Math.abs(dx) >= DRAG_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
+            interaction.dragging = true;
+            interaction.element.classList.add("dragging");
+            document.body.classList.add("dragging");
+          }
+          if (interaction.dragging) {
+            event.preventDefault();
+            showInsertion(event.clientX);
+          }
+        });
+
+        el.addEventListener("pointerup", (event) => {
+          if (!interaction || event.pointerId !== interaction.pointerId) return;
+          const current = interaction;
+          interaction = null;
+          clearMarkers();
+          try { current.element.releasePointerCapture(event.pointerId); } catch (_) {}
+
+          if (current.dragging) {
+            event.preventDefault();
+            event.stopPropagation();
+            const target = insertionIndex(event.clientX, current.index);
+            if (target !== current.index) {
+              const next = [...tabs];
+              const [moved] = next.splice(current.index, 1);
+              next.splice(target, 0, moved);
+              tabs = next;
+              render();
+              emit("reorder");
+            } else {
+              render();
+            }
+          } else {
+            if (active !== current.label) {
+              active = current.label;
+              render();
+              emit("select");
+            } else {
+              render();
+            }
+          }
+
+          if (queuedServerArgs) {
+            const args = queuedServerArgs;
+            queuedServerArgs = null;
+            applyServer(args);
+          }
+        });
+
+        el.addEventListener("pointercancel", (event) => {
+          if (!interaction || event.pointerId !== interaction.pointerId) return;
+          interaction = null;
+          clearMarkers();
+          render();
+        });
+
+        el.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (active !== label) {
+              active = label;
+              render();
+              emit("select");
+            }
+          }
+        });
+
+        root.appendChild(el);
+      });
+
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = "CLICK = OPEN  //  DRAG = REORDER";
+      root.appendChild(hint);
+      window.setTimeout(() => height(Math.max(44, root.scrollHeight + 2)), 0);
+    }
+
+    function applyServer(args) {
+      const allowed = Array.isArray(args.tabs) ? args.tabs.map(String) : [];
+      if (!allowed.length) return;
+
+      storageKey = String(args.storage_key || storageKey);
+      const serverOrder = cleanOrder(allowed, allowed);
+      const serverActive = allowed.includes(String(args.active)) ? String(args.active) : serverOrder[0];
+      const serverSignature = signature(serverOrder, serverActive);
+
+      if (!storageHydrated) {
+        storageHydrated = true;
+        try {
+          const raw = localStorage.getItem(storageKey);
+          if (raw) {
+            const saved = JSON.parse(raw);
+            const savedOrder = cleanOrder(saved.order, allowed);
+            const savedActive = allowed.includes(String(saved.active)) ? String(saved.active) : serverActive;
+            const savedSignature = signature(savedOrder, savedActive);
+            if (savedSignature !== serverSignature) {
+              tabs = savedOrder;
+              active = savedActive;
+              render();
+              emit("restore");
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (awaitingAck) {
+        if (serverSignature === awaitingAck.signature) {
+          awaitingAck = null;
+        } else if (Date.now() - awaitingAck.sentAt < ACK_TIMEOUT_MS) {
+          // This is the stale pre-event Streamlit render. Keep the user's
+          // optimistic highlight/order until Python acknowledges the event.
+          return;
+        } else {
+          awaitingAck = null;
+        }
+      }
+
+      tabs = serverOrder;
+      active = serverActive;
+      persist();
+      render();
+    }
+
+    function onMessage(event) {
+      if (!event.data || event.data.type !== "streamlit:render") return;
+      const args = event.data.args || {};
+      if (interaction) {
+        queuedServerArgs = args;
+        return;
+      }
+      applyServer(args);
+    }
+
+    window.addEventListener("message", onMessage);
+    window.addEventListener("load", () => height(46));
+    ready();
+  </script>
+</body>
+</html>
