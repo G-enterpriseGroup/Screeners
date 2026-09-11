@@ -5,6 +5,8 @@ Design goals:
 - sector legend lives to the LEFT of its donut; industry legend lives to the RIGHT
 - legends are kept INSIDE each Plotly canvas so they cannot be cut off by Streamlit columns
 - long legend labels are wrapped before Plotly renders them
+- every visible sector and industry receives its own distinct color
+- sector and industry palettes do not reuse colors across the two charts
 - tiny slices are grouped into Other and tiny percentage text is suppressed
 - chart height grows with legend density
 - full ungrouped exposure remains available in an expander
@@ -20,7 +22,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.stockanalysis_portfolio import _classification_frames, _portfolio_rows
-from src.theme import BB_BLACK, BB_GREEN, BB_ORANGE, CHART_COLORWAY
+from src.theme import BB_BLACK, BB_GREEN, BB_ORANGE
 
 
 MIN_SLICE_PCT = 2.0
@@ -29,6 +31,49 @@ MAX_VISIBLE_SLICES = 12
 LEGEND_WRAP_CHARS = 18
 LEGEND_MAX_LINES = 3
 DONUT_HOLE = 0.47  # 5 percentage points thicker than the prior 0.52 hole.
+
+# High-contrast qualitative palette designed for the terminal's black background.
+# The first 16 colors are reserved for SECTOR; the second 16 are reserved for
+# INDUSTRY. With MAX_VISIBLE_SLICES=12 (+ Other), neither chart repeats a color
+# and the two charts do not reuse one another's slice colors.
+DISTINCT_EXPOSURE_COLORS = [
+    # Sector palette
+    "#4AF6C3",  # mint
+    "#0068FF",  # electric blue
+    "#FB8B1E",  # terminal orange
+    "#FF433D",  # red
+    "#B26CFF",  # violet
+    "#FFE066",  # yellow
+    "#27D7FF",  # cyan
+    "#FF5CB8",  # pink
+    "#7BD23C",  # lime
+    "#00A7A7",  # teal
+    "#C58CFF",  # lavender
+    "#FF9F7A",  # coral
+    "#A1E8AF",  # sage
+    "#F45B69",  # rose red
+    "#1DD3B0",  # aqua green
+    "#A9DEF9",  # ice blue
+    # Industry palette — intentionally different from every sector color
+    "#E63946",  # crimson
+    "#2A9D8F",  # deep teal
+    "#F4A261",  # peach
+    "#8D5CF6",  # royal violet
+    "#E9C46A",  # gold
+    "#00B4D8",  # ocean cyan
+    "#F72585",  # magenta
+    "#90BE6D",  # leaf green
+    "#4361EE",  # indigo
+    "#FFB703",  # amber
+    "#577590",  # steel blue
+    "#D00000",  # deep red
+    "#8338EC",  # purple
+    "#06D6A0",  # emerald
+    "#EF476F",  # watermelon
+    "#118AB2",  # blue teal
+]
+SECTOR_COLOR_OFFSET = 0
+INDUSTRY_COLOR_OFFSET = 16
 
 
 def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
@@ -68,8 +113,21 @@ def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
     return major
 
 
-def _chart_colors(count: int) -> list[str]:
-    return [CHART_COLORWAY[index % len(CHART_COLORWAY)] for index in range(max(0, count))]
+def _chart_colors(count: int, *, palette_offset: int) -> list[str]:
+    """Return unique, non-repeating colors for one exposure chart."""
+    count = max(0, int(count))
+    palette_end = palette_offset + count
+    if palette_end <= len(DISTINCT_EXPOSURE_COLORS):
+        return DISTINCT_EXPOSURE_COLORS[palette_offset:palette_end]
+
+    # Defensive fallback. Current chart caps guarantee this should not be hit,
+    # but generated HSL colors keep every extra category visually distinct.
+    colors = list(DISTINCT_EXPOSURE_COLORS[palette_offset:])
+    remaining = count - len(colors)
+    for index in range(remaining):
+        hue = (17 + (index * 137.508) + palette_offset * 11) % 360
+        colors.append(f"hsl({hue:.1f}, 78%, 58%)")
+    return colors
 
 
 def _wrap_legend_label(value: object) -> str:
@@ -141,9 +199,8 @@ def _safe_donut(
             "borderwidth": 0,
         }
 
-    # Always calculate the annotation from the exact Plotly pie domain so the
-    # center label stays mathematically centered even though the two charts use
-    # mirrored legend layouts.
+    # Calculate the annotation from the exact Plotly pie domain so the center
+    # label stays mathematically centered despite the mirrored legend layouts.
     center_x = (pie_domain["x"][0] + pie_domain["x"][1]) / 2
     center_y = (pie_domain["y"][0] + pie_domain["y"][1]) / 2
     safe_height = max(500, min(650, 390 + len(chart) * 20))
@@ -232,13 +289,14 @@ def _render_chart_panel(
     key: str,
     *,
     legend_side: str,
+    palette_offset: int,
 ) -> None:
     if frame is None or frame.empty:
         st.info(f"No {label_column.lower()} exposure could be mapped.")
         return
 
     chart = _chart_frame(frame, label_column)
-    colors = _chart_colors(len(chart))
+    colors = _chart_colors(len(chart), palette_offset=palette_offset)
     st.plotly_chart(
         _safe_donut(
             chart,
@@ -294,24 +352,26 @@ def render_stockanalysis_portfolio(
         )
 
     # Preserve Raj's preferred original visual: two donuts on one row with the
-    # legends flanking the pair. Each legend lives inside its own Plotly paper
-    # region and wraps long labels, preventing clipping.
+    # legends flanking the pair. Sector and industry use completely separate
+    # color ranges so every visible category is visually distinct.
     left, right = st.columns(2, gap="small")
     with left:
         _render_chart_panel(
             sector_frame,
             "Sector",
             "SECTOR EXPOSURE",
-            f"{key_prefix}_sector_{account_key}_v5",
+            f"{key_prefix}_sector_{account_key}_v6",
             legend_side="left",
+            palette_offset=SECTOR_COLOR_OFFSET,
         )
     with right:
         _render_chart_panel(
             industry_frame,
             "Industry",
             "INDUSTRY EXPOSURE",
-            f"{key_prefix}_industry_{account_key}_v5",
+            f"{key_prefix}_industry_{account_key}_v6",
             legend_side="right",
+            palette_offset=INDUSTRY_COLOR_OFFSET,
         )
 
     with st.expander("FULL SECTOR + INDUSTRY BREAKDOWN"):
@@ -321,8 +381,8 @@ def render_stockanalysis_portfolio(
         _detail_table(industry_frame, "Industry")
 
     st.caption(
-        "VISUAL RULE // charts stay side by side on desktop with mirrored legends. Long legend names wrap inside "
-        "their own chart panel, slices below 2% are grouped into Other, and percentages below 3% are hover/legend "
-        "only. The full ungrouped exposure remains available in the breakdown above. ETF NOTE // StockAnalysis "
-        "reports ETF Asset Class/Category rather than one company Industry."
+        "VISUAL RULE // every visible sector and industry has a different color, and the two charts use separate "
+        "color sets. Charts stay side by side on desktop with mirrored legends. Long legend names wrap inside their "
+        "own panel, slices below 2% are grouped into Other, and percentages below 3% are hover/legend only. The full "
+        "ungrouped exposure remains available in the breakdown above."
     )
