@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any, Callable
 
 import pandas as pd
@@ -21,6 +22,9 @@ from src.risk_sizing import (
     stock_position_size,
 )
 from src.theme import BB_BLACK, BB_BLUE, BB_GREEN, BB_ORANGE, BB_RED
+
+
+RISK_AUTO_REFRESH_SECONDS = 30
 
 
 def _find_text_key(value: Any, wanted: str) -> str:
@@ -49,18 +53,21 @@ def _normalized_holdings(raw_holdings: list[dict[str, Any]]) -> pd.DataFrame:
         row = normalize_position(position)
         cusip = _find_text_key(position, "cusip")
         if not cusip and str(row.get("Type") or "").upper() == "BOND":
-            # Some E*TRADE bond payloads expose the CUSIP as the product symbol.
             possible = str(row.get("Symbol") or "").strip().upper()
             if len(possible) == 9 and possible.isalnum():
                 cusip = possible
-        # CUSIP remains internal for classification only. It is intentionally
-        # not repeated in the dashboard when the bond symbol already is its CUSIP.
         row["CUSIP"] = cusip
         rows.append(row)
     return pd.DataFrame(rows)
 
 
-def _metric_box(container, label: str, value: str, tone: str = "neutral", detail: str = "") -> None:
+def _metric_box(
+    container,
+    label: str,
+    value: str,
+    tone: str = "neutral",
+    detail: str = "",
+) -> None:
     color = {
         "positive": BB_GREEN,
         "negative": BB_RED,
@@ -126,8 +133,22 @@ def _render_crown_reference() -> None:
         st.markdown("**GUIDE EXAMPLE // TSM**")
         example = pd.DataFrame(
             [
-                {"Entry": 411.0, "Stop": 360.0, "Risk / Share": 51.0, "Risk Budget": 1500.0, "Sizing": "1.00", "Approx Shares": 29},
-                {"Entry": 411.0, "Stop": 360.0, "Risk / Share": 51.0, "Risk Budget": 750.0, "Sizing": "0.50", "Approx Shares": 15},
+                {
+                    "Entry": 411.0,
+                    "Stop": 360.0,
+                    "Risk / Share": 51.0,
+                    "Risk Budget": 1500.0,
+                    "Sizing": "1.00",
+                    "Approx Shares": 29,
+                },
+                {
+                    "Entry": 411.0,
+                    "Stop": 360.0,
+                    "Risk / Share": 51.0,
+                    "Risk Budget": 750.0,
+                    "Sizing": "0.50",
+                    "Approx Shares": 15,
+                },
             ]
         )
         st.dataframe(
@@ -141,14 +162,26 @@ def _render_crown_reference() -> None:
                 "Risk Budget": st.column_config.NumberColumn(format="$%.2f"),
             },
         )
-        st.caption("The guide works backward from the stop: dollar risk budget divided by risk per share.")
+        st.caption(
+            "The guide works backward from the stop: dollar risk budget divided by risk per share."
+        )
 
     elif choice == "Defined-Risk Options Example":
         st.markdown("**GUIDE EXAMPLE // DEFINED-RISK SPREAD**")
         example = pd.DataFrame(
             [
-                {"Max Loss / Spread": 300.0, "Risk Budget": 1500.0, "Sizing": "1.00", "Guide Example": "5 spreads"},
-                {"Max Loss / Spread": 300.0, "Risk Budget": 750.0, "Sizing": "0.50", "Guide Example": "2 to 3 spreads"},
+                {
+                    "Max Loss / Spread": 300.0,
+                    "Risk Budget": 1500.0,
+                    "Sizing": "1.00",
+                    "Guide Example": "5 spreads",
+                },
+                {
+                    "Max Loss / Spread": 300.0,
+                    "Risk Budget": 750.0,
+                    "Sizing": "0.50",
+                    "Guide Example": "2 to 3 spreads",
+                },
             ]
         )
         st.dataframe(
@@ -166,7 +199,9 @@ def _render_crown_reference() -> None:
         )
 
     elif choice == "Dollar Risk by Account Size":
-        st.markdown("**GUIDE TABLE // ASSUMES 15% TACTICAL SLEEVE + 1.5% RISK FOR 1.00**")
+        st.markdown(
+            "**GUIDE TABLE // ASSUMES 15% TACTICAL SLEEVE + 1.5% RISK FOR 1.00**"
+        )
         table = pd.DataFrame(CROWN_DOLLAR_RISK_TABLE)
         st.dataframe(
             table,
@@ -202,6 +237,7 @@ def _render_crown_reference() -> None:
         )
 
 
+@st.fragment(run_every="10s")
 def render_risk_sizing(
     client,
     *,
@@ -241,14 +277,41 @@ def render_risk_sizing(
     )
 
     holdings_cache = st.session_state.setdefault("etrade_holdings", {})
-    if refresh_portfolio or holdings_cache.get(account_key) is None:
+    now = time.time()
+    risk_refresh_key = f"risk_sizing_last_refresh_{account_key}"
+    last_risk_refresh = float(st.session_state.get(risk_refresh_key, 0.0) or 0.0)
+    shared_holdings_refresh = float(
+        st.session_state.get("etrade_holdings_last_refresh", 0.0) or 0.0
+    )
+    last_portfolio_refresh = max(last_risk_refresh, shared_holdings_refresh)
+    auto_refresh_due = (
+        holdings_cache.get(account_key) is None
+        or now - last_portfolio_refresh >= RISK_AUTO_REFRESH_SECONDS
+    )
+
+    if refresh_portfolio or auto_refresh_due:
         try:
             holdings_cache[account_key] = client.get_portfolio(account_key)
             account_balance(client, account, refresh=True)
+            synced_at = time.time()
+            st.session_state[risk_refresh_key] = synced_at
+            st.session_state["etrade_holdings_last_refresh"] = synced_at
+            st.session_state["etrade_balance_last_refresh"] = synced_at
             touch_session()
+            last_portfolio_refresh = synced_at
         except ETradeError as exc:
             st.error(str(exc))
             return
+
+    sync_age = (
+        max(0, int(time.time() - last_portfolio_refresh))
+        if last_portfolio_refresh
+        else 0
+    )
+    st.caption(
+        f"AUTO SYNC // portfolio + cash rechecked every {RISK_AUTO_REFRESH_SECONDS}s // "
+        f"last sync {sync_age}s ago // manual refresh remains available"
+    )
 
     raw_holdings = holdings_cache.get(account_key) or []
     normalized = _normalized_holdings(raw_holdings)
@@ -263,7 +326,9 @@ def render_risk_sizing(
         account_total = 0.0
         cash_available = 0.0
 
-    market_total = pd.to_numeric(normalized["Market Value"], errors="coerce").fillna(0.0).sum()
+    market_total = pd.to_numeric(
+        normalized["Market Value"], errors="coerce"
+    ).fillna(0.0).sum()
     investable_assets = float(account_total or (market_total + cash_available))
 
     st.markdown("**1 // CLASSIFY THE CURRENT BOOK**")
@@ -312,41 +377,91 @@ def render_risk_sizing(
         )
 
     classified = classify_holdings(normalized, gain_threshold)
-    summary = sleeve_summary(classified, investable_assets, tactical_sleeve_pct)
+    summary = sleeve_summary(
+        classified,
+        investable_assets,
+        tactical_sleeve_pct,
+    )
 
     if tactical_sleeve_pct < 10.0 or tactical_sleeve_pct > 20.0:
-        st.warning("CROWN SLEEVE RANGE FLAG // the guide's stated tactical sleeve range is 10% to 20%.")
+        st.warning(
+            "CROWN SLEEVE RANGE FLAG // the guide's stated tactical sleeve range is 10% to 20%."
+        )
     if full_position_risk_pct < 1.0 or full_position_risk_pct > 2.0:
-        st.warning("CROWN RISK RANGE FLAG // the guide's stated 1.00 risk cap is 1% to 2% of the tactical sleeve.")
+        st.warning(
+            "CROWN RISK RANGE FLAG // the guide's stated 1.00 risk cap is 1% to 2% of the tactical sleeve."
+        )
 
     tactical_usage_pct = (
         summary["tactical_value"] / summary["target_tactical_dollars"] * 100.0
         if summary["target_tactical_dollars"] > 0
         else 0.0
     )
+    cash_pct = (
+        float(cash_available) / investable_assets * 100.0
+        if investable_assets > 0
+        else 0.0
+    )
 
-    s1, s2, s3, s4, s5 = st.columns(5)
-    _metric_box(s1, "INVESTABLE ASSETS", _money(summary["investable_assets"]), "blue")
-    _metric_box(s2, "TARGET TACTICAL SLEEVE", _money(summary["target_tactical_dollars"]), "neutral", _percent(tactical_sleeve_pct))
-    current_tone = "negative" if summary["tactical_value"] > summary["target_tactical_dollars"] else "positive"
+    s1, s2, s3 = st.columns(3)
+    _metric_box(
+        s1,
+        "INVESTABLE ASSETS",
+        _money(summary["investable_assets"]),
+        "blue",
+    )
+    _metric_box(
+        s2,
+        "CASH AVAILABLE",
+        _money(cash_available),
+        "blue",
+        f"{cash_pct:.2f}% OF ACCOUNT",
+    )
     _metric_box(
         s3,
+        "TARGET TACTICAL SLEEVE",
+        _money(summary["target_tactical_dollars"]),
+        "neutral",
+        _percent(tactical_sleeve_pct),
+    )
+
+    s4, s5, s6 = st.columns(3)
+    current_tone = (
+        "negative"
+        if summary["tactical_value"] > summary["target_tactical_dollars"]
+        else "positive"
+    )
+    _metric_box(
+        s4,
         "CURRENT TACTICAL",
         _money(summary["tactical_value"]),
         current_tone,
         f"{tactical_usage_pct:.1f}% OF SLEEVE",
     )
-    _metric_box(s4, "LONG-TERM / STRUCTURAL", _money(summary["long_term_value"]), "positive")
+    _metric_box(
+        s5,
+        "LONG-TERM / STRUCTURAL",
+        _money(summary["long_term_value"]),
+        "positive",
+    )
     room_tone = "positive" if summary["target_room"] >= 0 else "negative"
-    _metric_box(s5, "TACTICAL ROOM", _money(summary["target_room"]), room_tone)
+    _metric_box(
+        s6,
+        "TACTICAL ROOM",
+        _money(summary["target_room"]),
+        room_tone,
+    )
 
-    # Keep the risk-book table decision-focused. CUSIP and security type remain
-    # available internally for classification, but duplicating them on screen
-    # adds noise (especially when a bond symbol already is the CUSIP).
     view = classified.copy()
-    view["Market Value"] = pd.to_numeric(view["Market Value"], errors="coerce").fillna(0.0)
-    view["Gain/Loss"] = pd.to_numeric(view["Gain/Loss"], errors="coerce").fillna(0.0)
-    view["Gain/Loss %"] = pd.to_numeric(view["Gain/Loss %"], errors="coerce").fillna(0.0)
+    view["Market Value"] = pd.to_numeric(
+        view["Market Value"], errors="coerce"
+    ).fillna(0.0)
+    view["Gain/Loss"] = pd.to_numeric(
+        view["Gain/Loss"], errors="coerce"
+    ).fillna(0.0)
+    view["Gain/Loss %"] = pd.to_numeric(
+        view["Gain/Loss %"], errors="coerce"
+    ).fillna(0.0)
     view["% Account"] = (
         view["Market Value"].abs() / investable_assets * 100.0
         if investable_assets > 0
@@ -458,11 +573,31 @@ def render_risk_sizing(
 
     if quote_data:
         q1, q2, q3, q4 = st.columns(4)
-        _metric_box(q1, "LAST", _money(quote_data.get("last") or 0.0), "positive")
-        _metric_box(q2, "BID", _money(quote_data.get("bid") or 0.0), "blue")
-        _metric_box(q3, "ASK", _money(quote_data.get("ask") or 0.0), "blue")
+        _metric_box(
+            q1,
+            "LAST",
+            _money(quote_data.get("last") or 0.0),
+            "positive",
+        )
+        _metric_box(
+            q2,
+            "BID",
+            _money(quote_data.get("bid") or 0.0),
+            "blue",
+        )
+        _metric_box(
+            q3,
+            "ASK",
+            _money(quote_data.get("ask") or 0.0),
+            "blue",
+        )
         change = float(quote_data.get("change") or 0.0)
-        _metric_box(q4, "CHANGE", f"{change:+.2f}", "positive" if change >= 0 else "negative")
+        _metric_box(
+            q4,
+            "CHANGE",
+            f"{change:+.2f}",
+            "positive" if change >= 0 else "negative",
+        )
 
     structure_col, multiplier_col = st.columns(2)
     with structure_col:
@@ -490,12 +625,31 @@ def render_risk_sizing(
     )
 
     r1, r2, r3 = st.columns(3)
-    _metric_box(r1, "1.00 RISK BUDGET", _money(risk_budget["full_risk_budget"]), "neutral")
-    _metric_box(r2, "SELECTED SIZE", f"{size_multiplier:.2f}", "blue")
-    _metric_box(r3, "MAX DOLLAR RISK", _money(risk_budget["selected_risk_budget"]), "positive")
+    _metric_box(
+        r1,
+        "1.00 RISK BUDGET",
+        _money(risk_budget["full_risk_budget"]),
+        "neutral",
+    )
+    _metric_box(
+        r2,
+        "SELECTED SIZE",
+        f"{size_multiplier:.2f}",
+        "blue",
+    )
+    _metric_box(
+        r3,
+        "MAX DOLLAR RISK",
+        _money(risk_budget["selected_risk_budget"]),
+        "positive",
+    )
 
     if trade_structure == "STOCK / ETF":
-        default_entry = float(quote_data.get("last") or 100.0) if quote_data else 100.0
+        default_entry = (
+            float(quote_data.get("last") or 100.0)
+            if quote_data
+            else 100.0
+        )
         e1, e2 = st.columns(2)
         with e1:
             entry_price = float(
@@ -527,11 +681,42 @@ def render_risk_sizing(
                 risk_budget["selected_risk_budget"],
             )
             p1, p2, p3, p4, p5 = st.columns(5)
-            _metric_box(p1, "RISK / SHARE", _money(sized["risk_per_share"]), "negative")
-            _metric_box(p2, "MAX SHARES", f"{sized['shares']:,}", "positive")
-            _metric_box(p3, "POSITION NOTIONAL", _money(sized["notional"]), "blue")
-            _metric_box(p4, "ACTUAL STOP RISK", _money(sized["actual_risk"]), "negative")
-            _metric_box(p5, "UNUSED RISK", _money(sized["unused_risk_budget"]), "neutral")
+            _metric_box(
+                p1,
+                "RISK / SHARE",
+                _money(sized["risk_per_share"]),
+                "negative",
+            )
+            _metric_box(
+                p2,
+                "MAX SHARES",
+                f"{sized['shares']:,}",
+                "positive",
+            )
+            _metric_box(
+                p3,
+                "POSITION NOTIONAL",
+                _money(sized["notional"]),
+                "blue",
+            )
+            _metric_box(
+                p4,
+                "ACTUAL STOP RISK",
+                _money(sized["actual_risk"]),
+                "negative",
+            )
+            _metric_box(
+                p5,
+                "UNUSED RISK",
+                _money(sized["unused_risk_budget"]),
+                "neutral",
+            )
+
+            if sized["notional"] > max(summary["target_room"], 0.0):
+                st.warning(
+                    "TACTICAL ROOM CHECK // stop-based risk sizing allows this share count, "
+                    "but the position notional exceeds the remaining tactical sleeve room."
+                )
         except ValueError as exc:
             st.warning(str(exc))
 
@@ -552,16 +737,37 @@ def render_risk_sizing(
                 risk_budget["selected_risk_budget"],
             )
             p1, p2, p3, p4 = st.columns(4)
-            _metric_box(p1, "MAX LOSS / SPREAD", _money(sized["max_loss_per_spread"]), "negative")
-            _metric_box(p2, "MAX SPREADS", f"{sized['contracts']:,}", "positive")
-            _metric_box(p3, "ACTUAL MAX RISK", _money(sized["actual_risk"]), "negative")
-            _metric_box(p4, "UNUSED RISK", _money(sized["unused_risk_budget"]), "neutral")
+            _metric_box(
+                p1,
+                "MAX LOSS / SPREAD",
+                _money(sized["max_loss_per_spread"]),
+                "negative",
+            )
+            _metric_box(
+                p2,
+                "MAX SPREADS",
+                f"{sized['contracts']:,}",
+                "positive",
+            )
+            _metric_box(
+                p3,
+                "ACTUAL MAX RISK",
+                _money(sized["actual_risk"]),
+                "negative",
+            )
+            _metric_box(
+                p4,
+                "UNUSED RISK",
+                _money(sized["unused_risk_budget"]),
+                "neutral",
+            )
         except ValueError as exc:
             st.warning(str(exc))
 
     st.caption(
         "RISK ENGINE // size is limited by the selected Crown-style dollar-risk budget. "
-        "For stocks/ETFs, risk = shares x distance to stop. For defined-risk spreads, max loss is the risk."
+        "For stocks/ETFs, risk = shares x distance to stop. "
+        "For defined-risk spreads, max loss is the risk."
     )
 
     _render_crown_reference()
