@@ -31,6 +31,7 @@ from src.session_persistence import (
     restore_etrade_session,
     save_etrade_session,
 )
+from src.tab_order import render_tab_order_editor
 
 
 # Preserve references to the core implementations before installing the
@@ -163,26 +164,17 @@ render_etrade_connection()
 _persist_active_etrade_session()
 _render_cache_status()
 
-(
-    holdings_tab,
-    risk_sizing_tab,
-    bull_spread_tab,
-    muni_screeners_tab,
-    orders_tab,
-) = st.tabs(
-    [
-        "HOLDINGS",
-        "RISK SIZING",
-        "BULL DEBIT SPREAD",
-        "MUNI SCREENERS",
-        "ORDERS",
-    ]
-)
+# Real drag-and-drop tab ordering. The sortable strip writes the user's order
+# to a process-memory preference vault and the actual Streamlit tabs are then
+# created in that exact order on the same rerun.
+tab_order = render_tab_order_editor(_trade_access_code_hash())
+tab_containers = st.tabs(tab_order)
+tab_by_name = dict(zip(tab_order, tab_containers))
 
-with holdings_tab:
+with tab_by_name["HOLDINGS"]:
     render_etrade_holdings()
 
-with risk_sizing_tab:
+with tab_by_name["RISK SIZING"]:
     render_risk_sizing(
         _etrade_client(),
         account_picker=_account_picker,
@@ -192,14 +184,14 @@ with risk_sizing_tab:
         touch_session=_touch_etrade_session,
     )
 
-with bull_spread_tab:
+with tab_by_name["BULL DEBIT SPREAD"]:
     render_bull_debit_spread(
         _etrade_client(),
         _touch_etrade_session,
         timezone_name="America/New_York",
     )
 
-with muni_screeners_tab:
+with tab_by_name["MUNI SCREENERS"]:
     load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
     with load_col:
         load_muni_clicked = st.button(
@@ -276,7 +268,7 @@ with muni_screeners_tab:
             "tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before trading."
         )
 
-with orders_tab:
+with tab_by_name["ORDERS"]:
     orders_left, orders_center, orders_right = st.columns([1.4, 5.2, 1.4])
     with orders_center:
         render_order_simulator()
