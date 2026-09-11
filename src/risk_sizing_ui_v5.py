@@ -17,7 +17,7 @@ from typing import Any, Callable
 import streamlit as st
 
 import src.risk_sizing_ui_v4 as _v4
-from src.stockanalysis_portfolio import render_stockanalysis_portfolio
+from src.stockanalysis_portfolio_v2 import render_stockanalysis_portfolio
 
 
 _ORIGINAL_QUOTE_SUMMARY = _v4.quote_summary
