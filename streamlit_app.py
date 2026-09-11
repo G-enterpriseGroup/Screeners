@@ -25,7 +25,7 @@ from src.etrade_data_cache import (
     clear_session_cache,
 )
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
-from src.risk_sizing_ui_v3 import render_risk_sizing
+from src.risk_sizing_ui_v4 import render_risk_sizing
 from src.session_persistence import (
     clear_etrade_session,
     restore_etrade_session,
@@ -164,25 +164,20 @@ _persist_active_etrade_session()
 _render_cache_status()
 
 (
-    orders_tab,
     holdings_tab,
     risk_sizing_tab,
     bull_spread_tab,
     muni_screeners_tab,
+    orders_tab,
 ) = st.tabs(
     [
-        "ORDERS",
         "HOLDINGS",
         "RISK SIZING",
         "BULL DEBIT SPREAD",
         "MUNI SCREENERS",
+        "ORDERS",
     ]
 )
-
-with orders_tab:
-    orders_left, orders_center, orders_right = st.columns([1.4, 5.2, 1.4])
-    with orders_center:
-        render_order_simulator()
 
 with holdings_tab:
     render_etrade_holdings()
@@ -280,3 +275,8 @@ with muni_screeners_tab:
             "Source prices/yields are not guaranteed executable broker quotes. Verify call schedules, "
             "tax treatment, AMT treatment, ratings, Treasury quotes, and official terms before trading."
         )
+
+with orders_tab:
+    orders_left, orders_center, orders_right = st.columns([1.4, 5.2, 1.4])
+    with orders_center:
+        render_order_simulator()
