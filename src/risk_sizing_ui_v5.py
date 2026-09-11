@@ -17,6 +17,7 @@ from typing import Any, Callable
 import streamlit as st
 
 import src.risk_sizing_ui_v4 as _v4
+from src.stockanalysis_portfolio import render_stockanalysis_portfolio
 
 
 _ORIGINAL_QUOTE_SUMMARY = _v4.quote_summary
@@ -76,3 +77,12 @@ def render_risk_sizing(
             "E*TRADE ASK UNAVAILABLE // Entry and Stop were not auto-reset. "
             "Pull the quote again when an ask is available or enter the values manually."
         )
+
+    # Requested placement: portfolio sector/industry visuals are the final
+    # block on Risk Sizing, below the Crown notes/examples and sizing engine.
+    render_stockanalysis_portfolio(
+        "risk_sizing_account",
+        key_prefix="risk_stockanalysis",
+        title="PORTFOLIO SECTOR + INDUSTRY // RISK CONTEXT",
+        show_classification_table=False,
+    )
