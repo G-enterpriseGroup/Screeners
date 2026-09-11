@@ -12,6 +12,8 @@ from typing import Callable
 
 import streamlit as st
 
+from src.stockanalysis_portfolio import render_stockanalysis_portfolio
+
 
 class _ColumnProxy:
     """Pass-through Streamlit column that removes stale 'Live' metric wording."""
@@ -128,8 +130,9 @@ def build_manual_holdings_renderer(core_renderer: Callable):
         st.caption = snapshot_caption
         st.warning = snapshot_warning
         st.columns = snapshot_columns
+        result = None
         try:
-            return core_body()
+            result = core_body()
         finally:
             st.toggle = original_toggle
             st.selectbox = original_selectbox
@@ -137,6 +140,17 @@ def build_manual_holdings_renderer(core_renderer: Callable):
             st.caption = original_caption
             st.warning = original_warning
             st.columns = original_columns
+
+        # Keep the user's requested visual rule: the holdings table and legacy
+        # portfolio analytics render first; StockAnalysis sector/industry maps
+        # are appended below them, never above the holdings table.
+        render_stockanalysis_portfolio(
+            "holdings_account",
+            key_prefix="holdings_stockanalysis",
+            title="STOCKANALYSIS // SECTOR + INDUSTRY EXPOSURE",
+            show_classification_table=True,
+        )
+        return result
 
     # If Streamlit exposes the original function behind @st.fragment, wrap that
     # body in a non-timed fragment. Otherwise call the existing renderer while
