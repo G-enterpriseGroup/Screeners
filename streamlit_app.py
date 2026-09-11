@@ -21,8 +21,11 @@ exec(compile(_CORE_DEFINITIONS, str(_CORE_PATH), "exec"), globals())
 from src.etrade_data_cache import (
     CACHE_TTLS,
     CachedETradeClient,
+    OfflineETradeClient,
     cache_stats,
     clear_session_cache,
+    offline_snapshot_available,
+    offline_snapshot_status,
 )
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.risk_sizing_ui_v5 import render_risk_sizing
@@ -37,25 +40,51 @@ from src.tab_bar import render_terminal_tab_bar
 # Preserve references to the core implementations before installing the
 # seamless-session/cache adapters below.
 _CORE_ETRADE_CLIENT_FACTORY = _etrade_client
+_CORE_RENDER_ETRADE_CONNECTION = render_etrade_connection
 _CORE_TOUCH_ETRADE_SESSION = _touch_etrade_session
 _CORE_CLEAR_ETRADE_RUNTIME = _clear_etrade_runtime
 _CORE_HOLDINGS_RENDERER = render_etrade_holdings
 
 
-def _etrade_client():
-    """Return one transparent shared-cache layer over the authenticated client.
-
-    Every tab calls this same adapter. The cache is server-memory, token-scoped,
-    and therefore survives normal Streamlit reruns and browser refreshes while
-    the app process + OAuth session remain alive.
-    """
+def _live_etrade_client():
+    """Return the authenticated live client wrapped in the shared smart cache."""
     raw_client = _CORE_ETRADE_CLIENT_FACTORY()
     if raw_client is None:
         return None
     return CachedETradeClient(
         raw_client,
         st.session_state.get("etrade_access_token"),
+        offline_key=_trade_access_code_hash(),
     )
+
+
+def _offline_etrade_client():
+    """Return a read-only last-known-good client when a snapshot exists."""
+    vault_key = _trade_access_code_hash()
+    if not offline_snapshot_available(vault_key):
+        return None
+    return OfflineETradeClient(vault_key)
+
+
+def _etrade_client():
+    """Use live E*TRADE when possible; otherwise transparently use prior snapshots."""
+    return _live_etrade_client() or _offline_etrade_client()
+
+
+def render_etrade_connection():
+    """Render connection controls against LIVE OAuth only, never the offline client.
+
+    The rest of Raj's Terminal can use _etrade_client() and therefore fall back
+    to cached snapshots. The connection bar must still truthfully show whether
+    E*TRADE itself is connected, so the core renderer temporarily sees the
+    live-only factory.
+    """
+    effective_factory = globals()["_etrade_client"]
+    globals()["_etrade_client"] = _live_etrade_client
+    try:
+        return _CORE_RENDER_ETRADE_CONNECTION()
+    finally:
+        globals()["_etrade_client"] = effective_factory
 
 
 def _persist_active_etrade_session():
@@ -72,15 +101,20 @@ def _persist_active_etrade_session():
 
 def _touch_etrade_session():
     """Core activity touch plus persistence for browser-refresh recovery."""
-    _CORE_TOUCH_ETRADE_SESSION()
-    _persist_active_etrade_session()
+    # Offline reads do not have an OAuth token to extend/persist.
+    if st.session_state.get("etrade_access_token"):
+        _CORE_TOUCH_ETRADE_SESSION()
+        _persist_active_etrade_session()
 
 
 def _clear_etrade_runtime(lock_access=False):
-    """LOCK preserves session/cache; DISCONNECT intentionally clears both."""
+    """LOCK preserves session/cache; DISCONNECT clears live OAuth, not snapshots."""
     token_snapshot = st.session_state.get("etrade_access_token")
     if lock_access:
         if bool(st.session_state.get("etrade_disconnect", False)):
+            # Clear the live token-scoped cache/session. The last-known-good
+            # access-code-scoped snapshot is intentionally kept so the terminal
+            # remains useful if E*TRADE cannot reconnect later.
             clear_session_cache(token_snapshot)
             clear_etrade_session(_trade_access_code_hash())
         else:
@@ -113,26 +147,71 @@ def _restore_active_etrade_session_after_unlock():
     return True
 
 
+def _cache_age_text(seconds):
+    if seconds is None:
+        return "UNKNOWN"
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+    return f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
+
+
 def _render_cache_status():
     token = st.session_state.get("etrade_access_token")
-    if not token:
+    offline = offline_snapshot_status(_trade_access_code_hash())
+
+    if token:
+        stats = cache_stats(token)
+        st.caption(
+            "SMART CACHE // SHARED ACROSS ALL TABS + BROWSER REFRESH // "
+            f"ACCOUNTS {CACHE_TTLS['accounts'] // 60}m // "
+            f"HOLDINGS {CACHE_TTLS['portfolio']}s // "
+            f"BALANCE {CACHE_TTLS['balance']}s // "
+            f"QUOTES {CACHE_TTLS['quote']}s // "
+            f"OPTION CHAINS {CACHE_TTLS['option_chain'] // 60}m // "
+            f"EXPIRATIONS {CACHE_TTLS['option_expirations'] // 3600}h // "
+            f"CACHE HITS {stats['hits']:,} // API FETCHES {stats['api_calls']:,} // "
+            f"STALE FALLBACKS {stats.get('stale_fallbacks', 0):,}"
+        )
         return
-    stats = cache_stats(token)
-    st.caption(
-        "SMART CACHE // SHARED ACROSS ALL TABS + BROWSER REFRESH // "
-        f"ACCOUNTS {CACHE_TTLS['accounts'] // 60}m // "
-        f"HOLDINGS {CACHE_TTLS['portfolio']}s // "
-        f"BALANCE {CACHE_TTLS['balance']}s // "
-        f"QUOTES {CACHE_TTLS['quote']}s // "
-        f"OPTION CHAINS {CACHE_TTLS['option_chain'] // 60}m // "
-        f"EXPIRATIONS {CACHE_TTLS['option_expirations'] // 3600}h // "
-        f"CACHE HITS {stats['hits']:,} // API FETCHES {stats['api_calls']:,}"
+
+    if offline.get("available"):
+        resources = offline.get("resources") or {}
+        st.caption(
+            "LAST-KNOWN E*TRADE VAULT // SERVER-MEMORY ONLY // "
+            f"NEWEST {_cache_age_text(offline.get('newest_age'))} AGO // "
+            f"HOLDINGS {resources.get('portfolio', 0)} // "
+            f"BALANCES {resources.get('balance', 0)} // "
+            f"QUOTES {resources.get('quote', 0)} // "
+            f"OPTION CHAINS {resources.get('option_chain', 0)}"
+        )
+
+
+def _render_offline_snapshot_notice():
+    live_client = _live_etrade_client()
+    status = offline_snapshot_status(_trade_access_code_hash())
+    using_offline = live_client is None and bool(status.get("available"))
+    fallback_event = st.session_state.get("_etrade_offline_mode", False)
+    if not using_offline and not fallback_event:
+        return
+
+    age = status.get("newest_age")
+    st.warning(
+        "E*TRADE OFFLINE SNAPSHOT MODE // live E*TRADE is unavailable, so Raj's Terminal is using "
+        f"your last-known cached brokerage data (newest snapshot {_cache_age_text(age)} ago). "
+        "Cached holdings, balances, prior quotes, option expirations, and option chains remain readable. "
+        "Values may be stale until E*TRADE reconnects."
     )
 
 
 # Holdings is snapshot/manual-refresh mode. The underlying E*TRADE call still
 # passes through the shared cache; pressing REFRESH HOLDINGS + BALANCE is
-# detected by CachedETradeClient and intentionally bypasses the cache once.
+# detected by CachedETradeClient and intentionally bypasses the normal TTL.
+# If that live refresh fails, the cache layer returns the prior snapshot.
 render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
 
 # On a hard browser refresh, Streamlit session_state may be new. The user still
@@ -163,6 +242,7 @@ render_etrade_connection()
 # refresh without changing the E*TRADE inactivity clock.
 _persist_active_etrade_session()
 _render_cache_status()
+_render_offline_snapshot_notice()
 
 # These ARE the terminal tabs: click to open; drag left/right to reorder.
 # Order and active tab are persisted in server memory and browser localStorage.
