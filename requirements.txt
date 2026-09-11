@@ -8,3 +8,4 @@ plotly>=5.24
 # redeploy marker: exact first 5%-below-ASK risk-sizing restore
 # clean rebuild marker: 2026-09-11 exposure-hover-leader-lines-commas-v3
 # clean rebuild marker: 2026-09-11 remove-legacy-sector-map-stale-classification-cache
+# clean rebuild marker: 2026-09-11 one-click-etrade-login
