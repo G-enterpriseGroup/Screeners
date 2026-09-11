@@ -3,12 +3,13 @@
 Design goals:
 - preserve the original Bloomberg-style side-by-side look Raj preferred
 - sector legend lives to the LEFT of its donut; industry legend lives to the RIGHT
-- legends are kept INSIDE each Plotly canvas so they cannot be cut off by Streamlit columns
-- long legend labels are wrapped before Plotly renders them
+- every chart panel uses the same hidden alignment grid and shared height
+- Bloomberg-style orange panel borders + header bars frame each visual
+- legends stay inside each Plotly canvas so Streamlit columns cannot clip them
+- long legend labels wrap before Plotly renders them
 - every visible sector and industry receives its own distinct color
 - sector and industry palettes do not reuse colors across the two charts
 - tiny slices are grouped into Other and tiny percentage text is suppressed
-- chart height grows with legend density
 - full ungrouped exposure remains available in an expander
 """
 
@@ -30,7 +31,24 @@ MIN_PRINTED_PCT = 3.0
 MAX_VISIBLE_SLICES = 12
 LEGEND_WRAP_CHARS = 18
 LEGEND_MAX_LINES = 3
-DONUT_HOLE = 0.47  # 5 percentage points thicker than the prior 0.52 hole.
+DONUT_HOLE = 0.47
+
+# ---------------------------------------------------------------------------
+# Bloomberg panel geometry.
+# These constants form an invisible alignment grid shared by BOTH charts.
+# Keeping every important y-coordinate identical prevents the sector/industry
+# panels from drifting when one side has more legend rows than the other.
+# ---------------------------------------------------------------------------
+PANEL_LEFT = 0.005
+PANEL_RIGHT = 0.995
+PANEL_BOTTOM = 0.015
+PANEL_TOP = 0.995
+HEADER_BOTTOM = 0.915
+CONTENT_TOP = 0.885
+CONTENT_BOTTOM = 0.065
+CONTENT_CENTER_Y = (CONTENT_TOP + CONTENT_BOTTOM) / 2
+PANEL_MIN_HEIGHT = 560
+PANEL_MAX_HEIGHT = 660
 
 # High-contrast qualitative palette designed for the terminal's black background.
 # The first 16 colors are reserved for SECTOR; the second 16 are reserved for
@@ -38,39 +56,15 @@ DONUT_HOLE = 0.47  # 5 percentage points thicker than the prior 0.52 hole.
 # and the two charts do not reuse one another's slice colors.
 DISTINCT_EXPOSURE_COLORS = [
     # Sector palette
-    "#4AF6C3",  # mint
-    "#0068FF",  # electric blue
-    "#FB8B1E",  # terminal orange
-    "#FF433D",  # red
-    "#B26CFF",  # violet
-    "#FFE066",  # yellow
-    "#27D7FF",  # cyan
-    "#FF5CB8",  # pink
-    "#7BD23C",  # lime
-    "#00A7A7",  # teal
-    "#C58CFF",  # lavender
-    "#FF9F7A",  # coral
-    "#A1E8AF",  # sage
-    "#F45B69",  # rose red
-    "#1DD3B0",  # aqua green
-    "#A9DEF9",  # ice blue
+    "#4AF6C3", "#0068FF", "#FB8B1E", "#FF433D",
+    "#B26CFF", "#FFE066", "#27D7FF", "#FF5CB8",
+    "#7BD23C", "#00A7A7", "#C58CFF", "#FF9F7A",
+    "#A1E8AF", "#F45B69", "#1DD3B0", "#A9DEF9",
     # Industry palette — intentionally different from every sector color
-    "#E63946",  # crimson
-    "#2A9D8F",  # deep teal
-    "#F4A261",  # peach
-    "#8D5CF6",  # royal violet
-    "#E9C46A",  # gold
-    "#00B4D8",  # ocean cyan
-    "#F72585",  # magenta
-    "#90BE6D",  # leaf green
-    "#4361EE",  # indigo
-    "#FFB703",  # amber
-    "#577590",  # steel blue
-    "#D00000",  # deep red
-    "#8338EC",  # purple
-    "#06D6A0",  # emerald
-    "#EF476F",  # watermelon
-    "#118AB2",  # blue teal
+    "#E63946", "#2A9D8F", "#F4A261", "#8D5CF6",
+    "#E9C46A", "#00B4D8", "#F72585", "#90BE6D",
+    "#4361EE", "#FFB703", "#577590", "#D00000",
+    "#8338EC", "#06D6A0", "#EF476F", "#118AB2",
 ]
 SECTOR_COLOR_OFFSET = 0
 INDUSTRY_COLOR_OFFSET = 16
@@ -97,13 +91,11 @@ def _chart_frame(frame: pd.DataFrame, label_column: str) -> pd.DataFrame:
     if not tail.empty:
         other_value = float(tail["Exposure"].sum())
         other_row = pd.DataFrame(
-            [
-                {
-                    label_column: f"Other (<{MIN_SLICE_PCT:.0f}% each)",
-                    "Exposure": other_value,
-                    "% Exposure": other_value / total * 100 if total else 0.0,
-                }
-            ]
+            [{
+                label_column: f"Other (<{MIN_SLICE_PCT:.0f}% each)",
+                "Exposure": other_value,
+                "% Exposure": other_value / total * 100 if total else 0.0,
+            }]
         )
         major = pd.concat([major, other_row], ignore_index=True)
 
@@ -120,8 +112,6 @@ def _chart_colors(count: int, *, palette_offset: int) -> list[str]:
     if palette_end <= len(DISTINCT_EXPOSURE_COLORS):
         return DISTINCT_EXPOSURE_COLORS[palette_offset:palette_end]
 
-    # Defensive fallback. Current chart caps guarantee this should not be hit,
-    # but generated HSL colors keep every extra category visually distinct.
     colors = list(DISTINCT_EXPOSURE_COLORS[palette_offset:])
     remaining = count - len(colors)
     for index in range(remaining):
@@ -152,6 +142,66 @@ def _wrap_legend_label(value: object) -> str:
     return "<br>".join(html.escape(chunk) for chunk in chunks)
 
 
+def _shared_panel_height(sector_chart: pd.DataFrame, industry_chart: pd.DataFrame) -> int:
+    """Use one height for both cards so their headers/borders/baselines align."""
+    item_count = max(len(sector_chart), len(industry_chart), 1)
+    return max(PANEL_MIN_HEIGHT, min(PANEL_MAX_HEIGHT, 490 + item_count * 13))
+
+
+def _panel_shapes(center_x: float) -> list[dict]:
+    """Visible Bloomberg frame plus invisible guides used as alignment rails."""
+    transparent = "rgba(0,0,0,0)"
+    return [
+        # Outer orange Bloomberg frame.
+        {
+            "type": "rect",
+            "xref": "paper", "yref": "paper",
+            "x0": PANEL_LEFT, "x1": PANEL_RIGHT,
+            "y0": PANEL_BOTTOM, "y1": PANEL_TOP,
+            "line": {"color": BB_ORANGE, "width": 1.4},
+            "fillcolor": "rgba(0,0,0,0)",
+            "layer": "above",
+        },
+        # Solid orange terminal header bar.
+        {
+            "type": "rect",
+            "xref": "paper", "yref": "paper",
+            "x0": PANEL_LEFT, "x1": PANEL_RIGHT,
+            "y0": HEADER_BOTTOM, "y1": PANEL_TOP,
+            "line": {"color": BB_ORANGE, "width": 1},
+            "fillcolor": BB_ORANGE,
+            "layer": "above",
+        },
+        # Subtle body/header separator.
+        {
+            "type": "line",
+            "xref": "paper", "yref": "paper",
+            "x0": PANEL_LEFT, "x1": PANEL_RIGHT,
+            "y0": HEADER_BOTTOM, "y1": HEADER_BOTTOM,
+            "line": {"color": BB_ORANGE, "width": 1.2},
+            "layer": "above",
+        },
+        # Hidden alignment rails: same horizontal centerline + donut centerline
+        # on both cards. They are intentionally transparent in production.
+        {
+            "type": "line",
+            "xref": "paper", "yref": "paper",
+            "x0": PANEL_LEFT, "x1": PANEL_RIGHT,
+            "y0": CONTENT_CENTER_Y, "y1": CONTENT_CENTER_Y,
+            "line": {"color": transparent, "width": 1},
+            "layer": "below",
+        },
+        {
+            "type": "line",
+            "xref": "paper", "yref": "paper",
+            "x0": center_x, "x1": center_x,
+            "y0": CONTENT_BOTTOM, "y1": CONTENT_TOP,
+            "line": {"color": transparent, "width": 1},
+            "layer": "below",
+        },
+    ]
+
+
 def _safe_donut(
     chart: pd.DataFrame,
     label_column: str,
@@ -159,8 +209,9 @@ def _safe_donut(
     colors: list[str],
     *,
     legend_side: str,
+    panel_height: int,
 ) -> go.Figure:
-    """Create a mirrored donut/legend layout that cannot spill outside its column."""
+    """Create one precisely aligned Bloomberg exposure panel."""
     full_labels = [str(value) for value in chart[label_column].tolist()]
     display_labels = [_wrap_legend_label(value) for value in full_labels]
     values = chart["Exposure"].tolist()
@@ -170,13 +221,12 @@ def _safe_donut(
         for value in percents
     ]
 
+    # Identical y-domain on both cards is the key visual alignment rule.
     if legend_side == "left":
-        pie_domain = {"x": [0.38, 0.98], "y": [0.08, 0.92]}
+        pie_domain = {"x": [0.38, 0.98], "y": [CONTENT_BOTTOM, CONTENT_TOP]}
         legend = {
-            "x": 0.01,
-            "xanchor": "left",
-            "y": 0.50,
-            "yanchor": "middle",
+            "x": 0.018, "xanchor": "left",
+            "y": CONTENT_CENTER_Y, "yanchor": "middle",
             "orientation": "v",
             "font": {"color": BB_ORANGE, "family": "Courier New", "size": 10},
             "itemsizing": "constant",
@@ -185,12 +235,10 @@ def _safe_donut(
             "borderwidth": 0,
         }
     else:
-        pie_domain = {"x": [0.02, 0.62], "y": [0.08, 0.92]}
+        pie_domain = {"x": [0.02, 0.62], "y": [CONTENT_BOTTOM, CONTENT_TOP]}
         legend = {
-            "x": 0.66,
-            "xanchor": "left",
-            "y": 0.50,
-            "yanchor": "middle",
+            "x": 0.655, "xanchor": "left",
+            "y": CONTENT_CENTER_Y, "yanchor": "middle",
             "orientation": "v",
             "font": {"color": BB_ORANGE, "family": "Courier New", "size": 10},
             "itemsizing": "constant",
@@ -199,11 +247,8 @@ def _safe_donut(
             "borderwidth": 0,
         }
 
-    # Calculate the annotation from the exact Plotly pie domain so the center
-    # label stays mathematically centered despite the mirrored legend layouts.
     center_x = (pie_domain["x"][0] + pie_domain["x"][1]) / 2
     center_y = (pie_domain["y"][0] + pie_domain["y"][1]) / 2
-    safe_height = max(500, min(650, 390 + len(chart) * 20))
 
     figure = go.Figure(
         go.Pie(
@@ -227,16 +272,7 @@ def _safe_donut(
     )
 
     figure.update_layout(
-        title={
-            "text": title,
-            "x": 0.5,
-            "xanchor": "center",
-            "y": 0.985,
-            "yanchor": "top",
-            "font": {"family": "Courier New", "size": 19, "color": BB_ORANGE},
-            "automargin": True,
-        },
-        height=safe_height,
+        height=panel_height,
         autosize=True,
         paper_bgcolor=BB_BLACK,
         plot_bgcolor=BB_BLACK,
@@ -245,21 +281,38 @@ def _safe_donut(
         legend=legend,
         uniformtext_minsize=9,
         uniformtext_mode="hide",
-        margin={"l": 14, "r": 14, "t": 68, "b": 34, "autoexpand": True},
+        margin={"l": 5, "r": 5, "t": 5, "b": 5, "autoexpand": False},
+        shapes=_panel_shapes(center_x),
         annotations=[
+            # Bloomberg-style header title.
+            {
+                "text": f"<b>{html.escape(title)}</b>",
+                "x": 0.025, "y": (HEADER_BOTTOM + PANEL_TOP) / 2,
+                "xref": "paper", "yref": "paper",
+                "xanchor": "left", "yanchor": "middle",
+                "showarrow": False,
+                "font": {"color": BB_BLACK, "size": 16, "family": "Courier New"},
+            },
+            # Small right-side status tag gives the card a terminal-panel feel.
+            {
+                "text": "MV WEIGHTED",
+                "x": 0.975, "y": (HEADER_BOTTOM + PANEL_TOP) / 2,
+                "xref": "paper", "yref": "paper",
+                "xanchor": "right", "yanchor": "middle",
+                "showarrow": False,
+                "font": {"color": BB_BLACK, "size": 9, "family": "Courier New"},
+            },
+            # Exact donut-center annotation.
             {
                 "text": "PORTFOLIO<br>EXPOSURE",
-                "x": center_x,
-                "y": center_y,
-                "xref": "paper",
-                "yref": "paper",
-                "xanchor": "center",
-                "yanchor": "middle",
+                "x": center_x, "y": center_y,
+                "xref": "paper", "yref": "paper",
+                "xanchor": "center", "yanchor": "middle",
                 "showarrow": False,
                 "align": "center",
                 "width": 110,
                 "font": {"color": BB_GREEN, "size": 12, "family": "Courier New"},
-            }
+            },
         ],
     )
     return figure
@@ -283,19 +336,19 @@ def _detail_table(frame: pd.DataFrame, label_column: str) -> None:
 
 
 def _render_chart_panel(
-    frame: pd.DataFrame,
+    chart: pd.DataFrame,
     label_column: str,
     title: str,
     key: str,
     *,
     legend_side: str,
     palette_offset: int,
+    panel_height: int,
 ) -> None:
-    if frame is None or frame.empty:
+    if chart is None or chart.empty:
         st.info(f"No {label_column.lower()} exposure could be mapped.")
         return
 
-    chart = _chart_frame(frame, label_column)
     colors = _chart_colors(len(chart), palette_offset=palette_offset)
     st.plotly_chart(
         _safe_donut(
@@ -304,6 +357,7 @@ def _render_chart_panel(
             title,
             colors,
             legend_side=legend_side,
+            panel_height=panel_height,
         ),
         width="stretch",
         config={
@@ -351,27 +405,32 @@ def render_stockanalysis_portfolio(
             key=f"{key_prefix}_classification_{account_key}",
         )
 
-    # Preserve Raj's preferred original visual: two donuts on one row with the
-    # legends flanking the pair. Sector and industry use completely separate
-    # color ranges so every visible category is visually distinct.
-    left, right = st.columns(2, gap="small")
+    sector_chart = _chart_frame(sector_frame, "Sector")
+    industry_chart = _chart_frame(industry_frame, "Industry")
+    panel_height = _shared_panel_height(sector_chart, industry_chart)
+
+    # Two equal-width cards with a shared height and shared hidden alignment
+    # grid. The medium gutter keeps the orange card borders visually separate.
+    left, right = st.columns(2, gap="medium")
     with left:
         _render_chart_panel(
-            sector_frame,
+            sector_chart,
             "Sector",
             "SECTOR EXPOSURE",
-            f"{key_prefix}_sector_{account_key}_v6",
+            f"{key_prefix}_sector_{account_key}_v7",
             legend_side="left",
             palette_offset=SECTOR_COLOR_OFFSET,
+            panel_height=panel_height,
         )
     with right:
         _render_chart_panel(
-            industry_frame,
+            industry_chart,
             "Industry",
             "INDUSTRY EXPOSURE",
-            f"{key_prefix}_industry_{account_key}_v6",
+            f"{key_prefix}_industry_{account_key}_v7",
             legend_side="right",
             palette_offset=INDUSTRY_COLOR_OFFSET,
+            panel_height=panel_height,
         )
 
     with st.expander("FULL SECTOR + INDUSTRY BREAKDOWN"):
@@ -381,8 +440,7 @@ def render_stockanalysis_portfolio(
         _detail_table(industry_frame, "Industry")
 
     st.caption(
-        "VISUAL RULE // every visible sector and industry has a different color, and the two charts use separate "
-        "color sets. Charts stay side by side on desktop with mirrored legends. Long legend names wrap inside their "
-        "own panel, slices below 2% are grouped into Other, and percentages below 3% are hover/legend only. The full "
-        "ungrouped exposure remains available in the breakdown above."
+        "BLOOMBERG PANEL // mirrored side-by-side exposure cards // market-value weighted // shared alignment grid // "
+        "each visible sector/industry has a distinct color // slices below 2% grouped into Other // percentages below "
+        "3% shown on hover/breakdown only. Full ungrouped exposure remains available above."
     )
