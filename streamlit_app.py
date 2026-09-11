@@ -18,7 +18,82 @@ if _CORE_MARKER not in _CORE_SOURCE:
 _CORE_DEFINITIONS = _CORE_SOURCE.split(_CORE_MARKER, 1)[0]
 exec(compile(_CORE_DEFINITIONS, str(_CORE_PATH), "exec"), globals())
 
+from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.risk_sizing_ui_v2 import render_risk_sizing
+from src.session_persistence import (
+    clear_etrade_session,
+    restore_etrade_session,
+    save_etrade_session,
+)
+
+
+# Preserve references to the core implementations before installing the
+# seamless-session adapters below.
+_CORE_TOUCH_ETRADE_SESSION = _touch_etrade_session
+_CORE_CLEAR_ETRADE_RUNTIME = _clear_etrade_runtime
+_CORE_HOLDINGS_RENDERER = render_etrade_holdings
+
+
+def _persist_active_etrade_session():
+    """Save the active OAuth token server-side without extending its timer."""
+    return save_etrade_session(
+        _trade_access_code_hash(),
+        token=st.session_state.get("etrade_access_token"),
+        last_activity_at=st.session_state.get("etrade_last_activity_at"),
+        inactivity_seconds=ETRADE_INACTIVITY_SECONDS,
+        timezone=ETRADE_TIMEZONE,
+        accounts=st.session_state.get("etrade_accounts", []),
+    )
+
+
+def _touch_etrade_session():
+    """Core activity touch plus persistence for browser-refresh recovery."""
+    _CORE_TOUCH_ETRADE_SESSION()
+    _persist_active_etrade_session()
+
+
+def _clear_etrade_runtime(lock_access=False):
+    """LOCK preserves an active OAuth session; DISCONNECT intentionally clears it."""
+    if lock_access:
+        if bool(st.session_state.get("etrade_disconnect", False)):
+            clear_etrade_session(_trade_access_code_hash())
+        else:
+            _persist_active_etrade_session()
+    return _CORE_CLEAR_ETRADE_RUNTIME(lock_access=lock_access)
+
+
+def _restore_active_etrade_session_after_unlock():
+    """Restore OAuth only after the terminal access code has been accepted."""
+    if not _trade_access_unlocked():
+        return False
+    if st.session_state.get("etrade_access_token"):
+        return False
+
+    restored = restore_etrade_session(
+        _trade_access_code_hash(),
+        inactivity_seconds=ETRADE_INACTIVITY_SECONDS,
+        timezone=ETRADE_TIMEZONE,
+    )
+    if not restored:
+        return False
+
+    st.session_state["etrade_access_token"] = restored["token"]
+    st.session_state["etrade_last_activity_at"] = restored["last_activity_at"]
+    if restored.get("accounts"):
+        st.session_state["etrade_accounts"] = restored["accounts"]
+    st.session_state["_etrade_restored_after_unlock"] = True
+    return True
+
+
+# Holdings is now snapshot/manual-refresh mode. This removes the live polling
+# controls and data polling while preserving the existing holdings table,
+# sector analytics, and charts.
+render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
+
+# On a hard browser refresh, Streamlit session_state may be new. The user still
+# enters the terminal code, but an E*TRADE OAuth session is recovered from
+# server memory when its original inactivity/midnight timer is still active.
+_restore_active_etrade_session_after_unlock()
 
 
 if not _trade_access_unlocked():
@@ -31,7 +106,17 @@ st.caption(
     "bull debit-spread optimization, and a live Triggers-OCO simulator."
 )
 
+if st.session_state.pop("_etrade_restored_after_unlock", False):
+    st.success(
+        "E*TRADE SESSION RESTORED // existing OAuth session is still active // "
+        "no E*TRADE reconnect required"
+    )
+
 render_etrade_connection()
+
+# Keep the latest active token/account snapshot available for a future browser
+# refresh without changing the E*TRADE inactivity clock.
+_persist_active_etrade_session()
 
 (
     orders_tab,
