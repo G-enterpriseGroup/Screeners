@@ -185,7 +185,7 @@
       sendDataToPython({ order:[...tabs], active:active, action:action });
     }
 
-    function clearDropMarkers() {
+    function clearVisualState() {
       document.querySelectorAll(".tab").forEach((el) => {
         el.classList.remove("drop-before", "drop-after", "pointer-down", "dragging");
       });
@@ -198,26 +198,22 @@
     function dropTargetFromX(clientX, sourceIndex) {
       const elements = getTabElements();
       let insertion = tabs.length;
-
       for (let i = 0; i < elements.length; i += 1) {
         const rect = elements[i].getBoundingClientRect();
-        const midpoint = rect.left + rect.width / 2;
-        if (clientX < midpoint) {
+        if (clientX < rect.left + rect.width / 2) {
           insertion = i;
           break;
         }
       }
-
       let target = insertion;
       if (sourceIndex < target) target -= 1;
       return Math.max(0, Math.min(target, tabs.length - 1));
     }
 
-    function markDropTarget(clientX, sourceIndex) {
+    function markDropTarget(clientX) {
       document.querySelectorAll(".tab").forEach((el) => {
         el.classList.remove("drop-before", "drop-after");
       });
-
       const elements = getTabElements();
       if (!elements.length) return;
 
@@ -231,11 +227,6 @@
           break;
         }
       }
-
-      if (markerIndex === sourceIndex && elements.length > 1) {
-        const rect = elements[markerIndex].getBoundingClientRect();
-        before = clientX < rect.left + rect.width / 2;
-      }
       elements[markerIndex].classList.add(before ? "drop-before" : "drop-after");
     }
 
@@ -245,11 +236,13 @@
       const current = interaction;
       interaction = null;
       document.body.classList.remove("drag-mode");
-      clearDropMarkers();
+      clearVisualState();
 
       try {
         current.element.releasePointerCapture(event.pointerId);
       } catch (_) {}
+
+      let localStateChanged = false;
 
       if (current.dragging) {
         event.preventDefault();
@@ -261,6 +254,7 @@
           const [moved] = next.splice(current.sourceIndex, 1);
           next.splice(targetIndex, 0, moved);
           tabs = next;
+          localStateChanged = true;
           render();
           emit("reorder");
         } else {
@@ -270,6 +264,7 @@
         const label = current.label;
         if (active !== label) {
           active = label;
+          localStateChanged = true;
           render();
           emit("select");
         } else {
@@ -277,7 +272,12 @@
         }
       }
 
-      if (pendingPythonArgs) {
+      // A render message queued while the pointer was down can represent the
+      // pre-interaction state. Never replay that stale state after a local drag
+      // or tab selection; wait for Streamlit's fresh acknowledgment instead.
+      if (localStateChanged) {
+        pendingPythonArgs = null;
+      } else if (pendingPythonArgs) {
         const args = pendingPythonArgs;
         pendingPythonArgs = null;
         applyPythonArgs(args);
@@ -289,17 +289,22 @@
       const current = interaction;
       interaction = null;
       document.body.classList.remove("drag-mode");
-      clearDropMarkers();
+      clearVisualState();
       try {
         current.element.releasePointerCapture(current.pointerId);
       } catch (_) {}
       render();
+
+      if (pendingPythonArgs) {
+        const args = pendingPythonArgs;
+        pendingPythonArgs = null;
+        applyPythonArgs(args);
+      }
     }
 
     function wireTab(button, label, index) {
       button.addEventListener("pointerdown", (event) => {
-        if (event.button !== 0) return;
-        if (interaction) return;
+        if (event.button !== 0 || interaction) return;
 
         interaction = {
           pointerId:event.pointerId,
@@ -321,9 +326,9 @@
 
         const dx = event.clientX - interaction.startX;
         const dy = event.clientY - interaction.startY;
-        const distance = Math.hypot(dx, dy);
+        const horizontalDrag = Math.abs(dx) >= DRAG_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy);
 
-        if (!interaction.dragging && distance >= DRAG_THRESHOLD_PX) {
+        if (!interaction.dragging && horizontalDrag) {
           interaction.dragging = true;
           interaction.element.classList.remove("pointer-down");
           interaction.element.classList.add("dragging");
@@ -332,7 +337,7 @@
 
         if (interaction.dragging) {
           event.preventDefault();
-          markDropTarget(event.clientX, interaction.sourceIndex);
+          markDropTarget(event.clientX);
         }
       });
 
@@ -385,7 +390,7 @@
         button.textContent = label;
         button.dataset.index = String(index);
         button.dataset.label = label;
-        button.title = "Click to open. Drag left or right to reorder.";
+        button.title = "Click to open. Drag horizontally to reorder.";
         button.setAttribute("role", "tab");
         button.setAttribute("aria-selected", label === active ? "true" : "false");
         button.setAttribute("tabindex", "0");
@@ -406,8 +411,8 @@
       if (!allowed.length) return;
 
       storageKey = String(args.storage_key || "raj-terminal-tabs-v2");
-      let pythonOrder = cleanOrder(allowed, allowed);
-      let pythonActive = allowed.includes(String(args.active)) ? String(args.active) : (allowed[0] || "");
+      const pythonOrder = cleanOrder(allowed, allowed);
+      const pythonActive = allowed.includes(String(args.active)) ? String(args.active) : (allowed[0] || "");
 
       if (!storageChecked) {
         storageChecked = true;
@@ -437,8 +442,7 @@
       if (!event.data || event.data.type !== "streamlit:render") return;
       const args = event.data.args || {};
 
-      // Never let a Streamlit rerender interrupt an in-progress pointer drag.
-      // Queue it and reconcile only after pointerup/pointercancel.
+      // Never interrupt a live drag/click gesture with a Streamlit rerender.
       if (interaction) {
         pendingPythonArgs = args;
         return;
