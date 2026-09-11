@@ -1,4 +1,9 @@
-"""Clickable + draggable terminal tab bar for Raj's Terminal."""
+"""Clickable + draggable terminal tab bar for Raj's Terminal.
+
+The Python side is the authoritative state. A component event is saved first,
+then Streamlit immediately reruns once so the component highlight and the
+rendered page can never be based on different tab states.
+"""
 
 from __future__ import annotations
 
@@ -46,6 +51,13 @@ def _clean_active(active: Any, order: list[str]) -> str:
     return active if active in order else order[0]
 
 
+def _same_state(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return (
+        list(left.get("order") or []) == list(right.get("order") or [])
+        and str(left.get("active") or "") == str(right.get("active") or "")
+    )
+
+
 def _load(vault_key: str) -> dict[str, Any]:
     session = st.session_state.get("terminal_tab_state")
     if isinstance(session, dict):
@@ -71,7 +83,15 @@ def _save(vault_key: str, order: Iterable[str], active: Any) -> dict[str, Any]:
 
 
 def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
-    """Render the actual terminal nav tabs; they are clickable and draggable."""
+    """Render terminal navigation with one-state-per-frame synchronization.
+
+    Custom components receive their args before Python receives the component's
+    newest return value. Without an acknowledgement rerun, the frontend can be
+    painted with the old active tab while Python renders the new tab content.
+    When a component event changes state, save it and rerun immediately before
+    any page content is rendered. The next pass sends the exact acknowledged
+    active/order state back to the component.
+    """
     state = _load(vault_key)
     storage_key = "raj-terminal-tabs-" + str(vault_key)[:16]
 
@@ -80,15 +100,30 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
         active=state["active"],
         storage_key=storage_key,
         key="raj_terminal_draggable_tabs",
-        default={"order": state["order"], "active": state["active"], "action": "init"},
+        default={
+            "order": state["order"],
+            "active": state["active"],
+            "action": "init",
+            "event_id": 0,
+        },
     )
 
     if isinstance(result, dict):
-        next_state = _save(
-            vault_key,
-            result.get("order", state["order"]),
+        proposed = {
+            "order": _clean_order(result.get("order", state["order"])),
+            "active": "",
+        }
+        proposed["active"] = _clean_active(
             result.get("active", state["active"]),
+            proposed["order"],
         )
-        return next_state["order"], next_state["active"]
 
-    return state["order"], state["active"]
+        if not _same_state(proposed, state):
+            _save(vault_key, proposed["order"], proposed["active"])
+            # Critical synchronization barrier: do not render tab content in
+            # the same pass that the component was called with stale args.
+            st.rerun()
+
+    # Only an acknowledged state reaches the page renderer below this point.
+    acknowledged = _load(vault_key)
+    return acknowledged["order"], acknowledged["active"]
