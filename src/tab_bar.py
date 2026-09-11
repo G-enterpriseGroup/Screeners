@@ -29,6 +29,56 @@ _terminal_tabs = components.declare_component(
 )
 
 
+# This module is imported after the legacy terminal-core stylesheet, so keep
+# terminal-wide table-header overrides here.  All table/data-grid headers use
+# the same solid Bloomberg-orange band with heavy black mono type as the
+# exposure-panel headers instead of the old black/orange-outline treatment.
+st.markdown(
+    """
+    <style>
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataEditor"] [role="columnheader"] {
+        background:#fb8b1e !important;
+        color:#000 !important;
+        -webkit-text-fill-color:#000 !important;
+        border-color:#000 !important;
+        font-family:"Courier New",monospace !important;
+        font-weight:900 !important;
+        text-transform:uppercase !important;
+    }
+
+    [data-testid="stDataFrame"] [role="columnheader"] *,
+    [data-testid="stDataEditor"] [role="columnheader"] * {
+        color:#000 !important;
+        -webkit-text-fill-color:#000 !important;
+        font-family:"Courier New",monospace !important;
+        font-weight:900 !important;
+    }
+
+    [data-testid="stTable"] thead,
+    [data-testid="stTable"] thead tr,
+    [data-testid="stTable"] thead tr th {
+        background:#fb8b1e !important;
+        color:#000 !important;
+        -webkit-text-fill-color:#000 !important;
+        border-color:#000 !important;
+        font-family:"Courier New",monospace !important;
+        font-weight:900 !important;
+        text-transform:uppercase !important;
+    }
+
+    [data-testid="stTable"] thead tr th * {
+        color:#000 !important;
+        -webkit-text-fill-color:#000 !important;
+        font-family:"Courier New",monospace !important;
+        font-weight:900 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 @st.cache_resource
 def _tab_state_vault() -> dict[str, dict[str, Any]]:
     return {}
