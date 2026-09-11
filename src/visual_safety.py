@@ -43,6 +43,19 @@ def _safe_margin_value(value: Any, minimum: int) -> int:
         return int(minimum)
 
 
+def _preserve_pie_textposition(trace) -> bool:
+    """Allow purpose-built charts to opt out of the generic inside-label rule."""
+    meta = getattr(trace, "meta", None)
+    return isinstance(meta, dict) and bool(meta.get("raj_preserve_textposition"))
+
+
+def _title_has_text(figure) -> bool:
+    """Avoid creating an empty Plotly title object that can render as 'undefined'."""
+    title = getattr(getattr(figure, "layout", None), "title", None)
+    text = getattr(title, "text", None) if title is not None else None
+    return text not in (None, "")
+
+
 def harden_plotly_figure(figure):
     """Apply non-destructive layout safety to one Plotly figure."""
     if figure is None or not hasattr(figure, "data"):
@@ -60,9 +73,11 @@ def harden_plotly_figure(figure):
             numeric_values = [max(0.0, _number(value)) for value in values]
             total = sum(numeric_values)
 
-            # Never let Plotly push tiny percentages outside the donut where
-            # they can collide with captions or be cut off by the chart SVG.
-            if total > 0:
+            # Purpose-built exposure charts deliberately place 2%-3% labels
+            # outside with Plotly leader lines. Respect that explicit design.
+            if _preserve_pie_textposition(trace):
+                trace.update(automargin=True)
+            elif total > 0:
                 safe_text = [
                     f"{value / total * 100:.1f}%"
                     if value / total * 100 >= _MIN_PIE_LABEL_PCT
@@ -83,8 +98,6 @@ def harden_plotly_figure(figure):
                     automargin=True,
                 )
 
-            # Hover still carries the full label + exact value even when a tiny
-            # slice's printed percentage is intentionally hidden.
             if not getattr(trace, "hovertemplate", None):
                 trace.update(
                     hovertemplate=(
@@ -112,46 +125,48 @@ def harden_plotly_figure(figure):
             default=0,
         )
         current_height = _number(getattr(figure.layout, "height", 0))
-        # Give long sector/industry legends enough vertical room instead of
-        # allowing the last entries to be clipped at the bottom of the chart.
         safe_height = max(
             int(current_height or 0),
             430 if label_count <= 10 else min(720, 430 + (label_count - 10) * 18),
         )
-        figure.update_layout(
-            height=safe_height,
-            autosize=True,
-            uniformtext_minsize=10,
-            uniformtext_mode="hide",
-            legend={
+        layout_updates = {
+            "height": safe_height,
+            "autosize": True,
+            "uniformtext_minsize": 10,
+            "uniformtext_mode": "hide",
+            "legend": {
                 "font": {"size": 10},
                 "itemsizing": "constant",
                 "tracegroupgap": 3,
             },
-            margin={
+            "margin": {
                 "l": _safe_margin_value(current_l, 18),
                 "r": _safe_margin_value(current_r, 18),
                 "t": _safe_margin_value(current_t, 52),
                 "b": _safe_margin_value(current_b, 28),
                 "autoexpand": True,
             },
-            title={"automargin": True},
-        )
+        }
+        # Critical bug fix: do not manufacture a title object with no text.
+        # Plotly/Streamlit can surface that empty title as literal "undefined".
+        if _title_has_text(figure):
+            layout_updates["title"] = {"automargin": True}
+        figure.update_layout(**layout_updates)
 
     elif has_free_text:
-        # Price ladders/annotation charts need a little breathing room so top
-        # and bottom labels do not get sliced by the SVG boundary.
-        figure.update_layout(
-            autosize=True,
-            margin={
+        layout_updates = {
+            "autosize": True,
+            "margin": {
                 "l": _safe_margin_value(current_l, 24),
                 "r": _safe_margin_value(current_r, 24),
                 "t": _safe_margin_value(current_t, _MIN_TEXT_MARGIN),
                 "b": _safe_margin_value(current_b, _MIN_TEXT_MARGIN),
                 "autoexpand": True,
             },
-            title={"automargin": True},
-        )
+        }
+        if _title_has_text(figure):
+            layout_updates["title"] = {"automargin": True}
+        figure.update_layout(**layout_updates)
 
     return figure
 
@@ -167,8 +182,6 @@ def install_streamlit_visual_safety() -> None:
         try:
             harden_plotly_figure(figure_or_data)
         except Exception:
-            # Presentation guardrails must never prevent the underlying chart
-            # from rendering if Plotly changes an internal property.
             pass
 
         config = dict(kwargs.get("config") or {})
