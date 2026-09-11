@@ -22,9 +22,9 @@ DEFAULT_TAB_ORDER = [
     "ORDERS",
 ]
 
-_COMPONENT_PATH = Path(__file__).parent / "components" / "terminal_tabs"
+_COMPONENT_PATH = Path(__file__).parent / "components" / "terminal_tabs_v3"
 _terminal_tabs = components.declare_component(
-    "raj_terminal_tabs",
+    "raj_terminal_tabs_v3",
     path=str(_COMPONENT_PATH),
 )
 
@@ -85,12 +85,10 @@ def _save(vault_key: str, order: Iterable[str], active: Any) -> dict[str, Any]:
 def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
     """Render terminal navigation with one-state-per-frame synchronization.
 
-    Custom components receive their args before Python receives the component's
-    newest return value. Without an acknowledgement rerun, the frontend can be
-    painted with the old active tab while Python renders the new tab content.
-    When a component event changes state, save it and rerun immediately before
-    any page content is rendered. The next pass sends the exact acknowledged
-    active/order state back to the component.
+    Streamlit sends component args before Python receives the component's newest
+    value. Without an acknowledgement rerun, the browser can highlight the old
+    tab while Python renders the newly selected page. Any real state change is
+    therefore saved first and followed by an immediate synchronization rerun.
     """
     state = _load(vault_key)
     storage_key = "raj-terminal-tabs-" + str(vault_key)[:16]
@@ -99,7 +97,7 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
         tabs=state["order"],
         active=state["active"],
         storage_key=storage_key,
-        key="raj_terminal_draggable_tabs",
+        key="raj_terminal_draggable_tabs_v3",
         default={
             "order": state["order"],
             "active": state["active"],
@@ -120,10 +118,9 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
 
         if not _same_state(proposed, state):
             _save(vault_key, proposed["order"], proposed["active"])
-            # Critical synchronization barrier: do not render tab content in
-            # the same pass that the component was called with stale args.
+            # Synchronization barrier: never render page content in a frame
+            # whose tab component was called with the previous active/order.
             st.rerun()
 
-    # Only an acknowledged state reaches the page renderer below this point.
     acknowledged = _load(vault_key)
     return acknowledged["order"], acknowledged["active"]
