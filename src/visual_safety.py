@@ -26,6 +26,16 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+def _sequence(value: Any) -> list[Any]:
+    """Convert Plotly tuple/list/numpy/pandas values without truth-value tests."""
+    if value is None:
+        return []
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
 def _safe_margin_value(value: Any, minimum: int) -> int:
     try:
         return max(int(value or 0), int(minimum))
@@ -46,7 +56,7 @@ def harden_plotly_figure(figure):
 
         if trace_type == "pie":
             pie_traces.append(trace)
-            values = list(getattr(trace, "values", None) or [])
+            values = _sequence(getattr(trace, "values", None))
             numeric_values = [max(0.0, _number(value)) for value in values]
             total = sum(numeric_values)
 
@@ -98,7 +108,7 @@ def harden_plotly_figure(figure):
 
     if pie_traces:
         label_count = max(
-            (len(list(getattr(trace, "labels", None) or [])) for trace in pie_traces),
+            (len(_sequence(getattr(trace, "labels", None))) for trace in pie_traces),
             default=0,
         )
         current_height = _number(getattr(figure.layout, "height", 0))
