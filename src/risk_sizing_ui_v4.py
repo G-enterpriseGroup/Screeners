@@ -5,6 +5,9 @@ actual cash balance into the main metric row. It intentionally does NOT use
 cashAvailableForInvestment, cashBuyingPower, marginBuyingPower, or day-trading
 buying power because those can reflect credit/purchasing power rather than cash
 actually held in the account.
+
+It also installs the compact Bloomberg layout used by Raj's Terminal so dense
+risk screens waste less vertical space and selectors are visually distinct.
 """
 
 from __future__ import annotations
@@ -73,6 +76,87 @@ exec(compile(_SOURCE, str(_V2_PATH), "exec"), globals())
 _BASE_RENDER_RISK_SIZING = render_risk_sizing
 
 
+def _render_compact_terminal_css() -> None:
+    """Reduce dead space and make dropdowns visually distinct."""
+    st.markdown(
+        """
+        <style>
+        .rs-card {
+            min-height:76px !important;
+            padding:.34rem .50rem !important;
+        }
+        .rs-card-head { gap:.28rem !important; }
+        .rs-card-label {
+            font-size:.70rem !important;
+            line-height:1.05 !important;
+        }
+        .rs-card-value {
+            font-size:1.18rem !important;
+            margin-top:.06rem !important;
+            line-height:1.08 !important;
+        }
+        .rs-card-detail {
+            font-size:.64rem !important;
+            margin-top:.05rem !important;
+            line-height:1.05 !important;
+        }
+        .rs-help {
+            width:15px !important;
+            height:15px !important;
+            flex:0 0 15px !important;
+            font-size:10px !important;
+        }
+        .rs-help-tip {
+            top:19px !important;
+            width:300px !important;
+        }
+
+        [data-testid="stNumberInput"] input,
+        [data-testid="stTextInput"] input {
+            min-height:34px !important;
+            height:34px !important;
+        }
+        [data-testid="stNumberInput"] button {
+            min-height:34px !important;
+            height:34px !important;
+        }
+
+        [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+            background:#0068ff !important;
+            border-color:#fb8b1e !important;
+            min-height:36px !important;
+            height:36px !important;
+        }
+        [data-testid="stSelectbox"] div[data-baseweb="select"] span,
+        [data-testid="stSelectbox"] div[data-baseweb="select"] svg {
+            color:#ffffff !important;
+            -webkit-text-fill-color:#ffffff !important;
+        }
+        div[role="listbox"] {
+            background:#000000 !important;
+            border:1px solid #0068ff !important;
+        }
+        div[role="option"] {
+            background:#000000 !important;
+            color:#fb8b1e !important;
+            min-height:32px !important;
+        }
+        div[role="option"] * { color:#fb8b1e !important; }
+        div[role="option"]:hover,
+        div[role="option"][aria-selected="true"] {
+            background:#0068ff !important;
+            color:#ffffff !important;
+        }
+        div[role="option"]:hover *,
+        div[role="option"][aria-selected="true"] * {
+            color:#ffffff !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _walk_dicts(value: Any):
     if isinstance(value, dict):
         yield value
@@ -107,12 +191,7 @@ def _number(section: dict[str, Any], key: str) -> float | None:
 
 
 def _true_cash_fields(payload: dict[str, Any]) -> dict[str, float | None]:
-    """Extract only cash-balance fields from E*TRADE's balance response.
-
-    E*TRADE's JSON/XML examples use a Computed object while the schema labels it
-    ComputedBalance. We support both explicitly and keep the Cash sweep object
-    separate so buying-power fields can never be mistaken for cash.
-    """
+    """Extract only cash-balance fields from E*TRADE's balance response."""
     computed = _section(payload, "Computed", "ComputedBalance", "computedBalance")
     cash_section = _section(payload, "Cash", "cash")
 
@@ -124,8 +203,6 @@ def _true_cash_fields(payload: dict[str, Any]) -> dict[str, float | None]:
         "unSettledCashForInvestment": _number(computed, "unSettledCashForInvestment"),
     }
 
-    # Defensive fallback for response-shape changes. Still restrict the search
-    # to cash-only field names; never search buying-power fields here.
     for key in list(fields):
         if fields[key] is None:
             fields[key] = find_number(payload, key)
@@ -133,14 +210,7 @@ def _true_cash_fields(payload: dict[str, Any]) -> dict[str, float | None]:
 
 
 def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, float | None]]:
-    """Choose E*TRADE's best actual-cash field without letting a zero block fallback.
-
-    The previous implementation treated cashBalance=0 as a final answer because
-    zero is a valid number. Some live margin-account responses expose 0 in that
-    field while netCash or the sweep balance carries the actual cash amount.
-    We therefore prefer the first *meaningful non-zero* cash-only value, while
-    preserving a real zero when every cash-only field is zero/missing.
-    """
+    """Choose E*TRADE's best actual-cash field without letting a zero block fallback."""
     fields = _true_cash_fields(payload)
     priority = (
         "cashBalance",
@@ -183,6 +253,8 @@ def render_risk_sizing(
     balance_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
     touch_session: Callable[[], None],
 ) -> None:
+    _render_compact_terminal_css()
+
     def cash_only_snapshot(payload: dict[str, Any]) -> tuple[float, float, float]:
         return _true_cash_snapshot(payload, balance_snapshot)
 
