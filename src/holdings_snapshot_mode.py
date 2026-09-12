@@ -8,16 +8,19 @@ This adapter:
 - appends the newer StockAnalysis sector + industry Bloomberg panels
 - uses a last-known-good public classification cache so a StockAnalysis/Yahoo
   failure does not erase previously known sector/industry mappings
+- installs the client-side lock keypad before the entrypoint renders the gate
 """
 
 from __future__ import annotations
 
+import inspect
 import time
 from contextlib import AbstractContextManager
 from typing import Callable
 
 import streamlit as st
 
+from src.lock_screen_v2 import install_seamless_lock_screen
 from src.stockanalysis_portfolio_v5 import cache_status, render_stockanalysis_portfolio
 from src.terminal_number_format import comma_column_config
 from src.visual_safety import install_streamlit_visual_safety
@@ -113,6 +116,13 @@ def _legacy_sector_table(data) -> bool:
 
 
 def build_manual_holdings_renderer(core_renderer: Callable):
+    # streamlit_app calls this only after defining its local lock renderer but
+    # before checking the lock state. Install the new browser-side keypad into
+    # that entrypoint namespace here so digit taps never trigger Python reruns.
+    caller = inspect.currentframe().f_back
+    if caller is not None:
+        install_seamless_lock_screen(caller.f_globals)
+
     raw_body = getattr(core_renderer, "__wrapped__", None)
     core_body = raw_body or core_renderer
 
