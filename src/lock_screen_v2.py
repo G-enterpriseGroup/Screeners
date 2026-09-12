@@ -1,10 +1,14 @@
-"""Seamless lock screen for Raj's Terminal.
+"""Seamless lock screen + compact E*TRADE authorization UI for Raj's Terminal.
 
 The keypad itself runs entirely in the browser and does not send a Streamlit
 event for every digit. Python receives a value only when UNLOCK TERMINAL is
 pressed. That removes the repeated page reruns/visual flashing caused by a grid
 of normal st.button widgets while preserving the same server-side hash check,
 failed-attempt counter, and lockout policy.
+
+This module also compacts the E*TRADE OAuth completion panel without replacing
+its authorization/session logic. CONNECT E*TRADE still uses the existing
+one-click OAuth patch; only the visual layout is tightened.
 """
 
 from __future__ import annotations
@@ -21,6 +25,80 @@ _lock_keypad = components.declare_component(
     "raj_terminal_lock_keypad_v1",
     path=str(_COMPONENT_PATH),
 )
+
+
+_COMPACT_AUTH_CSS = """
+<style>
+/* Compact only the OAuth completion container identified by its verifier input. */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) {
+    border:1px solid #fb8b1e !important;
+    background:#000 !important;
+    margin-top:.22rem !important;
+    margin-bottom:.42rem !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) > div {
+    padding:.34rem .52rem .42rem .52rem !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) [data-testid="stVerticalBlock"] {
+    gap:.26rem !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) [data-testid="stHorizontalBlock"] {
+    gap:.55rem !important;
+    align-items:center !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) [data-testid="stTextInput"] {
+    margin:0 !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) [data-testid="stTextInput"] input {
+    min-height:36px !important;
+    height:36px !important;
+    padding:.15rem .55rem !important;
+    font-size:.88rem !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) .stButton > button,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(input[placeholder*="Enter the code shown by E*TRADE"]) .stLinkButton > a {
+    min-height:36px !important;
+    height:36px !important;
+    padding:.15rem .7rem !important;
+    font-size:.86rem !important;
+    margin:0 !important;
+}
+.etrade-auth-compact-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    min-height:34px;
+    padding:.30rem .62rem;
+    margin:-.02rem 0 .12rem 0;
+    background:#fb8b1e;
+    color:#000 !important;
+    border:1px solid #fb8b1e;
+    font-family:"Courier New",monospace;
+    font-size:1.02rem;
+    font-weight:900;
+    line-height:1;
+    letter-spacing:.025em;
+    text-transform:uppercase;
+    box-sizing:border-box;
+}
+.etrade-auth-compact-head span {
+    color:#000 !important;
+}
+.etrade-auth-step {
+    color:#fb8b1e !important;
+    font-family:"Courier New",monospace;
+    font-size:.73rem;
+    font-weight:800;
+    line-height:1.18;
+    margin:.05rem 0 .08rem 0;
+    white-space:normal;
+}
+@media (max-width:900px) {
+    .etrade-auth-compact-head { font-size:.88rem; }
+    .etrade-auth-step { font-size:.68rem; }
+}
+</style>
+"""
 
 
 def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
@@ -51,9 +129,6 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     code = str(result.get("code") or "")
     last_nonce = int(st.session_state.get("_app_keypad_last_nonce_v2", 0) or 0)
 
-    # Custom components retain their last value across reruns. Process each
-    # explicit UNLOCK submission exactly once so an incorrect code cannot count
-    # as multiple failures on unrelated future reruns.
     if nonce <= 0 or nonce == last_nonce or not code:
         return
     st.session_state["_app_keypad_last_nonce_v2"] = nonce
@@ -68,8 +143,6 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
         st.session_state.pop("_app_keypad_feedback", None)
         st.session_state.pop("_app_keypad_feedback_v2", None)
         clear_fn()
-        # This is the one intentional full-app rerun: transition from the lock
-        # screen into the terminal framework after successful authentication.
         st.rerun()
 
     failed_fn()
@@ -86,12 +159,96 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             "tone": "error",
             "message": f"INCORRECT ACCESS CODE // {left} ATTEMPTS REMAIN",
         }
-
-    # One rerun only after an actual verification attempt so the component gets
-    # the new server-side error/lockout state. Digit taps never rerun Streamlit.
     st.rerun()
 
 
+def _install_compact_etrade_authorization(namespace: dict[str, Any]) -> None:
+    """Wrap the existing connection renderer and compact only its OAuth panel."""
+    current = namespace.get("render_etrade_connection")
+    if not callable(current) or getattr(current, "_raj_compact_auth", False):
+        return
+
+    original_renderer = current
+
+    def compact_renderer():
+        original_markdown = st.markdown
+        original_subheader = st.subheader
+        original_columns = st.columns
+        original_link_button = st.link_button
+        original_caption = st.caption
+        original_text_input = st.text_input
+        auth_state = {"active": False}
+
+        original_markdown(_COMPACT_AUTH_CSS, unsafe_allow_html=True)
+
+        def compact_subheader(body, *args, **kwargs):
+            if str(body).strip().casefold() == "complete e*trade authorization".casefold():
+                auth_state["active"] = True
+                return original_markdown(
+                    '<div class="etrade-auth-compact-head">'
+                    '<span>COMPLETE E*TRADE AUTHORIZATION</span>'
+                    '<span>OAUTH</span>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            return original_subheader(body, *args, **kwargs)
+
+        def compact_columns(spec, *args, **kwargs):
+            if auth_state["active"] and isinstance(spec, (list, tuple)) and list(spec) == [1, 1.25]:
+                return original_columns([0.72, 2.28], gap="small")
+            return original_columns(spec, *args, **kwargs)
+
+        def compact_link_button(label, url, *args, **kwargs):
+            direct_ready = bool(
+                st.session_state.get("_raj_direct_etrade_auth_ready", False)
+                and (st.session_state.get("etrade_request") or {}).get("authorization_url")
+                and not st.session_state.get("etrade_access_token")
+            )
+            if (
+                auth_state["active"]
+                and str(label).strip() == "1 // OPEN E*TRADE LOGIN"
+                and direct_ready
+            ):
+                return original_markdown(
+                    '<div class="etrade-auth-step">'
+                    '1 // CONNECT E*TRADE ABOVE OPENS LOGIN DIRECTLY<br>'
+                    'APPROVE ACCESS + COPY THE CODE'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            return original_link_button(label, url, *args, **kwargs)
+
+        def compact_caption(body, *args, **kwargs):
+            text = str(body)
+            if auth_state["active"] and text.startswith("Approve access and copy"):
+                return None
+            return original_caption(body, *args, **kwargs)
+
+        def compact_text_input(label, *args, **kwargs):
+            if auth_state["active"] and kwargs.get("key") == "etrade_verifier":
+                kwargs = dict(kwargs)
+                kwargs["label_visibility"] = "collapsed"
+            return original_text_input(label, *args, **kwargs)
+
+        st.subheader = compact_subheader
+        st.columns = compact_columns
+        st.link_button = compact_link_button
+        st.caption = compact_caption
+        st.text_input = compact_text_input
+        try:
+            return original_renderer()
+        finally:
+            st.subheader = original_subheader
+            st.columns = original_columns
+            st.link_button = original_link_button
+            st.caption = original_caption
+            st.text_input = original_text_input
+
+    compact_renderer._raj_compact_auth = True
+    namespace["render_etrade_connection"] = compact_renderer
+
+
 def install_seamless_lock_screen(namespace: dict[str, Any]) -> None:
-    """Install the v2 lock renderer into the active Streamlit entrypoint."""
+    """Install the smooth lock screen and compact OAuth panel into the entrypoint."""
     namespace["render_app_lock_screen"] = lambda: render_seamless_lock_screen(namespace)
+    _install_compact_etrade_authorization(namespace)
