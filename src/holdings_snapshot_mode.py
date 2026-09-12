@@ -4,6 +4,7 @@ This adapter:
 - keeps Holdings manual-refresh only
 - preserves comma formatting
 - removes the obsolete legacy PORTFOLIO VISUAL ANALYTICS / sector-map block
+- removes the old POSITION ALLOCATION and UNREALIZED P&L bar-chart pair
 - appends the newer StockAnalysis sector + industry Bloomberg panels
 - uses a last-known-good public classification cache so a StockAnalysis/Yahoo
   failure does not erase previously known sector/industry mappings
@@ -23,6 +24,12 @@ from src.visual_safety import install_streamlit_visual_safety
 
 
 install_streamlit_visual_safety()
+
+
+_REMOVED_HOLDINGS_CHART_KEYS = {
+    "holdings_allocation_chart",
+    "holdings_pnl_chart",
+}
 
 
 class _ColumnProxy:
@@ -45,6 +52,12 @@ class _ColumnProxy:
             "Live Market Value": "Market Value",
         }.get(str(label), label)
         return self._column.metric(label, *args, **kwargs)
+
+    def plotly_chart(self, figure_or_data, *args, **kwargs):
+        """Suppress only the obsolete Holdings allocation/P&L bar-chart pair."""
+        if str(kwargs.get("key") or "") in _REMOVED_HOLDINGS_CHART_KEYS:
+            return None
+        return self._column.plotly_chart(figure_or_data, *args, **kwargs)
 
 
 class _SuppressedContext(AbstractContextManager):
@@ -214,6 +227,8 @@ def build_manual_holdings_renderer(core_renderer: Callable):
 
         def snapshot_plotly_chart(figure_or_data, *args, **kwargs):
             if _legacy_sector_figure(figure_or_data):
+                return None
+            if str(kwargs.get("key") or "") in _REMOVED_HOLDINGS_CHART_KEYS:
                 return None
             return original_plotly_chart(figure_or_data, *args, **kwargs)
 
