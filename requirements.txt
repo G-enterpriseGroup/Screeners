@@ -12,3 +12,4 @@ plotly>=5.24
 # clean rebuild marker: 2026-09-11 native-orange-dataframe-headers
 # clean rebuild marker: 2026-09-12 remove-holdings-allocation-pnl-bars
 # clean rebuild marker: 2026-09-12 terminal-numeric-keypad
+# clean rebuild marker: 2026-09-12 seamless-client-keypad-fragment-reruns
