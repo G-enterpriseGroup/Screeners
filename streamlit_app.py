@@ -267,6 +267,181 @@ def _render_offline_snapshot_notice():
     )
 
 
+def render_app_lock_screen():
+    """Bloomberg-style lock screen with a click-only numeric keypad."""
+    remaining = _app_lockout_remaining()
+    buffer_key = "app_keypad_buffer"
+    buffer = str(st.session_state.get(buffer_key, ""))
+
+    st.markdown(
+        """
+        <style>
+        .keypad-display {
+            border:1px solid #fb8b1e;
+            background:#030303;
+            color:#fb8b1e !important;
+            font-family:'Courier New',monospace;
+            font-weight:900;
+            text-align:center;
+            padding:.72rem .55rem;
+            margin:.1rem 0 .65rem 0;
+            min-height:58px;
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+        }
+        .keypad-dots {
+            color:#4af6c3 !important;
+            font-size:1.5rem;
+            line-height:1.05;
+            letter-spacing:.18em;
+            min-height:1.5rem;
+        }
+        .keypad-meta {
+            color:#fb8b1e !important;
+            font-size:.68rem;
+            margin-top:.28rem;
+            letter-spacing:.05em;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    left, right = st.columns([2.1, 1.0], gap="large")
+
+    with left:
+        st.markdown(
+            """
+            <div class="app-lock-panel" style="width:100%;">
+              <div class="app-lock-header">RAJ'S TERMINAL // SECURE ACCESS</div>
+              <div class="app-lock-body">
+                <div class="app-lock-icon">▣</div>
+                <div class="app-lock-title">FRAMEWORK LOCKED</div>
+                <div class="app-lock-copy">
+                  Authentication is required before the terminal, E*TRADE connection,
+                  holdings, orders, municipal screeners, or account data are rendered.
+                </div>
+                <div class="app-lock-status">
+                  SESSION SECURITY // API CREDENTIALS REMAIN SERVER-SIDE // TERMINAL ACCESS DISABLED
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="terminal-note">INPUT METHOD // ON-SCREEN NUMERIC KEYPAD // NO KEYBOARD REQUIRED</div>',
+            unsafe_allow_html=True,
+        )
+
+    with right:
+        with st.container(border=True):
+            st.subheader("Access Keypad")
+            dots = "●" * len(buffer) if buffer else "—"
+            st.markdown(
+                (
+                    '<div class="keypad-display">'
+                    f'<div class="keypad-dots">{html.escape(dots)}</div>'
+                    f'<div class="keypad-meta">{len(buffer)} DIGITS ENTERED</div>'
+                    '</div>'
+                ),
+                unsafe_allow_html=True,
+            )
+
+            pressed = None
+            for row_index, digits in enumerate((("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9"))):
+                cols = st.columns(3, gap="small")
+                for col, digit in zip(cols, digits):
+                    with col:
+                        if st.button(
+                            digit,
+                            width="stretch",
+                            disabled=remaining > 0,
+                            key=f"app_keypad_digit_{digit}",
+                        ):
+                            pressed = digit
+
+            bottom = st.columns(3, gap="small")
+            with bottom[0]:
+                clear_pressed = st.button(
+                    "CLR",
+                    width="stretch",
+                    disabled=remaining > 0 or not buffer,
+                    key="app_keypad_clear",
+                )
+            with bottom[1]:
+                zero_pressed = st.button(
+                    "0",
+                    width="stretch",
+                    disabled=remaining > 0,
+                    key="app_keypad_digit_0",
+                )
+            with bottom[2]:
+                back_pressed = st.button(
+                    "⌫",
+                    width="stretch",
+                    disabled=remaining > 0 or not buffer,
+                    key="app_keypad_backspace",
+                )
+
+            if pressed is not None:
+                if len(buffer) < 32:
+                    st.session_state[buffer_key] = buffer + pressed
+                st.rerun()
+            if zero_pressed:
+                if len(buffer) < 32:
+                    st.session_state[buffer_key] = buffer + "0"
+                st.rerun()
+            if clear_pressed:
+                st.session_state[buffer_key] = ""
+                st.rerun()
+            if back_pressed:
+                st.session_state[buffer_key] = buffer[:-1]
+                st.rerun()
+
+            unlock = st.button(
+                "UNLOCK TERMINAL",
+                type="primary",
+                width="stretch",
+                disabled=(remaining > 0 or not buffer),
+                key="app_keypad_unlock",
+            )
+
+            feedback = st.session_state.pop("_app_keypad_feedback", None)
+            if remaining > 0:
+                st.error(f"SECURITY LOCKOUT // TRY AGAIN IN {remaining} SECONDS")
+            elif feedback:
+                tone, message = feedback
+                getattr(st, tone)(message)
+
+            if unlock:
+                if _verify_trade_access_code(buffer):
+                    st.session_state["etrade_access_unlocked"] = True
+                    st.session_state.pop(buffer_key, None)
+                    st.session_state.pop("app_access_code", None)
+                    st.session_state.pop("_app_keypad_feedback", None)
+                    _clear_unlock_failures()
+                    st.rerun()
+
+                _record_failed_unlock()
+                st.session_state[buffer_key] = ""
+                remaining_after = _app_lockout_remaining()
+                if remaining_after > 0:
+                    st.session_state["_app_keypad_feedback"] = (
+                        "error",
+                        f"TOO MANY FAILED ATTEMPTS // LOCKED FOR {remaining_after} SECONDS",
+                    )
+                else:
+                    attempts = int(st.session_state.get("app_unlock_failures", 0) or 0)
+                    left_attempts = max(0, APP_LOCK_MAX_ATTEMPTS - attempts)
+                    st.session_state["_app_keypad_feedback"] = (
+                        "error",
+                        f"INCORRECT ACCESS CODE // {left_attempts} ATTEMPTS REMAIN",
+                    )
+                st.rerun()
+
+
 # Holdings is snapshot/manual-refresh mode. The underlying E*TRADE call still
 # passes through the shared cache; pressing REFRESH HOLDINGS + BALANCE is
 # detected by CachedETradeClient and intentionally bypasses the normal TTL.
