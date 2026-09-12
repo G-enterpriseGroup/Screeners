@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{--o:#fb8b1e;--b:#000;--g:#4af6c3;--r:#ff433d;--blue:#0068ff}
+    *{box-sizing:border-box;border-radius:0!important}
+    html,body{margin:0;padding:0;background:#000;color:var(--o);font-family:"Courier New",monospace;overflow:hidden}
+    .shell{display:grid;grid-template-columns:minmax(0,2.05fr) minmax(300px,1fr);gap:34px;align-items:center;width:100%;padding:8px 2px 4px}
+    .panel{border:1px solid var(--o);background:#020202;box-shadow:0 0 0 1px rgba(251,139,30,.20) inset,0 0 28px rgba(251,139,30,.08)}
+    .head{background:var(--o);color:#000;padding:17px 20px;font-size:21px;font-weight:900;letter-spacing:.08em}
+    .body{padding:26px 28px 27px}
+    .icon{width:58px;height:58px;border:2px solid var(--o);display:flex;align-items:center;justify-content:center;font-size:25px;font-weight:900;margin-bottom:24px}
+    .title{font-size:18px;font-weight:900;letter-spacing:.05em;margin-bottom:15px}
+    .copy{font-size:14px;line-height:1.55;max-width:720px}
+    .status{border-top:1px solid var(--o);margin-top:20px;padding-top:16px;font-size:12px;line-height:1.45;letter-spacing:.04em}
+    .keycard{border:1px solid var(--o);background:#020202;padding:16px}
+    .keyhead{background:var(--o);color:#000;padding:10px 12px;margin:-16px -16px 14px;font-size:15px;font-weight:900;letter-spacing:.06em}
+    .display{border:1px solid var(--o);background:#070707;padding:13px 8px;text-align:center;margin-bottom:11px;min-height:64px;display:flex;flex-direction:column;justify-content:center}
+    .dots{color:var(--g);font-size:24px;line-height:1;letter-spacing:.20em;min-height:24px;font-weight:900}
+    .meta{font-size:10px;margin-top:7px;letter-spacing:.07em}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+    button{height:48px;border:1px solid var(--o);background:#050505;color:var(--o);font:900 17px/1 "Courier New",monospace;cursor:pointer;transition:background .08s,color .08s,transform .05s}
+    button:hover:not(:disabled){background:#141414;color:#fff}
+    button:active:not(:disabled){transform:translateY(1px);background:var(--o);color:#000}
+    button:disabled{opacity:.38;cursor:not-allowed}
+    .action{font-size:12px}
+    .unlock{width:100%;height:51px;margin-top:9px;background:var(--blue);border-color:#66adff;color:#fff;box-shadow:0 3px 0 #003579,0 0 10px rgba(0,104,255,.25);font-size:13px;letter-spacing:.04em}
+    .unlock:hover:not(:disabled){background:#0876ff;color:#fff}
+    .feedback{min-height:33px;margin-top:9px;border:1px solid var(--o);padding:8px 9px;font-size:11px;line-height:1.35}
+    .feedback.error{border-color:var(--r);color:var(--r)}
+    .feedback.ok{border-color:var(--g);color:var(--g)}
+    .hint{font-size:10px;margin-top:9px;color:#9a5b19;line-height:1.35}
+    @media(max-width:900px){.shell{grid-template-columns:1fr;gap:16px}.body{padding:20px}.head{font-size:17px}.keycard{max-width:430px;width:100%;justify-self:center}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="panel">
+      <div class="head">RAJ'S TERMINAL // SECURE ACCESS</div>
+      <div class="body">
+        <div class="icon">▣</div>
+        <div class="title">FRAMEWORK LOCKED</div>
+        <div class="copy">Authentication is required before the terminal, E*TRADE connection, holdings, orders, municipal screeners, or account data are rendered.</div>
+        <div class="status">SESSION SECURITY // API CREDENTIALS REMAIN SERVER-SIDE // TERMINAL ACCESS DISABLED</div>
+      </div>
+    </div>
+    <div class="keycard">
+      <div class="keyhead">ACCESS KEYPAD</div>
+      <div class="display">
+        <div class="dots" id="dots">—</div>
+        <div class="meta" id="meta">0 DIGITS ENTERED</div>
+      </div>
+      <div class="grid" id="grid"></div>
+      <button class="unlock" id="unlock" disabled>UNLOCK TERMINAL</button>
+      <div class="feedback" id="feedback">INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE</div>
+      <div class="hint">Digits stay inside this browser component until UNLOCK is pressed.</div>
+    </div>
+  </div>
+<script>
+  function post(type,data){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},data),"*")}
+  function ready(){post("streamlit:componentReady",{apiVersion:1})}
+  function height(){post("streamlit:setFrameHeight",{height:Math.max(390,document.documentElement.scrollHeight+4)})}
+  function send(value){post("streamlit:setComponentValue",{value:value,dataType:"json"})}
+
+  let buffer="";
+  let remaining=0;
+  let tickHandle=null;
+  const dots=document.getElementById("dots");
+  const meta=document.getElementById("meta");
+  const feedback=document.getElementById("feedback");
+  const unlock=document.getElementById("unlock");
+  const grid=document.getElementById("grid");
+
+  function renderBuffer(){
+    dots.textContent=buffer.length?"●".repeat(buffer.length):"—";
+    meta.textContent=buffer.length+" DIGITS ENTERED";
+    unlock.disabled=!buffer.length||remaining>0;
+  }
+  function addDigit(d){if(remaining>0||buffer.length>=32)return;buffer+=d;renderBuffer()}
+  function clearBuffer(){buffer="";renderBuffer()}
+  function backspace(){buffer=buffer.slice(0,-1);renderBuffer()}
+  function button(label,cls,handler){const b=document.createElement("button");b.textContent=label;b.className=cls||"";b.onclick=handler;grid.appendChild(b);return b}
+  ["1","2","3","4","5","6","7","8","9"].forEach(d=>button(d,"",()=>addDigit(d)));
+  button("CLR","action",clearBuffer);button("0","",()=>addDigit("0"));button("⌫","action",backspace);
+  unlock.onclick=()=>{if(!buffer||remaining>0)return;const code=buffer;buffer="";renderBuffer();feedback.className="feedback";feedback.textContent="VERIFYING // ONE MOMENT";send({code:code,nonce:Date.now()})};
+
+  function applyArgs(args){
+    remaining=Math.max(0,Number(args.remaining||0));
+    const message=String(args.feedback||"");
+    const tone=String(args.feedback_tone||"");
+    feedback.className="feedback"+(tone?" "+tone:"");
+    feedback.textContent=message||"INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE";
+    if(tickHandle)clearInterval(tickHandle);
+    if(remaining>0){
+      const update=()=>{feedback.className="feedback error";feedback.textContent="SECURITY LOCKOUT // TRY AGAIN IN "+remaining+" SECONDS";renderBuffer();if(remaining<=0){clearInterval(tickHandle);feedback.className="feedback";feedback.textContent="LOCKOUT CLEARED // ENTER ACCESS CODE";renderBuffer()}else{remaining-=1}};
+      update();tickHandle=setInterval(update,1000);
+    } else renderBuffer();
+    setTimeout(height,0);
+  }
+  window.addEventListener("message",e=>{if(e.data&&e.data.type==="streamlit:render")applyArgs(e.data.args||{})});
+  window.addEventListener("resize",height);
+  ready();height();renderBuffer();
+</script>
+</body>
+</html>
