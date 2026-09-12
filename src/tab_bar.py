@@ -1,8 +1,9 @@
 """Clickable + draggable terminal tab bar for Raj's Terminal.
 
-The Python side is the authoritative state. A component event is saved first,
-then Streamlit immediately reruns once so the component highlight and the
-rendered page can never be based on different tab states.
+The browser component applies tab selection/reordering optimistically, while the
+Python side persists that state immediately. We intentionally avoid a second
+explicit st.rerun() after the component event so each click/drag produces only
+the single Streamlit rerun that the component itself already triggers.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ _terminal_tabs = components.declare_component(
 
 
 # This module is imported after the legacy terminal-core stylesheet, so keep
-# terminal-wide table-header overrides here.  All table/data-grid headers use
+# terminal-wide table-header overrides here. All table/data-grid headers use
 # the same solid Bloomberg-orange band with heavy black mono type as the
 # exposure-panel headers instead of the old black/orange-outline treatment.
 st.markdown(
@@ -133,12 +134,13 @@ def _save(vault_key: str, order: Iterable[str], active: Any) -> dict[str, Any]:
 
 
 def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
-    """Render terminal navigation with one-state-per-frame synchronization.
+    """Render the terminal tabs with one Streamlit pass per interaction.
 
-    Streamlit sends component args before Python receives the component's newest
-    value. Without an acknowledgement rerun, the browser can highlight the old
-    tab while Python renders the newly selected page. Any real state change is
-    therefore saved first and followed by an immediate synchronization rerun.
+    The component already fires a Streamlit rerun when it sends a select/reorder
+    event. Its JavaScript keeps the user's optimistic highlight/order while
+    waiting for Python acknowledgement, so a second explicit st.rerun() here is
+    redundant and creates the visible flash/double-refresh effect. Persist the
+    returned state and use it immediately in this same render pass instead.
     """
     state = _load(vault_key)
     storage_key = "raj-terminal-tabs-" + str(vault_key)[:16]
@@ -157,20 +159,16 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
     )
 
     if isinstance(result, dict):
-        proposed = {
-            "order": _clean_order(result.get("order", state["order"])),
-            "active": "",
-        }
-        proposed["active"] = _clean_active(
+        proposed_order = _clean_order(result.get("order", state["order"]))
+        proposed_active = _clean_active(
             result.get("active", state["active"]),
-            proposed["order"],
+            proposed_order,
         )
+        proposed = {"order": proposed_order, "active": proposed_active}
 
         if not _same_state(proposed, state):
-            _save(vault_key, proposed["order"], proposed["active"])
-            # Synchronization barrier: never render page content in a frame
-            # whose tab component was called with the previous active/order.
-            st.rerun()
+            saved = _save(vault_key, proposed_order, proposed_active)
+            return saved["order"], saved["active"]
 
     acknowledged = _load(vault_key)
     return acknowledged["order"], acknowledged["active"]
