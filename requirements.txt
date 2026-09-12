@@ -10,3 +10,4 @@ plotly>=5.24
 # clean rebuild marker: 2026-09-11 remove-legacy-sector-map-stale-classification-cache
 # clean rebuild marker: 2026-09-11 one-click-etrade-login
 # clean rebuild marker: 2026-09-11 native-orange-dataframe-headers
+# clean rebuild marker: 2026-09-12 remove-holdings-allocation-pnl-bars
