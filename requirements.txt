@@ -13,3 +13,4 @@ plotly>=5.24
 # clean rebuild marker: 2026-09-12 remove-holdings-allocation-pnl-bars
 # clean rebuild marker: 2026-09-12 terminal-numeric-keypad
 # clean rebuild marker: 2026-09-12 seamless-client-keypad-fragment-reruns
+# clean rebuild marker: 2026-09-12 compact-etrade-authorization
