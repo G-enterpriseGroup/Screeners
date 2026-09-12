@@ -31,6 +31,7 @@ def _quote_summary_with_risk_defaults(payload):
     return summary
 
 
+@st.fragment
 def render_risk_sizing(
     client,
     *,
@@ -40,6 +41,12 @@ def render_risk_sizing(
     balance_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
     touch_session: Callable[[], None],
 ) -> None:
+    """Render Risk Sizing as an isolated fragment.
+
+    Streamlit controls inside this page now rerun only Risk Sizing instead of
+    rebuilding the entire terminal shell, connection banner, navigation, and
+    other tabs. Explicit actions still update the same shared session/cache.
+    """
     previous_quote_summary = _v4.quote_summary
     original_dataframe = st.dataframe
 
