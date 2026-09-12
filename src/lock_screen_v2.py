@@ -9,6 +9,10 @@ failed-attempt counter, and lockout policy.
 This module also compacts the E*TRADE OAuth completion panel without replacing
 its authorization/session logic. CONNECT E*TRADE still uses the existing
 one-click OAuth patch; only the visual layout is tightened.
+
+The E*TRADE connection/status controls are rendered as a utility bar before the
+main Raj's Terminal title. The later legacy render call is suppressed within the
+same Streamlit pass so the controls never appear twice.
 """
 
 from __future__ import annotations
@@ -248,7 +252,54 @@ def _install_compact_etrade_authorization(namespace: dict[str, Any]) -> None:
     namespace["render_etrade_connection"] = compact_renderer
 
 
+def _install_connection_above_title(namespace: dict[str, Any]) -> None:
+    """Render the E*TRADE utility controls before the main terminal title.
+
+    streamlit_app historically calls render_etrade_connection() after st.title().
+    Rather than duplicate that large entrypoint, intercept the first title call,
+    render the connection block immediately before it, and make the later legacy
+    render call a no-op for that same Streamlit pass.
+
+    The base st.title function is restored on every run so repeated Streamlit
+    reruns cannot stack wrappers or cause additional refreshes.
+    """
+    current = namespace.get("render_etrade_connection")
+    if not callable(current):
+        return
+
+    base_title = getattr(st, "_raj_terminal_base_title", None)
+    if not callable(base_title):
+        base_title = st.title
+        st._raj_terminal_base_title = base_title
+    else:
+        # Undo a wrapper left behind if a prior run stopped at the lock screen
+        # before reaching the title.
+        st.title = base_title
+
+    render_state = {"done": False}
+
+    def connection_once():
+        if render_state["done"]:
+            return None
+        render_state["done"] = True
+        return current()
+
+    def title_after_connection(*args, **kwargs):
+        try:
+            connection_once()
+            return base_title(*args, **kwargs)
+        finally:
+            # Never leave Streamlit's global title function wrapped after the
+            # title has rendered; this keeps later fragments/reruns predictable.
+            st.title = base_title
+
+    connection_once._raj_above_title = True
+    namespace["render_etrade_connection"] = connection_once
+    st.title = title_after_connection
+
+
 def install_seamless_lock_screen(namespace: dict[str, Any]) -> None:
-    """Install the smooth lock screen and compact OAuth panel into the entrypoint."""
+    """Install the smooth lock screen, compact OAuth UI, and utility-bar order."""
     namespace["render_app_lock_screen"] = lambda: render_seamless_lock_screen(namespace)
     _install_compact_etrade_authorization(namespace)
+    _install_connection_above_title(namespace)
