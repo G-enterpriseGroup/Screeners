@@ -56,7 +56,8 @@ p, label,
 span.material-symbols-rounded,
 span.material-symbols-outlined,
 span[class*="material-symbols"],
-[data-testid*="Icon"] span {
+[data-testid*="Icon"] span,
+span[data-testid*="Icon"] {
     font-family:"Material Symbols Rounded","Material Symbols Outlined","Material Icons" !important;
     font-weight:normal !important;
     font-style:normal !important;
@@ -98,6 +99,23 @@ span[class*="material-symbols"],
     flex:0 0 auto !important;
 }
 
+/* ---------- native tabs ---------- */
+[role="tablist"] {
+    max-width:100% !important;
+    min-width:0 !important;
+    overflow-x:auto !important;
+    overflow-y:hidden !important;
+    flex-wrap:nowrap !important;
+    scrollbar-width:thin;
+}
+
+[role="tab"] {
+    flex:0 0 auto !important;
+    min-width:max-content !important;
+    max-width:none !important;
+    white-space:nowrap !important;
+}
+
 /* ---------- buttons and input controls ---------- */
 .stButton,
 .stDownloadButton,
@@ -130,6 +148,23 @@ span[class*="material-symbols"],
 [data-baseweb="popover"] {
     min-width:0 !important;
     max-width:100% !important;
+}
+
+/* Select/popover text is allowed to truncate rather than cover the arrow or
+   the next column. The full value is still available in the opened menu. */
+[data-baseweb="select"] > div,
+[data-baseweb="select"] > div > div {
+    min-width:0 !important;
+    max-width:100% !important;
+}
+[data-baseweb="select"] span:not([class*="material-symbols"]) {
+    min-width:0 !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+}
+
+[data-baseweb="popover"] {
+    width:min(680px, calc(100vw - 32px)) !important;
 }
 
 [data-testid="stNumberInput"] input,
