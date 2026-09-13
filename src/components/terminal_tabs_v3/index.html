@@ -13,29 +13,46 @@
     html, body {
       margin:0;
       padding:0;
+      width:100%;
+      max-width:100%;
       background:var(--bb-black);
       color:var(--bb-orange);
       font-family:"Courier New",monospace;
       overflow:hidden;
+      box-sizing:border-box;
     }
+    *, *::before, *::after { box-sizing:border-box; }
     #tabs {
       display:flex;
+      flex-wrap:nowrap;
       align-items:stretch;
       gap:2px;
       width:100%;
+      max-width:100%;
+      min-width:0;
       min-height:42px;
       border-bottom:1px solid var(--bb-orange);
       background:var(--bb-black);
       box-sizing:border-box;
       user-select:none;
       -webkit-user-select:none;
+      overflow-x:auto;
+      overflow-y:hidden;
+      scrollbar-width:thin;
+      scrollbar-color:var(--bb-orange) var(--bb-black);
+      overscroll-behavior-x:contain;
     }
+    #tabs::-webkit-scrollbar { height:5px; }
+    #tabs::-webkit-scrollbar-track { background:var(--bb-black); }
+    #tabs::-webkit-scrollbar-thumb { background:var(--bb-orange); }
     .tab {
       position:relative;
       display:inline-flex;
+      flex:0 0 auto;
       align-items:center;
       justify-content:center;
       min-height:40px;
+      min-width:max-content;
       padding:0 14px;
       border:1px solid transparent;
       border-bottom:0;
@@ -79,6 +96,7 @@
     .tab.drop-before::before { left:-3px; }
     .tab.drop-after::after { right:-3px; }
     .hint {
+      flex:0 0 auto;
       margin-left:auto;
       align-self:center;
       padding:0 8px 0 12px;
@@ -88,9 +106,11 @@
       pointer-events:none;
     }
     body.dragging, body.dragging * { cursor:grabbing !important; }
+    @media (max-width:1100px) {
+      .hint { display:none; }
+    }
     @media (max-width:900px) {
       .tab { padding:0 9px; font-size:12px; }
-      .hint { display:none; }
     }
   </style>
 </head>
@@ -288,7 +308,10 @@
       hint.className = "hint";
       hint.textContent = "CLICK = OPEN  //  DRAG = REORDER";
       root.appendChild(hint);
-      window.setTimeout(() => height(Math.max(44, root.scrollHeight + 2)), 0);
+
+      // The component never grows vertically because tabs stay on one line.
+      // Horizontal overflow is scrollable instead of clipped/overlapped.
+      window.setTimeout(() => height(48), 0);
     }
 
     function applyServer(args) {
@@ -349,7 +372,7 @@
     }
 
     window.addEventListener("message", onMessage);
-    window.addEventListener("load", () => height(46));
+    window.addEventListener("load", () => height(48));
     ready();
   </script>
 </body>
