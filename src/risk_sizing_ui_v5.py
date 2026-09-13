@@ -62,6 +62,128 @@ def _unused_risk_metric_box(base_metric_box):
     return wrapped
 
 
+def _render_stop_loss_css() -> None:
+    """Bloomberg-style live stop-distance badge and arrow steppers."""
+    st.markdown(
+        """
+        <style>
+        .risk-stop-live-head {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:.55rem;
+            margin:0 0 .18rem 0;
+            font-family:"Courier New",monospace;
+        }
+        .risk-stop-live-label {
+            color:#fb8b1e !important;
+            font-size:1rem;
+            line-height:1.05;
+        }
+        .risk-stop-live-pct {
+            border:1px solid #fb8b1e;
+            background:#050505;
+            padding:.12rem .42rem;
+            font-size:.66rem;
+            font-weight:900;
+            line-height:1.05;
+            white-space:nowrap;
+        }
+
+        /* Convert only the Stop Loss number-input +/- controls into down/up arrows. */
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button > * {
+            display:none !important;
+        }
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button {
+            position:relative !important;
+            min-width:38px !important;
+            color:#fb8b1e !important;
+            background:#050505 !important;
+            border-color:#fb8b1e !important;
+        }
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:first-of-type::after {
+            content:"▼";
+            color:#fb8b1e !important;
+            font-size:.82rem;
+            font-weight:900;
+            position:absolute;
+            inset:0;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+        }
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:last-of-type::after {
+            content:"▲";
+            color:#4af6c3 !important;
+            font-size:.82rem;
+            font-weight:900;
+            position:absolute;
+            inset:0;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _live_stop_number_input(original_number_input):
+    """Wrap only risk_stop_price with a live percent-from-entry header."""
+
+    def wrapped(label, *args, **kwargs):
+        if kwargs.get("key") != "risk_stop_price":
+            return original_number_input(label, *args, **kwargs)
+
+        try:
+            entry = float(st.session_state.get("risk_entry_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry = 0.0
+
+        raw_stop = st.session_state.get("risk_stop_price", kwargs.get("value", 0.0))
+        try:
+            stop = float(raw_stop or 0.0)
+        except (TypeError, ValueError):
+            stop = 0.0
+
+        if entry > 0:
+            signed_pct = (entry - stop) / entry * 100.0
+            if abs(signed_pct) < 0.005:
+                pct_text = "0.00%"
+                pct_color = "#fb8b1e"
+                arrow = "•"
+            elif signed_pct > 0:
+                pct_text = f"{abs(signed_pct):.2f}% BELOW ENTRY"
+                pct_color = "#ff4343"
+                arrow = "▼"
+            else:
+                pct_text = f"{abs(signed_pct):.2f}% ABOVE ENTRY"
+                pct_color = "#4af6c3"
+                arrow = "▲"
+        else:
+            pct_text = "—"
+            pct_color = "#fb8b1e"
+            arrow = "%"
+
+        st.markdown(
+            (
+                '<div class="risk-stop-live-head">'
+                '<span class="risk-stop-live-label">Stop Loss</span>'
+                f'<span class="risk-stop-live-pct" style="color:{pct_color} !important;">'
+                f'{arrow} {pct_text}</span>'
+                '</div>'
+            ),
+            unsafe_allow_html=True,
+        )
+
+        local_kwargs = dict(kwargs)
+        local_kwargs["label_visibility"] = "collapsed"
+        return original_number_input(label, *args, **local_kwargs)
+
+    return wrapped
+
+
 @st.fragment
 def render_risk_sizing(
     client,
@@ -74,21 +196,24 @@ def render_risk_sizing(
 ) -> None:
     """Render Risk Sizing as an isolated fragment.
 
-    Streamlit controls inside this page now rerun only Risk Sizing instead of
-    rebuilding the entire terminal shell, connection banner, navigation, and
-    other tabs. Explicit actions still update the same shared session/cache.
+    Streamlit controls inside this page rerun only Risk Sizing. The Stop Loss
+    input also shows its live percentage distance from Entry and uses arrow
+    steppers while preserving the existing dollar-based sizing math.
     """
     previous_quote_summary = _v4.quote_summary
     previous_metric_box = _v4._metric_box
     original_dataframe = st.dataframe
+    original_number_input = st.number_input
 
     def comma_dataframe(data=None, *args, **kwargs):
         kwargs["column_config"] = comma_column_config(data, kwargs.get("column_config"))
         return original_dataframe(data, *args, **kwargs)
 
+    _render_stop_loss_css()
     _v4.quote_summary = _quote_summary_with_risk_defaults
     _v4._metric_box = _unused_risk_metric_box(previous_metric_box)
     st.dataframe = comma_dataframe
+    st.number_input = _live_stop_number_input(original_number_input)
     try:
         _v4.render_risk_sizing(
             client,
@@ -102,6 +227,7 @@ def render_risk_sizing(
         _v4.quote_summary = previous_quote_summary
         _v4._metric_box = previous_metric_box
         st.dataframe = original_dataframe
+        st.number_input = original_number_input
 
     if st.session_state.pop("_risk_ask_unavailable", False):
         st.warning(
