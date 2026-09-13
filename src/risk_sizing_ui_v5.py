@@ -75,9 +75,12 @@ def _render_stop_loss_css() -> None:
         <style>
         .risk-stop-live-head {
             display:flex;
+            flex-wrap:wrap;
             align-items:center;
             justify-content:space-between;
-            gap:.55rem;
+            gap:.30rem .55rem;
+            min-width:0;
+            max-width:100%;
             margin:0 0 .18rem 0;
             font-family:"Courier New",monospace;
         }
@@ -85,24 +88,35 @@ def _render_stop_loss_css() -> None:
             color:#fb8b1e !important;
             font-size:1rem;
             line-height:1.05;
+            min-width:0;
+            overflow-wrap:anywhere;
         }
         .risk-stop-live-pct {
             border:1px solid #fb8b1e;
             background:#050505;
             padding:.12rem .42rem;
+            margin-left:auto;
+            max-width:100%;
             font-size:.66rem;
             font-weight:900;
             line-height:1.05;
-            white-space:nowrap;
+            white-space:normal;
+            overflow-wrap:anywhere;
+            text-align:right;
         }
 
         /* Convert only the Stop Loss number-input +/- controls into down/up arrows. */
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) {
+            min-width:0 !important;
+            max-width:100% !important;
+        }
         div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button > * {
             display:none !important;
         }
         div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button {
             position:relative !important;
-            min-width:38px !important;
+            min-width:34px !important;
+            flex:0 0 34px !important;
             color:#fb8b1e !important;
             background:#050505 !important;
             border-color:#fb8b1e !important;
@@ -128,6 +142,17 @@ def _render_stop_loss_css() -> None:
             display:flex;
             align-items:center;
             justify-content:center;
+        }
+
+        /* Long ticker + company labels stay inside the smart selector. */
+        [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+            min-width:0 !important;
+            max-width:100% !important;
+        }
+        [data-testid="stSelectbox"] div[data-baseweb="select"] > div > div {
+            min-width:0 !important;
+            overflow:hidden !important;
+            text-overflow:ellipsis !important;
         }
         </style>
         """,
