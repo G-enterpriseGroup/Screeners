@@ -10,6 +10,7 @@ import streamlit as st
 import src.risk_sizing_ui_v4 as _v4
 from src.stockanalysis_portfolio_v5 import cache_status, render_stockanalysis_portfolio
 from src.terminal_number_format import comma_column_config
+from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_selector
 
 
 _ORIGINAL_QUOTE_SUMMARY = _v4.quote_summary
@@ -29,6 +30,11 @@ def _quote_summary_with_risk_defaults(payload):
         st.session_state.pop("_risk_ask_unavailable", None)
     else:
         st.session_state["_risk_ask_unavailable"] = True
+
+    symbol = str(summary.get("symbol") or st.session_state.get("risk_ticker") or "").strip().upper()
+    if symbol:
+        description = str(summary.get("description") or company_name(symbol) or "").strip()
+        record_lookup(symbol, description)
     return summary
 
 
@@ -184,6 +190,31 @@ def _live_stop_number_input(original_number_input):
     return wrapped
 
 
+def _smart_ticker_text_input(original_text_input, original_selectbox):
+    """Replace only Risk Sizing's ticker text field with searchable smart suggestions."""
+
+    def wrapped(label, *args, **kwargs):
+        if kwargs.get("key") != "risk_ticker":
+            return original_text_input(label, *args, **kwargs)
+
+        current = str(
+            st.session_state.get("risk_ticker")
+            or kwargs.get("value")
+            or "SPY"
+        ).strip().upper()
+        symbol = smart_ticker_selector(
+            original_selectbox,
+            label=str(label),
+            current=current,
+            key="risk_ticker_smart_selector",
+            help_text=str(kwargs.get("help") or ""),
+        )
+        st.session_state["risk_ticker"] = symbol
+        return symbol
+
+    return wrapped
+
+
 @st.fragment
 def render_risk_sizing(
     client,
@@ -197,13 +228,15 @@ def render_risk_sizing(
     """Render Risk Sizing as an isolated fragment.
 
     Streamlit controls inside this page rerun only Risk Sizing. The Stop Loss
-    input also shows its live percentage distance from Entry and uses arrow
-    steppers while preserving the existing dollar-based sizing math.
+    input shows its live percentage distance from Entry, and the ticker selector
+    searches both symbols and company names while ranking prior lookups first.
     """
     previous_quote_summary = _v4.quote_summary
     previous_metric_box = _v4._metric_box
     original_dataframe = st.dataframe
     original_number_input = st.number_input
+    original_text_input = st.text_input
+    original_selectbox = st.selectbox
 
     def comma_dataframe(data=None, *args, **kwargs):
         kwargs["column_config"] = comma_column_config(data, kwargs.get("column_config"))
@@ -214,6 +247,7 @@ def render_risk_sizing(
     _v4._metric_box = _unused_risk_metric_box(previous_metric_box)
     st.dataframe = comma_dataframe
     st.number_input = _live_stop_number_input(original_number_input)
+    st.text_input = _smart_ticker_text_input(original_text_input, original_selectbox)
     try:
         _v4.render_risk_sizing(
             client,
@@ -228,6 +262,7 @@ def render_risk_sizing(
         _v4._metric_box = previous_metric_box
         st.dataframe = original_dataframe
         st.number_input = original_number_input
+        st.text_input = original_text_input
 
     if st.session_state.pop("_risk_ask_unavailable", False):
         st.warning(
