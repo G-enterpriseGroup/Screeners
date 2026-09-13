@@ -14,6 +14,8 @@ from typing import Any, Iterable
 import streamlit as st
 import streamlit.components.v1 as components
 
+from src.layout_guardrails import install_layout_guardrails
+
 
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
@@ -30,10 +32,18 @@ _terminal_tabs = components.declare_component(
 )
 
 
+# Install after the legacy terminal-core stylesheet so anti-overlap geometry and
+# icon-font restoration win the cascade across every tab.
+install_layout_guardrails()
+
+
 # This module is imported after the legacy terminal-core stylesheet, so keep
 # terminal-wide table-header overrides here. All table/data-grid headers use
 # the same solid Bloomberg-orange band with heavy black mono type as the
 # exposure-panel headers instead of the old black/orange-outline treatment.
+# IMPORTANT: do not force Courier New on every descendant; Streamlit can use
+# Material icon spans inside headers, and overriding their font turns icon names
+# into visible text that can overlap the label.
 st.markdown(
     """
     <style>
@@ -46,14 +56,15 @@ st.markdown(
         font-family:"Courier New",monospace !important;
         font-weight:900 !important;
         text-transform:uppercase !important;
+        min-width:0 !important;
     }
 
     [data-testid="stDataFrame"] [role="columnheader"] *,
     [data-testid="stDataEditor"] [role="columnheader"] * {
         color:#000 !important;
         -webkit-text-fill-color:#000 !important;
-        font-family:"Courier New",monospace !important;
         font-weight:900 !important;
+        min-width:0 !important;
     }
 
     [data-testid="stTable"] thead,
@@ -66,12 +77,13 @@ st.markdown(
         font-family:"Courier New",monospace !important;
         font-weight:900 !important;
         text-transform:uppercase !important;
+        min-width:0 !important;
+        overflow-wrap:anywhere !important;
     }
 
     [data-testid="stTable"] thead tr th * {
         color:#000 !important;
         -webkit-text-fill-color:#000 !important;
-        font-family:"Courier New",monospace !important;
         font-weight:900 !important;
     }
     </style>
