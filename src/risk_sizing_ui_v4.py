@@ -69,6 +69,39 @@ if _OLD_ROOM_BLOCK not in _SOURCE:
     raise RuntimeError("Risk-sizing v2 Tactical Room block was not found.")
 _SOURCE = _SOURCE.replace(_OLD_ROOM_BLOCK, _NEW_ROOM_BLOCK, 1)
 
+
+def _wrap_expander_section(source: str, start_marker: str, end_marker: str, label: str) -> str:
+    """Wrap one top-level rendered section in a native Streamlit expander."""
+    start = source.find(start_marker)
+    if start < 0:
+        raise RuntimeError(f"Risk-sizing section start marker was not found: {label}")
+    body_start = start + len(start_marker)
+    end = source.find(end_marker, body_start)
+    if end < 0:
+        raise RuntimeError(f"Risk-sizing section end marker was not found: {label}")
+
+    body = source[body_start:end]
+    indented_body = "".join(
+        ("    " + line) if line.strip() else line
+        for line in body.splitlines(keepends=True)
+    )
+    replacement = f'    with st.expander("{label}", expanded=True):\n' + indented_body
+    return source[:start] + replacement + source[end:]
+
+
+_SOURCE = _wrap_expander_section(
+    _SOURCE,
+    '    st.markdown("**1 // CLASSIFY THE CURRENT BOOK**")\n',
+    '    st.markdown("**2 // SIZE THE NEXT TRADE**")\n',
+    "1 // CLASSIFY THE CURRENT BOOK",
+)
+_SOURCE = _wrap_expander_section(
+    _SOURCE,
+    '    st.markdown("**2 // SIZE THE NEXT TRADE**")\n',
+    '    _render_crown_reference()\n',
+    "2 // SIZE THE NEXT TRADE",
+)
+
 # Execute the enhanced v2 module in this module namespace. This keeps every
 # existing sizing control/example intact while making this adapter lightweight.
 exec(compile(_SOURCE, str(_V2_PATH), "exec"), globals())
@@ -81,6 +114,59 @@ def _render_compact_terminal_css() -> None:
     st.markdown(
         """
         <style>
+        /* Bloomberg collapsible section bars: + closed / − open. */
+        [data-testid="stExpander"] details {
+            border:1px solid #fb8b1e !important;
+            border-radius:0 !important;
+            background:#000000 !important;
+            margin:.20rem 0 .45rem 0 !important;
+            overflow:visible !important;
+        }
+        [data-testid="stExpander"] summary {
+            position:relative !important;
+            min-height:36px !important;
+            padding:.34rem .72rem .34rem 2.05rem !important;
+            background:#050505 !important;
+            color:#fb8b1e !important;
+            font-family:"Courier New",monospace !important;
+            font-weight:900 !important;
+            list-style:none !important;
+            cursor:pointer !important;
+        }
+        [data-testid="stExpander"] summary::-webkit-details-marker {
+            display:none !important;
+        }
+        [data-testid="stExpander"] summary svg {
+            display:none !important;
+        }
+        [data-testid="stExpander"] summary::before {
+            content:"+";
+            position:absolute;
+            left:.62rem;
+            top:50%;
+            transform:translateY(-50%);
+            width:1rem;
+            text-align:center;
+            color:#4af6c3 !important;
+            font-size:1.16rem;
+            font-weight:900;
+            line-height:1;
+        }
+        [data-testid="stExpander"] details[open] summary::before {
+            content:"−";
+            color:#fb8b1e !important;
+        }
+        [data-testid="stExpander"] summary p,
+        [data-testid="stExpander"] summary span {
+            color:#fb8b1e !important;
+            font-family:"Courier New",monospace !important;
+            font-weight:900 !important;
+            margin:0 !important;
+        }
+        [data-testid="stExpander"] details > div {
+            padding-top:.35rem !important;
+        }
+
         /* Metric/quote cards: keep the same text, remove the empty vertical box area. */
         .rs-card {
             min-height:0 !important;
