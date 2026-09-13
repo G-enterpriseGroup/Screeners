@@ -70,8 +70,20 @@ if _OLD_ROOM_BLOCK not in _SOURCE:
 _SOURCE = _SOURCE.replace(_OLD_ROOM_BLOCK, _NEW_ROOM_BLOCK, 1)
 
 
-def _wrap_expander_section(source: str, start_marker: str, end_marker: str, label: str) -> str:
-    """Wrap one top-level rendered section in a native Streamlit expander."""
+def _wrap_expander_section(
+    source: str,
+    start_marker: str,
+    end_marker: str,
+    label: str,
+    key: str,
+) -> str:
+    """Wrap one top-level rendered section in a keyed native Streamlit expander.
+
+    The key gives the section a stable CSS class so the Bloomberg +/- styling
+    is scoped only to these two primary sections. Other expanders (for example
+    HOW TO USE) keep Streamlit's native icon/font and cannot collide with our
+    custom section indicator.
+    """
     start = source.find(start_marker)
     if start < 0:
         raise RuntimeError(f"Risk-sizing section start marker was not found: {label}")
@@ -85,7 +97,10 @@ def _wrap_expander_section(source: str, start_marker: str, end_marker: str, labe
         ("    " + line) if line.strip() else line
         for line in body.splitlines(keepends=True)
     )
-    replacement = f'    with st.expander("{label}", expanded=True):\n' + indented_body
+    replacement = (
+        f'    with st.expander("{label}", expanded=True, key="{key}", type="compact"):\n'
+        + indented_body
+    )
     return source[:start] + replacement + source[end:]
 
 
@@ -94,12 +109,14 @@ _SOURCE = _wrap_expander_section(
     '    st.markdown("**1 // CLASSIFY THE CURRENT BOOK**")\n',
     '    st.markdown("**2 // SIZE THE NEXT TRADE**")\n',
     "1 // CLASSIFY THE CURRENT BOOK",
+    "risk_classify_section",
 )
 _SOURCE = _wrap_expander_section(
     _SOURCE,
     '    st.markdown("**2 // SIZE THE NEXT TRADE**")\n',
     '    _render_crown_reference()\n',
     "2 // SIZE THE NEXT TRADE",
+    "risk_size_section",
 )
 
 # Execute the enhanced v2 module in this module namespace. This keeps every
@@ -110,21 +127,37 @@ _BASE_RENDER_RISK_SIZING = render_risk_sizing
 
 
 def _render_compact_terminal_css() -> None:
-    """Reduce dead space while preserving the existing text and typography."""
+    """Reduce dead space while preserving text, icons, and responsive geometry."""
     st.markdown(
         """
         <style>
-        /* Bloomberg collapsible section bars: + closed / − open. */
-        [data-testid="stExpander"] details {
+        /*
+        Bloomberg collapsible section bars: + closed / − open.
+        IMPORTANT: only the two keyed primary sections get this treatment.
+        Styling every Streamlit expander used to override Material Symbols and
+        rendered icon names such as `arrow_right` as literal overlapping text.
+        */
+        .st-key-risk_classify_section details,
+        .st-key-risk_size_section details {
             border:1px solid #fb8b1e !important;
             border-radius:0 !important;
             background:#000000 !important;
             margin:.20rem 0 .45rem 0 !important;
             overflow:visible !important;
+            width:100% !important;
+            max-width:100% !important;
+            min-width:0 !important;
         }
-        [data-testid="stExpander"] summary {
+
+        .st-key-risk_classify_section summary,
+        .st-key-risk_size_section summary {
             position:relative !important;
+            display:flex !important;
+            align-items:center !important;
             min-height:36px !important;
+            width:100% !important;
+            min-width:0 !important;
+            max-width:100% !important;
             padding:.34rem .72rem .34rem 2.05rem !important;
             background:#050505 !important;
             color:#fb8b1e !important;
@@ -132,14 +165,24 @@ def _render_compact_terminal_css() -> None:
             font-weight:900 !important;
             list-style:none !important;
             cursor:pointer !important;
+            overflow:visible !important;
         }
-        [data-testid="stExpander"] summary::-webkit-details-marker {
+
+        .st-key-risk_classify_section summary::-webkit-details-marker,
+        .st-key-risk_size_section summary::-webkit-details-marker {
             display:none !important;
         }
-        [data-testid="stExpander"] summary svg {
+
+        /* Hide only the native toggle glyph for the two custom +/- sections. */
+        .st-key-risk_classify_section summary > svg,
+        .st-key-risk_size_section summary > svg,
+        .st-key-risk_classify_section summary [data-testid="stExpanderToggleIcon"],
+        .st-key-risk_size_section summary [data-testid="stExpanderToggleIcon"] {
             display:none !important;
         }
-        [data-testid="stExpander"] summary::before {
+
+        .st-key-risk_classify_section summary::before,
+        .st-key-risk_size_section summary::before {
             content:"+";
             position:absolute;
             left:.62rem;
@@ -148,29 +191,69 @@ def _render_compact_terminal_css() -> None:
             width:1rem;
             text-align:center;
             color:#4af6c3 !important;
+            font-family:"Courier New",monospace !important;
             font-size:1.16rem;
             font-weight:900;
             line-height:1;
+            pointer-events:none;
         }
-        [data-testid="stExpander"] details[open] summary::before {
+
+        .st-key-risk_classify_section details[open] summary::before,
+        .st-key-risk_size_section details[open] summary::before {
             content:"−";
             color:#fb8b1e !important;
         }
-        [data-testid="stExpander"] summary p,
-        [data-testid="stExpander"] summary span {
+
+        /* Style label text only. Do NOT assign a font to every span because
+           Streamlit may use Material Symbol spans for UI icons. */
+        .st-key-risk_classify_section summary p,
+        .st-key-risk_size_section summary p {
             color:#fb8b1e !important;
             font-family:"Courier New",monospace !important;
             font-weight:900 !important;
             margin:0 !important;
-        }
-        [data-testid="stExpander"] details > div {
-            padding-top:.35rem !important;
+            min-width:0 !important;
+            max-width:100% !important;
+            line-height:1.15 !important;
+            white-space:normal !important;
+            overflow-wrap:anywhere !important;
         }
 
-        /* Metric/quote cards: keep the same text, remove the empty vertical box area. */
+        .st-key-risk_classify_section details > div,
+        .st-key-risk_size_section details > div {
+            padding-top:.35rem !important;
+            min-width:0 !important;
+            max-width:100% !important;
+        }
+
+        /* Ensure all other expanders keep their native icon typography. */
+        [data-testid="stExpander"] summary span[class*="material-symbols"],
+        [data-testid="stExpander"] summary [data-testid*="Icon"] span {
+            font-family:"Material Symbols Rounded","Material Symbols Outlined","Material Icons" !important;
+            font-weight:normal !important;
+            letter-spacing:normal !important;
+            white-space:nowrap !important;
+            flex:0 0 auto !important;
+        }
+
+        [data-testid="stExpander"] summary {
+            min-width:0 !important;
+            max-width:100% !important;
+        }
+        [data-testid="stExpander"] summary p {
+            min-width:0 !important;
+            max-width:100% !important;
+            white-space:normal !important;
+            overflow-wrap:anywhere !important;
+        }
+
+        /* Metric/quote cards: keep the same text, remove empty space and wrap
+           long values instead of letting them invade neighboring cards. */
         .rs-card {
             min-height:0 !important;
             height:auto !important;
+            min-width:0 !important;
+            max-width:100% !important;
             padding:.24rem .48rem !important;
             margin:0 !important;
             box-sizing:border-box !important;
@@ -178,22 +261,33 @@ def _render_compact_terminal_css() -> None:
         .rs-card-head {
             gap:.28rem !important;
             min-height:15px !important;
+            min-width:0 !important;
             margin:0 !important;
         }
         .rs-card-label {
             font-size:.70rem !important;
             line-height:1.05 !important;
             margin:0 !important;
+            min-width:0 !important;
+            overflow-wrap:anywhere !important;
         }
         .rs-card-value {
             font-size:1.18rem !important;
             margin:.04rem 0 0 0 !important;
             line-height:1.08 !important;
+            min-width:0 !important;
+            max-width:100% !important;
+            white-space:normal !important;
+            overflow-wrap:anywhere !important;
         }
         .rs-card-detail {
             font-size:.64rem !important;
             margin:.04rem 0 0 0 !important;
             line-height:1.05 !important;
+            min-width:0 !important;
+            max-width:100% !important;
+            white-space:normal !important;
+            overflow-wrap:anywhere !important;
         }
         .rs-help {
             width:15px !important;
@@ -203,7 +297,10 @@ def _render_compact_terminal_css() -> None:
         }
         .rs-help-tip {
             top:19px !important;
-            width:300px !important;
+            width:min(300px, calc(100vw - 48px)) !important;
+            max-width:calc(100vw - 48px) !important;
+            white-space:normal !important;
+            overflow-wrap:anywhere !important;
         }
 
         /* Streamlit wraps each HTML card in extra blocks; collapse those wrappers too. */
@@ -214,28 +311,36 @@ def _render_compact_terminal_css() -> None:
             margin-bottom:0 !important;
             padding-top:0 !important;
             padding-bottom:0 !important;
+            min-width:0 !important;
+            max-width:100% !important;
         }
         [data-testid="stHorizontalBlock"]:has(.rs-card) {
             gap:.65rem !important;
             margin-top:.12rem !important;
             margin-bottom:.12rem !important;
+            align-items:stretch !important;
         }
 
-        /* Inputs stay readable but use less height. */
+        /* Inputs stay readable but use less height. Avoid fixed-height wrappers
+           that can clip text at browser zoom levels. */
         [data-testid="stNumberInput"] input,
         [data-testid="stTextInput"] input {
             min-height:34px !important;
-            height:34px !important;
+            height:auto !important;
+            min-width:0 !important;
             padding-top:.2rem !important;
             padding-bottom:.2rem !important;
         }
         [data-testid="stNumberInput"] button {
             min-height:34px !important;
-            height:34px !important;
+            height:auto !important;
+            flex:0 0 auto !important;
         }
         [data-testid="stNumberInput"],
         [data-testid="stTextInput"],
         [data-testid="stSelectbox"] {
+            min-width:0 !important;
+            max-width:100% !important;
             margin-bottom:.10rem !important;
         }
 
@@ -244,7 +349,9 @@ def _render_compact_terminal_css() -> None:
             background:#0068ff !important;
             border-color:#fb8b1e !important;
             min-height:36px !important;
-            height:36px !important;
+            height:auto !important;
+            min-width:0 !important;
+            max-width:100% !important;
         }
         [data-testid="stSelectbox"] div[data-baseweb="select"] span,
         [data-testid="stSelectbox"] div[data-baseweb="select"] svg {
@@ -254,11 +361,16 @@ def _render_compact_terminal_css() -> None:
         div[role="listbox"] {
             background:#000000 !important;
             border:1px solid #0068ff !important;
+            max-width:min(680px, calc(100vw - 32px)) !important;
         }
         div[role="option"] {
             background:#000000 !important;
             color:#fb8b1e !important;
             min-height:32px !important;
+            height:auto !important;
+            line-height:1.15 !important;
+            white-space:normal !important;
+            overflow-wrap:anywhere !important;
         }
         div[role="option"] * { color:#fb8b1e !important; }
         div[role="option"]:hover,
