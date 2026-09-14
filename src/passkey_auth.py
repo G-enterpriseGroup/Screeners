@@ -3,6 +3,10 @@
 Touch ID itself never exposes fingerprint data to the app. The browser invokes
 Apple's platform authenticator through WebAuthn and the server verifies the
 signed challenge with the credential public key enrolled for this terminal.
+
+Version 2 credentials are deliberately discoverable platform passkeys. That
+lets Safari/Chrome/macOS route authentication to the Mac's built-in platform
+authenticator instead of falling back to a removable security-key ceremony.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from urllib.parse import urlsplit
 _STORE_DIR = Path.home() / ".raj_terminal"
 _CREDENTIAL_FILE = _STORE_DIR / "touch_id_credential.json"
 _LOCK = threading.Lock()
+_CREDENTIAL_VERSION = 2
 
 try:
     from webauthn import (
@@ -32,8 +37,6 @@ try:
         AttestationConveyancePreference,
         AuthenticatorAttachment,
         AuthenticatorSelectionCriteria,
-        AuthenticatorTransport,
-        PublicKeyCredentialDescriptor,
         ResidentKeyRequirement,
         UserVerificationRequirement,
     )
@@ -88,8 +91,24 @@ def _write_record(payload: dict[str, Any]) -> None:
         tmp.replace(_CREDENTIAL_FILE)
 
 
+def clear_touch_id_record() -> None:
+    """Forget only the terminal's server-side passkey record."""
+    with _LOCK:
+        try:
+            _CREDENTIAL_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 def load_touch_id_record(app_url: str) -> dict[str, Any] | None:
-    """Return the enrolled credential only for the current relying-party host."""
+    """Return only a current platform/discoverable credential for this host.
+
+    Older v1 credentials are intentionally treated as unenrolled. They were
+    created before we required a discoverable platform passkey and could cause
+    macOS/Firefox to route the request to a USB security-key dialog.
+    """
     try:
         _origin, rp_id = origin_and_rp_id(app_url)
     except ValueError:
@@ -97,7 +116,14 @@ def load_touch_id_record(app_url: str) -> dict[str, Any] | None:
     record = _read_record()
     if not record or str(record.get("rp_id") or "") != rp_id:
         return None
+    if int(record.get("credential_version") or 0) < _CREDENTIAL_VERSION:
+        return None
     if not record.get("credential_id") or not record.get("public_key"):
+        return None
+    if str(record.get("authenticator_attachment") or "") != "platform":
+        return None
+    transports = {str(value).lower() for value in (record.get("transports") or [])}
+    if transports and "internal" not in transports:
         return None
     return record
 
@@ -116,11 +142,14 @@ def build_registration_options(app_url: str, identity_seed: str) -> tuple[dict[s
         attestation=AttestationConveyancePreference.NONE,
         authenticator_selection=AuthenticatorSelectionCriteria(
             authenticator_attachment=AuthenticatorAttachment.PLATFORM,
-            resident_key=ResidentKeyRequirement.PREFERRED,
+            resident_key=ResidentKeyRequirement.REQUIRED,
             user_verification=UserVerificationRequirement.REQUIRED,
         ),
     )
-    return json.loads(options_to_json(options)), bytes(options.challenge)
+    payload = json.loads(options_to_json(options))
+    # WebAuthn L3 hint. Unsupported browsers simply ignore it.
+    payload["hints"] = ["client-device"]
+    return payload, bytes(options.challenge)
 
 
 def complete_registration(
@@ -138,8 +167,25 @@ def complete_registration(
         expected_origin=origin,
         require_user_verification=True,
     )
-    transports = ((credential.get("response") or {}).get("transports") or [])
+
+    attachment = str(credential.get("authenticatorAttachment") or "").strip().lower()
+    if attachment and attachment != "platform":
+        raise ValueError("A Mac platform passkey is required; external security keys are not accepted.")
+
+    transports = [
+        str(value).strip().lower()
+        for value in ((credential.get("response") or {}).get("transports") or [])
+        if str(value).strip()
+    ]
+    if transports and "internal" not in transports:
+        raise ValueError("Touch ID setup did not return an internal Mac authenticator.")
+    if not transports:
+        # Platform attachment is already required above. Some browser versions
+        # omit getTransports(); persist the expected internal transport.
+        transports = ["internal"]
+
     record = {
+        "credential_version": _CREDENTIAL_VERSION,
         "rp_id": rp_id,
         "origin": origin,
         "credential_id": _b64e(verification.credential_id),
@@ -147,7 +193,9 @@ def complete_registration(
         "sign_count": int(verification.sign_count or 0),
         "device_type": str(verification.credential_device_type),
         "backed_up": bool(verification.credential_backed_up),
-        "transports": [str(value) for value in transports],
+        "authenticator_attachment": "platform",
+        "discoverable": True,
+        "transports": transports,
     }
     _write_record(record)
     return record
@@ -157,22 +205,29 @@ def build_authentication_options(
     app_url: str,
     record: dict[str, Any],
 ) -> tuple[dict[str, Any], bytes]:
+    """Build a discoverable-passkey request biased to the current Mac.
+
+    We intentionally omit allowCredentials for v2 credentials. A discoverable
+    platform passkey lets macOS choose the built-in authenticator directly,
+    instead of presenting a removable-security-key path for a stale credential
+    ID. The response credential ID is still matched server-side before verify.
+    """
     if not webauthn_ready():
         raise RuntimeError(_WEBAUTHN_IMPORT_ERROR or "WebAuthn dependency is unavailable.")
     _origin, rp_id = origin_and_rp_id(app_url)
     if str(record.get("rp_id") or "") != rp_id:
         raise ValueError("Touch ID credential belongs to a different terminal hostname.")
+    if int(record.get("credential_version") or 0) < _CREDENTIAL_VERSION:
+        raise ValueError("Touch ID must be enrolled again with the current platform-passkey flow.")
+
     options = generate_authentication_options(
         rp_id=rp_id,
-        allow_credentials=[
-            PublicKeyCredentialDescriptor(
-                id=_b64d(str(record["credential_id"])),
-                transports=[AuthenticatorTransport.INTERNAL],
-            )
-        ],
         user_verification=UserVerificationRequirement.REQUIRED,
     )
-    return json.loads(options_to_json(options)), bytes(options.challenge)
+    payload = json.loads(options_to_json(options))
+    payload.pop("allowCredentials", None)
+    payload["hints"] = ["client-device"]
+    return payload, bytes(options.challenge)
 
 
 def complete_authentication(
@@ -184,6 +239,16 @@ def complete_authentication(
     if not webauthn_ready():
         raise RuntimeError(_WEBAUTHN_IMPORT_ERROR or "WebAuthn dependency is unavailable.")
     origin, rp_id = origin_and_rp_id(app_url)
+
+    returned_id = str(credential.get("id") or credential.get("rawId") or "").rstrip("=")
+    expected_id = str(record.get("credential_id") or "").rstrip("=")
+    if not returned_id or returned_id != expected_id:
+        raise ValueError("The selected passkey is not the one enrolled for Raj's Terminal.")
+
+    attachment = str(credential.get("authenticatorAttachment") or "").strip().lower()
+    if attachment and attachment != "platform":
+        raise ValueError("External security keys are not accepted for this Touch ID shortcut.")
+
     verification = verify_authentication_response(
         credential=credential,
         expected_challenge=bytes(expected_challenge),
