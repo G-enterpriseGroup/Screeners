@@ -72,7 +72,7 @@
     return out
   }
 
-  let buffer="",remaining=0,tickHandle=null,registrationOptions=null,authenticationOptions=null,touchRegistered=false,touchSupported=false,touchChecked=false;
+  let buffer="",remaining=0,tickHandle=null,registrationOptions=null,authenticationOptions=null,touchRegistered=false,touchSupported=false,touchPlatformReported=false,touchChecked=false;
   const dots=document.getElementById("dots"),meta=document.getElementById("meta"),feedback=document.getElementById("feedback"),unlock=document.getElementById("unlock"),touch=document.getElementById("touch"),grid=document.getElementById("grid"),biohint=document.getElementById("biohint");
 
   function setFeedback(text,tone=""){feedback.className="feedback"+(tone?" "+tone:"");feedback.textContent=text}
@@ -112,10 +112,12 @@
   document.addEventListener("keydown",e=>{if(remaining>0)return;if(/^\d$/.test(e.key)){addDigit(e.key);e.preventDefault()}else if(e.key==="Backspace"){backspace();e.preventDefault()}else if(e.key==="Escape"){clearBuffer();e.preventDefault()}else if(e.key==="Enter"&&!unlock.disabled){unlock.click();e.preventDefault()}});
 
   async function checkTouch(){
-    touchChecked=true;touchSupported=false;
-    try{if(window.isSecureContext&&window.PublicKeyCredential&&navigator.credentials&&PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable){touchSupported=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()}}
-    catch(_){touchSupported=false}
-    biohint.textContent=touchSupported?"TOUCH ID / PASSKEY PLATFORM AUTHENTICATOR READY // BIOMETRIC DATA NEVER LEAVES macOS":"TOUCH ID PLATFORM AUTHENTICATOR NOT AVAILABLE HERE // USE CODE OR TRY SAFARI/CHROME";
+    touchChecked=true;touchSupported=Boolean(window.isSecureContext&&window.PublicKeyCredential&&navigator.credentials);touchPlatformReported=false;
+    try{if(touchSupported&&PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable){touchPlatformReported=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()}}
+    catch(_){touchPlatformReported=false}
+    if(!touchSupported){biohint.textContent="WEB AUTHENTICATION UNAVAILABLE HERE // USE ACCESS CODE"}
+    else if(touchPlatformReported){biohint.textContent="TOUCH ID / PASSKEY PLATFORM AUTHENTICATOR READY // BIOMETRIC DATA NEVER LEAVES macOS"}
+    else{biohint.textContent="WEB AUTHENTICATION READY // macOS PLATFORM AUTHENTICATOR NOT REPORTED // YOU CAN STILL TRY TOUCH ID; USE SAFARI/CHROME IF NEEDED"}
     renderTouch();height()
   }
 
