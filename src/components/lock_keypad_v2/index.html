@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{--o:#fb8b1e;--b:#000;--g:#4af6c3;--r:#ff433d;--blue:#0068ff}
+    *{box-sizing:border-box;border-radius:0!important}
+    html,body{margin:0;padding:0;background:#000;color:var(--o);font-family:"Courier New",monospace;overflow:hidden}
+    .shell{display:grid;grid-template-columns:minmax(0,2.05fr) minmax(360px,1fr);gap:26px;align-items:center;width:100%;padding:8px 2px 4px}
+    .panel{border:1px solid var(--o);background:#020202;box-shadow:0 0 0 1px rgba(251,139,30,.20) inset,0 0 28px rgba(251,139,30,.08)}
+    .head{background:var(--o);color:#000;padding:17px 20px;font-size:21px;font-weight:900;letter-spacing:.08em}
+    .body{padding:26px 28px 27px}.icon{width:58px;height:58px;border:2px solid var(--o);display:flex;align-items:center;justify-content:center;font-size:25px;font-weight:900;margin-bottom:24px}
+    .title{font-size:18px;font-weight:900;letter-spacing:.05em;margin-bottom:15px}.copy{font-size:14px;line-height:1.55;max-width:720px}
+    .status{border-top:1px solid var(--o);margin-top:20px;padding-top:16px;font-size:12px;line-height:1.45;letter-spacing:.04em}
+    .keycard{border:1px solid var(--o);background:#020202;padding:14px;width:100%;max-width:520px;justify-self:center}
+    .keyhead{background:var(--o);color:#000;padding:10px 12px;margin:-14px -14px 12px;font-size:15px;font-weight:900;letter-spacing:.06em}
+    .display{border:1px solid var(--o);background:#070707;padding:10px 8px;text-align:center;margin:0 auto 10px;min-height:58px;max-width:300px;display:flex;flex-direction:column;justify-content:center}
+    .dots{color:var(--g);font-size:22px;line-height:1;letter-spacing:.18em;min-height:22px;font-weight:900}.meta{font-size:10px;margin-top:6px;letter-spacing:.07em}
+    .grid{display:grid;grid-template-columns:repeat(3,64px);grid-auto-rows:64px;gap:8px;justify-content:center;width:max-content;max-width:100%;margin:0 auto}
+    button{border:1px solid var(--o);background:#050505;color:var(--o);font:900 18px/1 "Courier New",monospace;cursor:pointer;transition:background .08s,color .08s,transform .05s}
+    .grid button{width:64px;height:64px;padding:0}
+    button:hover:not(:disabled){background:#141414;color:#fff}button:active:not(:disabled){transform:translateY(1px);background:var(--o);color:#000}button:disabled{opacity:.38;cursor:not-allowed}.action{font-size:11px}
+    .actionbar{width:208px;max-width:100%;margin:9px auto 0;display:grid;gap:8px}
+    .unlock,.touch{width:100%;height:46px;font-size:12px;letter-spacing:.04em}
+    .unlock{background:var(--blue);border-color:#66adff;color:#fff;box-shadow:0 3px 0 #003579,0 0 10px rgba(0,104,255,.25)}
+    .unlock:hover:not(:disabled){background:#0876ff;color:#fff}.touch{background:#050505;border-color:var(--g);color:var(--g)}.touch:hover:not(:disabled){background:#082219;color:#fff}
+    .touch.ready{box-shadow:0 0 12px rgba(74,246,195,.20)}
+    .feedback{max-width:390px;min-height:33px;margin:9px auto 0;border:1px solid var(--o);padding:8px 9px;font-size:11px;line-height:1.35;overflow-wrap:anywhere}
+    .feedback.error{border-color:var(--r);color:var(--r)}.feedback.ok{border-color:var(--g);color:var(--g)}
+    .hint{max-width:390px;font-size:10px;margin:8px auto 0;color:#9a5b19;line-height:1.35;text-align:center}
+    .biohint{max-width:390px;font-size:9px;margin:6px auto 0;color:#777;line-height:1.35;text-align:center}
+    @media(max-width:900px){.shell{grid-template-columns:1fr;gap:16px}.body{padding:20px}.head{font-size:17px}.panel{display:none}.keycard{max-width:430px}.grid{grid-template-columns:repeat(3,60px);grid-auto-rows:60px;gap:7px}.grid button{width:60px;height:60px}.actionbar{width:194px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="panel">
+      <div class="head">RAJ'S TERMINAL // SECURE ACCESS</div>
+      <div class="body">
+        <div class="icon">▣</div><div class="title">FRAMEWORK LOCKED</div>
+        <div class="copy">Authentication is required before the terminal, E*TRADE connection, holdings, orders, municipal screeners, or account data are rendered.</div>
+        <div class="status">SESSION SECURITY // API CREDENTIALS REMAIN SERVER-SIDE // TERMINAL ACCESS DISABLED</div>
+      </div>
+    </div>
+    <div class="keycard">
+      <div class="keyhead">ACCESS KEYPAD</div>
+      <div class="display"><div class="dots" id="dots">—</div><div class="meta" id="meta">0 DIGITS ENTERED</div></div>
+      <div class="grid" id="grid"></div>
+      <div class="actionbar">
+        <button class="unlock" id="unlock" disabled>UNLOCK TERMINAL</button>
+        <button class="touch" id="touch">TOUCH ID</button>
+      </div>
+      <div class="feedback" id="feedback">INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE</div>
+      <div class="hint">NUMBER KEYS ALSO WORK // KEYPAD STAYS LOCAL UNTIL UNLOCK</div>
+      <div class="biohint" id="biohint">TOUCH ID USES WEB AUTHENTICATION // NO FINGERPRINT DATA IS SENT TO THE TERMINAL</div>
+    </div>
+  </div>
+<script>
+  function post(type,data){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},data),"*")}
+  function ready(){post("streamlit:componentReady",{apiVersion:1})}
+  function height(){post("streamlit:setFrameHeight",{height:Math.max(360,document.documentElement.scrollHeight+4)})}
+  function send(value){post("streamlit:setComponentValue",{value:value,dataType:"json"})}
+  function b64urlToBytes(value){const s=String(value||"").replace(/-/g,"+").replace(/_/g,"/");const p=s+"=".repeat((4-s.length%4)%4);const raw=atob(p);return Uint8Array.from(raw,c=>c.charCodeAt(0))}
+  function bytesToB64url(value){const bytes=new Uint8Array(value);let raw="";bytes.forEach(b=>raw+=String.fromCharCode(b));return btoa(raw).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"")}
+  function creationOptions(raw){const o=structuredClone(raw);o.challenge=b64urlToBytes(o.challenge);o.user.id=b64urlToBytes(o.user.id);if(Array.isArray(o.excludeCredentials))o.excludeCredentials=o.excludeCredentials.map(x=>Object.assign({},x,{id:b64urlToBytes(x.id)}));return o}
+  function requestOptions(raw){const o=structuredClone(raw);o.challenge=b64urlToBytes(o.challenge);if(Array.isArray(o.allowCredentials))o.allowCredentials=o.allowCredentials.map(x=>Object.assign({},x,{id:b64urlToBytes(x.id)}));return o}
+  function credentialJSON(cred){
+    const r=cred.response;const out={id:cred.id,rawId:bytesToB64url(cred.rawId),type:cred.type,authenticatorAttachment:cred.authenticatorAttachment||null,clientExtensionResults:cred.getClientExtensionResults?cred.getClientExtensionResults():{},response:{clientDataJSON:bytesToB64url(r.clientDataJSON)}};
+    if(r.attestationObject){out.response.attestationObject=bytesToB64url(r.attestationObject);out.response.transports=r.getTransports?r.getTransports():[]}
+    if(r.authenticatorData){out.response.authenticatorData=bytesToB64url(r.authenticatorData);out.response.signature=bytesToB64url(r.signature);out.response.userHandle=r.userHandle?bytesToB64url(r.userHandle):null}
+    return out
+  }
+
+  let buffer="",remaining=0,tickHandle=null,registrationOptions=null,authenticationOptions=null,touchRegistered=false,touchSupported=false,touchChecked=false;
+  const dots=document.getElementById("dots"),meta=document.getElementById("meta"),feedback=document.getElementById("feedback"),unlock=document.getElementById("unlock"),touch=document.getElementById("touch"),grid=document.getElementById("grid"),biohint=document.getElementById("biohint");
+
+  function setFeedback(text,tone=""){feedback.className="feedback"+(tone?" "+tone:"");feedback.textContent=text}
+  function renderBuffer(){dots.textContent=buffer.length?"●".repeat(buffer.length):"—";meta.textContent=buffer.length+" DIGITS ENTERED";unlock.disabled=!buffer.length||remaining>0;renderTouch()}
+  function renderTouch(){
+    if(remaining>0){touch.disabled=true;return}
+    if(!touchChecked){touch.disabled=true;touch.textContent="CHECKING TOUCH ID...";return}
+    if(!touchSupported){touch.disabled=true;touch.textContent="TOUCH ID UNAVAILABLE";return}
+    touch.disabled=false;touch.classList.add("ready");
+    if(registrationOptions){touch.textContent="CONFIRM TOUCH ID SETUP"}
+    else if(touchRegistered){touch.textContent="TOUCH ID"}
+    else{touch.textContent="SET UP TOUCH ID";touch.disabled=!buffer.length}
+  }
+  function addDigit(d){if(remaining>0||buffer.length>=32)return;buffer+=d;renderBuffer()}
+  function clearBuffer(){buffer="";renderBuffer()}function backspace(){buffer=buffer.slice(0,-1);renderBuffer()}
+  function button(label,cls,handler){const b=document.createElement("button");b.textContent=label;b.className=cls||"";b.onclick=handler;grid.appendChild(b);return b}
+  ["1","2","3","4","5","6","7","8","9"].forEach(d=>button(d,"",()=>addDigit(d)));button("CLR","action",clearBuffer);button("0","",()=>addDigit("0"));button("⌫","action",backspace);
+
+  unlock.onclick=()=>{if(!buffer||remaining>0)return;const code=buffer;buffer="";renderBuffer();setFeedback("VERIFYING ACCESS CODE // ONE MOMENT");send({action:"code",code:code,nonce:Date.now()})};
+
+  async function runRegistration(){
+    try{setFeedback("TOUCH ID SETUP // FOLLOW THE macOS PROMPT");const cred=await navigator.credentials.create({publicKey:creationOptions(registrationOptions)});if(!cred)throw new Error("No credential returned");send({action:"finish_registration",credential:credentialJSON(cred),nonce:Date.now()})}
+    catch(err){setFeedback("TOUCH ID SETUP CANCELED OR UNAVAILABLE // "+(err&&err.message?err.message:String(err)),"error")}
+  }
+  async function runAuthentication(){
+    try{setFeedback("TOUCH ID // FOLLOW THE macOS PROMPT");const cred=await navigator.credentials.get({publicKey:requestOptions(authenticationOptions)});if(!cred)throw new Error("No credential returned");send({action:"authenticate",credential:credentialJSON(cred),nonce:Date.now()})}
+    catch(err){setFeedback("TOUCH ID CANCELED OR UNAVAILABLE // "+(err&&err.message?err.message:String(err)),"error")}
+  }
+  touch.onclick=async()=>{
+    if(remaining>0||!touchSupported)return;
+    if(registrationOptions){await runRegistration();return}
+    if(touchRegistered&&authenticationOptions){await runAuthentication();return}
+    if(!buffer){setFeedback("ENTER YOUR ACCESS CODE ONCE TO ENROLL TOUCH ID","error");return}
+    const code=buffer;buffer="";renderBuffer();setFeedback("VERIFYING CODE // PREPARING TOUCH ID SETUP");send({action:"begin_registration",code:code,nonce:Date.now()})
+  };
+
+  document.addEventListener("keydown",e=>{if(remaining>0)return;if(/^\d$/.test(e.key)){addDigit(e.key);e.preventDefault()}else if(e.key==="Backspace"){backspace();e.preventDefault()}else if(e.key==="Escape"){clearBuffer();e.preventDefault()}else if(e.key==="Enter"&&!unlock.disabled){unlock.click();e.preventDefault()}});
+
+  async function checkTouch(){
+    touchChecked=true;touchSupported=false;
+    try{if(window.isSecureContext&&window.PublicKeyCredential&&navigator.credentials&&PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable){touchSupported=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()}}
+    catch(_){touchSupported=false}
+    biohint.textContent=touchSupported?"TOUCH ID / PASSKEY PLATFORM AUTHENTICATOR READY // BIOMETRIC DATA NEVER LEAVES macOS":"TOUCH ID PLATFORM AUTHENTICATOR NOT AVAILABLE HERE // USE CODE OR TRY SAFARI/CHROME";
+    renderTouch();height()
+  }
+
+  function applyArgs(args){
+    remaining=Math.max(0,Number(args.remaining||0));registrationOptions=args.registration_options||null;authenticationOptions=args.authentication_options||null;touchRegistered=Boolean(args.touch_id_registered);
+    const message=String(args.feedback||""),tone=String(args.feedback_tone||"");setFeedback(message||"INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE",tone);
+    if(tickHandle)clearInterval(tickHandle);
+    if(remaining>0){const update=()=>{setFeedback("SECURITY LOCKOUT // TRY AGAIN IN "+remaining+" SECONDS","error");renderBuffer();if(remaining<=0){clearInterval(tickHandle);setFeedback("LOCKOUT CLEARED // ENTER ACCESS CODE");renderBuffer()}else{remaining-=1}};update();tickHandle=setInterval(update,1000)}else renderBuffer();
+    setTimeout(height,0)
+  }
+  window.addEventListener("message",e=>{if(e.data&&e.data.type==="streamlit:render")applyArgs(e.data.args||{})});window.addEventListener("resize",height);ready();height();renderBuffer();checkTouch();
+</script>
+</body>
+</html>
