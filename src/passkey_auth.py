@@ -32,6 +32,7 @@ try:
         AttestationConveyancePreference,
         AuthenticatorAttachment,
         AuthenticatorSelectionCriteria,
+        AuthenticatorTransport,
         PublicKeyCredentialDescriptor,
         ResidentKeyRequirement,
         UserVerificationRequirement,
@@ -164,7 +165,10 @@ def build_authentication_options(
     options = generate_authentication_options(
         rp_id=rp_id,
         allow_credentials=[
-            PublicKeyCredentialDescriptor(id=_b64d(str(record["credential_id"])))
+            PublicKeyCredentialDescriptor(
+                id=_b64d(str(record["credential_id"])),
+                transports=[AuthenticatorTransport.INTERNAL],
+            )
         ],
         user_verification=UserVerificationRequirement.REQUIRED,
     )
