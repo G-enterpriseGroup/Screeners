@@ -61,6 +61,12 @@
   function ready(){post("streamlit:componentReady",{apiVersion:1})}
   function height(){post("streamlit:setFrameHeight",{height:Math.max(360,document.documentElement.scrollHeight+4)})}
   function send(value){post("streamlit:setComponentValue",{value:value,dataType:"json"})}
+  function credentialHost(){
+    try{
+      if(window.parent&&window.parent!==window&&window.parent.navigator&&window.parent.PublicKeyCredential)return window.parent
+    }catch(_){}
+    return window
+  }
   function b64urlToBytes(value){const s=String(value||"").replace(/-/g,"+").replace(/_/g,"/");const p=s+"=".repeat((4-s.length%4)%4);const raw=atob(p);return Uint8Array.from(raw,c=>c.charCodeAt(0))}
   function bytesToB64url(value){const bytes=new Uint8Array(value);let raw="";bytes.forEach(b=>raw+=String.fromCharCode(b));return btoa(raw).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"")}
   function creationOptions(raw){const o=structuredClone(raw);o.challenge=b64urlToBytes(o.challenge);o.user.id=b64urlToBytes(o.user.id);if(Array.isArray(o.excludeCredentials))o.excludeCredentials=o.excludeCredentials.map(x=>Object.assign({},x,{id:b64urlToBytes(x.id)}));return o}
@@ -94,11 +100,11 @@
   unlock.onclick=()=>{if(!buffer||remaining>0)return;const code=buffer;buffer="";renderBuffer();setFeedback("VERIFYING ACCESS CODE // ONE MOMENT");send({action:"code",code:code,nonce:Date.now()})};
 
   async function runRegistration(){
-    try{setFeedback("TOUCH ID SETUP // FOLLOW THE macOS PROMPT");const cred=await navigator.credentials.create({publicKey:creationOptions(registrationOptions)});if(!cred)throw new Error("No credential returned");send({action:"finish_registration",credential:credentialJSON(cred),nonce:Date.now()})}
+    try{const host=credentialHost();setFeedback("TOUCH ID SETUP // FOLLOW THE macOS PROMPT");const cred=await host.navigator.credentials.create({publicKey:creationOptions(registrationOptions)});if(!cred)throw new Error("No credential returned");send({action:"finish_registration",credential:credentialJSON(cred),nonce:Date.now()})}
     catch(err){setFeedback("TOUCH ID SETUP CANCELED OR UNAVAILABLE // "+(err&&err.message?err.message:String(err)),"error")}
   }
   async function runAuthentication(){
-    try{setFeedback("TOUCH ID // FOLLOW THE macOS PROMPT");const cred=await navigator.credentials.get({publicKey:requestOptions(authenticationOptions)});if(!cred)throw new Error("No credential returned");send({action:"authenticate",credential:credentialJSON(cred),nonce:Date.now()})}
+    try{const host=credentialHost();setFeedback("TOUCH ID // FOLLOW THE macOS PROMPT");const cred=await host.navigator.credentials.get({publicKey:requestOptions(authenticationOptions)});if(!cred)throw new Error("No credential returned");send({action:"authenticate",credential:credentialJSON(cred),nonce:Date.now()})}
     catch(err){setFeedback("TOUCH ID CANCELED OR UNAVAILABLE // "+(err&&err.message?err.message:String(err)),"error")}
   }
   touch.onclick=async()=>{
@@ -112,8 +118,9 @@
   document.addEventListener("keydown",e=>{if(remaining>0)return;if(/^\d$/.test(e.key)){addDigit(e.key);e.preventDefault()}else if(e.key==="Backspace"){backspace();e.preventDefault()}else if(e.key==="Escape"){clearBuffer();e.preventDefault()}else if(e.key==="Enter"&&!unlock.disabled){unlock.click();e.preventDefault()}});
 
   async function checkTouch(){
-    touchChecked=true;touchSupported=Boolean(window.isSecureContext&&window.PublicKeyCredential&&navigator.credentials);touchPlatformReported=false;
-    try{if(touchSupported&&PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable){touchPlatformReported=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()}}
+    const host=credentialHost();const PKC=host.PublicKeyCredential;
+    touchChecked=true;touchSupported=Boolean(host.isSecureContext&&PKC&&host.navigator&&host.navigator.credentials);touchPlatformReported=false;
+    try{if(touchSupported&&PKC.isUserVerifyingPlatformAuthenticatorAvailable){touchPlatformReported=await PKC.isUserVerifyingPlatformAuthenticatorAvailable()}}
     catch(_){touchPlatformReported=false}
     if(!touchSupported){biohint.textContent="WEB AUTHENTICATION UNAVAILABLE HERE // USE ACCESS CODE"}
     else if(touchPlatformReported){biohint.textContent="TOUCH ID / PASSKEY PLATFORM AUTHENTICATOR READY // BIOMETRIC DATA NEVER LEAVES macOS"}
