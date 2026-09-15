@@ -323,7 +323,7 @@ def _raw_oi_df(result: dict[str, Any]) -> pd.DataFrame:
 # TRADINGVIEW BRIDGE
 # ==============================
 def _packed_gamma_lines(result: dict[str, Any]) -> list[str]:
-    """Fallback Packed Gamma rows matching Apps Script row order/format."""
+    """Build packed rows with the exact Apps Script order/number formatting."""
     rows = [f"SPOT,{_bridge_num(result.get('spot'))},0"]
     gamma_flip = result.get("gammaFlip")
     if gamma_flip:
@@ -351,21 +351,14 @@ def _packed_gamma_lines(result: dict[str, Any]) -> list[str]:
 
 
 def _google_sheets_summary_text(result: dict[str, Any]) -> str:
-    """Return one ticker block in the exact Google Sheets summaryText structure.
+    """Serialize one ticker fresh in the Google Sheets ``summaryText`` contract.
 
-    The GEX engine already stores ``summaryText``/``packed`` using the supplied
-    Apps Script contract. Prefer that source verbatim so the TradingView bridge
-    cannot drift by reformatting the same numbers a second time. The fallback
-    exists only for an older cached result that predates ``summaryText``.
+    Do not reuse cached ``summaryText``/``packed`` here. Older cached GEX results
+    can contain a prior serializer's line endings or number formatting. Building
+    from the current structured result makes the TradingView copy deterministic
+    without changing any GEX calculation values.
     """
-    summary = str(result.get("summaryText") or "").replace("\r\n", "\n").replace("\r", "\n")
-    if summary.strip():
-        return summary
-
-    packed = str(result.get("packed") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not packed:
-        packed = "\n".join(_packed_gamma_lines(result))
-
+    packed = "\n".join(_packed_gamma_lines(result))
     lines = [
         f"Ticker: {str(result.get('symbol') or '').strip().upper()}",
         f"Mode: {str(result.get('mode') or 'BARCHART_STYLE')}",
@@ -384,30 +377,26 @@ def _google_sheets_summary_text(result: dict[str, Any]) -> str:
 
 
 def _tradingview_block(result: dict[str, Any]) -> str:
-    """Return the exact single-ticker block Google Sheets would expose."""
+    """Return one clean copy-ready ticker block."""
     return _google_sheets_summary_text(result).strip()
 
 
 def _master_bridge_text(result_map: dict[str, Any], tickers: list[str]) -> str:
-    """Mirror Apps Script allOutputLines + A6 join semantics exactly.
+    """Return MASTER A6 with the exact successful-block boundary from Sheets.
 
-    Apps Script does:
-      allOutputLines.push(...result.summaryText.split('\n'))
-      allOutputLines.push('')
-      writeTradingViewA6_(allOutputLines.join('\n').trim())
-
-    Reproducing that sequence preserves the same blank-line boundaries between
-    ticker blocks that the working Google Sheets / TradingView bridge receives.
+    A successful Apps Script ``summaryText`` ends with ``\n``. ``refreshGEX``
+    then splits it, pushes one additional empty row, joins with ``\n``, and
+    trims the final text. The result is exactly two blank rows between complete
+    successful ticker blocks, i.e. three newline characters before the next
+    ``Ticker:`` header. Force that boundary directly so cached text cannot alter
+    the Pine router contract.
     """
-    all_output_lines: list[str] = []
-    for ticker in tickers:
-        result = result_map.get(ticker)
-        if not result:
-            continue
-        summary = _google_sheets_summary_text(result)
-        all_output_lines.extend(summary.split("\n"))
-        all_output_lines.append("")
-    return "\n".join(all_output_lines).strip()
+    blocks = [
+        _tradingview_block(result_map[ticker])
+        for ticker in tickers
+        if ticker in result_map
+    ]
+    return "\n\n\n".join(blocks).strip()
 
 
 # ==============================
