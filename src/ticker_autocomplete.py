@@ -3,6 +3,11 @@
 The autocomplete universe is sourced from Nasdaq Trader's public symbol
 directories and cached for 24 hours. Successful lookups are ranked by frequency
 and recency so commonly used symbols appear first on subsequent visits.
+
+Important performance rule: the selector builds its display labels from ONE
+snapshot of the directory/history.  It never calls cached lookup functions once
+per option.  This keeps a 10k+ symbol selector fast enough for Streamlit and
+prevents the Risk Sizing section from appearing blank while labels are built.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ _FALLBACK_NAMES = {
     "BAC": "Bank of America Corporation",
     "GOOG": "Alphabet Inc.",
     "GOOGL": "Alphabet Inc.",
+    "GS": "Goldman Sachs Group, Inc.",
     "IWM": "iShares Russell 2000 ETF",
     "LMT": "Lockheed Martin Corporation",
     "META": "Meta Platforms, Inc.",
@@ -78,8 +84,6 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _clean_security_name(value: str) -> str:
     name = " ".join(str(value or "").split()).strip()
-    # Nasdaq Trader appends security-class descriptors to many stock names.
-    # Keep useful ETF/fund wording but trim repetitive common-stock suffixes.
     for suffix in (
         " - Common Stock",
         " - Class A Common Stock",
@@ -145,7 +149,6 @@ def ticker_directory() -> dict[str, str]:
 
 
 def lookup_history() -> dict[str, dict[str, Any]]:
-    """Load lookup history from session first, then the local persistent cache."""
     session_value = st.session_state.get("_raj_ticker_history")
     if isinstance(session_value, dict):
         return session_value
@@ -158,7 +161,6 @@ def lookup_history() -> dict[str, dict[str, Any]]:
 
 
 def record_lookup(symbol: str, company_name: str = "") -> None:
-    """Increment a successful ticker lookup and persist its latest display name."""
     symbol = str(symbol or "").strip().upper()
     if not symbol:
         return
@@ -191,10 +193,11 @@ def company_name(symbol: str) -> str:
     return str(ticker_directory().get(symbol) or "")
 
 
-def _ranked_symbols(current: str = "") -> list[str]:
-    directory = ticker_directory()
-    history = lookup_history()
-
+def _ranked_symbols_from_snapshots(
+    directory: dict[str, str],
+    history: dict[str, dict[str, Any]],
+    current: str = "",
+) -> list[str]:
     frequent = sorted(
         (
             (symbol, data)
@@ -230,17 +233,41 @@ def _ranked_symbols(current: str = "") -> list[str]:
     return ordered
 
 
+def _ranked_symbols(current: str = "") -> list[str]:
+    return _ranked_symbols_from_snapshots(ticker_directory(), lookup_history(), current)
+
+
 def _display_label(symbol: str) -> str:
+    """Compatibility formatter for any older callers."""
     symbol = str(symbol or "").strip().upper()
-    name = company_name(symbol)
-    row = lookup_history().get(symbol) or {}
+    directory = ticker_directory()
+    history = lookup_history()
+    row = history.get(symbol) or {}
+    name = str((row.get("name") if isinstance(row, dict) else "") or directory.get(symbol) or "").strip()
     try:
         count = int(row.get("count") or 0) if isinstance(row, dict) else 0
     except (TypeError, ValueError):
         count = 0
-
     suffix = f"  // {count} LOOKUPS" if count else ""
     return f"{symbol} — {name}{suffix}" if name else f"{symbol}{suffix}"
+
+
+def _build_fast_labels(current: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Build display labels once; return labels + label->symbol + directory."""
+    directory = ticker_directory()
+    history = lookup_history()
+    symbols = _ranked_symbols_from_snapshots(directory, history, current)
+
+    labels: list[str] = []
+    label_to_symbol: dict[str, str] = {}
+    for symbol in symbols:
+        row = history.get(symbol) or {}
+        cached_name = str(row.get("name") or "").strip() if isinstance(row, dict) else ""
+        name = cached_name or str(directory.get(symbol) or "").strip()
+        label = f"{symbol} — {name}" if name else symbol
+        labels.append(label)
+        label_to_symbol[label] = symbol
+    return labels, label_to_symbol, directory
 
 
 def smart_ticker_selector(
@@ -251,46 +278,55 @@ def smart_ticker_selector(
     key: str = "risk_ticker_smart_selector",
     help_text: str = "",
 ) -> str:
-    """Render a searchable ticker/company selector with frequent symbols first."""
-    current = str(current or "SPY").strip().upper() or "SPY"
-    options = _ranked_symbols(current)
-    if current not in options:
-        options.insert(0, current)
+    """Fast searchable ticker/company selector.
 
+    Streamlit's selectbox provides the keyboard search.  Options are literal
+    `SYMBOL — COMPANY NAME` strings, so typing either the ticker or company name
+    filters immediately in the browser.  No expensive per-option format_func is
+    used.
+    """
+    current = str(current or "SPY").strip().upper() or "SPY"
+    labels, label_to_symbol, directory = _build_fast_labels(current)
+
+    current_label = next(
+        (label for label, symbol in label_to_symbol.items() if symbol == current),
+        current,
+    )
     try:
-        current_index = options.index(current)
+        current_index = labels.index(current_label)
     except ValueError:
+        labels.insert(0, current_label)
+        label_to_symbol[current_label] = current
         current_index = 0
 
     selected = original_selectbox(
         label,
-        options,
+        labels,
         index=current_index,
-        format_func=_display_label,
         key=key,
         help=(
             help_text
-            or "Start typing a ticker OR company name. Successful quote lookups are remembered and your most-used symbols are ranked first."
+            or "Start typing a ticker OR company name. Choose a result to load it."
         ),
         placeholder="Type ticker or company name...",
         accept_new_options=True,
     )
 
-    raw = str(selected or current).strip()
-    raw_upper = raw.upper()
-    directory = ticker_directory()
-    if raw_upper in directory or raw_upper in lookup_history():
-        return raw_upper
+    raw = str(selected or current_label).strip()
+    if raw in label_to_symbol:
+        return label_to_symbol[raw]
 
-    # If a user enters a company name manually instead of selecting a suggestion,
-    # resolve an exact/unique company-name match before falling back to the raw symbol.
+    # New/manual text may be either SYMBOL, `SYMBOL — NAME`, or exact company name.
+    symbol_part = raw.split(" — ", 1)[0].strip().upper()
+    if symbol_part in directory or symbol_part in lookup_history():
+        return symbol_part
+
     needle = raw.casefold()
-    matches = [
-        symbol
-        for symbol, name in directory.items()
+    exact_matches = [
+        symbol for symbol, name in directory.items()
         if needle and needle == str(name).casefold()
     ]
-    if len(matches) == 1:
-        return matches[0]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
 
-    return raw_upper
+    return symbol_part or current
