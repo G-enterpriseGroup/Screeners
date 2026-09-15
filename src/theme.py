@@ -71,11 +71,7 @@ CHART_COLORWAY = [
 # crash the entire app at import time. Substitute colors with .replace().
 _TYPING_CARET_CSS = """
 <style>
-/*
-   Use the browser's native blinking insertion caret everywhere the user can
-   type. Do not fake a cursor with pseudo-elements or JavaScript: the native
-   caret tracks selection, keyboard navigation, accessibility, and IME input.
-*/
+/* Native blinking insertion caret anywhere the user can type. */
 input[type="text"]:not(:disabled),
 input[type="search"]:not(:disabled),
 input[type="password"]:not(:disabled),
@@ -90,7 +86,6 @@ textarea:not(:disabled),
     cursor:text !important;
 }
 
-/* Keep the insertion bar clearly visible in focused Streamlit/BaseWeb fields. */
 [data-testid="stTextInput"] input:focus,
 [data-testid="stNumberInput"] input:focus,
 [data-testid="stTextArea"] textarea:focus,
@@ -104,96 +99,114 @@ textarea:not(:disabled),
 
 /*
    TERMINAL-WIDE DROPDOWN READABILITY
-   Selected values and open menu options must never render black-on-black or
-   black-on-dark. BaseWeb renders open menus in a portal, so style both the
-   closed control and the popover/listbox states.
+   .streamlit/config.toml intentionally uses black textColor so interactive
+   dataframe headers are black on orange. Therefore select controls MUST
+   explicitly override every nested selected-value and menu-option text node.
 */
 [data-testid="stSelectbox"] [data-baseweb="select"] > div,
 [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
-[data-baseweb="select"] > div[role="combobox"] {
-    background: #050505 !important;
-    border-color: __RAJ_DROPDOWN_ACCENT__ !important;
-    color: #f2f2f2 !important;
-    box-shadow: none !important;
+[data-baseweb="select"] > div,
+[data-baseweb="select"] [role="combobox"] {
+    background:#050505 !important;
+    border-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    -webkit-text-fill-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    box-shadow:none !important;
 }
 
-[data-testid="stSelectbox"] [data-baseweb="select"] span,
-[data-testid="stSelectbox"] [data-baseweb="select"] input,
-[data-testid="stMultiSelect"] [data-baseweb="select"] span,
-[data-testid="stMultiSelect"] [data-baseweb="select"] input,
-[data-baseweb="select"] [role="combobox"],
-[data-baseweb="select"] [role="combobox"] * {
-    color: __RAJ_DROPDOWN_ACCENT__ !important;
-    -webkit-text-fill-color: __RAJ_DROPDOWN_ACCENT__ !important;
-    font-family: "Courier New", monospace !important;
-    font-weight: 800 !important;
+[data-testid="stSelectbox"] [data-baseweb="select"] > div *,
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div *,
+[data-baseweb="select"] > div *,
+[data-baseweb="select"] [role="combobox"] *,
+[data-baseweb="select"] input,
+[data-baseweb="select"] span,
+[data-baseweb="select"] p {
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    -webkit-text-fill-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    font-family:"Courier New",monospace !important;
+    font-weight:800 !important;
+    opacity:1 !important;
 }
 
 [data-baseweb="select"] svg,
 [data-testid="stSelectbox"] svg,
 [data-testid="stMultiSelect"] svg {
-    color: __RAJ_DROPDOWN_ACCENT__ !important;
-    fill: __RAJ_DROPDOWN_ACCENT__ !important;
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    fill:__RAJ_DROPDOWN_ACCENT__ !important;
+}
+
+/* BaseWeb open menus live in a portal outside the original selectbox DOM. */
+[data-baseweb="popover"],
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="menu"],
+[role="listbox"] {
+    background:#050505 !important;
+    color:#f2f2f2 !important;
 }
 
 [data-baseweb="popover"] [role="listbox"],
-[data-baseweb="popover"] ul[role="listbox"],
-[data-baseweb="popover"] div[data-baseweb="menu"] {
-    background: #050505 !important;
-    border: 1px solid __RAJ_DROPDOWN_ACCENT__ !important;
-    color: #f2f2f2 !important;
+[data-baseweb="popover"] [data-baseweb="menu"] {
+    border:1px solid __RAJ_DROPDOWN_ACCENT__ !important;
 }
 
-[data-baseweb="popover"] [role="option"] {
-    background: #050505 !important;
-    color: #f2f2f2 !important;
-    -webkit-text-fill-color: #f2f2f2 !important;
-    font-family: "Courier New", monospace !important;
-    font-weight: 800 !important;
-}
-
-[data-baseweb="popover"] [role="option"] * {
-    color: inherit !important;
-    -webkit-text-fill-color: currentColor !important;
-    font-family: "Courier New", monospace !important;
-    font-weight: 800 !important;
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] [role="option"] *,
+[data-baseweb="menu"] [role="option"],
+[data-baseweb="menu"] [role="option"] *,
+[role="listbox"] [role="option"],
+[role="listbox"] [role="option"] * {
+    background:#050505 !important;
+    color:#f2f2f2 !important;
+    -webkit-text-fill-color:#f2f2f2 !important;
+    font-family:"Courier New",monospace !important;
+    font-weight:800 !important;
+    opacity:1 !important;
 }
 
 [data-baseweb="popover"] [role="option"]:hover,
-[data-baseweb="popover"] [role="option"]:focus {
-    background: #171007 !important;
-    color: #ffad52 !important;
-    -webkit-text-fill-color: #ffad52 !important;
+[data-baseweb="popover"] [role="option"]:focus,
+[data-baseweb="menu"] [role="option"]:hover,
+[data-baseweb="menu"] [role="option"]:focus,
+[role="listbox"] [role="option"]:hover,
+[role="listbox"] [role="option"]:focus {
+    background:#171007 !important;
+    color:#ffad52 !important;
+    -webkit-text-fill-color:#ffad52 !important;
 }
 
-[data-baseweb="popover"] [role="option"][aria-selected="true"] {
-    background: __RAJ_DROPDOWN_ACCENT__ !important;
-    color: #000000 !important;
-    -webkit-text-fill-color: #000000 !important;
+[data-baseweb="popover"] [role="option"][aria-selected="true"],
+[data-baseweb="popover"] [role="option"][aria-selected="true"] *,
+[data-baseweb="menu"] [role="option"][aria-selected="true"],
+[data-baseweb="menu"] [role="option"][aria-selected="true"] *,
+[role="listbox"] [role="option"][aria-selected="true"],
+[role="listbox"] [role="option"][aria-selected="true"] * {
+    background:__RAJ_DROPDOWN_ACCENT__ !important;
+    color:#000000 !important;
+    -webkit-text-fill-color:#000000 !important;
 }
 
 select:not(:disabled) {
-    background: #050505 !important;
-    color: __RAJ_DROPDOWN_ACCENT__ !important;
-    border-color: __RAJ_DROPDOWN_ACCENT__ !important;
+    background:#050505 !important;
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    border-color:__RAJ_DROPDOWN_ACCENT__ !important;
 }
 select:not(:disabled) option {
-    background: #050505 !important;
-    color: #f2f2f2 !important;
+    background:#050505 !important;
+    color:#f2f2f2 !important;
 }
 </style>
 """.replace("__RAJ_CARET_COLOR__", BB_ORANGE).replace("__RAJ_DROPDOWN_ACCENT__", BB_ORANGE)
 
 
 def install_typing_caret_theme() -> None:
-    """Install shared editable-field and dropdown styling once per process."""
-    if getattr(st, "_raj_typing_caret_theme", False):
-        return
+    """Emit shared input/dropdown CSS for the current Streamlit render.
 
-    # st.html with style-only content applies CSS without consuming a visible
-    # vertical layout row. This is shared appearance, not a widget monkey-patch.
+    Streamlit output is session/rerun scoped. Do not use a process-global
+    "already installed" flag here: later browser sessions would otherwise lose
+    this stylesheet and fall back to black dropdown text.
+    """
     st.html(_TYPING_CARET_CSS)
-    st._raj_typing_caret_theme = True
 
 
 # ==============================
@@ -201,14 +214,7 @@ def install_typing_caret_theme() -> None:
 # ==============================
 
 def _install_components_html_compat() -> None:
-    """Route legacy components.html calls through Streamlit's current st.iframe API.
-
-    Streamlit 1.56+ deprecated st.components.v1.html. Raj's Terminal still has
-    older renderers that call components.html for trusted, locally generated
-    HTML/JavaScript (for example the E*TRADE session timer). Patching the shared
-    module object here removes the deprecated runtime call without changing the
-    behavior of those renderers one by one.
-    """
+    """Route legacy components.html calls through Streamlit's current st.iframe API."""
     if getattr(components, "_raj_html_compat_installed", False):
         return
 
@@ -219,9 +225,6 @@ def _install_components_html_compat() -> None:
         scrolling=False,
         **_kwargs,
     ):
-        # st.iframe accepts raw HTML and executes JavaScript inside an iframe.
-        # The legacy `scrolling` flag has no direct replacement; existing Raj's
-        # Terminal component frames are explicitly sized and do not rely on it.
         iframe_width = width if width is not None else "stretch"
         iframe_height = height if height is not None else "content"
         return st.iframe(
@@ -239,21 +242,12 @@ def _install_components_html_compat() -> None:
 # ==============================
 
 def _style_dataframe_body(data):
-    """Keep body text orange without overwriting existing financial colors.
-
-    The app theme intentionally uses black as Streamlit's base text color so
-    dataframe headers can render black text on the native orange header band.
-    Interactive dataframe body cells therefore need an explicit orange default.
-    Existing Styler colors (green gains, red losses, blue tactical percentages,
-    etc.) are detected first and left untouched.
-    """
+    """Keep body text orange without overwriting existing financial colors."""
     if isinstance(data, pd.DataFrame):
         return data.style.set_properties(**{"color": BB_ORANGE})
 
     if Styler and isinstance(data, Styler):
         try:
-            # Compute the current style context before adding our fallback.
-            # ctx is keyed by (row_position, column_position).
             data._compute()
             existing_ctx = dict(getattr(data, "ctx", {}) or {})
             body = data.data
@@ -274,7 +268,6 @@ def _style_dataframe_body(data):
             if has_defaults:
                 data = data.apply(lambda _frame: defaults, axis=None)
         except Exception:
-            # Styling must never make a functional table fail to render.
             pass
         return data
 
@@ -299,8 +292,8 @@ def install_bloomberg_dataframe_theme() -> None:
     st._raj_bloomberg_dataframe_theme = True
 
 
-# src.theme is imported before terminal renderers execute, so installing here
-# guarantees one consistent terminal-wide treatment across every tab.
-install_typing_caret_theme()
+# Theme rendering itself is intentionally NOT executed at import time. The
+# entrypoint calls install_typing_caret_theme() after terminal_core has completed
+# st.set_page_config and does so on every Streamlit rerun/session.
 _install_components_html_compat()
 install_bloomberg_dataframe_theme()
