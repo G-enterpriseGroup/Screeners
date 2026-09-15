@@ -34,3 +34,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-15 risk-sizing-v7-compact-company-preview-v2
 # clean rebuild marker: 2026-09-15 risk-sizing-v8-content-height-radio-controls
 # clean rebuild marker: 2026-09-15 compact-etrade-oauth-panel-v2
+# clean rebuild marker: 2026-09-15 etrade-verifier-inline-button-v3
