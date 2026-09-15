@@ -34,42 +34,55 @@ from src import gex_ui_v3_base as _base
 # ==============================
 _ROW_ACTION_CSS = """
 <style>
-.gexv3-summary th.gexv3-trash-col,
-.gexv3-summary td.gexv3-trash-col {
-    width: 3.15rem !important;
-    min-width: 3.15rem !important;
-    max-width: 3.15rem !important;
-    padding: .18rem .12rem !important;
-    text-align: center !important;
+/* Keep the delete affordance inside the TICKER cell, directly beside symbol. */
+.gexv3-summary td.sym {
+    overflow: visible !important;
+}
+.gexv3-symbol-wrap {
+    display:inline-flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    gap:.38rem !important;
+    white-space:nowrap !important;
+}
+.gexv3-symbol-text {
+    color:#4af6c3 !important;
+    font-weight:900 !important;
 }
 .gexv3-trash-link {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    width: 1.55rem !important;
-    height: 1.42rem !important;
-    border: 1px solid #5d3605 !important;
-    background: #050505 !important;
-    color: #fb8b1e !important;
-    text-decoration: none !important;
-    font-size: .82rem !important;
-    line-height: 1 !important;
+    display:inline-flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    width:1.25rem !important;
+    height:1.18rem !important;
+    padding:0 !important;
+    margin:0 !important;
+    border:1px solid #5d3605 !important;
+    background:#050505 !important;
+    color:#fb8b1e !important;
+    -webkit-text-fill-color:#fb8b1e !important;
+    text-decoration:none !important;
+    font-size:.72rem !important;
+    line-height:1 !important;
+    cursor:pointer !important;
 }
 .gexv3-trash-link:hover {
-    border-color: #ff433d !important;
-    color: #ff433d !important;
-    background: #160606 !important;
+    border-color:#ff433d !important;
+    color:#ff433d !important;
+    -webkit-text-fill-color:#ff433d !important;
+    background:#160606 !important;
 }
 </style>
 """
 
 
 def _delete_href(ticker: str) -> str:
+    """Build a same-page delete URL while preserving unrelated query state."""
     params: dict[str, Any] = {}
     try:
         for key in st.query_params:
-            value = st.query_params.get_all(key)
-            params[key] = value if len(value) > 1 else (value[0] if value else "")
+            values = st.query_params.get_all(key)
+            params[key] = values if len(values) > 1 else (values[0] if values else "")
     except Exception:
         params = {}
     params["gex_delete"] = ticker
@@ -77,32 +90,29 @@ def _delete_href(ticker: str) -> str:
 
 
 def _inject_row_trash(markup: str) -> str:
-    """Add one clickable trash cell beside each ticker in the overview table."""
+    """Place one clickable trash icon inside every ticker cell in Overview."""
     if 'class="gexv3-summary"' not in markup:
         return markup
 
-    updated = markup.replace(
-        "<th>TICKER</th>",
-        '<th class="gexv3-trash-col">DEL</th><th>TICKER</th>',
-        1,
-    )
-
     def replace_symbol(match: re.Match[str]) -> str:
         ticker = html.unescape(match.group(1)).strip().upper()
+        ticker_html = html.escape(ticker)
         href = html.escape(_delete_href(ticker), quote=True)
-        symbol_cell = match.group(0)
-        trash_cell = (
-            '<td class="gexv3-trash-col">'
+        return (
+            '<td class="sym">'
+            '<span class="gexv3-symbol-wrap">'
+            f'<span class="gexv3-symbol-text">{ticker_html}</span>'
             f'<a class="gexv3-trash-link" href="{href}" target="_self" '
-            f'title="Delete {html.escape(ticker)} from GEX">🗑</a>'
-            "</td>"
+            f'aria-label="Delete {ticker_html} from GEX" '
+            f'title="Delete {ticker_html} from GEX">🗑</a>'
+            '</span>'
+            '</td>'
         )
-        return trash_cell + symbol_cell
 
     return re.sub(
         r'<td class="sym">([^<]+)</td>',
         replace_symbol,
-        updated,
+        markup,
     )
 
 
