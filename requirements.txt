@@ -22,3 +22,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-13 terminal-overlap-audit-v1
 # clean rebuild marker: 2026-09-14 compact-square-keypad-touch-id-webauthn-v1
 # clean rebuild marker: 2026-09-14 seamless-discoverable-mac-touch-id-v2
+# clean rebuild marker: 2026-09-14 firefox-touch-id-readiness-helper-v3
