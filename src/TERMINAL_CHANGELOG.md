@@ -141,3 +141,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** Not applicable to the no-op `requirements.txt` rebuild commit; the corrected source and strengthened guard had already passed on commits `632a76e`, `c52726d`, and `28de7aa`.
 - **Commit SHA:** `ca15c12` plus this changelog commit.
 - **Lesson:** Distinguish stale deployment failures from source-code failures before editing production code. A stale cloud process should be rebuilt, not "fixed" with unrelated code changes.
+
+## 2026-09-15 — Unified top-level terminal page headers
+
+- **Feature changed:** Shared top-level tab page chrome / visual consistency.
+- **Exact production file(s) changed:** `streamlit_app.py`, `src/ARCHITECTURE.md`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The six top-level tabs used visibly different page-header treatments: Holdings/Risk/Bull used Streamlit subheaders, Muni had no page header, Orders rendered its header only inside a narrow centered column, and GEX used a custom black outlined header. Font size, bar width, subtitle spacing, and left alignment therefore changed from tab to tab.
+- **Root cause:** Each feature historically owned its first visible heading independently, so page-level chrome drifted even though the top navigation was shared.
+- **What was changed:** Added one top-level page-header map and renderer in `streamlit_app.py`. Every active tab now receives the same full-width Bloomberg-orange title bar, black title text, Courier typography, compact subtitle, and spacing. During each feature render only, exact legacy top headings/subtitles are suppressed with temporary `st.subheader`/`st.caption`/`st.markdown` wrappers restored in `finally`; internal feature section headings remain untouched. Muni now gets the same header structure as the other tabs. Orders keeps its centered simulator body while its page header is full width. GEX's old outlined `gexv3-head/gexv3-sub` page chrome is suppressed without changing GEX analytics or subtabs.
+- **Important behavior that must remain:** All top-level terminal tabs must use the shared page-header system in `streamlit_app.py`. Do not add competing feature-specific page titles. Internal section headers remain feature-owned. Temporary wrappers must stay render-scoped and restore in `finally`.
+- **Files/features intentionally NOT changed:** Risk sizing formulas/math, Risk Part 2 interactions, GEX calculations/subtabs/tables, E*TRADE OAuth, Holdings data logic, Bull Debit calculations, navigation component behavior, Touch ID/authentication, and `src/terminal_core.py`.
+- **Tests performed:** Re-fetched the exact committed `streamlit_app.py`; inspected the commit diff to confirm only page-header/render routing changed; GitHub Actions `validate-boundaries` passed on code commit `9128054e` and again after the architecture rule commit `448e6781`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `9128054e`, `448e6781` plus this changelog commit.
+- **Lesson:** Top-level page chrome is shared application routing/presentation, not feature-owned UI. Centralize it once and suppress only the legacy first heading during each feature render instead of letting six tabs drift independently.
