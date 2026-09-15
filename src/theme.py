@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     from pandas.io.formats.style import Styler
@@ -41,6 +42,40 @@ CHART_COLORWAY = [
     BB_ORANGE,
     BB_RED,
 ]
+
+
+def _install_components_html_compat() -> None:
+    """Route legacy components.html calls through Streamlit's current st.iframe API.
+
+    Streamlit 1.56+ deprecated st.components.v1.html. Raj's Terminal still has
+    older renderers that call components.html for trusted, locally generated
+    HTML/JavaScript (for example the E*TRADE session timer). Patching the shared
+    module object here removes the deprecated runtime call without changing the
+    behavior of those renderers one by one.
+    """
+    if getattr(components, "_raj_html_compat_installed", False):
+        return
+
+    def _html_via_iframe(
+        html_body,
+        width=None,
+        height=None,
+        scrolling=False,
+        **_kwargs,
+    ):
+        # st.iframe accepts raw HTML and executes JavaScript inside an iframe.
+        # The legacy `scrolling` flag has no direct replacement; existing Raj's
+        # Terminal component frames are explicitly sized and do not rely on it.
+        iframe_width = width if width is not None else "stretch"
+        iframe_height = height if height is not None else "content"
+        return st.iframe(
+            html_body,
+            width=iframe_width,
+            height=iframe_height,
+        )
+
+    components.html = _html_via_iframe
+    components._raj_html_compat_installed = True
 
 
 def _style_dataframe_body(data):
@@ -105,5 +140,7 @@ def install_bloomberg_dataframe_theme() -> None:
 
 
 # src.theme is imported before terminal renderers execute, so installing here
-# guarantees one consistent dataframe treatment across every tab.
+# guarantees one consistent dataframe treatment across every tab and also
+# replaces deprecated components.html calls before those renderers run.
+_install_components_html_compat()
 install_bloomberg_dataframe_theme()
