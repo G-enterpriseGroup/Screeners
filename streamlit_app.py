@@ -358,6 +358,154 @@ def render_app_lock_screen():
                 st.rerun()
 
 
+# ==============================
+# TOP-LEVEL TAB PAGE HEADERS
+# ==============================
+# One renderer owns the page title/subtitle chrome for every top-level terminal
+# tab. Feature renderers keep their own internal sections, but their historical
+# first header is suppressed only for the duration of that feature render.
+# This prevents Holdings/Risk/Bull/Muni/Orders/GEX from drifting visually.
+
+_TERMINAL_PAGE_HEADER_CSS = """
+<style>
+.terminal-page-header-shell {
+    width:100%;
+    margin:.08rem 0 .38rem 0;
+    font-family:"Courier New",monospace;
+}
+.terminal-page-header-title {
+    width:100%;
+    box-sizing:border-box;
+    background:#fb8b1e;
+    color:#000000 !important;
+    padding:.34rem .58rem;
+    font-size:1.08rem;
+    line-height:1.08;
+    font-weight:900;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+}
+.terminal-page-header-subtitle {
+    color:#b87621 !important;
+    padding:.20rem .04rem 0 .04rem;
+    font-size:.69rem;
+    line-height:1.18;
+    font-weight:800;
+    letter-spacing:.015em;
+    text-transform:none;
+}
+</style>
+"""
+
+_TERMINAL_PAGE_HEADERS = {
+    "HOLDINGS": (
+        "E*TRADE HOLDINGS",
+        "BROKERAGE POSITIONS // MANUAL SNAPSHOT // E*TRADE ACCOUNT",
+    ),
+    "RISK SIZING": (
+        "RISK SIZING",
+        "CROWN MACRO RISK ENGINE // PORTFOLIO SLEEVE CONTROL // STOP-BASED POSITION SIZING // RAJ CLASSIFICATION RULE",
+    ),
+    "BULL DEBIT SPREAD": (
+        "BULL DEBIT SPREAD",
+        "HIGH-TECH BULL CALL DEBIT SPREAD OPTIMIZER // E*TRADE OPTION CHAINS // READ-ONLY ANALYTICS // NATURAL PRICING = LONG ASK - SHORT BID",
+    ),
+    "MUNI SCREENERS": (
+        "MUNI SCREENERS",
+        "MUNICIPAL BOND SCREENING // TAX-EXEMPT STATUS // STATE TAX COMPARISON",
+    ),
+    "ORDERS": (
+        "TRIGGERS — OCO ORDER SIMULATOR",
+        "BUY LIMIT → WHEN FILLED, ACTIVATES A TAKE-PROFIT LIMIT AND STOP-MARKET EXIT // SIMULATION ONLY // NO ORDER CAN BE TRANSMITTED",
+    ),
+    "GEX": (
+        "GEX // MULTI-TICKER GAMMA WORKSPACE",
+        "BARCHART_STYLE // CALLS +GEX // PUTS −GEX // GAMMA × OI × 100 × SPOT² × 1% // INDIVIDUAL DTE // PACKED A6 // NOTES HISTORY",
+    ),
+}
+
+_LEGACY_PAGE_TITLES = {
+    "HOLDINGS": {"E*TRADE HOLDINGS"},
+    "RISK SIZING": {"RISK SIZING"},
+    "BULL DEBIT SPREAD": {"BULL DEBIT SPREAD"},
+    "ORDERS": {"TRIGGERS – OCO ORDER SIMULATOR", "TRIGGERS — OCO ORDER SIMULATOR"},
+}
+
+_LEGACY_PAGE_CAPTION_PREFIXES = {
+    "RISK SIZING": ("CROWN MACRO RISK ENGINE //",),
+    "BULL DEBIT SPREAD": ("HIGH-TECH BULL CALL DEBIT SPREAD OPTIMIZER //",),
+    "ORDERS": ("BUY LIMIT → WHEN FILLED, ACTIVATES A TAKE-PROFIT LIMIT AND STOP-MARKET EXIT.",),
+}
+
+_LEGACY_PAGE_MARKDOWN_FRAGMENTS = {
+    "GEX": ("class=\"gexv3-head\"", "class=\"gexv3-sub\""),
+}
+
+
+def _render_terminal_page_header(active_tab: str) -> None:
+    """Render exactly one compact, consistent header for the active top-level tab."""
+    spec = _TERMINAL_PAGE_HEADERS.get(str(active_tab))
+    if not spec:
+        return
+    if not getattr(st, "_raj_page_header_css_installed", False):
+        st.html(_TERMINAL_PAGE_HEADER_CSS)
+        st._raj_page_header_css_installed = True
+
+    title, subtitle = spec
+    markup = (
+        '<div class="terminal-page-header-shell">'
+        '<div class="terminal-page-header-title">' + html.escape(title) + "</div>"
+        '<div class="terminal-page-header-subtitle">' + html.escape(subtitle) + "</div>"
+        "</div>"
+    )
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+def _render_without_legacy_page_header(active_tab: str, renderer):
+    """Suppress only the feature's old first title/subtitle while it renders.
+
+    The temporary wrappers are installed inside this function and always
+    restored in ``finally``. Internal feature subheaders/captions remain intact.
+    """
+    original_subheader = st.subheader
+    original_caption = st.caption
+    original_markdown = st.markdown
+
+    titles = {str(value).strip().upper() for value in _LEGACY_PAGE_TITLES.get(active_tab, set())}
+    caption_prefixes = tuple(
+        str(value).strip().upper()
+        for value in _LEGACY_PAGE_CAPTION_PREFIXES.get(active_tab, ())
+    )
+    markdown_fragments = tuple(_LEGACY_PAGE_MARKDOWN_FRAGMENTS.get(active_tab, ()))
+
+    def filtered_subheader(body, *args, **kwargs):
+        if str(body).strip().upper() in titles:
+            return None
+        return original_subheader(body, *args, **kwargs)
+
+    def filtered_caption(body, *args, **kwargs):
+        upper = str(body).strip().upper()
+        if any(upper.startswith(prefix) for prefix in caption_prefixes):
+            return None
+        return original_caption(body, *args, **kwargs)
+
+    def filtered_markdown(body, *args, **kwargs):
+        text = str(body)
+        if any(fragment in text for fragment in markdown_fragments):
+            return None
+        return original_markdown(body, *args, **kwargs)
+
+    st.subheader = filtered_subheader
+    st.caption = filtered_caption
+    st.markdown = filtered_markdown
+    try:
+        return renderer()
+    finally:
+        st.subheader = original_subheader
+        st.caption = original_caption
+        st.markdown = original_markdown
+
+
 render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
 _restore_active_etrade_session_after_unlock()
 
@@ -378,25 +526,36 @@ _render_cache_status()
 _render_offline_snapshot_notice()
 
 tab_order, active_tab = render_terminal_tab_bar(_trade_access_code_hash())
+_render_terminal_page_header(active_tab)
 
 if active_tab == "HOLDINGS":
-    render_etrade_holdings()
+    _render_without_legacy_page_header("HOLDINGS", render_etrade_holdings)
 
 elif active_tab == "RISK SIZING":
-    render_risk_sizing(
-        _etrade_client(),
-        account_picker=_account_picker,
-        refresh_accounts=_refresh_accounts,
-        account_balance=_account_balance,
-        balance_snapshot=_balance_snapshot,
-        touch_session=_touch_etrade_session,
+    _render_without_legacy_page_header(
+        "RISK SIZING",
+        lambda: render_risk_sizing(
+            _etrade_client(),
+            account_picker=_account_picker,
+            refresh_accounts=_refresh_accounts,
+            account_balance=_account_balance,
+            balance_snapshot=_balance_snapshot,
+            touch_session=_touch_etrade_session,
+        ),
     )
 
 elif active_tab == "GEX":
-    render_gex_workspace()
+    _render_without_legacy_page_header("GEX", render_gex_workspace)
 
 elif active_tab == "BULL DEBIT SPREAD":
-    render_bull_debit_spread(_etrade_client(), _touch_etrade_session, timezone_name="America/New_York")
+    _render_without_legacy_page_header(
+        "BULL DEBIT SPREAD",
+        lambda: render_bull_debit_spread(
+            _etrade_client(),
+            _touch_etrade_session,
+            timezone_name="America/New_York",
+        ),
+    )
 
 elif active_tab == "MUNI SCREENERS":
     load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
@@ -447,4 +606,4 @@ elif active_tab == "MUNI SCREENERS":
 elif active_tab == "ORDERS":
     orders_left, orders_center, orders_right = st.columns([1.4, 5.2, 1.4])
     with orders_center:
-        render_order_simulator()
+        _render_without_legacy_page_header("ORDERS", render_order_simulator)
