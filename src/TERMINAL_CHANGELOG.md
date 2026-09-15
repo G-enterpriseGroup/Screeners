@@ -19,13 +19,13 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 ## 2026-09-15 — Navigation gap below terminal tab bar
 
 - **Feature changed:** Top navigation / terminal tab bar spacing.
-- **Exact production file(s) changed:** `src/tab_bar_v4.py`, `src/components/terminal_tabs_v3/index.html`.
+- **Exact production file(s) changed:** `src/tab_bar_v4.py`, `src/components/terminal_tabs_v3/index.html`, `src/TERMINAL_CHANGELOG.md`.
 - **What was broken:** A large black blank area appeared between the top terminal tab bar and the active GEX workspace.
-- **Root cause:** The custom Streamlit tab component visually rendered at about 48px, but the parent Streamlit component element could still reserve its larger default frame height under the tab bar.
+- **Root cause:** The custom Streamlit tab component visually rendered at about 48px, but the parent Streamlit component element could still reserve its larger default frame height under the tab bar. The first fix targeted iframe titles, but the live DOM could still miss that selector.
 - **What was changed:** Scoped the navigation component frame to 48px and added a zero-height marker immediately before the tab component so CSS collapses the exact next Streamlit element container. The component itself also repeatedly reports its 48px height during reruns.
 - **Important behavior that must remain:** The top tab bar should reserve only its visible height; do not use GEX/Risk/OAuth files to correct navigation whitespace.
 - **Files/features intentionally NOT changed:** GEX content, Risk Sizing, OAuth, Holdings, Bull Debit, and municipal tools.
-- **Tests performed:** Production navigation files re-fetched from `main`; architecture guard to be checked after commit.
-- **Architecture guard result:** Pending at write time.
-- **Commit SHA:** `2196fe5`, `745cfbd`, `208e604`.
-- **Lesson:** For custom Streamlit components, target the parent component frame/container, not only the iframe title; title-based CSS may miss the live DOM.
+- **Tests performed:** Production navigation files re-fetched from `main`; GitHub Actions `Terminal Architecture Guard` run `34995163033` passed.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `2196fe5`, `745cfbd`, `208e604`, `d9364cd`.
+- **Lesson:** For custom Streamlit components, target the parent component frame/container, not only the iframe title; title-based CSS may miss the live DOM. Always log terminal fixes in this changelog because project memory is disabled.
