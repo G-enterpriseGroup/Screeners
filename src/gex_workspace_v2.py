@@ -5,6 +5,7 @@ OWNERSHIP / EDITING NOTES
 EDIT THIS FILE ONLY for:
 - obtaining the live E*TRADE client for GEX;
 - resolving the terminal vault/session context;
+- building a dedicated background E*TRADE client snapshot for GEX refresh-all;
 - GEX-only wrapper CSS emitted while the GEX tab renders;
 - keeping GEX style-only CSS out of Streamlit's visible vertical stack.
 
@@ -24,10 +25,11 @@ from __future__ import annotations
 
 import inspect
 import sys
-from typing import Any
+from typing import Any, Callable
 
 import streamlit as st
 
+from src.etrade_client import ETradeClient
 from src.gex_ui_v3 import render_gex as _render_gex_v3
 
 
@@ -197,12 +199,52 @@ def _is_style_only_markdown(body: Any) -> bool:
 # E*TRADE / TERMINAL CONTEXT
 # ==============================
 
-def _discover_terminal_context() -> tuple[Any, str, Any]:
-    """Resolve the live terminal client, access-code vault key, and touch hook.
+def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | None:
+    """Capture a thread-safe E*TRADE client factory on the Streamlit thread.
 
-    This is context plumbing only. GEX calculations and presentation belong in
-    `src/gex_ui_v3.py`.
+    Background workers must not read ``st.session_state`` or call terminal
+    helpers after the worker starts. Capture only credential/token strings here,
+    then create a fresh OAuth session inside the worker thread.
     """
+    credentials_factory = scope.get("_etrade_credentials")
+    if not callable(credentials_factory):
+        return None
+
+    try:
+        consumer_key, consumer_secret, environment = credentials_factory()
+    except Exception:
+        return None
+
+    token = st.session_state.get("etrade_access_token") or {}
+    oauth_token = str(token.get("oauth_token") or "").strip()
+    oauth_secret = str(token.get("oauth_token_secret") or "").strip()
+    consumer_key = str(consumer_key or "").strip()
+    consumer_secret = str(consumer_secret or "").strip()
+    environment = str(environment or "live").strip() or "live"
+
+    if not (consumer_key and consumer_secret and oauth_token and oauth_secret):
+        return None
+
+    def build_client(
+        _consumer_key: str = consumer_key,
+        _consumer_secret: str = consumer_secret,
+        _oauth_token: str = oauth_token,
+        _oauth_secret: str = oauth_secret,
+        _environment: str = environment,
+    ) -> ETradeClient:
+        return ETradeClient(
+            _consumer_key,
+            _consumer_secret,
+            _oauth_token,
+            _oauth_secret,
+            _environment,
+        )
+
+    return build_client
+
+
+def _discover_terminal_context() -> tuple[Any, str, Any, Callable[[], Any] | None]:
+    """Resolve live GEX context plus a dedicated background-client factory."""
     candidates: list[dict[str, Any]] = []
     main = sys.modules.get("__main__")
     if main is not None:
@@ -226,16 +268,26 @@ def _discover_terminal_context() -> tuple[Any, str, Any]:
             vault_key = str(hash_fn()) if callable(hash_fn) else "default"
         except Exception:
             vault_key = "default"
-        return client, vault_key or "default", touch
+        return (
+            client,
+            vault_key or "default",
+            touch,
+            _background_client_factory(scope),
+        )
 
-    return None, "default", None
+    return None, "default", None, None
 
 
 # ==============================
 # SAFE GEX RENDER BRIDGE
 # ==============================
 
-def _render_with_style_only_html(client: Any, vault_key: str, touch: Any) -> None:
+def _render_with_style_only_html(
+    client: Any,
+    vault_key: str,
+    touch: Any,
+    background_client_factory: Callable[[], Any] | None,
+) -> None:
     """Render GEX while routing only style-only markdown through ``st.html``.
 
     `src.gex_ui_v3_base.py` emits its feature CSS with a standalone
@@ -256,7 +308,12 @@ def _render_with_style_only_html(client: Any, vault_key: str, touch: Any) -> Non
 
     st.markdown = gex_markdown
     try:
-        _render_gex_v3(client, vault_key, touch)
+        _render_gex_v3(
+            client,
+            vault_key,
+            touch,
+            background_client_factory=background_client_factory,
+        )
     finally:
         st.markdown = original_markdown
 
@@ -266,12 +323,17 @@ def _render_with_style_only_html(client: Any, vault_key: str, touch: Any) -> Non
 # ==============================
 
 def render_gex() -> None:
-    """Render only the GEX feature without visible CSS/spacer rows."""
-    client, vault_key, touch = _discover_terminal_context()
+    """Render GEX with non-blocking refresh-all support and compact styling."""
+    client, vault_key, touch, background_factory = _discover_terminal_context()
 
     # Style-only HTML is applied without creating a visible Streamlit row.
     st.html(_gex_subtab_skin_css())
-    _render_with_style_only_html(client, vault_key, touch)
+    _render_with_style_only_html(
+        client,
+        vault_key,
+        touch,
+        background_factory,
+    )
 
 
 __all__ = ["render_gex"]
