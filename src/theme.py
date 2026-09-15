@@ -66,7 +66,10 @@ CHART_COLORWAY = [
 # TERMINAL-WIDE TYPING CARET
 # ==============================
 
-_TYPING_CARET_CSS = f"""
+# IMPORTANT: Keep this as a plain string. CSS uses { ... } blocks, so using a
+# Python f-string here can make Python interpret CSS braces as expressions and
+# crash the entire app at import time. Substitute the color with .replace().
+_TYPING_CARET_CSS = """
 <style>
 /*
    Use the browser's native blinking insertion caret everywhere the user can
@@ -83,7 +86,7 @@ input[type="url"]:not(:disabled),
 input:not([type]):not(:disabled),
 textarea:not(:disabled),
 [contenteditable="true"] {
-    caret-color:{BB_ORANGE} !important;
+    caret-color:__RAJ_CARET_COLOR__ !important;
     cursor:text !important;
 }
 
@@ -96,10 +99,10 @@ textarea:not(:disabled),
 [data-baseweb="select"] input:focus,
 [role="combobox"]:focus,
 [contenteditable="true"]:focus {
-    caret-color:{BB_ORANGE} !important;
+    caret-color:__RAJ_CARET_COLOR__ !important;
 }
 </style>
-"""
+""".replace("__RAJ_CARET_COLOR__", BB_ORANGE)
 
 
 def install_typing_caret_theme() -> None:
