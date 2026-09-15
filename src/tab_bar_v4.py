@@ -283,7 +283,7 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
         active=state["active"],
         storage_key=storage_key,
         height=NAV_FRAME_HEIGHT,
-        key="raj_terminal_draggable_tabs_v4_h48_safe_unlock",
+        key="raj_terminal_draggable_tabs_v4_h48_gapfix_exact",
         default={
             "order": state["order"],
             "active": state["active"],
