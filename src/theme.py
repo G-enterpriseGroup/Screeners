@@ -195,16 +195,49 @@ select:not(:disabled) option {
     background:#050505 !important;
     color:#f2f2f2 !important;
 }
+
+/*
+   STREAMLIT TOOLBAR / RUNNING CONTROL
+   Global textColor is intentionally black elsewhere for dataframe headers, but
+   the native top-right Stop/running control sits on a dark toolbar. Force all
+   of its nested label/icon nodes back to terminal orange on every rerun.
+*/
+[data-testid="stToolbar"],
+[data-testid="stToolbar"] button,
+[data-testid="stToolbar"] button *,
+[data-testid="stToolbar"] [role="button"],
+[data-testid="stToolbar"] [role="button"] *,
+[data-testid="stStatusWidget"],
+[data-testid="stStatusWidget"] *,
+[data-testid="stStatusWidget"] button,
+[data-testid="stStatusWidget"] button * {
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    -webkit-text-fill-color:__RAJ_DROPDOWN_ACCENT__ !important;
+}
+
+[data-testid="stToolbar"] svg,
+[data-testid="stStatusWidget"] svg {
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    fill:currentColor !important;
+    stroke:currentColor !important;
+}
+
+[data-testid="stStatusWidget"] button,
+[data-testid="stToolbar"] button[aria-label="Stop"],
+[data-testid="stToolbar"] button[title="Stop"] {
+    border-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    background:#050505 !important;
+}
 </style>
 """.replace("__RAJ_CARET_COLOR__", BB_ORANGE).replace("__RAJ_DROPDOWN_ACCENT__", BB_ORANGE)
 
 
 def install_typing_caret_theme() -> None:
-    """Emit shared input/dropdown CSS for the current Streamlit render.
+    """Emit shared input/dropdown/toolbar CSS for the current Streamlit render.
 
     Streamlit output is session/rerun scoped. Do not use a process-global
     "already installed" flag here: later browser sessions would otherwise lose
-    this stylesheet and fall back to black dropdown text.
+    this stylesheet and fall back to black dropdown or toolbar text.
     """
     st.html(_TYPING_CARET_CSS)
 
