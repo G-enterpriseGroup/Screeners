@@ -20,6 +20,7 @@ from src.layout_guardrails import install_layout_guardrails
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
     "RISK SIZING",
+    "GEX",
     "BULL DEBIT SPREAD",
     "MUNI SCREENERS",
     "ORDERS",
@@ -145,6 +146,15 @@ def _save(vault_key: str, order: Iterable[str], active: Any) -> dict[str, Any]:
     return state
 
 
+def _render_builtin_tab(active: str) -> None:
+    """Render lightweight modular tabs that do not live in the legacy app switch."""
+    if active != "GEX":
+        return
+    from src.gex_ui import render_gex
+
+    render_gex()
+
+
 def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
     """Render the terminal tabs with one Streamlit pass per interaction.
 
@@ -180,7 +190,9 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
 
         if not _same_state(proposed, state):
             saved = _save(vault_key, proposed_order, proposed_active)
+            _render_builtin_tab(saved["active"])
             return saved["order"], saved["active"]
 
     acknowledged = _load(vault_key)
+    _render_builtin_tab(acknowledged["active"])
     return acknowledged["order"], acknowledged["active"]
