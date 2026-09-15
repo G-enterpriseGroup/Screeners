@@ -1,14 +1,9 @@
-"""Stable Risk Sizing v7.
+"""Stable, compact Risk Sizing renderer for Raj's Terminal.
 
-This renderer deliberately avoids the v4/v6 source-rewrite/expander chain.
-It calls the known-good v2 sizing engine directly, keeps both primary sections
-always visible, and layers the current ASK defaults, live stop percentage,
-unused-risk percentage, true-cash balance selection, comma formatting, and
-cached sector/industry context on top.
-
-Part 2 intentionally uses Streamlit's native text input for the ticker. The
-previous large autocomplete selectbox could prevent the rest of Section 2 from
-rendering on some sessions, leaving the area below the header blank.
+The known-good v2 engine remains the source of the sizing math. This layer only
+adds the production behavior Raj wants: true-cash selection, ASK-based entry +
+5% stop defaults, unused-risk percentage, ticker/company recognition, compact
+cards, and a single clean Stop Loss control.
 """
 
 from __future__ import annotations
@@ -144,80 +139,41 @@ def _render_css() -> None:
     st.markdown(
         """
         <style>
-        .risk-v7-build {
-            border:1px solid #4af6c3;
-            color:#4af6c3 !important;
-            background:#020202;
-            padding:.28rem .55rem;
-            margin:.12rem 0 .42rem 0;
-            font-family:"Courier New",monospace;
-            font-weight:900;
-            font-size:.72rem;
-        }
         .risk-v7-section {
-            display:flex;
-            align-items:center;
-            width:100%;
-            box-sizing:border-box;
-            margin:.38rem 0 .32rem 0;
-            padding:.43rem .72rem;
-            border:1px solid #fb8b1e;
-            background:#050505;
-            color:#fb8b1e !important;
-            font-family:"Courier New",monospace;
-            font-weight:900;
-            line-height:1.15;
+            display:flex;align-items:center;width:100%;box-sizing:border-box;
+            margin:.28rem 0 .24rem;padding:.34rem .58rem;border:1px solid #fb8b1e;
+            background:#050505;color:#fb8b1e!important;font-family:"Courier New",monospace;
+            font-weight:900;line-height:1.05;
         }
         .risk-v7-section::before {
-            content:"−";
-            margin-right:.55rem;
-            color:#fb8b1e !important;
-            font-size:1.15rem;
-            font-weight:900;
+            content:"−";margin-right:.45rem;color:#fb8b1e!important;
+            font-size:1rem;font-weight:900;
         }
-        .risk-stop-live-head {
-            display:flex;
-            flex-wrap:wrap;
-            align-items:center;
-            justify-content:space-between;
-            gap:.30rem .55rem;
-            min-width:0;
-            max-width:100%;
-            margin:0 0 .18rem 0;
-            font-family:"Courier New",monospace;
+        .risk-stop-pct-row {
+            display:flex;justify-content:flex-end;align-items:center;
+            margin:-.28rem 0 .08rem;font-family:"Courier New",monospace;
         }
-        .risk-stop-live-label { color:#fb8b1e !important; font-size:1rem; }
-        .risk-stop-live-pct {
-            border:1px solid #fb8b1e;
-            background:#050505;
-            padding:.12rem .42rem;
-            margin-left:auto;
-            max-width:100%;
-            font-size:.66rem;
-            font-weight:900;
-            line-height:1.05;
-            white-space:normal;
-            text-align:right;
+        .risk-stop-pct {
+            border:1px solid #5d3605;background:#050505;padding:.10rem .36rem;
+            font-size:.64rem;font-weight:900;line-height:1.05;
         }
-        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button > * { display:none !important; }
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button > * {
+            display:none!important;
+        }
         div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button {
-            position:relative !important;
-            min-width:34px !important;
-            flex:0 0 34px !important;
-            background:#050505 !important;
-            border-color:#fb8b1e !important;
+            position:relative!important;min-width:30px!important;flex:0 0 30px!important;
+            background:#050505!important;border-color:#fb8b1e!important;
         }
         div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:first-of-type::after {
-            content:"▼"; color:#fb8b1e !important; position:absolute; inset:0;
-            display:flex; align-items:center; justify-content:center; font-weight:900;
+            content:"▼";color:#fb8b1e!important;position:absolute;inset:0;display:flex;
+            align-items:center;justify-content:center;font-weight:900;font-size:.68rem;
         }
         div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:last-of-type::after {
-            content:"▲"; color:#4af6c3 !important; position:absolute; inset:0;
-            display:flex; align-items:center; justify-content:center; font-weight:900;
+            content:"▲";color:#4af6c3!important;position:absolute;inset:0;display:flex;
+            align-items:center;justify-content:center;font-weight:900;font-size:.68rem;
         }
         [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            min-width:0 !important;
-            max-width:100% !important;
+            min-width:0!important;max-width:100%!important;
         }
         </style>
         """,
@@ -225,45 +181,108 @@ def _render_css() -> None:
     )
 
 
-def _live_stop_number_input(original_number_input):
+def _compact_v2_tooltip_css(base_css):
+    """Render v2 styling, then override only Risk Sizing card dimensions."""
+    def wrapped():
+        base_css()
+        st.markdown(
+            """
+            <style>
+            .rs-card {
+                min-height:76px!important;
+                padding:.36rem .54rem!important;
+            }
+            .rs-card-label {
+                font-size:.69rem!important;
+                line-height:1.02!important;
+            }
+            .rs-card-value {
+                font-size:1.18rem!important;
+                margin-top:.10rem!important;
+                line-height:1.05!important;
+            }
+            .rs-card-detail {
+                font-size:.66rem!important;
+                margin-top:.08rem!important;
+            }
+            .rs-help {
+                width:16px!important;height:16px!important;flex-basis:16px!important;
+                font-size:10px!important;
+            }
+            .rs-help-tip {
+                top:20px!important;width:300px!important;padding:.55rem .65rem!important;
+                font-size:.69rem!important;line-height:1.32!important;
+            }
+            .rs-howto {
+                padding:.48rem .65rem!important;margin:.18rem 0 .5rem!important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+    return wrapped
+
+
+def _normalize_risk_ticker_state() -> None:
+    value = str(st.session_state.get("risk_ticker") or "").strip().upper()
+    st.session_state["risk_ticker"] = value
+
+
+def _ticker_text_input(original_text_input):
+    """Native input with safe company-name recognition; no giant autocomplete widget."""
     def wrapped(label, *args, **kwargs):
+        if kwargs.get("key") != "risk_ticker":
+            return original_text_input(label, *args, **kwargs)
+
+        current = str(st.session_state.get("risk_ticker") or kwargs.get("value") or "SPY").strip().upper()
+        known_name = company_name(current) if current else ""
+        display_label = "Ticker"
+        if current and known_name:
+            display_label = f"Ticker // {current} — {known_name}"
+        elif current:
+            display_label = f"Ticker // {current}"
+
+        local_kwargs = dict(kwargs)
+        local_kwargs["on_change"] = _normalize_risk_ticker_state
+        local_kwargs["placeholder"] = "Type ticker, then press Enter"
+        raw = original_text_input(display_label, *args, **local_kwargs)
+        return str(raw or "").strip().upper()
+
+    return wrapped
+
+
+def _stop_number_input(original_number_input):
+    """Keep exactly one native Stop Loss label and place the live % below it."""
+    def wrapped(label, *args, **kwargs):
+        value = original_number_input(label, *args, **kwargs)
         if kwargs.get("key") != "risk_stop_price":
-            return original_number_input(label, *args, **kwargs)
+            return value
+
         try:
             entry = float(st.session_state.get("risk_entry_price", 0.0) or 0.0)
+            stop = float(value or 0.0)
         except (TypeError, ValueError):
-            entry = 0.0
-        try:
-            stop = float(st.session_state.get("risk_stop_price", kwargs.get("value", 0.0)) or 0.0)
-        except (TypeError, ValueError):
-            stop = 0.0
+            entry, stop = 0.0, 0.0
+
         if entry > 0:
             signed_pct = (entry - stop) / entry * 100.0
             if abs(signed_pct) < 0.005:
                 pct_text, pct_color, arrow = "0.00%", "#fb8b1e", "•"
             elif signed_pct > 0:
-                pct_text, pct_color, arrow = f"{abs(signed_pct):.2f}% BELOW ENTRY", "#ff4343", "▼"
+                pct_text, pct_color, arrow = f"{abs(signed_pct):.2f}% BELOW ENTRY", "#ff5757", "▼"
             else:
                 pct_text, pct_color, arrow = f"{abs(signed_pct):.2f}% ABOVE ENTRY", "#4af6c3", "▲"
         else:
             pct_text, pct_color, arrow = "—", "#fb8b1e", "%"
+
         st.markdown(
-            '<div class="risk-stop-live-head">'
-            '<span class="risk-stop-live-label">Stop Loss</span>'
-            f'<span class="risk-stop-live-pct" style="color:{pct_color} !important;">{arrow} {pct_text}</span>'
+            '<div class="risk-stop-pct-row">'
+            f'<span class="risk-stop-pct" style="color:{pct_color}!important;">{arrow} {pct_text}</span>'
             '</div>',
             unsafe_allow_html=True,
         )
-        local_kwargs = dict(kwargs)
-        local_kwargs["label_visibility"] = "collapsed"
-        return original_number_input(label, *args, **local_kwargs)
-    return wrapped
+        return value
 
-
-def _native_ticker_text_input(original_text_input):
-    """Keep Section 2 render-safe by using the native ticker text box."""
-    def wrapped(label, *args, **kwargs):
-        return original_text_input(label, *args, **kwargs)
     return wrapped
 
 
@@ -271,10 +290,32 @@ def _section_header_markdown(original_markdown):
     def wrapped(body, *args, **kwargs):
         text = str(body).strip()
         if text == "**1 // CLASSIFY THE CURRENT BOOK**":
-            return original_markdown('<div class="risk-v7-section">1 // CLASSIFY THE CURRENT BOOK</div>', unsafe_allow_html=True)
+            return original_markdown(
+                '<div class="risk-v7-section">1 // CLASSIFY THE CURRENT BOOK</div>',
+                unsafe_allow_html=True,
+            )
         if text == "**2 // SIZE THE NEXT TRADE**":
-            return original_markdown('<div class="risk-v7-section">2 // SIZE THE NEXT TRADE</div>', unsafe_allow_html=True)
+            return original_markdown(
+                '<div class="risk-v7-section">2 // SIZE THE NEXT TRADE</div>',
+                unsafe_allow_html=True,
+            )
         return original_markdown(body, *args, **kwargs)
+    return wrapped
+
+
+def _compact_warning(original_warning):
+    def wrapped(body, *args, **kwargs):
+        text = str(body or "")
+        if text.startswith("TACTICAL CAPACITY CHECK"):
+            st.markdown(
+                '<div style="border:1px solid #7d6500;background:#292900;color:#fb8b1e;'
+                'padding:.42rem .62rem;margin:.18rem 0;font:800 .72rem/1.25 Courier New,monospace;">'
+                + text
+                + '</div>',
+                unsafe_allow_html=True,
+            )
+            return None
+        return original_warning(body, *args, **kwargs)
     return wrapped
 
 
@@ -287,19 +328,16 @@ def render_risk_sizing(
     balance_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
     touch_session: Callable[[], None],
 ) -> None:
-    """Render the complete v2 trade-sizing workflow with no expander nesting."""
     _render_css()
-    st.markdown(
-        '<div class="risk-v7-build">RISK ENGINE BUILD // V7.1 DIRECT // NATIVE TICKER FAIL-SAFE // SECTION 2 ALWAYS VISIBLE</div>',
-        unsafe_allow_html=True,
-    )
 
     previous_quote_summary = _v2.quote_summary
     previous_metric_box = _v2._metric_box
+    previous_tooltip_css = _v2._render_tooltip_css
     original_dataframe = st.dataframe
     original_number_input = st.number_input
     original_text_input = st.text_input
     original_markdown = st.markdown
+    original_warning = st.warning
 
     def comma_dataframe(data=None, *args, **kwargs):
         kwargs["column_config"] = comma_column_config(data, kwargs.get("column_config"))
@@ -314,10 +352,12 @@ def render_risk_sizing(
 
     _v2.quote_summary = _quote_summary_with_risk_defaults
     _v2._metric_box = _unused_risk_metric_box(previous_metric_box)
+    _v2._render_tooltip_css = _compact_v2_tooltip_css(previous_tooltip_css)
     st.dataframe = comma_dataframe
-    st.number_input = _live_stop_number_input(original_number_input)
-    st.text_input = _native_ticker_text_input(original_text_input)
+    st.number_input = _stop_number_input(original_number_input)
+    st.text_input = _ticker_text_input(original_text_input)
     st.markdown = _section_header_markdown(original_markdown)
+    st.warning = _compact_warning(original_warning)
 
     try:
         _v2.render_risk_sizing(
@@ -331,10 +371,12 @@ def render_risk_sizing(
     finally:
         _v2.quote_summary = previous_quote_summary
         _v2._metric_box = previous_metric_box
+        _v2._render_tooltip_css = previous_tooltip_css
         st.dataframe = original_dataframe
         st.number_input = original_number_input
         st.text_input = original_text_input
         st.markdown = original_markdown
+        st.warning = original_warning
 
     if st.session_state.pop("_risk_ask_unavailable", False):
         st.warning(
