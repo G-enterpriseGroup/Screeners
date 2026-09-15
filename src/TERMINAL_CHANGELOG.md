@@ -127,3 +127,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `632a76e`, `c52726d`.
 - **Lesson:** Shared CSS is startup-critical code. Treat CSS construction as production code, avoid f-string brace hazards, and make the guard explicitly test shared appearance files so a cosmetic request cannot take down the whole terminal.
+
+## 2026-09-15 — Live app served stale caret-crash build after source recovery
+
+- **Feature changed:** Deployment/rebuild discipline after startup-critical fixes.
+- **Exact production file(s) changed:** `requirements.txt`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The live Streamlit app continued to show the old `NameError` traceback referencing `caret-color:{BB_ORANGE}` even though `main` had already replaced that code.
+- **Root cause:** The deployed Streamlit process/build was stale relative to the corrected `main` branch. The exact failing source line no longer existed on `main`, proving the live traceback came from an older checkout/process rather than the current source.
+- **What was changed:** Verified the `main` branch head and exact `src/theme.py` contents, confirmed the bad f-string line was absent, and added a no-op rebuild marker to `requirements.txt` to force Streamlit Cloud to rebuild from current `main` without changing feature behavior.
+- **Important behavior that must remain:** When a live traceback references source text that no longer exists on `main`, compare the deployed traceback to the current committed file before making additional code changes. Force a clean rebuild rather than stacking another workaround on correct source.
+- **Files/features intentionally NOT changed:** Risk Sizing, GEX, OAuth, Holdings, navigation, Touch ID/authentication, Bull Debit, Muni, `terminal_core.py`, and all business logic.
+- **Tests performed:** Verified repository default branch is `main`; verified `main` head was the corrected caret-crash recovery history; re-fetched `src/theme.py` from `main` and confirmed `caret-color:{BB_ORANGE}` is absent; pushed rebuild commit `ca15c12` containing only a requirements comment.
+- **Architecture guard result:** Not applicable to the no-op `requirements.txt` rebuild commit; the corrected source and strengthened guard had already passed on commits `632a76e`, `c52726d`, and `28de7aa`.
+- **Commit SHA:** `ca15c12` plus this changelog commit.
+- **Lesson:** Distinguish stale deployment failures from source-code failures before editing production code. A stale cloud process should be rebuilt, not "fixed" with unrelated code changes.
