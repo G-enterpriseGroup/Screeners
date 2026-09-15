@@ -1,78 +1,271 @@
 """Seamless production Risk Sizing UI for Raj's Terminal.
 
-The v2 renderer remains the math/source-of-truth engine.  This layer changes
-only presentation + interaction for Part 2:
-- searchable ticker/company selector
-- ticker selection automatically pulls the E*TRADE quote
+The v2 renderer remains the sizing/classification math source of truth. This
+module owns the production interaction layer for Part 2:
+- searchable SYMBOL — COMPANY NAME selector
+- selecting a ticker automatically loads its E*TRADE quote
 - no manual PULL E*TRADE QUOTE button
-- ASK automatically seeds Entry and a 5%-below-ASK Stop
+- ASK seeds Entry and a 5%-below-ASK Stop once per selected symbol
 - exactly one live stop-distance badge
-- compact structure/size controls and metric cards from the v8 layer
+- compact radio controls and content-height number cards
 
-Part 1 portfolio/risk math is intentionally untouched.
+Part 1 portfolio/risk calculations are intentionally unchanged.
 """
 
 from __future__ import annotations
 
 import html
+import re
 from typing import Any, Callable
 
 import streamlit as st
 
 import src.risk_sizing_ui_v2 as _v2
-import src.risk_sizing_ui_v7 as _v8
-from src.etrade_client import ETradeError
+from src.etrade_client import ETradeError, find_number, quote_summary as _base_quote_summary
 from src.stockanalysis_portfolio_v5 import cache_status, render_stockanalysis_portfolio
 from src.terminal_number_format import comma_column_config
-from src.ticker_autocomplete import company_name, smart_ticker_selector
+from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_selector
 
 
-def _render_v9_css() -> None:
-    _v8._render_css()
+def _quote_summary_with_defaults(payload):
+    summary = _base_quote_summary(payload)
+    symbol = str(summary.get("symbol") or st.session_state.get("risk_ticker") or "").strip().upper()
+
+    try:
+        ask = float(summary.get("ask") or 0.0)
+    except (TypeError, ValueError):
+        ask = 0.0
+
+    if ask > 0:
+        st.session_state["risk_entry_price"] = round(ask, 2)
+        st.session_state["risk_stop_price"] = round(ask * 0.95, 2)
+        st.session_state["_risk_entry_source"] = "E*TRADE ASK"
+        st.session_state["_risk_entry_seed_symbol"] = symbol
+        st.session_state.pop("_risk_ask_unavailable", None)
+    else:
+        st.session_state["_risk_ask_unavailable"] = True
+
+    if symbol:
+        description = str(summary.get("description") or company_name(symbol) or "").strip()
+        record_lookup(symbol, description)
+    return summary
+
+
+def _walk_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_dicts(child)
+
+
+def _section(payload: dict[str, Any], *names: str) -> dict[str, Any]:
+    wanted = {str(name).casefold() for name in names}
+    for node in _walk_dicts(payload):
+        for key, child in node.items():
+            if str(key).casefold() in wanted and isinstance(child, dict):
+                return child
+    return {}
+
+
+def _number(section: dict[str, Any], key: str) -> float | None:
+    wanted = str(key).casefold()
+    for actual_key, value in (section or {}).items():
+        if str(actual_key).casefold() != wanted:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, float | None]]:
+    computed = _section(payload, "Computed", "ComputedBalance", "computedBalance")
+    cash_section = _section(payload, "Cash", "cash")
+    fields = {
+        "cashBalance": _number(computed, "cashBalance"),
+        "netCash": _number(computed, "netCash"),
+        "moneyMktBalance": _number(cash_section, "moneyMktBalance"),
+        "settledCashForInvestment": _number(computed, "settledCashForInvestment"),
+        "unSettledCashForInvestment": _number(computed, "unSettledCashForInvestment"),
+    }
+    for key in list(fields):
+        if fields[key] is None:
+            fields[key] = find_number(payload, key)
+
+    priority = ("cashBalance", "netCash", "moneyMktBalance", "settledCashForInvestment")
+    for key in priority:
+        value = fields.get(key)
+        if value is not None and abs(float(value)) >= 0.005:
+            return float(value), key, fields
+    for key in priority:
+        value = fields.get(key)
+        if value is not None:
+            return float(value), key, fields
+    return 0.0, "NO CASH FIELD RETURNED", fields
+
+
+def _unused_risk_value(label: str, value: str, help_text: str) -> tuple[str, str]:
+    if str(label).strip().upper() != "UNUSED RISK":
+        return value, help_text
+    try:
+        unused_match = re.search(r"\$([0-9,]+(?:\.\d+)?)", str(value))
+        budget_match = re.search(
+            r"Max Dollar Risk\s+\$([0-9,]+(?:\.\d+)?)",
+            str(help_text),
+            flags=re.IGNORECASE,
+        )
+        if unused_match and budget_match:
+            unused = float(unused_match.group(1).replace(",", ""))
+            budget = float(budget_match.group(1).replace(",", ""))
+            if budget > 0:
+                pct = unused / budget * 100.0
+                return (
+                    f"{value} // {pct:.2f}%",
+                    f"{help_text} UNUSED RISK % = {unused:,.2f} / {budget:,.2f} x 100 = {pct:.2f}%.",
+                )
+    except (TypeError, ValueError):
+        pass
+    return value, help_text
+
+
+def _compact_metric_box(container, label, value, tone="neutral", detail="", help_text=""):
+    value, help_text = _unused_risk_value(str(label), str(value), str(help_text))
+    color = {
+        "positive": "#4af6c3",
+        "negative": "#ff433d",
+        "blue": "#0068ff",
+        "neutral": "#fb8b1e",
+    }.get(str(tone), "#fb8b1e")
+
+    tip = ""
+    if help_text:
+        safe = html.escape(str(help_text)).replace("\n", "<br>")
+        tip = '<span class="rs9-help" tabindex="0">?<span class="rs9-tip">' + safe + "</span></span>"
+    detail_html = (
+        f'<div class="rs9-detail" style="color:{color}!important;">{html.escape(str(detail))}</div>'
+        if detail else ""
+    )
+    container.markdown(
+        '<div class="rs9-card"><div class="rs9-head">'
+        f'<span class="rs9-label">{html.escape(str(label))}</span>{tip}</div>'
+        f'<div class="rs9-value" style="color:{color}!important;">{html.escape(str(value))}</div>'
+        f'{detail_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_css() -> None:
     st.markdown(
         """
         <style>
-        /* Part 2 ticker is now the single full-width searchable control. */
-        [data-testid="stSelectbox"]:has(#risk-v9-search-sentinel){width:100%!important;}
+        .risk-v9-section{display:flex;align-items:center;width:100%;box-sizing:border-box;margin:.14rem 0 .16rem;padding:.25rem .48rem;border:1px solid #fb8b1e;background:#050505;color:#fb8b1e!important;font-family:"Courier New",monospace;font-weight:900;line-height:1;}
+        .risk-v9-section::before{content:"−";margin-right:.40rem;color:#fb8b1e!important;font-size:.92rem;font-weight:900;}
 
-        /* Keep searchable ticker/company options readable and compact. */
-        [role="listbox"] [role="option"]{
-            font-family:"Courier New",monospace!important;
-            font-size:.72rem!important;
-        }
+        .rs9-card{position:relative;background:#000;border:1px solid #fb8b1e;padding:.24rem .38rem .27rem;min-height:0!important;height:auto!important;font-family:"Courier New",monospace;overflow:visible!important;}
+        .rs9-head{display:flex;align-items:center;justify-content:space-between;gap:.28rem;}
+        .rs9-label{color:#fb8b1e!important;font-size:.61rem;font-weight:900;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .rs9-value{font-size:1.02rem;font-weight:900;margin-top:.10rem;line-height:1.02;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .rs9-detail{font-size:.60rem;margin-top:.07rem;font-weight:700;line-height:1.04;}
+        .rs9-help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex:0 0 14px;border:1px solid #fb8b1e;border-radius:50%!important;color:#fb8b1e!important;font-size:9px;font-weight:900;cursor:help;line-height:1;}
+        .rs9-tip{visibility:hidden;opacity:0;position:absolute;z-index:999999;right:-2px;top:18px;width:285px;max-width:72vw;padding:.48rem .56rem;border:1px solid #fb8b1e;background:#080808;color:#fb8b1e!important;font-family:"Courier New",monospace;font-size:.66rem;line-height:1.28;font-weight:600;white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.72);pointer-events:none;}
+        .rs9-help:hover .rs9-tip,.rs9-help:focus .rs9-tip{visibility:visible;opacity:1;}
 
-        /* Only one stop-distance badge may be visible even if Streamlit keeps
-           stale DOM nodes briefly during a rerun. */
-        [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct)
-        ~ [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct){
-            display:none!important;
-        }
-        .risk-v9-stop-row{
-            display:flex;justify-content:flex-end;align-items:center;
-            margin:-.16rem 0 .02rem;font-family:"Courier New",monospace;
-        }
-        .risk-v9-stop-pct{
-            border:1px solid #5d3605;background:#050505;
-            padding:.08rem .30rem;font-size:.61rem;font-weight:900;line-height:1;
-        }
+        .rs-card{min-height:0!important;height:auto!important;padding:.24rem .38rem!important;}
+        .rs-card-label{font-size:.61rem!important;line-height:1!important;}
+        .rs-card-value{font-size:1.02rem!important;margin-top:.10rem!important;line-height:1.02!important;}
+        .rs-card-detail{font-size:.60rem!important;margin-top:.07rem!important;}
+
+        [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:36px!important;height:36px!important;background:#050505!important;border-color:#fb8b1e!important;}
+        [data-testid="stSelectbox"] div[data-baseweb="select"] span,[data-testid="stSelectbox"] div[data-baseweb="select"] input{color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;font-family:"Courier New",monospace!important;}
+        [role="listbox"]{background:#050505!important;color:#fb8b1e!important;max-height:250px!important;min-height:0!important;padding:.14rem!important;}
+        [role="option"]{background:#050505!important;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;min-height:28px!important;height:auto!important;padding:.28rem .44rem!important;font-family:"Courier New",monospace!important;font-size:.70rem!important;font-weight:800!important;}
+        [role="option"] *{color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;}
+        [role="option"]:hover,[role="option"][aria-selected="true"]{background:#fb8b1e!important;color:#000!important;}
+        [role="option"]:hover *,[role="option"][aria-selected="true"] *{color:#000!important;-webkit-text-fill-color:#000!important;}
+
+        [data-testid="stRadio"]>div[role="radiogroup"]{display:flex!important;flex-wrap:wrap!important;gap:.22rem!important;}
+        [data-testid="stRadio"] label{border:1px solid #5d3605!important;background:#050505!important;padding:.18rem .34rem!important;margin:0!important;min-height:28px!important;}
+        [data-testid="stRadio"] label p{color:#fb8b1e!important;font-size:.68rem!important;font-weight:900!important;font-family:"Courier New",monospace!important;}
+        [data-testid="stRadio"] label:has(input:checked){background:#fb8b1e!important;border-color:#fb8b1e!important;}
+        [data-testid="stRadio"] label:has(input:checked) p{color:#000!important;}
+
+        .risk-v9-stop-row{display:flex;justify-content:flex-end;align-items:center;margin:-.14rem 0 .01rem;font-family:"Courier New",monospace;}
+        .risk-v9-stop-pct{border:1px solid #5d3605;background:#050505;padding:.07rem .28rem;font-size:.59rem;font-weight:900;line-height:1;}
+        [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct) ~ [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct){display:none!important;}
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button>*{display:none!important;}
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button{position:relative!important;min-width:28px!important;flex:0 0 28px!important;background:#050505!important;border-color:#fb8b1e!important;}
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:first-of-type::after{content:"▼";color:#fb8b1e!important;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.64rem;}
+        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:last-of-type::after{content:"▲";color:#4af6c3!important;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.64rem;}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _auto_quote_ticker_input(
-    original_selectbox,
-    *,
-    client,
-    touch_session: Callable[[], None],
-):
-    """Replace v2's ticker text box with searchable ticker/company selection."""
+def _tooltip_css_after_v2(base_css):
+    def wrapped():
+        base_css()
+        _render_css()
+    return wrapped
 
+
+def _compact_selectbox(original_selectbox, original_radio):
+    def wrapped(label, options, *args, **kwargs):
+        key = kwargs.get("key")
+        if key not in {"risk_trade_structure", "risk_size_multiplier"}:
+            return original_selectbox(label, options, *args, **kwargs)
+
+        choices = list(options)
+        default_index = min(max(int(kwargs.get("index", 0) or 0), 0), max(len(choices) - 1, 0))
+        current = st.session_state.get(key, choices[default_index] if choices else None)
+        selected_index = choices.index(current) if current in choices else default_index
+        value = original_radio(
+            label,
+            choices,
+            index=selected_index,
+            format_func=kwargs.get("format_func", str),
+            key=f"_{key}_choice_v9",
+            horizontal=True,
+            help=kwargs.get("help"),
+        )
+        st.session_state[key] = value
+        return value
+    return wrapped
+
+
+def _section_header_markdown(original_markdown):
+    def wrapped(body, *args, **kwargs):
+        text = str(body).strip()
+        if text == "**1 // CLASSIFY THE CURRENT BOOK**":
+            return original_markdown('<div class="risk-v9-section">1 // CLASSIFY THE CURRENT BOOK</div>', unsafe_allow_html=True)
+        if text == "**2 // SIZE THE NEXT TRADE**":
+            return original_markdown('<div class="risk-v9-section">2 // SIZE THE NEXT TRADE</div>', unsafe_allow_html=True)
+        return original_markdown(body, *args, **kwargs)
+    return wrapped
+
+
+def _compact_warning(original_warning):
+    def wrapped(body, *args, **kwargs):
+        text = str(body or "")
+        if text.startswith("TACTICAL CAPACITY CHECK"):
+            st.markdown(
+                '<div style="border:1px solid #7d6500;background:#222200;color:#fb8b1e;padding:.27rem .46rem;margin:.10rem 0;font:800 .66rem/1.15 Courier New,monospace;">'
+                + html.escape(text) + "</div>",
+                unsafe_allow_html=True,
+            )
+            return None
+        return original_warning(body, *args, **kwargs)
+    return wrapped
+
+
+def _auto_quote_ticker_input(original_text_input, original_selectbox, *, client, touch_session):
     def wrapped(label, *args, **kwargs):
         if kwargs.get("key") != "risk_ticker":
-            # v2 has other text inputs in future versions; leave them native.
-            return st._risk_v9_base_text_input(label, *args, **kwargs)
+            return original_text_input(label, *args, **kwargs)
 
         current = str(st.session_state.get("risk_ticker") or kwargs.get("value") or "SPY").strip().upper() or "SPY"
         selected = smart_ticker_selector(
@@ -81,69 +274,65 @@ def _auto_quote_ticker_input(
             current=current,
             key="risk_ticker_smart_v9",
             help_text=(
-                "Type a ticker OR company name. Suggestions show SYMBOL — COMPANY NAME. "
-                "Selecting one automatically pulls the E*TRADE quote and resets Entry to ASK with Stop 5% below ASK."
+                "Start typing a ticker OR company name. Suggestions display SYMBOL — COMPANY NAME. "
+                "Choose one and the E*TRADE quote loads automatically."
             ),
         )
         selected = str(selected or current).strip().upper() or current
         st.session_state["risk_ticker"] = selected
 
-        quote_key = "risk_quote_data"
+        quote_data = st.session_state.get("risk_quote_data")
         quote_symbol = str(st.session_state.get("risk_quote_symbol") or "").strip().upper()
-        quote_data = st.session_state.get(quote_key)
-        needs_quote = quote_symbol != selected or not isinstance(quote_data, dict) or not quote_data
+        seed_symbol = str(st.session_state.get("_risk_entry_seed_symbol") or "").strip().upper()
+        needs_quote = (
+            quote_symbol != selected
+            or seed_symbol != selected
+            or not isinstance(quote_data, dict)
+            or not quote_data
+        )
 
         if needs_quote:
-            # Clear the old symbol first so a failed lookup can never display the
-            # previous ticker's quote as though it belonged to the new ticker.
-            st.session_state.pop(quote_key, None)
+            st.session_state.pop("risk_quote_data", None)
             st.session_state["risk_quote_symbol"] = ""
             try:
-                payload = client.get_quote(selected)
-                summary = _v2.quote_summary(payload)
-                st.session_state[quote_key] = summary
+                summary = _v2.quote_summary(client.get_quote(selected))
+                st.session_state["risk_quote_data"] = summary
                 st.session_state["risk_quote_symbol"] = selected
                 touch_session()
             except ETradeError as exc:
                 st.session_state["_risk_v9_quote_error"] = str(exc)
             except Exception as exc:
                 st.session_state["_risk_v9_quote_error"] = f"Quote load failed for {selected}: {exc}"
-
-        # The formatted selectbox itself already shows SYMBOL — COMPANY NAME.
-        # Return only the canonical symbol because v2's calculations expect it.
         return selected
 
     return wrapped
 
 
-def _hide_manual_quote_button(original_button):
-    """Remove the obsolete PULL E*TRADE QUOTE button without affecting others."""
-
+def _hide_quote_button(original_button):
     def wrapped(label, *args, **kwargs):
         if kwargs.get("key") == "risk_pull_quote":
             return False
         return original_button(label, *args, **kwargs)
-
     return wrapped
 
 
 def _full_width_ticker_columns(original_columns, original_container, original_empty):
-    """Collapse v2's old ticker+button row into one full-width ticker container."""
-
     def wrapped(spec, *args, **kwargs):
         try:
             values = list(spec) if not isinstance(spec, int) else []
         except TypeError:
             values = []
-        if len(values) == 2 and abs(float(values[0]) - 3.4) < 1e-9 and abs(float(values[1]) - 1.2) < 1e-9:
-            return [original_container(), original_empty()]
+        if len(values) == 2:
+            try:
+                if abs(float(values[0]) - 3.4) < 1e-9 and abs(float(values[1]) - 1.2) < 1e-9:
+                    return [original_container(), original_empty()]
+            except (TypeError, ValueError):
+                pass
         return original_columns(spec, *args, **kwargs)
-
     return wrapped
 
 
 def _single_stop_number_input(original_number_input):
-    """Render one and only one live stop-distance badge per Part 2 render."""
     rendered = False
 
     def wrapped(label, *args, **kwargs):
@@ -152,7 +341,6 @@ def _single_stop_number_input(original_number_input):
         if kwargs.get("key") != "risk_stop_price" or rendered:
             return value
         rendered = True
-
         try:
             entry = float(st.session_state.get("risk_entry_price", 0.0) or 0.0)
             stop = float(value or 0.0)
@@ -160,24 +348,23 @@ def _single_stop_number_input(original_number_input):
             entry, stop = 0.0, 0.0
 
         if entry > 0:
-            signed_pct = (entry - stop) / entry * 100.0
-            if abs(signed_pct) < 0.005:
-                pct_text, pct_color, arrow = "0.00%", "#fb8b1e", "•"
-            elif signed_pct > 0:
-                pct_text, pct_color, arrow = f"{abs(signed_pct):.2f}% BELOW ENTRY", "#ff5757", "▼"
+            signed = (entry - stop) / entry * 100.0
+            if abs(signed) < 0.005:
+                text, color, arrow = "0.00%", "#fb8b1e", "•"
+            elif signed > 0:
+                text, color, arrow = f"{abs(signed):.2f}% BELOW ENTRY", "#ff5757", "▼"
             else:
-                pct_text, pct_color, arrow = f"{abs(signed_pct):.2f}% ABOVE ENTRY", "#4af6c3", "▲"
+                text, color, arrow = f"{abs(signed):.2f}% ABOVE ENTRY", "#4af6c3", "▲"
         else:
-            pct_text, pct_color, arrow = "—", "#fb8b1e", "%"
+            text, color, arrow = "—", "#fb8b1e", "%"
 
         st.markdown(
             '<div class="risk-v9-stop-row">'
-            f'<span class="risk-v9-stop-pct" style="color:{pct_color}!important;">{arrow} {html.escape(pct_text)}</span>'
+            f'<span class="risk-v9-stop-pct" style="color:{color}!important;">{arrow} {html.escape(text)}</span>'
             '</div>',
             unsafe_allow_html=True,
         )
         return value
-
     return wrapped
 
 
@@ -190,46 +377,21 @@ def render_risk_sizing(
     balance_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
     touch_session: Callable[[], None],
 ) -> None:
-    """Render the v2 risk engine with seamless, dynamic Part 2 controls."""
-    _render_v9_css()
-
-    if client is None:
-        # Let v2 render its normal disconnected guidance.
-        return _v2.render_risk_sizing(
-            client,
-            account_picker=account_picker,
-            refresh_accounts=refresh_accounts,
-            account_balance=account_balance,
-            balance_snapshot=balance_snapshot,
-            touch_session=touch_session,
-        )
+    _render_css()
 
     previous_quote_summary = _v2.quote_summary
     previous_metric_box = _v2._metric_box
     previous_tooltip_css = _v2._render_tooltip_css
 
-    # Capture the true Streamlit primitives before applying this render's narrow
-    # widget adapters.  Store text_input once so nested/hot reruns cannot stack.
-    if not hasattr(st, "_risk_v9_base_text_input"):
-        st._risk_v9_base_text_input = st.text_input
-    if not hasattr(st, "_risk_v9_base_number_input"):
-        st._risk_v9_base_number_input = st.number_input
-    if not hasattr(st, "_risk_v9_base_button"):
-        st._risk_v9_base_button = st.button
-    if not hasattr(st, "_risk_v9_base_columns"):
-        st._risk_v9_base_columns = st.columns
-    if not hasattr(st, "_risk_v9_base_selectbox"):
-        st._risk_v9_base_selectbox = st.selectbox
-
-    base_text_input = st._risk_v9_base_text_input
-    base_number_input = st._risk_v9_base_number_input
-    base_button = st._risk_v9_base_button
-    base_columns = st._risk_v9_base_columns
-    base_selectbox = st._risk_v9_base_selectbox
-    base_radio = st.radio
     base_dataframe = st.dataframe
+    base_number_input = st.number_input
+    base_text_input = st.text_input
+    base_selectbox = st.selectbox
+    base_radio = st.radio
     base_markdown = st.markdown
     base_warning = st.warning
+    base_button = st.button
+    base_columns = st.columns
     base_container = st.container
     base_empty = st.empty
 
@@ -239,27 +401,28 @@ def render_risk_sizing(
 
     def cash_only_snapshot(payload: dict[str, Any]) -> tuple[float, float, float]:
         total, _, market_value = balance_snapshot(payload)
-        cash, source, fields = _v8._select_true_cash(payload)
+        cash, source, fields = _select_true_cash(payload)
         st.session_state["_risk_true_cash_source"] = source
         st.session_state["_risk_true_cash_fields"] = fields
         return float(total or 0.0), float(cash), float(market_value or 0.0)
 
-    _v2.quote_summary = _v8._quote_summary_with_risk_defaults
-    _v2._metric_box = _v8._compact_metric_box
-    _v2._render_tooltip_css = _v8._compact_v2_tooltip_css(previous_tooltip_css)
+    _v2.quote_summary = _quote_summary_with_defaults
+    _v2._metric_box = _compact_metric_box
+    _v2._render_tooltip_css = _tooltip_css_after_v2(previous_tooltip_css)
 
     st.dataframe = comma_dataframe
     st.number_input = _single_stop_number_input(base_number_input)
     st.text_input = _auto_quote_ticker_input(
+        base_text_input,
         base_selectbox,
         client=client,
         touch_session=touch_session,
     )
-    st.button = _hide_manual_quote_button(base_button)
+    st.selectbox = _compact_selectbox(base_selectbox, base_radio)
+    st.markdown = _section_header_markdown(base_markdown)
+    st.warning = _compact_warning(base_warning)
+    st.button = _hide_quote_button(base_button)
     st.columns = _full_width_ticker_columns(base_columns, base_container, base_empty)
-    st.selectbox = _v8._compact_selectbox(base_selectbox, base_radio)
-    st.markdown = _v8._section_header_markdown(base_markdown)
-    st.warning = _v8._compact_warning(base_warning)
 
     try:
         _v2.render_risk_sizing(
@@ -274,24 +437,20 @@ def render_risk_sizing(
         _v2.quote_summary = previous_quote_summary
         _v2._metric_box = previous_metric_box
         _v2._render_tooltip_css = previous_tooltip_css
-
         st.dataframe = base_dataframe
         st.number_input = base_number_input
         st.text_input = base_text_input
-        st.button = base_button
-        st.columns = base_columns
         st.selectbox = base_selectbox
         st.markdown = base_markdown
         st.warning = base_warning
+        st.button = base_button
+        st.columns = base_columns
 
     quote_error = st.session_state.pop("_risk_v9_quote_error", None)
     if quote_error:
         st.warning(str(quote_error))
-
     if st.session_state.pop("_risk_ask_unavailable", False):
-        st.warning(
-            "E*TRADE ASK UNAVAILABLE // Entry and Stop were not auto-reset because the selected symbol returned no usable ask."
-        )
+        st.warning("E*TRADE ASK UNAVAILABLE // Entry and Stop were not auto-reset because no usable ask was returned.")
 
     render_stockanalysis_portfolio(
         "risk_sizing_account",
