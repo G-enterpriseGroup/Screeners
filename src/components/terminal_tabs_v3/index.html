@@ -131,16 +131,72 @@
     function height(px) { post("streamlit:setFrameHeight", {height:px}); }
     function send(value) { post("streamlit:setComponentValue", {value:value, dataType:"json"}); }
 
-    // IMPORTANT SAFETY RULE:
-    // Never walk into or resize parent Streamlit DOM wrappers from inside this
-    // component. Biometric/unlock reruns can remount the component under a
-    // different wrapper, and forcing ancestor heights can collapse the entire
-    // app body. Use Streamlit's supported setFrameHeight message only.
+    // ==============================
+    // FRAME HEIGHT / SPACER CONTROL
+    // ==============================
+    // Streamlit custom components can initially mount at its default ~150px
+    // iframe height even though this tab bar is only 48px tall. That creates
+    // the black dead space between the orange tab line and the active feature.
+    //
+    // SAFETY: touch ONLY this iframe and the exact Streamlit wrappers that
+    // contain this iframe. NEVER walk upward through arbitrary ancestors; an
+    // earlier implementation did that and could collapse the whole app after
+    // biometric/Touch ID reruns.
+    function pinExactNavigationFrame() {
+      try {
+        const frame = window.frameElement;
+        if (!frame) return;
+        const px = FRAME_HEIGHT + "px";
+
+        const applyFrameBox = (node) => {
+          if (!node) return;
+          node.style.height = px;
+          node.style.minHeight = px;
+          node.style.maxHeight = px;
+          node.style.blockSize = px;
+          node.style.minBlockSize = px;
+          node.style.maxBlockSize = px;
+          node.style.marginTop = "0";
+          node.style.marginBottom = "0";
+          node.style.paddingTop = "0";
+          node.style.paddingBottom = "0";
+          node.style.overflow = "hidden";
+        };
+
+        applyFrameBox(frame);
+
+        // These selectors are specific Streamlit wrappers for THIS iframe.
+        // If Streamlit changes its DOM and they are absent, setFrameHeight
+        // still works and we simply skip the optional tightening.
+        const component = frame.closest('[data-testid="stCustomComponentV1"]');
+        if (component) applyFrameBox(component);
+
+        const element = frame.closest('[data-testid="stElementContainer"]');
+        if (element) {
+          applyFrameBox(element);
+          // Streamlit's main vertical stack normally adds ~1rem between
+          // element containers. Offset only this navigation element so the
+          // active workspace starts directly under the tab line.
+          element.style.marginBottom = "-1rem";
+        }
+      } catch (_) {}
+    }
+
     function enforceFrameHeight() {
       height(FRAME_HEIGHT);
-      window.requestAnimationFrame(() => height(FRAME_HEIGHT));
-      window.setTimeout(() => height(FRAME_HEIGHT), 50);
-      window.setTimeout(() => height(FRAME_HEIGHT), 250);
+      pinExactNavigationFrame();
+      window.requestAnimationFrame(() => {
+        height(FRAME_HEIGHT);
+        pinExactNavigationFrame();
+      });
+      window.setTimeout(() => {
+        height(FRAME_HEIGHT);
+        pinExactNavigationFrame();
+      }, 50);
+      window.setTimeout(() => {
+        height(FRAME_HEIGHT);
+        pinExactNavigationFrame();
+      }, 250);
     }
 
     let tabs = [];
