@@ -85,3 +85,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `7e50074d`.
 - **Lesson:** Invisible `st.markdown(<style>...)` calls can still cost vertical-stack spacing in Streamlit. Fold feature CSS into a visible feature element when compact spacing matters instead of adding hidden rows before content.
+
+## 2026-09-15 — Fix GEX raw-CSS rendering regression
+
+- **Feature changed:** GEX wrapper CSS delivery / compact spacing.
+- **Exact production file(s) changed:** `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The GEX page displayed the literal `<style>` block and CSS source below the top tabs instead of rendering `GEX // MULTI-TICKER GAMMA WORKSPACE` normally.
+- **Root cause:** The prior spacer-row fix buffered CSS and concatenated it into the first visible `st.markdown` block. In the deployed Streamlit renderer that combined payload was surfaced as page text, so the workaround corrupted the GEX render path.
+- **What was changed:** Removed all CSS concatenation and the GEX negative-margin rule. GEX wrapper CSS now uses style-only `st.html`, and the existing style-only markdown emitted by `gex_ui_v3.py` is routed to `st.html` only during the GEX render. All normal markdown passes through unchanged and the original `st.markdown` is restored in `finally`.
+- **Important behavior that must remain:** Never concatenate `<style>` source into visible GEX markdown. Never expose CSS text in the page. Do not use negative margins to hide spacing. Style-only CSS should use `st.html`, which Streamlit places outside the main layout when the payload contains only style tags.
+- **Files/features intentionally NOT changed:** Risk Sizing, E*TRADE OAuth, Holdings, Bull Debit, Muni, Touch ID authentication logic, GEX analytics/math, `gex_ui_v3.py`, `terminal_core.py`, and top-navigation files.
+- **Tests performed:** Re-fetched the exact committed `src/gex_workspace_v2.py` from `main`; confirmed no CSS concatenation and no negative-margin rule remain. GitHub Actions `Terminal Architecture Guard` run `34999147469` passed and therefore parsed all production Python files successfully, including the changed GEX wrapper.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `6962f37e`.
+- **Lesson:** For style-only CSS in Streamlit, use `st.html`; do not fold style tags into visible markdown just to avoid layout spacing.
