@@ -35,6 +35,10 @@ import streamlit.components.v1 as components
 from src.layout_guardrails import install_layout_guardrails
 
 
+# ==============================
+# FEATURE OWNERSHIP
+# ==============================
+
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
     "RISK SIZING",
@@ -52,30 +56,79 @@ _terminal_tabs = components.declare_component(
 
 install_layout_guardrails()
 
-# IMPORTANT: Custom Streamlit components default to a much taller frame while
-# loading. The tab component itself is only ~42-48px high. Keep both the iframe
-# and its Streamlit element container pinned to the actual navigation height so
-# there is no 100px+ black spacer between the tabs and the active feature.
+
+# ==============================
+# TOP NAVIGATION CSS
+# ==============================
+
+# IMPORTANT: Custom Streamlit components can reserve a much taller frame while
+# loading or rerendering. The terminal tab component itself is only 48px high.
+# The zero-height marker emitted immediately before the component lets this CSS
+# collapse the EXACT NEXT Streamlit element container instead of guessing the
+# browser-specific iframe title.
 #
-# This selector is intentionally NAVIGATION-SCOPED. Do not generalize it to all
-# iframes/components because GEX charts, keypad components, etc. need their own
-# heights.
+# This is intentionally NAVIGATION-SCOPED. Do not generalize it to all iframes
+# because GEX charts, lock-screen components, etc. need their own heights.
 st.markdown(
     """
     <style>
     /* ---------- TOP TERMINAL NAV ONLY ---------- */
+    .raj-terminal-tabs-v4-frame-anchor {
+        display:block !important;
+        width:0 !important;
+        height:0 !important;
+        min-height:0 !important;
+        max-height:0 !important;
+        overflow:hidden !important;
+        margin:0 !important;
+        padding:0 !important;
+    }
+
+    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor) {
+        height:0 !important;
+        min-height:0 !important;
+        max-height:0 !important;
+        margin:0 !important;
+        padding:0 !important;
+        overflow:hidden !important;
+    }
+
+    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor)
+    + [data-testid="stElementContainer"],
+    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor)
+    + [data-testid="stElementContainer"] [data-testid="stCustomComponentV1"],
+    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor)
+    + [data-testid="stElementContainer"] iframe {
+        height:48px !important;
+        min-height:48px !important;
+        max-height:48px !important;
+        margin-top:0 !important;
+        margin-bottom:0 !important;
+        padding-top:0 !important;
+        padding-bottom:0 !important;
+        overflow:hidden !important;
+        display:block !important;
+    }
+
     iframe[title="raj_terminal_tabs_v4"],
-    iframe[title*="raj_terminal_tabs_v4"] {
+    iframe[title*="raj_terminal_tabs_v4"],
+    iframe[title*="raj_terminal_tabs"],
+    iframe[src*="raj_terminal_tabs_v4"],
+    iframe[src*="terminal_tabs_v3"] {
         height:48px !important;
         min-height:48px !important;
         max-height:48px !important;
         display:block !important;
         margin:0 !important;
         padding:0 !important;
+        overflow:hidden !important;
     }
 
     [data-testid="stElementContainer"]:has(iframe[title="raj_terminal_tabs_v4"]),
-    [data-testid="stElementContainer"]:has(iframe[title*="raj_terminal_tabs_v4"]) {
+    [data-testid="stElementContainer"]:has(iframe[title*="raj_terminal_tabs_v4"]),
+    [data-testid="stElementContainer"]:has(iframe[title*="raj_terminal_tabs"]),
+    [data-testid="stElementContainer"]:has(iframe[src*="raj_terminal_tabs_v4"]),
+    [data-testid="stElementContainer"]:has(iframe[src*="terminal_tabs_v3"]) {
         height:48px !important;
         min-height:48px !important;
         max-height:48px !important;
@@ -87,7 +140,10 @@ st.markdown(
     }
 
     [data-testid="stCustomComponentV1"]:has(iframe[title="raj_terminal_tabs_v4"]),
-    [data-testid="stCustomComponentV1"]:has(iframe[title*="raj_terminal_tabs_v4"]) {
+    [data-testid="stCustomComponentV1"]:has(iframe[title*="raj_terminal_tabs_v4"]),
+    [data-testid="stCustomComponentV1"]:has(iframe[title*="raj_terminal_tabs"]),
+    [data-testid="stCustomComponentV1"]:has(iframe[src*="raj_terminal_tabs_v4"]),
+    [data-testid="stCustomComponentV1"]:has(iframe[src*="terminal_tabs_v3"]) {
         height:48px !important;
         min-height:48px !important;
         max-height:48px !important;
@@ -143,6 +199,10 @@ st.markdown(
 )
 
 
+# ==============================
+# TAB STATE STORAGE
+# ==============================
+
 @st.cache_resource
 def _tab_state_vault() -> dict[str, dict[str, Any]]:
     return {}
@@ -196,10 +256,21 @@ def _save(vault_key: str, order: Iterable[str], active: Any) -> dict[str, Any]:
     return state
 
 
+# ==============================
+# PUBLIC RENDER ENTRYPOINT
+# ==============================
+
 def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
     """Render navigation only and return the active terminal tab."""
     state = _load(vault_key)
     storage_key = "raj-terminal-tabs-" + str(vault_key)[:16]
+
+    # Zero-height marker for CSS sibling targeting. This guarantees the
+    # following component element is the only frame collapsed to 48px.
+    st.markdown(
+        '<span class="raj-terminal-tabs-v4-frame-anchor"></span>',
+        unsafe_allow_html=True,
+    )
 
     result = _terminal_tabs(
         tabs=state["order"],
