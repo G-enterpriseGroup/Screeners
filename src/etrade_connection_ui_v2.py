@@ -1,8 +1,9 @@
 """Compact E*TRADE connection / OAuth UI for Raj's Terminal.
 
 This module owns the presentation of the connection strip and OAuth completion
-panel. It deliberately keeps the OAuth widgets in one physical Streamlit row:
-OPEN LOGIN | VERIFICATION CODE | VERIFY AND CONNECT.
+panel. The OAuth completion panel deliberately keeps only the two controls the
+user needs in one physical Streamlit row:
+VERIFICATION CODE | VERIFY AND CONNECT.
 
 No brokerage/session math or token semantics live here; those are injected from
 the terminal entrypoint so this stays a pure UI layer.
@@ -29,8 +30,7 @@ def _render_compact_css() -> None:
         [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) [data-testid="stTextInput"] label{display:none!important;}
         [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) [data-testid="stTextInput"] div[data-baseweb="input"]>div,
         [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) [data-testid="stTextInput"] input{min-height:34px!important;height:34px!important;}
-        [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) .stButton>button,
-        [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) .stLinkButton>a{min-height:34px!important;height:34px!important;padding:.16rem .42rem!important;margin:0!important;font-size:.69rem!important;line-height:1!important;}
+        [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) .stButton>button{min-height:34px!important;height:34px!important;padding:.16rem .42rem!important;margin:0!important;font-size:.69rem!important;line-height:1!important;}
         </style>
         """,
         unsafe_allow_html=True,
@@ -112,9 +112,7 @@ def render_compact_etrade_connection(
             '<div class="etrade-oauth-v3-head"><span>COMPLETE E*TRADE AUTHORIZATION</span><span>OAUTH</span></div>',
             unsafe_allow_html=True,
         )
-        login_col, code_col, verify_col = st.columns([1.25, 4.7, 1.65], gap="small", vertical_alignment="bottom")
-        with login_col:
-            st.link_button("OPEN LOGIN", request["authorization_url"], type="primary", width="stretch")
+        code_col, verify_col = st.columns([5.4, 1.7], gap="small", vertical_alignment="bottom")
         with code_col:
             verifier = st.text_input(
                 "Verification Code",
