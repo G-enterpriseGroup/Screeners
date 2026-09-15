@@ -113,3 +113,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `8071cff`, `95dcd74`.
 - **Lesson:** A terminal-wide typing affordance is shared appearance. Keep it in the theme layer and use native caret behavior so selection, keyboard navigation, accessibility, and input-method behavior stay correct.
+
+## 2026-09-15 — Caret CSS startup crash recovery
+
+- **Feature changed:** Shared terminal theme / deployment safety guard.
+- **Exact production file(s) changed:** `src/theme.py`, `scripts/validate_architecture.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The entire Streamlit app failed at startup with `NameError` while importing `src/theme.py`; the traceback pointed at the new `caret-color` CSS block.
+- **Root cause:** `_TYPING_CARET_CSS` was created as a Python f-string while containing normal CSS `{ ... }` braces. Python treated part of the CSS block as an f-string expression during module import, so a shared appearance change prevented every terminal feature from loading.
+- **What was changed:** Replaced the caret stylesheet f-string with a plain triple-quoted CSS string and explicit `__RAJ_CARET_COLOR__` substitution via `.replace()`. Added a permanent source comment explaining why CSS blocks must remain plain strings. Expanded the architecture validator to include `src/theme.py` and `src/layout_guardrails.py` and to reject module-level `*_CSS` constants implemented as f-strings.
+- **Important behavior that must remain:** Never use a Python f-string for a module-level CSS block. Use a plain string plus explicit substitution. A shared visual change must never be able to crash app startup before Risk, GEX, OAuth, Holdings, navigation, or authentication render.
+- **Files/features intentionally NOT changed:** Risk Sizing, GEX, OAuth, Holdings, top navigation, Touch ID/authentication logic, Bull Debit logic, municipal tools, and `terminal_core.py`.
+- **Tests performed:** Re-fetched the corrected production theme; the original recovery commit `632a76e` passed the existing architecture workflow. Then strengthened `scripts/validate_architecture.py`; the new `validate-boundaries` check completed successfully on commit `c52726d`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `632a76e`, `c52726d`.
+- **Lesson:** Shared CSS is startup-critical code. Treat CSS construction as production code, avoid f-string brace hazards, and make the guard explicitly test shared appearance files so a cosmetic request cannot take down the whole terminal.
