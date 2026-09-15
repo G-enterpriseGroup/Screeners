@@ -69,6 +69,10 @@ install_layout_guardrails()
 # collapse the EXACT NEXT Streamlit element container instead of guessing the
 # browser-specific iframe title.
 #
+# SAFETY: do not walk upward through parent DOM nodes from inside the iframe.
+# Biometric/unlock reruns can remount the component under a different wrapper,
+# and forcing ancestor heights can collapse the entire app body.
+#
 # This is intentionally NAVIGATION-SCOPED. Do not generalize it to all iframes
 # because GEX charts, lock-screen components, etc. need their own heights.
 st.markdown(
@@ -279,7 +283,7 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
         active=state["active"],
         storage_key=storage_key,
         height=NAV_FRAME_HEIGHT,
-        key="raj_terminal_draggable_tabs_v4_h48",
+        key="raj_terminal_draggable_tabs_v4_h48_safe_unlock",
         default={
             "order": state["order"],
             "active": state["active"],
