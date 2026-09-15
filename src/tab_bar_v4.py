@@ -1,7 +1,26 @@
 """Clickable + draggable terminal tab bar for Raj's Terminal.
 
+OWNERSHIP / EDITING NOTES
+-------------------------
+THIS FILE owns only the TOP TERMINAL NAVIGATION shell.
+
+EDIT HERE for:
+- top-level tab sizing / spacing / appearance;
+- the Streamlit component frame that contains the top tab bar;
+- tab order persistence and active-tab routing state.
+
+DO NOT edit here for:
+- Risk Sizing content;
+- GEX content/subtabs/tables;
+- E*TRADE OAuth layout;
+- Holdings content;
+- municipal or bull-debit feature content.
+
+Standing layout rule: the navigation must reserve ONLY the pixels it actually
+uses. Never leave a default Streamlit component-height spacer below the bar.
+
 V4 is navigation-only: it never renders tab content itself. This prevents
-cached helper modules from leaving an old GEX scaffold on screen. The main
+cached helper modules from leaving an old feature scaffold on screen. The main
 Streamlit entrypoint owns all tab rendering, including GEX.
 """
 
@@ -33,9 +52,52 @@ _terminal_tabs = components.declare_component(
 
 install_layout_guardrails()
 
+# IMPORTANT: Custom Streamlit components default to a much taller frame while
+# loading. The tab component itself is only ~42-48px high. Keep both the iframe
+# and its Streamlit element container pinned to the actual navigation height so
+# there is no 100px+ black spacer between the tabs and the active feature.
+#
+# This selector is intentionally NAVIGATION-SCOPED. Do not generalize it to all
+# iframes/components because GEX charts, keypad components, etc. need their own
+# heights.
 st.markdown(
     """
     <style>
+    /* ---------- TOP TERMINAL NAV ONLY ---------- */
+    iframe[title="raj_terminal_tabs_v4"],
+    iframe[title*="raj_terminal_tabs_v4"] {
+        height:48px !important;
+        min-height:48px !important;
+        max-height:48px !important;
+        display:block !important;
+        margin:0 !important;
+        padding:0 !important;
+    }
+
+    [data-testid="stElementContainer"]:has(iframe[title="raj_terminal_tabs_v4"]),
+    [data-testid="stElementContainer"]:has(iframe[title*="raj_terminal_tabs_v4"]) {
+        height:48px !important;
+        min-height:48px !important;
+        max-height:48px !important;
+        margin-top:0 !important;
+        margin-bottom:0 !important;
+        padding-top:0 !important;
+        padding-bottom:0 !important;
+        overflow:hidden !important;
+    }
+
+    [data-testid="stCustomComponentV1"]:has(iframe[title="raj_terminal_tabs_v4"]),
+    [data-testid="stCustomComponentV1"]:has(iframe[title*="raj_terminal_tabs_v4"]) {
+        height:48px !important;
+        min-height:48px !important;
+        max-height:48px !important;
+        margin:0 !important;
+        padding:0 !important;
+        overflow:hidden !important;
+    }
+
+    /* Table-header styling historically lived with the tab shell. Keep it
+       unchanged here until it is intentionally moved to a shared table theme. */
     [data-testid="stDataFrame"] [role="columnheader"],
     [data-testid="stDataEditor"] [role="columnheader"] {
         background:#fb8b1e !important;
