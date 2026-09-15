@@ -15,6 +15,9 @@
       padding:0;
       width:100%;
       max-width:100%;
+      height:48px;
+      min-height:48px;
+      max-height:48px;
       background:var(--bb-black);
       color:var(--bb-orange);
       font-family:"Courier New",monospace;
@@ -30,7 +33,9 @@
       width:100%;
       max-width:100%;
       min-width:0;
-      min-height:42px;
+      height:48px;
+      min-height:48px;
+      max-height:48px;
       border-bottom:1px solid var(--bb-orange);
       background:var(--bb-black);
       box-sizing:border-box;
@@ -117,12 +122,24 @@
 <body>
   <div id="tabs"></div>
   <script>
+    const FRAME_HEIGHT = 48;
+
     function post(type, data) {
       window.parent.postMessage(Object.assign({isStreamlitMessage:true, type:type}, data), "*");
     }
     function ready() { post("streamlit:componentReady", {apiVersion:1}); }
     function height(px) { post("streamlit:setFrameHeight", {height:px}); }
     function send(value) { post("streamlit:setComponentValue", {value:value, dataType:"json"}); }
+
+    // Streamlit custom components can briefly revert to their default iframe
+    // height during reruns. Re-assert the navigation's real 48px height after
+    // render/load so the active feature starts immediately below the tab bar.
+    function enforceFrameHeight() {
+      height(FRAME_HEIGHT);
+      window.requestAnimationFrame(() => height(FRAME_HEIGHT));
+      window.setTimeout(() => height(FRAME_HEIGHT), 50);
+      window.setTimeout(() => height(FRAME_HEIGHT), 250);
+    }
 
     let tabs = [];
     let active = "";
@@ -309,9 +326,7 @@
       hint.textContent = "CLICK = OPEN  //  DRAG = REORDER";
       root.appendChild(hint);
 
-      // The component never grows vertically because tabs stay on one line.
-      // Horizontal overflow is scrollable instead of clipped/overlapped.
-      window.setTimeout(() => height(48), 0);
+      enforceFrameHeight();
     }
 
     function applyServer(args) {
@@ -372,8 +387,18 @@
     }
 
     window.addEventListener("message", onMessage);
-    window.addEventListener("load", () => height(48));
+    window.addEventListener("load", enforceFrameHeight);
+
+    if (window.ResizeObserver) {
+      const observer = new ResizeObserver(enforceFrameHeight);
+      window.addEventListener("load", () => {
+        const root = document.getElementById("tabs");
+        if (root) observer.observe(root);
+      });
+    }
+
     ready();
+    enforceFrameHeight();
   </script>
 </body>
 </html>
