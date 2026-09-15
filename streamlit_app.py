@@ -39,6 +39,13 @@ from src.session_persistence import (
     save_etrade_session,
 )
 from src.tab_bar_v4 import render_terminal_tab_bar
+from src.theme import install_typing_caret_theme
+
+
+# Shared appearance is emitted after terminal_core has completed set_page_config
+# and on every Streamlit rerun/session. Do not gate this with a process-global
+# flag: later browser sessions must receive the same dropdown/caret stylesheet.
+install_typing_caret_theme()
 
 
 # Preserve references to the core implementations before installing the
