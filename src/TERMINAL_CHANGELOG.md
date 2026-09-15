@@ -281,3 +281,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `4004ba2458dd90edcf81038b9ad49a8eb763f5bd` plus this changelog commit.
 - **Lesson:** Keep human-readable audit serialization deterministic, but keep the actual Pine transport minimal. A screenshot that still shows `Mode`, `Contracts`, `Source URL`, and the instruction separator under default `MASTER A6` is showing an older verbose bridge build, not the current Pine-router-safe production output.
+
+## 2026-09-15 — High-contrast GEX TradingView copy control
+
+- **Feature changed:** GEX TradingView bridge visibility / copy-to-clipboard affordance.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The built-in copy-to-clipboard icon on the GEX TradingView code block could blend into the terminal's dark background and be difficult to see.
+- **Root cause:** Streamlit's native code-block copy control inherited generic theme colors, while the terminal deliberately uses dark surfaces and some global black text for other widgets. The GEX bridge did not explicitly force contrast for the copy button's SVG/icon states.
+- **What was changed:** Added a plain-string `_TRADINGVIEW_CODE_CSS` stylesheet scoped only to `.st-key-gexv3_bridge_code`. The code block now keeps a near-black background, bright near-white code text, and an orange-edged frame. The native copy control is forced visible with a dark button background, Bloomberg-orange border/text/SVG strokes/fills, and full opacity. Hover/focus reverses to orange background with black icon/text plus a visible focus ring. The style is emitted with style-only `st.html()` immediately before the code block so it does not add a visible spacer row.
+- **Important behavior that must remain:** The copy icon must remain clearly visible on black in all normal/hover/focus states. Keep this selector scoped to the GEX TradingView bridge; do not globally recolor every Streamlit button or code block. Preserve the MASTER A6 payload and Pine router logic unchanged.
+- **Files/features intentionally NOT changed:** GEX formulas/math in `src/gex_ui.py`, E*TRADE/session plumbing, Overview/Analytics calculations, Risk Sizing, OAuth, Holdings, Bull Debit, Muni, Orders, navigation, shared theme, Touch ID/authentication, and `src/terminal_core.py`.
+- **Tests performed:** Re-fetched the exact committed production `src/gex_ui_v3.py` and confirmed the copy selectors are confined to `.st-key-gexv3_bridge_code`, the stylesheet is a normal triple-quoted string rather than an f-string, and the existing TradingView renderer emits it via `st.html()` before the code container. GitHub Actions `validate-boundaries` passed on code commit `1e9f8511f287208a469abe96c951ee3c9e4eb48b`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `1e9f8511f287208a469abe96c951ee3c9e4eb48b` plus this changelog commit.
+- **Lesson:** High-contrast native controls should be styled at the narrowest feature-owned container possible. Dark terminal surfaces need explicit icon/SVG colors as well as text colors so controls never disappear into the background.
