@@ -2,9 +2,13 @@
 
 This renderer deliberately avoids the v4/v6 source-rewrite/expander chain.
 It calls the known-good v2 sizing engine directly, keeps both primary sections
-always visible, and layers the current ASK defaults, smart ticker selector,
-live stop percentage, unused-risk percentage, true-cash balance selection,
-comma formatting, and cached sector/industry context on top.
+always visible, and layers the current ASK defaults, live stop percentage,
+unused-risk percentage, true-cash balance selection, comma formatting, and
+cached sector/industry context on top.
+
+Part 2 intentionally uses Streamlit's native text input for the ticker. The
+previous large autocomplete selectbox could prevent the rest of Section 2 from
+rendering on some sessions, leaving the area below the header blank.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import src.risk_sizing_ui_v2 as _v2
 from src.etrade_client import find_number
 from src.stockanalysis_portfolio_v5 import cache_status, render_stockanalysis_portfolio
 from src.terminal_number_format import comma_column_config
-from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_selector
+from src.ticker_autocomplete import company_name, record_lookup
 
 
 _ORIGINAL_QUOTE_SUMMARY = _v2.quote_summary
@@ -256,20 +260,10 @@ def _live_stop_number_input(original_number_input):
     return wrapped
 
 
-def _smart_ticker_text_input(original_text_input, original_selectbox):
+def _native_ticker_text_input(original_text_input):
+    """Keep Section 2 render-safe by using the native ticker text box."""
     def wrapped(label, *args, **kwargs):
-        if kwargs.get("key") != "risk_ticker":
-            return original_text_input(label, *args, **kwargs)
-        current = str(st.session_state.get("risk_ticker") or kwargs.get("value") or "SPY").strip().upper()
-        symbol = smart_ticker_selector(
-            original_selectbox,
-            label=str(label),
-            current=current,
-            key="risk_ticker_smart_selector_v7",
-            help_text=str(kwargs.get("help") or ""),
-        )
-        st.session_state["risk_ticker"] = symbol
-        return symbol
+        return original_text_input(label, *args, **kwargs)
     return wrapped
 
 
@@ -296,7 +290,7 @@ def render_risk_sizing(
     """Render the complete v2 trade-sizing workflow with no expander nesting."""
     _render_css()
     st.markdown(
-        '<div class="risk-v7-build">RISK ENGINE BUILD // V7 DIRECT // SECTION 2 ALWAYS VISIBLE</div>',
+        '<div class="risk-v7-build">RISK ENGINE BUILD // V7.1 DIRECT // NATIVE TICKER FAIL-SAFE // SECTION 2 ALWAYS VISIBLE</div>',
         unsafe_allow_html=True,
     )
 
@@ -305,7 +299,6 @@ def render_risk_sizing(
     original_dataframe = st.dataframe
     original_number_input = st.number_input
     original_text_input = st.text_input
-    original_selectbox = st.selectbox
     original_markdown = st.markdown
 
     def comma_dataframe(data=None, *args, **kwargs):
@@ -323,7 +316,7 @@ def render_risk_sizing(
     _v2._metric_box = _unused_risk_metric_box(previous_metric_box)
     st.dataframe = comma_dataframe
     st.number_input = _live_stop_number_input(original_number_input)
-    st.text_input = _smart_ticker_text_input(original_text_input, original_selectbox)
+    st.text_input = _native_ticker_text_input(original_text_input)
     st.markdown = _section_header_markdown(original_markdown)
 
     try:
