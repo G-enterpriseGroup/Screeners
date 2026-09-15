@@ -27,3 +27,5 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-15 gex-full-loader-hot-reload-v2
 # clean rebuild marker: 2026-09-15 restore-risk-sizing-part-2-v1
 # clean rebuild marker: 2026-09-15 restore-risk-sizing-part-2-v2-direct-visible
+# clean rebuild marker: 2026-09-15 risk-sizing-v7-1-native-ticker-failsafe
+# clean rebuild marker: 2026-09-15 gex-fragment-live-context-v3
