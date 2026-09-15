@@ -1,5 +1,25 @@
 """Fail-safe production Risk Sizing v10.
 
+OWNERSHIP / EDITING NOTES
+-------------------------
+THIS IS THE PRODUCTION OWNER for Risk Sizing Part 2 interaction safety.
+
+EDIT THIS FILE for:
+- ticker search / ticker-company selection behavior;
+- automatic E*TRADE quote loading after ticker selection;
+- ASK -> Entry and 5%-below-ASK Stop interaction plumbing;
+- Part 2 fail-safe behavior when autocomplete fails;
+- narrowly scoped Part 2 layout fixes.
+
+DO NOT edit GEX, OAuth, Holdings, or navigation files to fix Risk Sizing.
+DO NOT add module-level assignments such as `st.columns = ...` or
+`st.button = ...`. A Risk fix must not replace Streamlit functions globally.
+
+Supporting responsibilities:
+- base Risk UI sequence/cards: `src/risk_sizing_ui_v9.py` / `v2.py`;
+- formulas: `src/risk_sizing.py`;
+- ticker directory/search data: `src/ticker_autocomplete.py`.
+
 This module keeps the v9 calculations/presentation but removes the two fragile
 behaviors that could blank Part 2:
 1) no global st.columns interception;
@@ -109,7 +129,7 @@ def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, cl
             _load_quote(selected)
             return selected
         except Exception as exc:
-            # Part 2 must still render.  The native field is the permanent
+            # Part 2 must still render. The native field is the permanent
             # emergency fallback if Streamlit's selectbox changes behavior.
             st.session_state["_risk_v10_selector_error"] = str(exc)
             local_kwargs = dict(kwargs)
@@ -130,6 +150,7 @@ def _safe_full_width_ticker_columns(original_columns, original_container, origin
 
 
 def render_risk_sizing(*args, **kwargs):
+    """Install Risk-only overrides for one render, then restore them."""
     previous_css = _v9._render_css
     previous_ticker = _v9._auto_quote_ticker_input
     previous_columns = _v9._full_width_ticker_columns
@@ -141,6 +162,8 @@ def render_risk_sizing(*args, **kwargs):
     try:
         return _v9.render_risk_sizing(*args, **kwargs)
     finally:
+        # REQUIRED: always restore the underlying module hooks so a Risk Sizing
+        # render cannot leak behavior into a later rerun or another feature.
         _v9._render_css = previous_css
         _v9._auto_quote_ticker_input = previous_ticker
         _v9._full_width_ticker_columns = previous_columns
