@@ -638,13 +638,7 @@ def _consume_delete_request(vault_key: str) -> None:
 # TRADINGVIEW / PINE ROUTER BRIDGE
 # ==============================
 def _pine_router_block(result: dict[str, Any]) -> str:
-    """Emit only lines consumed by the uploaded GEX TEST Pine router.
-
-    The Pine script routes by ``Ticker:`` and then parses only packed row types
-    (SPOT/GFLIP/WALL/OI/GEXPOS/GEXNEG). Keeping MASTER A6 to exactly those
-    required lines makes the multi-ticker payload materially smaller, so later
-    symbols are much less likely to be truncated by TradingView's text input.
-    """
+    """Optional compact diagnostic block for the Pine router."""
     symbol = _base.core._normalize_ticker(result.get("symbol"))
     if not symbol:
         return ""
@@ -653,7 +647,7 @@ def _pine_router_block(result: dict[str, Any]) -> str:
 
 
 def _pine_master_bridge_text(result_map: dict[str, Any], tickers: list[str]) -> str:
-    """Build compact multi-ticker MASTER A6 for the uploaded Pine router."""
+    """Build the optional compact multi-ticker diagnostic payload."""
     blocks: list[str] = []
     for ticker in tickers:
         result = result_map.get(ticker)
@@ -666,16 +660,24 @@ def _pine_master_bridge_text(result_map: dict[str, Any], tickers: list[str]) -> 
 
 
 def _google_sheets_master_text(result_map: dict[str, Any], tickers: list[str]) -> str:
-    """Preserve the prior full Google-Sheets-style A6 as an audit option."""
-    all_output_lines: list[str] = []
+    """Mirror the proven Apps Script A6 assembly exactly.
+
+    Each successful ``summaryText`` ends with one newline. Apps Script then
+    splits it into lines, pushes one additional blank line, joins everything
+    with ``\n``, and trims the final A6. This creates two blank rows between
+    ticker blocks (three newline characters) and preserves the complete
+    metadata/instruction/separator structure that the user's working Sheets A6
+    sends to TradingView.
+    """
+    blocks: list[str] = []
     for ticker in tickers:
         result = result_map.get(ticker)
         if not result:
             continue
-        summary = _base._google_sheets_summary_text(result)
-        all_output_lines.extend(summary.split("\n"))
-        all_output_lines.append("")
-    return "\n".join(all_output_lines).strip()
+        block = _base._google_sheets_summary_text(result).rstrip("\n")
+        if block:
+            blocks.append(block)
+    return "\n\n\n".join(blocks).strip()
 
 
 def _pine_router_headers(text: str) -> list[str]:
@@ -685,6 +687,43 @@ def _pine_router_headers(text: str) -> list[str]:
         for value in re.findall(r"(?m)^Ticker:\s*([^\r\n]+)\s*$", str(text or ""))
         if _base.core._normalize_ticker(value)
     ]
+
+
+def _apps_script_contract_issues(text: str, expected: list[str]) -> list[str]:
+    """Validate the copied block against the working Apps Script A6 contract."""
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    issues: list[str] = []
+    headers = _pine_router_headers(normalized)
+    for ticker in expected:
+        if ticker not in headers:
+            issues.append(f"{ticker}:HEADER")
+            continue
+        start = normalized.find(f"Ticker: {ticker}")
+        if start < 0:
+            issues.append(f"{ticker}:HEADER")
+            continue
+        next_start = normalized.find("\nTicker: ", start + 1)
+        block = normalized[start:] if next_start < 0 else normalized[start:next_start]
+        required = (
+            "Mode: ",
+            "Spot: ",
+            "Max DTE Used: ",
+            "Contracts Used: ",
+            "Net Current GEX: ",
+            "Source URL: ",
+            "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels",
+            "------------------------------------------------------------",
+            "\nSPOT,",
+            "\nCALLWALL,",
+            "\nPUTWALL,",
+            "\nMAXCALLOI,",
+            "\nMAXPUTOI,",
+        )
+        if any(token not in block for token in required):
+            issues.append(f"{ticker}:STRUCTURE")
+        if "\nGEXPOS" not in block and "\nGEXNEG" not in block:
+            issues.append(f"{ticker}:GEX")
+    return issues
 
 
 _TRADINGVIEW_CODE_CSS = """
@@ -749,35 +788,39 @@ _TRADINGVIEW_CODE_CSS = """
 
 
 def _render_tradingview_pine(state: dict[str, Any], result_map: dict[str, Any]) -> None:
-    """Render a Pine-router-safe bridge while retaining a full Sheets audit mode."""
+    """Render the exact working Apps Script A6 contract by default."""
     available = [ticker for ticker in state["tickers"] if ticker in result_map]
     if not available:
         st.info("Refresh GEX first. The TradingView bridge is built from refreshed ticker results.")
         return
 
-    full_label = "MASTER A6 // GOOGLE SHEETS FULL"
-    options = ["MASTER A6", full_label] + available
+    compact_label = "MASTER A6 // COMPACT DIAGNOSTIC"
+    options = ["MASTER A6", compact_label] + available
     choice = st.selectbox("PACKED GAMMA BLOCK", options, key="gexv3_bridge_choice")
 
     if choice == "MASTER A6":
-        text = _pine_master_bridge_text(result_map, state["tickers"])
+        text = _google_sheets_master_text(result_map, state["tickers"])
         filename = "raj_terminal_gex_A6.txt"
         expected = available
-        mode_text = "PINE ROUTER-SAFE // Ticker: + packed rows only"
-    elif choice == full_label:
-        text = _google_sheets_master_text(result_map, state["tickers"])
-        filename = "raj_terminal_gex_A6_google_sheets_full.txt"
+        mode_text = "EXACT GOOGLE SHEETS A6 // FULL APPS SCRIPT SUMMARY TEXT"
+        contract_check = True
+    elif choice == compact_label:
+        text = _pine_master_bridge_text(result_map, state["tickers"])
+        filename = "raj_terminal_gex_A6_compact_diagnostic.txt"
         expected = available
-        mode_text = "FULL GOOGLE SHEETS STRUCTURE // audit/reference"
+        mode_text = "COMPACT DIAGNOSTIC ONLY // NOT THE DEFAULT COPY FORMAT"
+        contract_check = False
     else:
-        text = _pine_router_block(result_map[choice])
+        text = _base._google_sheets_summary_text(result_map[choice]).strip()
         filename = f"{choice}_gex.txt"
         expected = [choice]
-        mode_text = f"{choice} // PINE ROUTER-SAFE SINGLE TICKER"
+        mode_text = f"{choice} // EXACT GOOGLE SHEETS SINGLE-TICKER BLOCK"
+        contract_check = True
 
     headers = _pine_router_headers(text)
     missing = [ticker for ticker in expected if ticker not in headers]
     duplicate_headers = sorted({ticker for ticker in headers if headers.count(ticker) > 1})
+    contract_issues = _apps_script_contract_issues(text, expected) if contract_check else []
 
     st.caption(
         "TRADINGVIEW BRIDGE // "
@@ -785,13 +828,24 @@ def _render_tradingview_pine(state: dict[str, Any], result_map: dict[str, Any]) 
         + f" // {len(headers)}/{len(expected)} TICKER HEADERS // {len(text):,} CHARACTERS"
     )
     if missing:
-        st.error("PINE ROUTER CHECK FAILED // MISSING: " + ", ".join(missing[:12]))
+        st.error("A6 CHECK FAILED // MISSING TICKER: " + ", ".join(missing[:12]))
     elif duplicate_headers:
-        st.warning("PINE ROUTER CHECK // DUPLICATE HEADERS: " + ", ".join(duplicate_headers[:12]))
+        st.warning("A6 CHECK // DUPLICATE HEADERS: " + ", ".join(duplicate_headers[:12]))
+    elif contract_issues:
+        st.error("A6 APPS SCRIPT CONTRACT FAILED // " + ", ".join(contract_issues[:12]))
+    elif contract_check:
+        st.success(
+            f"A6 APPS SCRIPT CONTRACT // PASS // {len(expected)}/{len(expected)} FULL TICKER BLOCKS"
+        )
     else:
         st.success(
-            f"PINE ROUTER CHECK // PASS // {len(expected)}/{len(expected)} TICKERS PRESENT"
+            f"COMPACT HEADER CHECK // PASS // {len(expected)}/{len(expected)} TICKERS PRESENT"
         )
+
+    st.caption(
+        "COPY THIS BLOCK INTO TRADINGVIEW → GEX TEST → PACKED GAMMA LEVELS, "
+        "THEN APPLY/OK THE INDICATOR SETTINGS. MASTER A6 NOW MATCHES THE WORKING SHEETS A6 STRUCTURE."
+    )
 
     # Style-only HTML does not add another visible Streamlit row. Keep these
     # selectors scoped to this exact TradingView bridge container.
