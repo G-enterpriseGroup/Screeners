@@ -36,3 +36,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-15 compact-etrade-oauth-panel-v2
 # clean rebuild marker: 2026-09-15 etrade-verifier-inline-button-v3
 # clean rebuild marker: 2026-09-15 etrade-structural-oauth-renderer-v4
+# clean rebuild marker: 2026-09-15 risk-sizing-v9-seamless-dynamic-ticker
