@@ -36,7 +36,7 @@ from src.gex_ui_v3 import render_gex as _render_gex_v3
 # ==============================
 
 def _gex_subtab_skin_css() -> str:
-    """Return GEX secondary-navigation and control CSS as style-only HTML.
+    """Return GEX secondary-navigation CSS as style-only HTML.
 
     Streamlit's ``st.html`` sends style-only content to its event container,
     which applies the CSS without reserving a visible row in the app layout.
@@ -96,65 +96,6 @@ def _gex_subtab_skin_css() -> str:
         div[data-testid="stTabs"] div[data-baseweb="tab-panel"] {
             padding-top: .22rem !important;
         }
-
-        /* GEX DROPDOWNS: selected values must never render black-on-black. */
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            background: #050505 !important;
-            border-color: #fb8b1e !important;
-            color: #f2f2f2 !important;
-            box-shadow: none !important;
-        }
-
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] span,
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] input,
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] [data-testid="stMarkdownContainer"] {
-            color: #f2f2f2 !important;
-            -webkit-text-fill-color: #f2f2f2 !important;
-            font-family: "Courier New", monospace !important;
-            font-weight: 800 !important;
-        }
-
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] svg {
-            color: #fb8b1e !important;
-            fill: #fb8b1e !important;
-        }
-
-        /* BaseWeb renders the open menu in a portal outside the selectbox. */
-        div[data-baseweb="popover"] [role="listbox"],
-        div[data-baseweb="popover"] ul[role="listbox"],
-        div[data-baseweb="popover"] div[data-baseweb="menu"] {
-            background: #050505 !important;
-            border: 1px solid #fb8b1e !important;
-            color: #f2f2f2 !important;
-        }
-
-        div[data-baseweb="popover"] [role="option"] {
-            background: #050505 !important;
-            color: #f2f2f2 !important;
-            -webkit-text-fill-color: #f2f2f2 !important;
-            font-family: "Courier New", monospace !important;
-            font-weight: 800 !important;
-        }
-
-        div[data-baseweb="popover"] [role="option"] * {
-            color: inherit !important;
-            -webkit-text-fill-color: currentColor !important;
-            font-family: "Courier New", monospace !important;
-            font-weight: 800 !important;
-        }
-
-        div[data-baseweb="popover"] [role="option"]:hover,
-        div[data-baseweb="popover"] [role="option"]:focus {
-            background: #171007 !important;
-            color: #ffad52 !important;
-            -webkit-text-fill-color: #ffad52 !important;
-        }
-
-        div[data-baseweb="popover"] [role="option"][aria-selected="true"] {
-            background: #fb8b1e !important;
-            color: #000000 !important;
-            -webkit-text-fill-color: #000000 !important;
-        }
         </style>
     """
 
@@ -212,7 +153,7 @@ def _discover_terminal_context() -> tuple[Any, str, Any]:
 def _render_with_style_only_html(client: Any, vault_key: str, touch: Any) -> None:
     """Render GEX while routing only style-only markdown through ``st.html``.
 
-    `src.gex_ui_v3.py` currently emits its feature CSS with a standalone
+    `src.gex_ui_v3_base.py` emits its feature CSS with a standalone
     ``st.markdown(<style>...</style>)`` call. For GEX only, route that exact
     style-only case through ``st.html`` so Streamlit applies it without adding
     a visible layout row. All normal markdown is passed through unchanged.
