@@ -39,6 +39,78 @@ def _production_caption(body, *args, **kwargs):
 st.caption = _production_caption
 
 
+def _render_gex_subtab_skin() -> None:
+    """Make Streamlit tabs look like unmistakable terminal sub-tabs.
+
+    This CSS is emitted only while the GEX renderer is active, so the second
+    navigation row appears only inside the GEX terminal tab. It also styles the
+    nested RAW STRIKES tabs consistently.
+    """
+    st.markdown(
+        """
+        <style>
+        /* GEX SECONDARY NAVIGATION */
+        div[data-testid="stTabs"] > div[data-baseweb="tab-list"] {
+            gap: .42rem !important;
+            padding: .34rem 0 .48rem 0 !important;
+            margin: .20rem 0 .58rem 0 !important;
+            border-bottom: 1px solid #fb8b1e !important;
+            overflow-x: visible !important;
+            flex-wrap: wrap !important;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"] {
+            flex: 0 0 auto !important;
+            min-width: 118px !important;
+            min-height: 38px !important;
+            padding: .46rem .82rem !important;
+            margin: 0 !important;
+            border: 1px solid #fb8b1e !important;
+            border-radius: 0 !important;
+            background: #050505 !important;
+            color: #fb8b1e !important;
+            box-shadow: none !important;
+            font-family: "Courier New", monospace !important;
+            font-size: .74rem !important;
+            font-weight: 900 !important;
+            letter-spacing: .02em !important;
+            text-transform: uppercase !important;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"]:hover {
+            background: #171007 !important;
+            color: #ffad52 !important;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+            background: #fb8b1e !important;
+            color: #000000 !important;
+            border-color: #fb8b1e !important;
+            box-shadow: inset 0 -3px 0 #a64b00 !important;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"] * {
+            color: inherit !important;
+            font-family: "Courier New", monospace !important;
+            font-weight: 900 !important;
+        }
+
+        /* Hide Streamlit's tiny default active underline: the orange fill is
+           now the active-state indicator. */
+        div[data-testid="stTabs"] div[data-baseweb="tab-highlight"] {
+            display: none !important;
+        }
+
+        /* Keep the tab content aligned directly beneath the subnav. */
+        div[data-testid="stTabs"] div[data-baseweb="tab-panel"] {
+            padding-top: .22rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _discover_terminal_context() -> tuple[Any, str, Any]:
     """Resolve the live terminal client, access-code vault key, and touch hook."""
     candidates: list[dict[str, Any]] = []
@@ -71,6 +143,7 @@ def _discover_terminal_context() -> tuple[Any, str, Any]:
 
 def render_gex() -> None:
     client, vault_key, touch = _discover_terminal_context()
+    _render_gex_subtab_skin()
     _render_gex_v3(client, vault_key, touch)
 
 
