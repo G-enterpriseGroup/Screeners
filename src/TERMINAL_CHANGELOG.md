@@ -239,3 +239,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `23753218` plus this changelog commit.
 - **Lesson:** A correct non-blocking backend job should not depend on Streamlit's request-level spinner. Show explicit feature-owned background-job status, and use the Overview interaction layer for presentation upgrades rather than changing the GEX calculation engine.
+
+## 2026-09-15 — Orange native Streamlit Stop / running toolbar control
+
+- **Feature changed:** Shared terminal appearance for Streamlit's native toolbar/status widget.
+- **Exact production file(s) changed:** `src/theme.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** While Streamlit displayed its native top-right `Stop` / running control, the button label inherited the app's global black `textColor`, making `Stop` appear black against the dark toolbar even though Share/star/menu controls were orange.
+- **Root cause:** The terminal deliberately uses black global text in Streamlit's theme so interactive dataframe headers can render black on orange. The native toolbar/status widget lives outside feature-level GEX CSS and therefore inherited that black color unless explicitly overridden in the shared theme.
+- **What was changed:** Added terminal-wide toolbar/status selectors to `src/theme.py` covering `stToolbar`, `stStatusWidget`, nested buttons/labels, role-buttons, and SVG nodes. The native running/Stop control now forces Bloomberg orange text/icon color, orange border, and dark button background on every rerun/session. The stylesheet remains the existing plain module string with explicit color substitution, preserving the prior no-CSS-f-string startup-safety rule.
+- **Important behavior that must remain:** Native Streamlit toolbar/status controls on the dark terminal header must never render black text or icons. Keep this shared appearance rule in `src/theme.py`; do not patch GEX, Risk, OAuth, Holdings, or navigation merely to recolor Streamlit's own toolbar.
+- **Files/features intentionally NOT changed:** GEX calculations/background worker, Risk Sizing, OAuth, Holdings, Bull Debit, Muni, Orders, top navigation behavior, Touch ID/authentication, and `src/terminal_core.py`.
+- **Tests performed:** Re-fetched the production theme before editing, confirmed the new selectors remain inside the existing post-`set_page_config` shared stylesheet, and GitHub Actions `validate-boundaries` passed on code commit `976b4c94`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `976b4c94` plus this changelog commit.
+- **Lesson:** Streamlit's native toolbar/status widget is shared shell chrome, not feature UI. When the app intentionally uses black global text for dataframe headers, explicitly recolor dark-shell native controls in the shared theme.
