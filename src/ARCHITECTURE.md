@@ -25,6 +25,7 @@ These are durable terminal preferences and should be checked on every UI change:
 5. **Retest neighboring top-level tabs after any UI change** so a feature-specific improvement does not regress another tab.
 6. For custom components, explicitly control iframe/component height when the visible UI is compact; do not rely on Streamlit's larger default frame height.
 7. **Every editable text field must keep a clearly visible native blinking insertion caret.** Shared caret styling belongs in `src/theme.py`; do not fake the typing cursor with JavaScript or feature-specific pseudo-elements.
+8. **All top-level terminal tabs use one shared page-header system owned by `streamlit_app.py`.** Holdings, Risk Sizing, Bull Debit Spread, Muni Screeners, Orders, and GEX must use the same full-width orange title bar, compact subtitle spacing, typography, and left alignment. Do not add competing one-off top-level headers inside feature files; internal feature section headers remain feature-owned.
 
 ## Production feature map
 
