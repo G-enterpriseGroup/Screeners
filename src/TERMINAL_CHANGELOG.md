@@ -43,3 +43,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `85d82b8`, `a8364ce`, `039d148`, `d88e454`.
 - **Lesson:** For custom Streamlit components, set frame height in Python and inside the component; CSS alone can miss Streamlit's generated wrapper structure.
+
+## 2026-09-15 — Blank screen after biometric / Touch ID unlock
+
+- **Feature changed:** Top navigation component safety during terminal unlock reruns.
+- **Exact production file(s) changed:** `src/components/terminal_tabs_v3/index.html`, `src/tab_bar_v4.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** After biometric / Touch ID unlock, the terminal could render a blank screen instead of the application.
+- **Root cause:** The previous navigation-gap fix added JavaScript inside the tab iframe that walked up as many as four parent DOM wrappers and forced every ancestor to 48px. On an unlock-triggered Streamlit rerun, the component can be mounted under a different wrapper hierarchy, so that code could collapse a high-level Streamlit content container and hide the whole app.
+- **What was changed:** Removed all parent-DOM traversal/resizing from the tab component. The component now uses only Streamlit's supported `streamlit:setFrameHeight` message while Python still passes `height=48`. Changed the component key to `raj_terminal_draggable_tabs_v4_h48_safe_unlock` so existing browser sessions remount the safe component instead of retaining the old iframe instance.
+- **Important behavior that must remain:** Never resize arbitrary parent/ancestor DOM nodes from inside a Streamlit iframe. Keep the navigation frame compact through the component API and tightly scoped navigation CSS only. Biometric/unlock reruns must never be coupled to navigation sizing hacks.
+- **Files/features intentionally NOT changed:** Touch ID credential/authentication logic, E*TRADE OAuth, GEX, Risk Sizing, Holdings, Bull Debit, and Muni content.
+- **Tests performed:** Re-fetched the exact production component and navigation file from `main`; confirmed parent traversal is absent and the new component key is live; GitHub Actions `Terminal Architecture Guard` run `34996846652` completed successfully.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `f85bb1c`, `a2e66f6`.
+- **Lesson:** A compact iframe must never enforce size by mutating ancestor wrappers. Use `setFrameHeight`/Python component height and scoped CSS only, especially across authentication reruns.
