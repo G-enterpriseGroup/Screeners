@@ -190,6 +190,7 @@ def _fmt_num(value: Any, decimals: int = 0) -> str:
 
 
 def _bridge_num(value: Any, decimals: int = 4) -> str:
+    """Match the Apps Script fmtNum_ helper used by Packed Gamma Levels."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -322,10 +323,10 @@ def _raw_oi_df(result: dict[str, Any]) -> pd.DataFrame:
 # TRADINGVIEW BRIDGE
 # ==============================
 def _packed_gamma_lines(result: dict[str, Any]) -> list[str]:
-    """Rebuild the Pine input rows with real newline boundaries."""
+    """Fallback Packed Gamma rows matching Apps Script row order/format."""
     rows = [f"SPOT,{_bridge_num(result.get('spot'))},0"]
     gamma_flip = result.get("gammaFlip")
-    if gamma_flip is not None:
+    if gamma_flip:
         rows.append(f"GFLIP,{_bridge_num(gamma_flip)},0")
 
     call_wall = result.get("callWall") or {}
@@ -349,12 +350,26 @@ def _packed_gamma_lines(result: dict[str, Any]) -> list[str]:
     return rows
 
 
-def _tradingview_block(result: dict[str, Any]) -> str:
-    """Return one copy-ready block matching the original A6 bridge structure."""
+def _google_sheets_summary_text(result: dict[str, Any]) -> str:
+    """Return one ticker block in the exact Google Sheets summaryText structure.
+
+    The GEX engine already stores ``summaryText``/``packed`` using the supplied
+    Apps Script contract. Prefer that source verbatim so the TradingView bridge
+    cannot drift by reformatting the same numbers a second time. The fallback
+    exists only for an older cached result that predates ``summaryText``.
+    """
+    summary = str(result.get("summaryText") or "").replace("\r\n", "\n").replace("\r", "\n")
+    if summary.strip():
+        return summary
+
+    packed = str(result.get("packed") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not packed:
+        packed = "\n".join(_packed_gamma_lines(result))
+
     lines = [
         f"Ticker: {str(result.get('symbol') or '').strip().upper()}",
         f"Mode: {str(result.get('mode') or 'BARCHART_STYLE')}",
-        f"Spot: {_bridge_num(result.get('spot'))}",
+        f"Spot: {result.get('spot') if result.get('spot') is not None else ''}",
         f"Max DTE Used: {int(result.get('maxDte') or 0)}",
         f"Contracts Used: {int(result.get('contractsUsed') or 0)}",
         f"Net Current GEX: {float(result.get('netCurrent') or 0.0):,.2f}",
@@ -362,19 +377,37 @@ def _tradingview_block(result: dict[str, Any]) -> str:
         "",
         "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels",
         "------------------------------------------------------------",
-        *_packed_gamma_lines(result),
+        packed,
     ]
-    return "\n".join(lines).strip()
+    # Apps Script summaryText deliberately ends with a newline.
+    return "\n".join(lines) + "\n"
+
+
+def _tradingview_block(result: dict[str, Any]) -> str:
+    """Return the exact single-ticker block Google Sheets would expose."""
+    return _google_sheets_summary_text(result).strip()
 
 
 def _master_bridge_text(result_map: dict[str, Any], tickers: list[str]) -> str:
-    """Combine refreshed tickers with a blank line between complete blocks."""
-    blocks = [
-        _tradingview_block(result_map[ticker])
-        for ticker in tickers
-        if ticker in result_map
-    ]
-    return "\n\n".join(blocks).strip()
+    """Mirror Apps Script allOutputLines + A6 join semantics exactly.
+
+    Apps Script does:
+      allOutputLines.push(...result.summaryText.split('\n'))
+      allOutputLines.push('')
+      writeTradingViewA6_(allOutputLines.join('\n').trim())
+
+    Reproducing that sequence preserves the same blank-line boundaries between
+    ticker blocks that the working Google Sheets / TradingView bridge receives.
+    """
+    all_output_lines: list[str] = []
+    for ticker in tickers:
+        result = result_map.get(ticker)
+        if not result:
+            continue
+        summary = _google_sheets_summary_text(result)
+        all_output_lines.extend(summary.split("\n"))
+        all_output_lines.append("")
+    return "\n".join(all_output_lines).strip()
 
 
 # ==============================
@@ -582,9 +615,9 @@ def _render_tradingview(state: dict[str, Any], result_map: dict[str, Any]) -> No
         count_text = f"{choice} // SINGLE-TICKER BLOCK"
 
     st.caption(
-        "TRADINGVIEW BRIDGE // REAL LINE BREAKS RESTORED // "
+        "TRADINGVIEW BRIDGE // GOOGLE SHEETS A6 FORMAT // "
         + count_text
-        + " // use the code-block copy button or download the TXT."
+        + " // copy the code block exactly or download the TXT."
     )
     with st.container(key="gexv3_bridge_code"):
         st.code(text or "REFRESH GEX FIRST", language=None, wrap_lines=False)
