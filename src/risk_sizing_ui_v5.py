@@ -104,6 +104,21 @@ def _render_stop_loss_css() -> None:
             overflow-wrap:anywhere;
             text-align:right;
         }
+        .risk-size-restored-header {
+            width:100%;
+            max-width:100%;
+            box-sizing:border-box;
+            border:1px solid #fb8b1e;
+            background:#050505;
+            color:#fb8b1e !important;
+            padding:.42rem .72rem;
+            margin:.32rem 0 .22rem 0;
+            font-family:"Courier New",monospace;
+            font-size:.88rem;
+            font-weight:900;
+            line-height:1.15;
+            overflow-wrap:anywhere;
+        }
 
         /* Convert only the Stop Loss number-input +/- controls into down/up arrows. */
         div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) {
@@ -240,6 +255,29 @@ def _smart_ticker_text_input(original_text_input, original_selectbox):
     return wrapped
 
 
+def _force_size_trade_visible(original_expander):
+    """Guarantee section 2 renders even if Streamlit preserves a stale/closed expander state.
+
+    The v4 engine still contains the complete Crown sizing controls. For the
+    SIZE THE NEXT TRADE section we deliberately replace the expander shell with
+    an always-visible container while keeping every underlying widget and
+    calculation unchanged. HOW TO USE and section 1 continue to use their normal
+    expanders.
+    """
+
+    def wrapped(label, *args, **kwargs):
+        if str(label).strip() != "2 // SIZE THE NEXT TRADE":
+            return original_expander(label, *args, **kwargs)
+
+        st.markdown(
+            '<div class="risk-size-restored-header">− 2 // SIZE THE NEXT TRADE</div>',
+            unsafe_allow_html=True,
+        )
+        return st.container(border=True)
+
+    return wrapped
+
+
 @st.fragment
 def render_risk_sizing(
     client,
@@ -255,6 +293,8 @@ def render_risk_sizing(
     Streamlit controls inside this page rerun only Risk Sizing. The Stop Loss
     input shows its live percentage distance from Entry, and the ticker selector
     searches both symbols and company names while ranking prior lookups first.
+    Section 2 is forced visible so the trade-sizing controls cannot disappear
+    behind a stale expander state.
     """
     previous_quote_summary = _v4.quote_summary
     previous_metric_box = _v4._metric_box
@@ -262,6 +302,7 @@ def render_risk_sizing(
     original_number_input = st.number_input
     original_text_input = st.text_input
     original_selectbox = st.selectbox
+    original_expander = st.expander
 
     def comma_dataframe(data=None, *args, **kwargs):
         kwargs["column_config"] = comma_column_config(data, kwargs.get("column_config"))
@@ -273,6 +314,7 @@ def render_risk_sizing(
     st.dataframe = comma_dataframe
     st.number_input = _live_stop_number_input(original_number_input)
     st.text_input = _smart_ticker_text_input(original_text_input, original_selectbox)
+    st.expander = _force_size_trade_visible(original_expander)
     try:
         _v4.render_risk_sizing(
             client,
@@ -288,6 +330,7 @@ def render_risk_sizing(
         st.dataframe = original_dataframe
         st.number_input = original_number_input
         st.text_input = original_text_input
+        st.expander = original_expander
 
     if st.session_state.pop("_risk_ask_unavailable", False):
         st.warning(
