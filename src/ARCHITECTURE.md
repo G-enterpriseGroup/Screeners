@@ -1,0 +1,87 @@
+# Raj's Terminal — Production Architecture
+
+This file is the **first place to check before editing the terminal**.
+
+The goal is simple: a change to one feature must not silently change another feature.
+
+## Golden rules
+
+1. **Edit the feature owner file, not `terminal_core.py`, for feature UI changes.**
+2. **Do not monkey-patch Streamlit globally at import time** (`st.button = ...`, `st.columns = ...`, `st.caption = ...`, etc.).
+3. If a temporary Streamlit wrapper is absolutely required, install it only inside the feature render function and restore it in `finally`.
+4. **Risk math and Risk UI are different ownership areas.** Never change sizing formulas when fixing appearance/search controls.
+5. **GEX UI and GEX terminal-context plumbing are different ownership areas.**
+6. Historical `*_v2.py`, `*_v4.py`, etc. files are not automatically production. Follow the production map below.
+7. Before merging a feature change, run `python scripts/validate_architecture.py`.
+
+## Production feature map
+
+| Feature | Production entry / owner | Supporting files | Do not edit for normal feature UI work |
+|---|---|---|---|
+| App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
+| Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings files |
+| Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
+| GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
+| GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` only when legacy calculation helpers are intentionally reused | `streamlit_app.py` for ordinary GEX layout changes |
+| E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
+| Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
+| Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
+| Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py` | Risk/GEX files |
+| Municipal tools | functions loaded from `src/terminal_core.py` + `src/muni_data.py` / `src/treasury_data.py` | muni/treasury data modules | Risk/GEX/OAuth files |
+| Theme / shared appearance | `src/theme.py`, `src/layout_guardrails.py` | shared CSS helpers | Change only when the requested change is truly global |
+
+## Risk Sizing edit map
+
+Risk Sizing has several historical versions. The current production import path is:
+
+`streamlit_app.py` → `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` → v9/v2 helpers
+
+Use this decision tree:
+
+- Change **ticker autocomplete / auto quote / Part 2 fail-safe behavior** → `src/risk_sizing_ui_v10.py` or `src/ticker_autocomplete.py`.
+- Change **compact card styling / Part 2 presentation inherited from v9** → `src/risk_sizing_ui_v9.py`.
+- Change **existing Part 1 / Part 2 base widget sequence** → `src/risk_sizing_ui_v2.py`, only if a wrapper cannot safely solve it.
+- Change **risk formulas** → `src/risk_sizing.py`.
+- Do **not** edit GEX/OAuth/navigation to fix Risk Sizing.
+
+## GEX edit map
+
+Production path:
+
+`streamlit_app.py` → `src/gex_workspace_v2.py` → `src/gex_ui_v3.py`
+
+- Change **subtabs, tables, multi-ticker layout, settings, notes, TradingView presentation** → `src/gex_ui_v3.py`.
+- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback** → `src/gex_workspace_v2.py`.
+- Do not patch global Streamlit functions from GEX.
+
+## OAuth edit map
+
+Production path:
+
+`streamlit_app.py` → `src/etrade_connection_ui_v2.py`
+
+- Change **OAuth panel height, code field, Verify button, connection strip layout** → `src/etrade_connection_ui_v2.py` only.
+- Change **API request/signature/token behavior** → `src/etrade_client.py`.
+- Change **saved-session behavior** → `src/session_persistence.py`.
+
+## Holdings edit map
+
+- Change Holdings UI → `src/holdings_snapshot_mode.py`.
+- Change classification panels → `src/stockanalysis_portfolio_v5.py` and its cache helpers.
+- Do not change Risk Sizing or GEX to fix Holdings.
+
+## Shared-code warning
+
+`src/terminal_core.py` is a large legacy definition source loaded by `streamlit_app.py`. Treat it as **shared infrastructure**. A feature-specific visual request should almost never require editing it.
+
+If a requested change appears to require `terminal_core.py`, first verify that the feature cannot be handled in its production owner module above.
+
+## Required change discipline
+
+For every future change:
+
+1. Identify the feature in the production map.
+2. Touch the smallest possible owner file set.
+3. Do not introduce a global Streamlit assignment.
+4. Run the architecture validator.
+5. Re-test the feature changed **and** confirm the other top-level tabs still render.
