@@ -11,7 +11,9 @@ that have caused unrelated tabs to break in the past:
 - Risk Sizing compatibility route no longer pointing to v10;
 - top-level feature imports disappearing from streamlit_app.py;
 - module-level monkey-patching of Streamlit functions in production feature
-  modules (for example `st.caption = ...` at import time).
+  modules (for example `st.caption = ...` at import time);
+- module-level CSS constants written as Python f-strings, where ordinary CSS
+  braces can be interpreted as Python expressions and crash app startup.
 
 This does not replace UI testing. It is a fast boundary check before deploy.
 """
@@ -29,6 +31,8 @@ SRC = ROOT / "src"
 
 PRODUCTION_PYTHON_FILES = [
     ROOT / "streamlit_app.py",
+    SRC / "theme.py",
+    SRC / "layout_guardrails.py",
     SRC / "risk_sizing_ui_v7.py",
     SRC / "risk_sizing_ui_v10.py",
     SRC / "gex_workspace_v2.py",
@@ -105,6 +109,49 @@ class ModuleScopeStreamlitAssignmentVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+class ModuleScopeCssFStringVisitor(ast.NodeVisitor):
+    """Reject module-level *_CSS constants implemented as f-strings.
+
+    A CSS block normally contains many literal ``{ ... }`` braces. A Python
+    f-string can interpret those braces as Python expressions while importing a
+    shared module, producing runtime NameError/ValueError failures before the
+    Streamlit app renders. Prefer a plain string plus explicit ``.replace``.
+    """
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.violations: list[tuple[int, str]] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.depth += 1
+        self.generic_visit(node)
+        self.depth -= 1
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.depth += 1
+        self.generic_visit(node)
+        self.depth -= 1
+
+    def _check(self, target: ast.expr, value: ast.expr | None, lineno: int) -> None:
+        if self.depth != 0 or not isinstance(target, ast.Name):
+            return
+        if not target.id.upper().endswith("_CSS"):
+            return
+        if isinstance(value, ast.JoinedStr):
+            self.violations.append((lineno, target.id))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            self._check(target, node.value, node.lineno)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._check(node.target, node.value, node.lineno)
+        self.generic_visit(node)
+
+
 
 def parse_file(path: Path) -> ast.Module:
     text = path.read_text(encoding="utf-8")
@@ -127,12 +174,20 @@ def main() -> int:
             )
             continue
 
-        visitor = ModuleScopeStreamlitAssignmentVisitor()
-        visitor.visit(tree)
-        for lineno, attribute in visitor.violations:
+        streamlit_visitor = ModuleScopeStreamlitAssignmentVisitor()
+        streamlit_visitor.visit(tree)
+        for lineno, attribute in streamlit_visitor.violations:
             errors.append(
                 f"GLOBAL STREAMLIT PATCH {path.relative_to(ROOT)}:{lineno}: "
                 f"st.{attribute} = ... is forbidden at module scope"
+            )
+
+        css_visitor = ModuleScopeCssFStringVisitor()
+        css_visitor.visit(tree)
+        for lineno, constant_name in css_visitor.violations:
+            errors.append(
+                f"UNSAFE CSS F-STRING {path.relative_to(ROOT)}:{lineno}: "
+                f"{constant_name} must be a plain string; use .replace() for values"
             )
 
     app_path = ROOT / "streamlit_app.py"
@@ -166,7 +221,10 @@ def main() -> int:
         return 1
 
     print("ARCHITECTURE GUARD: PASS")
-    print("Production feature routes exist, parse successfully, and contain no module-level Streamlit monkey patches.")
+    print(
+        "Production routes parse successfully, contain no forbidden module-level "
+        "Streamlit monkey patches, and contain no unsafe module-level CSS f-strings."
+    )
     return 0
 
 
