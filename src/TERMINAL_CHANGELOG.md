@@ -267,3 +267,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `fa32146a2591961837cbc2b13f09f1090f85a1e3` plus this changelog commit.
 - **Lesson:** When Pine is acting as a ticker router, optimize the copied payload for the parser, not for human readability. Every unnecessary per-ticker line reduces headroom for later symbols and can create false `NO MATCH` behavior even when the first block is valid.
+
+## 2026-09-15 — Harden full Google-Sheets TradingView serialization
+
+- **Feature changed:** GEX TradingView bridge / full Google-Sheets audit export.
+- **Exact production file(s) changed:** `src/gex_ui_v3_base.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The full Sheets-style bridge could still reuse cached `summaryText`/`packed` strings from an older serializer, so its line endings or number formatting could differ from the supplied Apps Script contract even after the Pine-router-safe default MASTER A6 had been added.
+- **Root cause:** `_google_sheets_summary_text()` preferred stored text instead of rebuilding from the current structured GEX result. That made export formatting dependent on when a ticker result had originally been refreshed. The user-supplied Apps Script also creates two blank rows between successful summary blocks; relying on stored trailing newlines could collapse that boundary.
+- **What was changed:** The base TradingView serializer now rebuilds every Sheets-style ticker block fresh from structured result fields and `_packed_gamma_lines()`, preserving Apps Script row order and integer OI formatting. The full master forces the exact successful-block delimiter (`\n\n\n`, two blank rows) instead of inheriting cached trailing-newline state. No GEX formulas or E*TRADE values were changed. The production interaction layer continues to make compact Pine-router-safe `MASTER A6` the default and keeps this verbose structure only under `MASTER A6 // GOOGLE SHEETS FULL`.
+- **Important behavior that must remain:** Default `MASTER A6` stays compact and Pine-router-safe. The full Google-Sheets option is audit/reference only and must be rebuilt deterministically from structured results. Never trust stale `summaryText` to control TradingView transport formatting, and never strip meaningful integer zeroes from OI.
+- **Files/features intentionally NOT changed:** `src/gex_ui.py` calculations, `src/gex_workspace_v2.py` E*TRADE/session plumbing, Risk Sizing, OAuth, Holdings, Bull Debit, Muni, Orders, navigation, shared theme, Touch ID/authentication, and `src/terminal_core.py`.
+- **Tests performed:** Compared the supplied working Google-Sheets output with the supplied Streamlit output and verified the successful-block boundary difference; emulated the uploaded Pine router against the Streamlit data and confirmed NVDA yields 14 packed rows; inspected the committed production diff; GitHub Actions `validate-boundaries` passed on code commit `4004ba2458dd90edcf81038b9ad49a8eb763f5bd`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `4004ba2458dd90edcf81038b9ad49a8eb763f5bd` plus this changelog commit.
+- **Lesson:** Keep human-readable audit serialization deterministic, but keep the actual Pine transport minimal. A screenshot that still shows `Mode`, `Contracts`, `Source URL`, and the instruction separator under default `MASTER A6` is showing an older verbose bridge build, not the current Pine-router-safe production output.
