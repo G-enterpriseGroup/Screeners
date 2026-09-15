@@ -687,6 +687,67 @@ def _pine_router_headers(text: str) -> list[str]:
     ]
 
 
+_TRADINGVIEW_CODE_CSS = """
+<style>
+/* GEX TradingView bridge only: keep code and copy affordance visible on black. */
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] {
+    background:#030303 !important;
+    border:1px solid #5d3605 !important;
+    box-shadow:0 0 0 1px rgba(251,139,30,.08) !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] pre,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] code {
+    background:#030303 !important;
+    color:#f4f4f4 !important;
+    -webkit-text-fill-color:#f4f4f4 !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"],
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"] {
+    background:#050505 !important;
+    color:#fb8b1e !important;
+    -webkit-text-fill-color:#fb8b1e !important;
+    border:1px solid #fb8b1e !important;
+    opacity:1 !important;
+    visibility:visible !important;
+    box-shadow:0 0 0 1px rgba(251,139,30,.16) !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"] svg,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"] svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button svg,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"] svg,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"] svg * {
+    color:#fb8b1e !important;
+    stroke:#fb8b1e !important;
+    fill:#fb8b1e !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"]:hover,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"]:focus-visible,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button:hover,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button:focus-visible,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"]:hover,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"]:focus-visible {
+    background:#fb8b1e !important;
+    color:#020202 !important;
+    -webkit-text-fill-color:#020202 !important;
+    border-color:#ffad52 !important;
+    box-shadow:0 0 0 2px rgba(251,139,30,.30) !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"]:hover svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"]:focus-visible svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button:hover svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button:focus-visible svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"]:hover svg *,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"]:focus-visible svg * {
+    color:#020202 !important;
+    stroke:#020202 !important;
+    fill:#020202 !important;
+}
+</style>
+"""
+
+
 def _render_tradingview_pine(state: dict[str, Any], result_map: dict[str, Any]) -> None:
     """Render a Pine-router-safe bridge while retaining a full Sheets audit mode."""
     available = [ticker for ticker in state["tickers"] if ticker in result_map]
@@ -732,6 +793,9 @@ def _render_tradingview_pine(state: dict[str, Any], result_map: dict[str, Any]) 
             f"PINE ROUTER CHECK // PASS // {len(expected)}/{len(expected)} TICKERS PRESENT"
         )
 
+    # Style-only HTML does not add another visible Streamlit row. Keep these
+    # selectors scoped to this exact TradingView bridge container.
+    st.html(_TRADINGVIEW_CODE_CSS)
     with st.container(key="gexv3_bridge_code"):
         st.code(text or "REFRESH GEX FIRST", language=None, wrap_lines=False)
     st.download_button(
