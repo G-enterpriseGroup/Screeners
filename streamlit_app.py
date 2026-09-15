@@ -29,6 +29,7 @@ from src.etrade_data_cache import (
     offline_snapshot_available,
     offline_snapshot_status,
 )
+from src.gex_workspace_v2 import render_gex as render_gex_workspace
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.risk_sizing_ui_v5 import render_risk_sizing
 from src.session_persistence import (
@@ -36,7 +37,7 @@ from src.session_persistence import (
     restore_etrade_session,
     save_etrade_session,
 )
-from src.tab_bar import render_terminal_tab_bar
+from src.tab_bar_v4 import render_terminal_tab_bar
 
 
 # Preserve references to the core implementations before installing the
@@ -498,6 +499,9 @@ elif active_tab == "RISK SIZING":
         balance_snapshot=_balance_snapshot,
         touch_session=_touch_etrade_session,
     )
+
+elif active_tab == "GEX":
+    render_gex_workspace()
 
 elif active_tab == "BULL DEBIT SPREAD":
     render_bull_debit_spread(
