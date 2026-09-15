@@ -24,6 +24,7 @@ These are durable terminal preferences and should be checked on every UI change:
 4. **Do not fix one feature by globally patching Streamlit.** Scope CSS and widget wrappers to the owning feature/component.
 5. **Retest neighboring top-level tabs after any UI change** so a feature-specific improvement does not regress another tab.
 6. For custom components, explicitly control iframe/component height when the visible UI is compact; do not rely on Streamlit's larger default frame height.
+7. **Every editable text field must keep a clearly visible native blinking insertion caret.** Shared caret styling belongs in `src/theme.py`; do not fake the typing cursor with JavaScript or feature-specific pseudo-elements.
 
 ## Production feature map
 
