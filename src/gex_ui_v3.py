@@ -637,8 +637,15 @@ def _consume_delete_request(vault_key: str) -> None:
 # ==============================
 # TRADINGVIEW / PINE ROUTER BRIDGE
 # ==============================
+# The uploaded Pine v6 indicator is fixed and is the transport contract. It
+# routes by Ticker: headers, then parses only these packed row types. MASTER A6
+# must therefore optimize for the Pine parser, not for human-readable metadata.
+_PINE_TEXT_LIMIT = 40_960
+_PINE_REQUIRED_TYPES = {"SPOT", "CALLWALL", "PUTWALL", "MAXCALLOI", "MAXPUTOI"}
+
+
 def _pine_router_block(result: dict[str, Any]) -> str:
-    """Optional compact diagnostic block for the Pine router."""
+    """Emit exactly the lines consumed by the user's unchanged Pine router."""
     symbol = _base.core._normalize_ticker(result.get("symbol"))
     if not symbol:
         return ""
@@ -647,9 +654,10 @@ def _pine_router_block(result: dict[str, Any]) -> str:
 
 
 def _pine_master_bridge_text(result_map: dict[str, Any], tickers: list[str]) -> str:
-    """Build the optional compact multi-ticker diagnostic payload."""
+    """Build the compact all-ticker MASTER A6 consumed by the Pine router."""
     blocks: list[str] = []
-    for ticker in tickers:
+    for raw_ticker in tickers:
+        ticker = _base.core._normalize_ticker(raw_ticker)
         result = result_map.get(ticker)
         if not result:
             continue
@@ -660,17 +668,10 @@ def _pine_master_bridge_text(result_map: dict[str, Any], tickers: list[str]) -> 
 
 
 def _google_sheets_master_text(result_map: dict[str, Any], tickers: list[str]) -> str:
-    """Mirror the proven Apps Script A6 assembly exactly.
-
-    Each successful ``summaryText`` ends with one newline. Apps Script then
-    splits it into lines, pushes one additional blank line, joins everything
-    with ``\n``, and trims the final A6. This creates two blank rows between
-    ticker blocks (three newline characters) and preserves the complete
-    metadata/instruction/separator structure that the user's working Sheets A6
-    sends to TradingView.
-    """
+    """Retain the verbose Apps Script structure only as an audit/reference view."""
     blocks: list[str] = []
-    for ticker in tickers:
+    for raw_ticker in tickers:
+        ticker = _base.core._normalize_ticker(raw_ticker)
         result = result_map.get(ticker)
         if not result:
             continue
@@ -689,41 +690,76 @@ def _pine_router_headers(text: str) -> list[str]:
     ]
 
 
-def _apps_script_contract_issues(text: str, expected: list[str]) -> list[str]:
-    """Validate the copied block against the working Apps Script A6 contract."""
+def _pine_ticker_block(text: str, ticker: str) -> str:
+    """Extract one routed block using the same Ticker-header boundary Pine uses."""
+    target = _base.core._normalize_ticker(ticker)
+    if not target:
+        return ""
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    issues: list[str] = []
-    headers = _pine_router_headers(normalized)
-    for ticker in expected:
-        if ticker not in headers:
-            issues.append(f"{ticker}:HEADER")
+    active = False
+    out: list[str] = []
+    for row in normalized.split("\n"):
+        header = re.match(r"^\s*Ticker:\s*([^\r\n]+?)\s*$", row, flags=re.IGNORECASE)
+        if header:
+            found = _base.core._normalize_ticker(header.group(1))
+            if active and found != target:
+                break
+            active = found == target
+        if active:
+            out.append(row)
+    return "\n".join(out).strip()
+
+
+def _pine_parsed_types(block: str) -> list[str]:
+    """Replica of the fixed Pine row parser for Streamlit-side preflight checks."""
+    parsed: list[str] = []
+    for raw_row in str(block or "").replace("\r", "").split("\n"):
+        compact = raw_row.replace("|", ",").replace(" ", "").replace("\t", "")
+        parts = compact.split(",")
+        if len(parts) < 2:
             continue
-        start = normalized.find(f"Ticker: {ticker}")
-        if start < 0:
-            issues.append(f"{ticker}:HEADER")
-            continue
-        next_start = normalized.find("\nTicker: ", start + 1)
-        block = normalized[start:] if next_start < 0 else normalized[start:next_start]
-        required = (
-            "Mode: ",
-            "Spot: ",
-            "Max DTE Used: ",
-            "Contracts Used: ",
-            "Net Current GEX: ",
-            "Source URL: ",
-            "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels",
-            "------------------------------------------------------------",
-            "\nSPOT,",
-            "\nCALLWALL,",
-            "\nPUTWALL,",
-            "\nMAXCALLOI,",
-            "\nMAXPUTOI,",
+        typ = parts[0].strip().upper()
+        is_packed = (
+            typ in {"SPOT", "GFLIP", "CALLWALL", "PUTWALL", "MAXCALLOI", "MAXPUTOI"}
+            or typ.startswith("GEXPOS")
+            or typ.startswith("GEXNEG")
         )
-        if any(token not in block for token in required):
-            issues.append(f"{ticker}:STRUCTURE")
-        if "\nGEXPOS" not in block and "\nGEXNEG" not in block:
-            issues.append(f"{ticker}:GEX")
-    return issues
+        if not is_packed:
+            continue
+        try:
+            float(parts[1])
+        except (TypeError, ValueError):
+            continue
+        parsed.append(typ)
+    return parsed
+
+
+def _pine_ticker_issues(text: str, ticker: str) -> tuple[list[str], int]:
+    """Validate one ticker exactly enough to guarantee Pine has drawable levels."""
+    target = _base.core._normalize_ticker(ticker)
+    block = _pine_ticker_block(text, target)
+    if not block:
+        return [f"{target}:NO_HEADER"], 0
+    parsed = _pine_parsed_types(block)
+    parsed_set = set(parsed)
+    issues = [f"{target}:NO_{typ}" for typ in sorted(_PINE_REQUIRED_TYPES - parsed_set)]
+    if not any(typ.startswith("GEXPOS") or typ.startswith("GEXNEG") for typ in parsed):
+        issues.append(f"{target}:NO_GEX")
+    return issues, len(parsed)
+
+
+def _pine_master_issues(text: str, expected: list[str]) -> tuple[list[str], dict[str, int]]:
+    """Run the fixed Pine routing/parsing contract against every saved ticker."""
+    issues: list[str] = []
+    counts: dict[str, int] = {}
+    headers = _pine_router_headers(text)
+    duplicate_headers = sorted({ticker for ticker in headers if headers.count(ticker) > 1})
+    issues.extend(f"{ticker}:DUPLICATE_HEADER" for ticker in duplicate_headers)
+    for ticker in expected:
+        ticker_issues, parsed_count = _pine_ticker_issues(text, ticker)
+        counts[ticker] = parsed_count
+        issues.extend(ticker_issues)
+    return issues, counts
 
 
 _TRADINGVIEW_CODE_CSS = """
@@ -788,77 +824,129 @@ _TRADINGVIEW_CODE_CSS = """
 
 
 def _render_tradingview_pine(state: dict[str, Any], result_map: dict[str, Any]) -> None:
-    """Render the exact working Apps Script A6 contract by default."""
-    available = [ticker for ticker in state["tickers"] if ticker in result_map]
+    """Render a fail-closed MASTER A6 for the user's unchanged Pine indicator."""
+    saved: list[str] = []
+    for value in state.get("tickers", []):
+        ticker = _base.core._normalize_ticker(value)
+        if ticker and ticker not in saved:
+            saved.append(ticker)
+    available = [ticker for ticker in saved if ticker in result_map]
+    missing_results = [ticker for ticker in saved if ticker not in result_map]
+    if not saved:
+        st.info("Add GEX tickers first.")
+        return
     if not available:
-        st.info("Refresh GEX first. The TradingView bridge is built from refreshed ticker results.")
+        st.info("Refresh GEX first. MASTER A6 requires refreshed ticker results.")
         return
 
-    compact_label = "MASTER A6 // COMPACT DIAGNOSTIC"
-    options = ["MASTER A6", compact_label] + available
-    choice = st.selectbox("PACKED GAMMA BLOCK", options, key="gexv3_bridge_choice")
+    pine_label = "MASTER A6 // PINE COPY — USE THIS"
+    full_label = "MASTER A6 // GOOGLE SHEETS FULL — AUDIT ONLY"
+    options = [pine_label, full_label] + available
+    choice = st.selectbox("PACKED GAMMA BLOCK", options, key="gexv3_bridge_choice_pine_v2")
 
-    if choice == "MASTER A6":
-        text = _google_sheets_master_text(result_map, state["tickers"])
-        filename = "raj_terminal_gex_A6.txt"
-        expected = available
-        mode_text = "EXACT GOOGLE SHEETS A6 // FULL APPS SCRIPT SUMMARY TEXT"
-        contract_check = True
-    elif choice == compact_label:
-        text = _pine_master_bridge_text(result_map, state["tickers"])
-        filename = "raj_terminal_gex_A6_compact_diagnostic.txt"
-        expected = available
-        mode_text = "COMPACT DIAGNOSTIC ONLY // NOT THE DEFAULT COPY FORMAT"
-        contract_check = False
+    is_master_pine = choice == pine_label
+    is_full_audit = choice == full_label
+    if is_master_pine:
+        text = _pine_master_bridge_text(result_map, saved)
+        filename = "raj_terminal_gex_A6_pine.txt"
+        expected = saved
+        mode_text = "FIXED PINE ROUTER // Ticker: + packed rows only"
+    elif is_full_audit:
+        text = _google_sheets_master_text(result_map, saved)
+        filename = "raj_terminal_gex_A6_google_sheets_full.txt"
+        expected = saved
+        mode_text = "GOOGLE SHEETS STRUCTURE // AUDIT ONLY // DO NOT USE AS DEFAULT PINE COPY"
     else:
-        text = _base._google_sheets_summary_text(result_map[choice]).strip()
-        filename = f"{choice}_gex.txt"
+        text = _pine_router_block(result_map[choice])
+        filename = f"{choice}_gex_pine.txt"
         expected = [choice]
-        mode_text = f"{choice} // EXACT GOOGLE SHEETS SINGLE-TICKER BLOCK"
-        contract_check = True
+        mode_text = f"{choice} // SINGLE-TICKER PINE TEST"
 
+    byte_count = len(text.encode("utf-8"))
     headers = _pine_router_headers(text)
-    missing = [ticker for ticker in expected if ticker not in headers]
-    duplicate_headers = sorted({ticker for ticker in headers if headers.count(ticker) > 1})
-    contract_issues = _apps_script_contract_issues(text, expected) if contract_check else []
+    missing_headers = [ticker for ticker in expected if ticker not in headers]
+    pine_issues, parsed_counts = _pine_master_issues(text, [t for t in expected if t in result_map])
+    too_large = byte_count > _PINE_TEXT_LIMIT
+    incomplete = bool(missing_results) if is_master_pine or is_full_audit else False
+    pine_ready = not incomplete and not missing_headers and not pine_issues and not too_large
 
     st.caption(
         "TRADINGVIEW BRIDGE // "
         + mode_text
-        + f" // {len(headers)}/{len(expected)} TICKER HEADERS // {len(text):,} CHARACTERS"
+        + f" // {len(headers)}/{len(expected)} HEADERS // {byte_count:,}/{_PINE_TEXT_LIMIT:,} CHARS"
     )
-    if missing:
-        st.error("A6 CHECK FAILED // MISSING TICKER: " + ", ".join(missing[:12]))
-    elif duplicate_headers:
-        st.warning("A6 CHECK // DUPLICATE HEADERS: " + ", ".join(duplicate_headers[:12]))
-    elif contract_issues:
-        st.error("A6 APPS SCRIPT CONTRACT FAILED // " + ", ".join(contract_issues[:12]))
-    elif contract_check:
-        st.success(
-            f"A6 APPS SCRIPT CONTRACT // PASS // {len(expected)}/{len(expected)} FULL TICKER BLOCKS"
+
+    if is_master_pine:
+        if missing_results:
+            st.error(
+                "PINE MASTER NOT READY // REFRESH ALL FIRST // MISSING RESULTS: "
+                + ", ".join(missing_results[:16])
+            )
+        elif missing_headers:
+            st.error("PINE MASTER FAILED // MISSING HEADERS: " + ", ".join(missing_headers[:16]))
+        elif pine_issues:
+            st.error("PINE MASTER PARSER FAILED // " + ", ".join(pine_issues[:16]))
+        elif too_large:
+            st.error(
+                f"PINE MASTER TOO LARGE // {byte_count:,} > {_PINE_TEXT_LIMIT:,} // USE SINGLE-TICKER TEST"
+            )
+        else:
+            min_rows = min(parsed_counts.values()) if parsed_counts else 0
+            max_rows = max(parsed_counts.values()) if parsed_counts else 0
+            st.success(
+                f"PINE COPY READY // {len(expected)}/{len(expected)} TICKERS ROUTE + PARSE // "
+                f"{min_rows}-{max_rows} PACKED ROWS EACH"
+            )
+    elif is_full_audit:
+        st.warning(
+            "AUDIT ONLY // THIS VERBOSE SHEETS VIEW IS NOT THE DEFAULT PINE TRANSPORT. "
+            "USE 'MASTER A6 // PINE COPY — USE THIS' FOR TRADINGVIEW."
         )
+    elif pine_ready:
+        st.success(f"{choice} // PINE ROUTER TEST PASS // {parsed_counts.get(choice, 0)} PACKED ROWS")
     else:
-        st.success(
-            f"COMPACT HEADER CHECK // PASS // {len(expected)}/{len(expected)} TICKERS PRESENT"
-        )
+        details = pine_issues or missing_headers or (["TEXT_LIMIT"] if too_large else [])
+        st.error(f"{choice} // PINE ROUTER TEST FAILED // " + ", ".join(details[:12]))
+
+    # Let the user test the exact chart ticker before copying the all-ticker master.
+    verify_ticker = st.selectbox(
+        "PINE CHART TICKER CHECK",
+        saved,
+        key="gexv3_pine_chart_ticker_check",
+        help="Pick the same symbol as your TradingView chart. This runs the same header/packed-row logic your Pine uses.",
+    )
+    if verify_ticker not in result_map:
+        st.error(f"{verify_ticker} // NO REFRESHED RESULT // REFRESH THIS TICKER BEFORE COPYING")
+    else:
+        check_text = _pine_master_bridge_text(result_map, saved)
+        target_issues, target_count = _pine_ticker_issues(check_text, verify_ticker)
+        if target_issues:
+            st.error(f"{verify_ticker} // PINE TARGET FAIL // " + ", ".join(target_issues))
+        else:
+            st.success(f"{verify_ticker} // PINE TARGET PASS // {target_count} DRAWABLE PACKED ROWS")
 
     st.caption(
-        "COPY THIS BLOCK INTO TRADINGVIEW → GEX TEST → PACKED GAMMA LEVELS, "
-        "THEN APPLY/OK THE INDICATOR SETTINGS. MASTER A6 NOW MATCHES THE WORKING SHEETS A6 STRUCTURE."
+        "YOUR PINE SCRIPT IS UNCHANGED. COPY ONLY THE PINE-COPY BLOCK INTO "
+        "GEX TEST → PACKED GAMMA LEVELS, REPLACE THE OLD CONTENT COMPLETELY, THEN APPLY/OK."
     )
 
-    # Style-only HTML does not add another visible Streamlit row. Keep these
-    # selectors scoped to this exact TradingView bridge container.
+    # Fail closed for the all-ticker Pine master: never expose a copy button for
+    # an incomplete/truncated/parser-invalid master. Audit/single-ticker views
+    # remain visible for diagnosis.
+    display_text = text
+    if is_master_pine and not pine_ready:
+        display_text = "PINE MASTER NOT READY — REFRESH ALL GEX AND CLEAR THE ERRORS ABOVE."
+
     st.html(_TRADINGVIEW_CODE_CSS)
     with st.container(key="gexv3_bridge_code"):
-        st.code(text or "REFRESH GEX FIRST", language=None, wrap_lines=False)
+        st.code(display_text, language=None, wrap_lines=False)
     st.download_button(
         "DOWNLOAD PACKED GAMMA BLOCK",
-        data=text,
+        data=text if (pine_ready or not is_master_pine) else "",
         file_name=filename,
         mime="text/plain",
         width="stretch",
-        disabled=not bool(text),
+        disabled=is_master_pine and not pine_ready,
         key="gexv3_download_bridge",
     )
 
