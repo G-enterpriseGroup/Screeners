@@ -99,3 +99,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `6962f37e`.
 - **Lesson:** For style-only CSS in Streamlit, use `st.html`; do not fold style tags into visible markdown just to avoid layout spacing.
+
+## 2026-09-15 — Terminal-wide native typing caret
+
+- **Feature changed:** Shared terminal appearance / editable-field interaction.
+- **Exact production file(s) changed:** `src/theme.py`, `src/ARCHITECTURE.md`, `src/TERMINAL_CHANGELOG.md`.
+- **What was requested:** Every place where a user types should show a traditional, clearly visible flashing text cursor in the text box.
+- **Root cause:** Individual Streamlit/BaseWeb inputs relied on browser/theme defaults, so the insertion caret could be difficult to see against the terminal's black background and was not documented as a terminal-wide UI requirement.
+- **What was changed:** Added terminal-wide shared CSS in `src/theme.py` using the browser's native blinking insertion caret with Bloomberg orange `caret-color` and the normal text I-beam pointer. The selectors cover text, search, password, number, email, telephone, URL, untyped BaseWeb inputs, textareas, searchable select inputs, and editable content. Added explicit ownership/section comments to `src/theme.py` and recorded the caret as a standing UI rule in `src/ARCHITECTURE.md`.
+- **Important behavior that must remain:** Use the native browser insertion caret; do not fake a blinking cursor with JavaScript or pseudo-elements. Shared caret behavior belongs in `src/theme.py`, not in individual Risk/GEX/OAuth/Holdings files.
+- **Files/features intentionally NOT changed:** Risk Sizing logic/UI files, GEX files, OAuth files, Holdings, navigation, `terminal_core.py`, Bull Debit, and municipal tools.
+- **Tests performed:** Re-fetched the exact committed `src/theme.py`; confirmed the caret CSS is style-only and contains no feature widget replacement. GitHub Actions `Terminal Architecture Guard` run `35001666323` passed on commit `8071cff` and parsed all production Python files successfully.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `8071cff`, `95dcd74`.
+- **Lesson:** A terminal-wide typing affordance is shared appearance. Keep it in the theme layer and use native caret behavior so selection, keyboard navigation, accessibility, and input-method behavior stay correct.
