@@ -18,6 +18,7 @@ if _CORE_MARKER not in _CORE_SOURCE:
 _CORE_DEFINITIONS = _CORE_SOURCE.split(_CORE_MARKER, 1)[0]
 exec(compile(_CORE_DEFINITIONS, str(_CORE_PATH), "exec"), globals())
 
+from src.etrade_connection_ui_v2 import render_compact_etrade_connection
 from src.etrade_data_cache import (
     CACHE_TTLS,
     CachedETradeClient,
@@ -43,7 +44,6 @@ from src.tab_bar_v4 import render_terminal_tab_bar
 # Preserve references to the core implementations before installing the
 # seamless-session/cache adapters below.
 _CORE_ETRADE_CLIENT_FACTORY = _etrade_client
-_CORE_RENDER_ETRADE_CONNECTION = render_etrade_connection
 _CORE_TOUCH_ETRADE_SESSION = _touch_etrade_session
 _CORE_CLEAR_ETRADE_RUNTIME = _clear_etrade_runtime
 _CORE_HOLDINGS_RENDERER = render_etrade_holdings
@@ -75,19 +75,18 @@ def _etrade_client():
 
 
 def render_etrade_connection():
-    """Render connection controls against LIVE OAuth only, never the offline client.
-
-    The rest of Raj's Terminal can use _etrade_client() and therefore fall back
-    to cached snapshots. The connection bar must still truthfully show whether
-    E*TRADE itself is connected, so the core renderer temporarily sees the
-    live-only factory.
-    """
-    effective_factory = globals()["_etrade_client"]
-    globals()["_etrade_client"] = _live_etrade_client
-    try:
-        return _CORE_RENDER_ETRADE_CONNECTION()
-    finally:
-        globals()["_etrade_client"] = effective_factory
+    """Render the production E*TRADE strip and compact one-row OAuth panel."""
+    return render_compact_etrade_connection(
+        credentials_factory=_etrade_credentials,
+        live_client_factory=_live_etrade_client,
+        session_timer=_render_etrade_session_timer,
+        begin_authorization=begin_authorization,
+        complete_authorization=complete_authorization,
+        etrade_error_type=ETradeError,
+        touch_session=_touch_etrade_session,
+        clear_runtime=_clear_etrade_runtime,
+        refresh_accounts=_refresh_accounts,
+    )
 
 
 def _persist_active_etrade_session():
@@ -197,34 +196,8 @@ def _portfolio_snapshot_age():
 
 
 def _render_cache_status():
-    token = st.session_state.get("etrade_access_token")
-    offline = offline_snapshot_status(_trade_access_code_hash())
-
-    if token:
-        stats = cache_stats(token)
-        st.caption(
-            "SMART CACHE // SHARED ACROSS ALL TABS + BROWSER REFRESH // "
-            f"ACCOUNTS {CACHE_TTLS['accounts'] // 60}m // "
-            f"HOLDINGS {CACHE_TTLS['portfolio']}s // "
-            f"BALANCE {CACHE_TTLS['balance']}s // "
-            f"QUOTES {CACHE_TTLS['quote']}s // "
-            f"OPTION CHAINS {CACHE_TTLS['option_chain'] // 60}m // "
-            f"EXPIRATIONS {CACHE_TTLS['option_expirations'] // 3600}h // "
-            f"CACHE HITS {stats['hits']:,} // API FETCHES {stats['api_calls']:,} // "
-            f"STALE FALLBACKS {stats.get('stale_fallbacks', 0):,}"
-        )
-        return
-
-    if offline.get("available"):
-        resources = offline.get("resources") or {}
-        st.caption(
-            "LAST-KNOWN E*TRADE VAULT // SERVER-MEMORY ONLY // "
-            f"PORTFOLIO SNAPSHOT {_cache_age_text(_portfolio_snapshot_age())} AGO // "
-            f"HOLDINGS {resources.get('portfolio', 0)} // "
-            f"BALANCES {resources.get('balance', 0)} // "
-            f"QUOTES {resources.get('quote', 0)} // "
-            f"OPTION CHAINS {resources.get('option_chain', 0)}"
-        )
+    """Keep cache diagnostics available internally without wasting terminal space."""
+    return None
 
 
 def _render_offline_snapshot_notice():
@@ -395,11 +368,6 @@ if not _trade_access_unlocked():
 _seed_offline_from_session_state()
 
 st.title("Raj's Terminal")
-st.caption("BUILD // RISK-V7 DIRECT // 2026-09-15 // if you see this, the live app has the new entrypoint")
-st.caption(
-    "Bloomberg-style municipal analytics, E*TRADE holdings, Crown-style risk sizing, "
-    "bull debit-spread optimization, and a live Triggers-OCO simulator."
-)
 
 if st.session_state.pop("_etrade_restored_after_unlock", False):
     st.success("E*TRADE SESSION RESTORED // existing OAuth session is still active // no E*TRADE reconnect required")
