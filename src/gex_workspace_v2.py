@@ -36,10 +36,12 @@ from src.gex_ui_v3 import render_gex as _render_gex_v3
 # ==============================
 
 def _gex_subtab_skin_css() -> str:
-    """Return GEX secondary-navigation CSS as style-only HTML.
+    """Return GEX navigation/control CSS as style-only HTML.
 
-    Streamlit's ``st.html`` sends style-only content to its event container,
-    which applies the CSS without reserving a visible row in the app layout.
+    This stylesheet is emitted on every GEX render so the controls do not rely
+    on process-global theme state. Streamlit's global ``textColor`` is black to
+    support black dataframe-header text on orange, so every GEX select value and
+    menu option is explicitly recolored here for dark-background readability.
     """
     return """
         <style>
@@ -95,6 +97,89 @@ def _gex_subtab_skin_css() -> str:
 
         div[data-testid="stTabs"] div[data-baseweb="tab-panel"] {
             padding-top: .22rem !important;
+        }
+
+        /* GEX SELECTBOX SHELL + SELECTED VALUE */
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div,
+        div[data-testid="stSelectbox"] [role="combobox"] {
+            background:#050505 !important;
+            border-color:#fb8b1e !important;
+            color:#fb8b1e !important;
+            -webkit-text-fill-color:#fb8b1e !important;
+            box-shadow:none !important;
+        }
+
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] > div *,
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] span,
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] p,
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] input,
+        div[data-testid="stSelectbox"] [role="combobox"] * {
+            color:#fb8b1e !important;
+            -webkit-text-fill-color:#fb8b1e !important;
+            font-family:"Courier New",monospace !important;
+            font-weight:800 !important;
+            opacity:1 !important;
+        }
+
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] svg {
+            color:#fb8b1e !important;
+            fill:#fb8b1e !important;
+        }
+
+        /*
+           BaseWeb mounts the OPEN dropdown menu in a portal outside the
+           stSelectbox DOM. Target every listbox/menu option descendant so a
+           nested div/span cannot inherit Streamlit's black global text color.
+        */
+        div[data-baseweb="popover"],
+        div[data-baseweb="popover"] [role="listbox"],
+        div[data-baseweb="popover"] [data-baseweb="menu"],
+        div[data-baseweb="menu"],
+        [role="listbox"] {
+            background:#050505 !important;
+            color:#f2f2f2 !important;
+        }
+
+        div[data-baseweb="popover"] [role="listbox"],
+        div[data-baseweb="popover"] [data-baseweb="menu"] {
+            border:1px solid #fb8b1e !important;
+        }
+
+        div[data-baseweb="popover"] [role="option"],
+        div[data-baseweb="popover"] [role="option"] *,
+        div[data-baseweb="menu"] [role="option"],
+        div[data-baseweb="menu"] [role="option"] *,
+        [role="listbox"] [role="option"],
+        [role="listbox"] [role="option"] * {
+            background:#050505 !important;
+            color:#f2f2f2 !important;
+            -webkit-text-fill-color:#f2f2f2 !important;
+            font-family:"Courier New",monospace !important;
+            font-weight:800 !important;
+            opacity:1 !important;
+        }
+
+        div[data-baseweb="popover"] [role="option"]:hover,
+        div[data-baseweb="popover"] [role="option"]:focus,
+        div[data-baseweb="menu"] [role="option"]:hover,
+        div[data-baseweb="menu"] [role="option"]:focus,
+        [role="listbox"] [role="option"]:hover,
+        [role="listbox"] [role="option"]:focus {
+            background:#171007 !important;
+            color:#ffad52 !important;
+            -webkit-text-fill-color:#ffad52 !important;
+        }
+
+        div[data-baseweb="popover"] [role="option"][aria-selected="true"],
+        div[data-baseweb="popover"] [role="option"][aria-selected="true"] *,
+        div[data-baseweb="menu"] [role="option"][aria-selected="true"],
+        div[data-baseweb="menu"] [role="option"][aria-selected="true"] *,
+        [role="listbox"] [role="option"][aria-selected="true"],
+        [role="listbox"] [role="option"][aria-selected="true"] * {
+            background:#fb8b1e !important;
+            color:#000000 !important;
+            -webkit-text-fill-color:#000000 !important;
         }
         </style>
     """
