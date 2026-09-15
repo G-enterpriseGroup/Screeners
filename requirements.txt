@@ -39,3 +39,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-15 risk-sizing-v9-seamless-dynamic-ticker
 # clean rebuild marker: 2026-09-15 risk-sizing-v10-failsafe-no-column-hijack
 # clean rebuild marker: 2026-09-15 navigation-tab-frame-height-hard-pin
+# clean rebuild marker: 2026-09-15 force-current-main-after-caret-css-crash
