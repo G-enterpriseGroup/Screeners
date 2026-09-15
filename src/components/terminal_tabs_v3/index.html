@@ -131,45 +131,16 @@
     function height(px) { post("streamlit:setFrameHeight", {height:px}); }
     function send(value) { post("streamlit:setComponentValue", {value:value, dataType:"json"}); }
 
-    // Streamlit can keep a larger default custom-component wrapper even when
-    // the visible HTML is only one tab row. The official setFrameHeight message
-    // is sent first, then the component defensively pins its own iframe and a
-    // few immediate parent wrappers. This is scoped to this tab iframe only.
-    function hardPinOwnFrame() {
-      try {
-        const frame = window.frameElement;
-        if (!frame) return;
-        const px = FRAME_HEIGHT + "px";
-        frame.style.height = px;
-        frame.style.minHeight = px;
-        frame.style.maxHeight = px;
-        frame.style.margin = "0";
-        frame.style.padding = "0";
-        frame.style.display = "block";
-        frame.style.overflow = "hidden";
-
-        let node = frame.parentElement;
-        for (let i = 0; node && i < 4; i += 1) {
-          node.style.height = px;
-          node.style.minHeight = px;
-          node.style.maxHeight = px;
-          node.style.marginTop = "0";
-          node.style.marginBottom = "0";
-          node.style.paddingTop = "0";
-          node.style.paddingBottom = "0";
-          node.style.overflow = "hidden";
-          node = node.parentElement;
-        }
-      } catch (_) {}
-    }
-
+    // IMPORTANT SAFETY RULE:
+    // Never walk into or resize parent Streamlit DOM wrappers from inside this
+    // component. Biometric/unlock reruns can remount the component under a
+    // different wrapper, and forcing ancestor heights can collapse the entire
+    // app body. Use Streamlit's supported setFrameHeight message only.
     function enforceFrameHeight() {
       height(FRAME_HEIGHT);
-      hardPinOwnFrame();
-      window.requestAnimationFrame(() => { height(FRAME_HEIGHT); hardPinOwnFrame(); });
-      window.setTimeout(() => { height(FRAME_HEIGHT); hardPinOwnFrame(); }, 50);
-      window.setTimeout(() => { height(FRAME_HEIGHT); hardPinOwnFrame(); }, 250);
-      window.setTimeout(() => { height(FRAME_HEIGHT); hardPinOwnFrame(); }, 750);
+      window.requestAnimationFrame(() => height(FRAME_HEIGHT));
+      window.setTimeout(() => height(FRAME_HEIGHT), 50);
+      window.setTimeout(() => height(FRAME_HEIGHT), 250);
     }
 
     let tabs = [];
