@@ -48,6 +48,8 @@ DEFAULT_TAB_ORDER = [
     "ORDERS",
 ]
 
+NAV_FRAME_HEIGHT = 48
+
 _COMPONENT_PATH = Path(__file__).parent / "components" / "terminal_tabs_v3"
 _terminal_tabs = components.declare_component(
     "raj_terminal_tabs_v4",
@@ -276,7 +278,8 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
         tabs=state["order"],
         active=state["active"],
         storage_key=storage_key,
-        key="raj_terminal_draggable_tabs_v4",
+        height=NAV_FRAME_HEIGHT,
+        key="raj_terminal_draggable_tabs_v4_h48",
         default={
             "order": state["order"],
             "active": state["active"],
