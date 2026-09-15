@@ -31,7 +31,7 @@ from src.etrade_data_cache import (
 )
 from src.gex_workspace_v2 import render_gex as render_gex_workspace
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
-from src.risk_sizing_ui_v5 import render_risk_sizing
+from src.risk_sizing_ui_v7 import render_risk_sizing
 from src.session_persistence import (
     clear_etrade_session,
     restore_etrade_session,
@@ -104,7 +104,6 @@ def _persist_active_etrade_session():
 
 def _touch_etrade_session():
     """Core activity touch plus persistence for browser-refresh recovery."""
-    # Offline reads do not have an OAuth token to extend/persist.
     if st.session_state.get("etrade_access_token"):
         _CORE_TOUCH_ETRADE_SESSION()
         _persist_active_etrade_session()
@@ -115,14 +114,9 @@ def _clear_etrade_runtime(lock_access=False):
     token_snapshot = st.session_state.get("etrade_access_token")
     if lock_access:
         if bool(st.session_state.get("etrade_disconnect", False)):
-            # Clear the live token-scoped cache/session. The last-known-good
-            # access-code-scoped snapshot is intentionally kept so the terminal
-            # remains useful if E*TRADE cannot reconnect later.
             clear_session_cache(token_snapshot)
             clear_etrade_session(_trade_access_code_hash())
         else:
-            # A simple terminal LOCK should feel instant when reopened: keep
-            # both the still-valid OAuth session and its read-only cache.
             _persist_active_etrade_session()
     return _CORE_CLEAR_ETRADE_RUNTIME(lock_access=lock_access)
 
@@ -158,31 +152,15 @@ def _seed_offline_from_session_state():
     if accounts and _offline_get(vault_key, "accounts", "all") is None:
         _offline_store(vault_key, "accounts", "all", accounts, loaded_at=now)
 
-    holdings_loaded_at = float(
-        st.session_state.get("etrade_holdings_last_refresh", now) or now
-    )
+    holdings_loaded_at = float(st.session_state.get("etrade_holdings_last_refresh", now) or now)
     for account_key, value in (st.session_state.get("etrade_holdings") or {}).items():
         if value is not None and _offline_get(vault_key, "portfolio", str(account_key)) is None:
-            _offline_store(
-                vault_key,
-                "portfolio",
-                str(account_key),
-                value,
-                loaded_at=holdings_loaded_at,
-            )
+            _offline_store(vault_key, "portfolio", str(account_key), value, loaded_at=holdings_loaded_at)
 
-    balance_loaded_at = float(
-        st.session_state.get("etrade_balance_last_refresh", now) or now
-    )
+    balance_loaded_at = float(st.session_state.get("etrade_balance_last_refresh", now) or now)
     for account_key, value in (st.session_state.get("etrade_balances") or {}).items():
         if value is not None and _offline_get(vault_key, "balance", str(account_key)) is None:
-            _offline_store(
-                vault_key,
-                "balance",
-                str(account_key),
-                value,
-                loaded_at=balance_loaded_at,
-            )
+            _offline_store(vault_key, "balance", str(account_key), value, loaded_at=balance_loaded_at)
 
 
 def _cache_age_text(seconds):
@@ -202,9 +180,7 @@ def _portfolio_snapshot_age():
     """Age of the freshest actual holdings snapshot, not metadata like accounts."""
     vault_key = _trade_access_code_hash()
     accounts_entry = _offline_get(vault_key, "accounts", "all")
-    accounts = st.session_state.get("etrade_accounts") or (
-        (accounts_entry or {}).get("value") or []
-    )
+    accounts = st.session_state.get("etrade_accounts") or ((accounts_entry or {}).get("value") or [])
     ages = []
     now = time.time()
     for account in accounts:
@@ -341,50 +317,28 @@ def render_app_lock_screen():
             st.subheader("Access Keypad")
             dots = "●" * len(buffer) if buffer else "—"
             st.markdown(
-                (
-                    '<div class="keypad-display">'
-                    f'<div class="keypad-dots">{html.escape(dots)}</div>'
-                    f'<div class="keypad-meta">{len(buffer)} DIGITS ENTERED</div>'
-                    '</div>'
-                ),
+                '<div class="keypad-display">'
+                f'<div class="keypad-dots">{html.escape(dots)}</div>'
+                f'<div class="keypad-meta">{len(buffer)} DIGITS ENTERED</div>'
+                '</div>',
                 unsafe_allow_html=True,
             )
 
             pressed = None
-            for row_index, digits in enumerate((("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9"))):
+            for digits in (("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9")):
                 cols = st.columns(3, gap="small")
                 for col, digit in zip(cols, digits):
                     with col:
-                        if st.button(
-                            digit,
-                            width="stretch",
-                            disabled=remaining > 0,
-                            key=f"app_keypad_digit_{digit}",
-                        ):
+                        if st.button(digit, width="stretch", disabled=remaining > 0, key=f"app_keypad_digit_{digit}"):
                             pressed = digit
 
             bottom = st.columns(3, gap="small")
             with bottom[0]:
-                clear_pressed = st.button(
-                    "CLR",
-                    width="stretch",
-                    disabled=remaining > 0 or not buffer,
-                    key="app_keypad_clear",
-                )
+                clear_pressed = st.button("CLR", width="stretch", disabled=remaining > 0 or not buffer, key="app_keypad_clear")
             with bottom[1]:
-                zero_pressed = st.button(
-                    "0",
-                    width="stretch",
-                    disabled=remaining > 0,
-                    key="app_keypad_digit_0",
-                )
+                zero_pressed = st.button("0", width="stretch", disabled=remaining > 0, key="app_keypad_digit_0")
             with bottom[2]:
-                back_pressed = st.button(
-                    "⌫",
-                    width="stretch",
-                    disabled=remaining > 0 or not buffer,
-                    key="app_keypad_backspace",
-                )
+                back_pressed = st.button("⌫", width="stretch", disabled=remaining > 0 or not buffer, key="app_keypad_backspace")
 
             if pressed is not None:
                 if len(buffer) < 32:
@@ -401,13 +355,7 @@ def render_app_lock_screen():
                 st.session_state[buffer_key] = buffer[:-1]
                 st.rerun()
 
-            unlock = st.button(
-                "UNLOCK TERMINAL",
-                type="primary",
-                width="stretch",
-                disabled=(remaining > 0 or not buffer),
-                key="app_keypad_unlock",
-            )
+            unlock = st.button("UNLOCK TERMINAL", type="primary", width="stretch", disabled=(remaining > 0 or not buffer), key="app_keypad_unlock")
 
             feedback = st.session_state.pop("_app_keypad_feedback", None)
             if remaining > 0:
@@ -429,62 +377,38 @@ def render_app_lock_screen():
                 st.session_state[buffer_key] = ""
                 remaining_after = _app_lockout_remaining()
                 if remaining_after > 0:
-                    st.session_state["_app_keypad_feedback"] = (
-                        "error",
-                        f"TOO MANY FAILED ATTEMPTS // LOCKED FOR {remaining_after} SECONDS",
-                    )
+                    st.session_state["_app_keypad_feedback"] = ("error", f"TOO MANY FAILED ATTEMPTS // LOCKED FOR {remaining_after} SECONDS")
                 else:
                     attempts = int(st.session_state.get("app_unlock_failures", 0) or 0)
                     left_attempts = max(0, APP_LOCK_MAX_ATTEMPTS - attempts)
-                    st.session_state["_app_keypad_feedback"] = (
-                        "error",
-                        f"INCORRECT ACCESS CODE // {left_attempts} ATTEMPTS REMAIN",
-                    )
+                    st.session_state["_app_keypad_feedback"] = ("error", f"INCORRECT ACCESS CODE // {left_attempts} ATTEMPTS REMAIN")
                 st.rerun()
 
 
-# Holdings is snapshot/manual-refresh mode. The underlying E*TRADE call still
-# passes through the shared cache; pressing REFRESH HOLDINGS + BALANCE is
-# detected by CachedETradeClient and intentionally bypasses the normal TTL.
-# If that live refresh fails, the cache layer returns the prior snapshot.
 render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
-
-# On a hard browser refresh, Streamlit session_state may be new. The user still
-# enters the terminal code, but an E*TRADE OAuth session is recovered from
-# server memory when its original inactivity/midnight timer is still active.
 _restore_active_etrade_session_after_unlock()
-
 
 if not _trade_access_unlocked():
     render_app_lock_screen()
     st.stop()
 
-# Capture any already-loaded portfolio data before connection controls or tab
-# renderers have a chance to clear/replace session values.
 _seed_offline_from_session_state()
 
 st.title("Raj's Terminal")
+st.caption("BUILD // RISK-V7 DIRECT // 2026-09-15 // if you see this, the live app has the new entrypoint")
 st.caption(
     "Bloomberg-style municipal analytics, E*TRADE holdings, Crown-style risk sizing, "
     "bull debit-spread optimization, and a live Triggers-OCO simulator."
 )
 
 if st.session_state.pop("_etrade_restored_after_unlock", False):
-    st.success(
-        "E*TRADE SESSION RESTORED // existing OAuth session is still active // "
-        "no E*TRADE reconnect required"
-    )
+    st.success("E*TRADE SESSION RESTORED // existing OAuth session is still active // no E*TRADE reconnect required")
 
 render_etrade_connection()
-
-# Keep the latest active token/account snapshot available for a future browser
-# refresh without changing the E*TRADE inactivity clock.
 _persist_active_etrade_session()
 _render_cache_status()
 _render_offline_snapshot_notice()
 
-# These ARE the terminal tabs: click to open; drag left/right to reorder.
-# Order and active tab are persisted in server memory and browser localStorage.
 tab_order, active_tab = render_terminal_tab_bar(_trade_access_code_hash())
 
 if active_tab == "HOLDINGS":
@@ -504,38 +428,21 @@ elif active_tab == "GEX":
     render_gex_workspace()
 
 elif active_tab == "BULL DEBIT SPREAD":
-    render_bull_debit_spread(
-        _etrade_client(),
-        _touch_etrade_session,
-        timezone_name="America/New_York",
-    )
+    render_bull_debit_spread(_etrade_client(), _touch_etrade_session, timezone_name="America/New_York")
 
 elif active_tab == "MUNI SCREENERS":
     load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
     with load_col:
-        load_muni_clicked = st.button(
-            "LOAD MUNI SCREENERS",
-            type="primary",
-            key="load_muni_data",
-            width="stretch",
-        )
+        load_muni_clicked = st.button("LOAD MUNI SCREENERS", type="primary", key="load_muni_data", width="stretch")
     with refresh_col:
-        refresh_muni_clicked = st.button(
-            "REFRESH MUNI DATA",
-            key="refresh_muni_data",
-            width="stretch",
-        )
+        refresh_muni_clicked = st.button("REFRESH MUNI DATA", key="refresh_muni_data", width="stretch")
 
     if refresh_muni_clicked:
         st.session_state.pop(MUNI_SESSION_KEY, None)
         st.session_state.pop(MUNI_SESSION_AT_KEY, None)
 
     muni_bundle = None
-    should_load_munis = (
-        load_muni_clicked
-        or refresh_muni_clicked
-        or _session_muni_cache_is_valid()
-    )
+    should_load_munis = load_muni_clicked or refresh_muni_clicked or _session_muni_cache_is_valid()
 
     if should_load_munis:
         try:
@@ -543,41 +450,23 @@ elif active_tab == "MUNI SCREENERS":
         except Exception as exc:
             st.error(f"Municipal data load failed: {exc}")
     else:
-        st.info(
-            "Municipal data is paused. Select LOAD MUNI SCREENERS when you are ready."
-        )
+        st.info("Municipal data is paused. Select LOAD MUNI SCREENERS when you are ready.")
 
     if muni_bundle is not None:
         df, source_rows, etf_status, as_of = muni_bundle
-
         if used_session_cache:
-            age_minutes = int(
-                (time.time() - st.session_state[MUNI_SESSION_AT_KEY]) / 60
-            )
-            st.caption(
-                f"DATA ENGINE // SESSION CACHE READY • {len(df):,} CUSIPs "
-                f"• loaded {age_minutes} min ago"
-            )
+            age_minutes = int((time.time() - st.session_state[MUNI_SESSION_AT_KEY]) / 60)
+            st.caption(f"DATA ENGINE // SESSION CACHE READY • {len(df):,} CUSIPs • loaded {age_minutes} min ago")
 
-        tab1, tab2, tab3 = st.tabs(
-            [
-                "MUNI SCREENER",
-                "TAX EXEMPT STATUS FOR NIST",
-                "STATE INCOME TAX // MUNI vs UST",
-            ]
-        )
-
+        tab1, tab2, tab3 = st.tabs([
+            "MUNI SCREENER",
+            "TAX EXEMPT STATUS FOR NIST",
+            "STATE INCOME TAX // MUNI vs UST",
+        ])
         with tab1:
-            render_muni_screener(
-                df,
-                source_rows,
-                etf_status,
-                as_of,
-            )
-
+            render_muni_screener(df, source_rows, etf_status, as_of)
         with tab2:
             render_nist_comparison(df)
-
         with tab3:
             render_state_income_tax_comparison(df)
 
