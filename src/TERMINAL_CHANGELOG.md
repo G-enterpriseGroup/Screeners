@@ -197,3 +197,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `949b8495`, `3c2e8c18`, `a23564db`, `7afb9067` plus this changelog commit.
 - **Lesson:** Streamlit CSS output is session/rerun scoped, so visual styles must not rely on a process-global "already installed" flag. When the request says the delete icon belongs next to the ticker, put it inside the ticker cell itself rather than approximating with an adjacent action column.
+
+## 2026-09-15 — Left-align GEX trash icons in ticker cells
+
+- **Feature changed:** GEX Overview row-action alignment.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The trash icon was inside the ticker cell but the ticker/icon group was centered, and the ticker appeared before the icon.
+- **Root cause:** `.gexv3-symbol-wrap` used `justify-content:center`, while the generated markup rendered the symbol before the trash link.
+- **What was changed:** The ticker cell now uses left text alignment, the wrapper uses `justify-content:flex-start` across the full cell width, and the trash link is rendered before the ticker text. Rows therefore read visually as `🗑  SPY`, `🗑  QQQ`, etc., with every icon aligned on the same left edge.
+- **Important behavior that must remain:** The trash icon stays inside the existing TICKER column, immediately beside its ticker; do not create a separate delete column. Clicking the icon must continue to use the existing persistent GEX delete path.
+- **Files/features intentionally NOT changed:** GEX calculations/TradingView bridge, Risk Sizing, OAuth, Holdings, Bull Debit, Muni, navigation, Touch ID/authentication, shared theme, `src/gex_ui.py`, and `src/terminal_core.py`.
+- **Tests performed:** Re-fetched the exact committed `src/gex_ui_v3.py` from commit `bee8ee65`; confirmed `text-align:left`, `justify-content:flex-start`, and trash-link-before-symbol markup; GitHub Actions `validate-boundaries` completed successfully on commit `bee8ee65`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `bee8ee65` plus this changelog commit.
+- **Lesson:** For row actions, match requested direction and alignment exactly; if the icon is meant to be left-aligned, render it first and align the row wrapper to `flex-start` rather than approximating with centered content.
