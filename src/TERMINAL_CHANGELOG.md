@@ -57,3 +57,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `f85bb1c`, `a2e66f6`.
 - **Lesson:** A compact iframe must never enforce size by mutating ancestor wrappers. Use `setFrameHeight`/Python component height and scoped CSS only, especially across authentication reruns.
+
+## 2026-09-15 — Exact removal of black spacer under top tabs
+
+- **Feature changed:** Top navigation / terminal tab component height.
+- **Exact production file(s) changed:** `src/components/terminal_tabs_v3/index.html`, `src/tab_bar_v4.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** A large black dead area remained specifically between the orange bottom line of the selected top tab bar and `GEX // MULTI-TICKER GAMMA WORKSPACE`.
+- **Root cause:** The visual tab row was 48px tall, but the live Streamlit custom-component iframe could remain at its default roughly 150px frame height. The screenshot gap matched the unused remainder of that default iframe, plus Streamlit's normal vertical element gap.
+- **What was changed:** The tab component now pins only its own iframe and the exact `stCustomComponentV1` / `stElementContainer` wrappers containing that iframe to 48px, offsets the navigation element's normal 1rem bottom gap, and continues to send `streamlit:setFrameHeight(48)`. It never walks into arbitrary ancestors. The component key was changed to force a clean remount in existing browser sessions.
+- **Important behavior that must remain:** `GEX // MULTI-TICKER GAMMA WORKSPACE` and every other active tab should start immediately below the top tab bar. Never add GEX-specific negative margins to compensate for navigation height. Never resize generic ancestors from the iframe because that can break biometric unlock.
+- **Files/features intentionally NOT changed:** GEX UI/content, Risk Sizing, E*TRADE OAuth, Holdings, Bull Debit, Muni, Touch ID authentication logic.
+- **Tests performed:** Re-fetched the exact committed navigation HTML and Python route from `main`; confirmed the component is scoped to exact iframe wrappers and the new remount key is live; GitHub Actions `Terminal Architecture Guard` run `34997907820` passed on commit `233d72f8`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `7f5dff0`, `233d72f8`.
+- **Lesson:** When a Streamlit custom component shows a 48px UI inside a ~150px black frame, fix the exact component frame and exact component wrappers—not the feature below it and not arbitrary DOM ancestors.
