@@ -34,15 +34,18 @@ from src import gex_ui_v3_base as _base
 # ==============================
 _ROW_ACTION_CSS = """
 <style>
-/* Keep the delete affordance inside the TICKER cell, directly beside symbol. */
+/* Keep the delete affordance inside the TICKER cell, aligned left beside symbol. */
 .gexv3-summary td.sym {
     overflow: visible !important;
+    text-align: left !important;
+    padding-left: .48rem !important;
 }
 .gexv3-symbol-wrap {
     display:inline-flex !important;
     align-items:center !important;
-    justify-content:center !important;
+    justify-content:flex-start !important;
     gap:.38rem !important;
+    width:100% !important;
     white-space:nowrap !important;
 }
 .gexv3-symbol-text {
@@ -53,6 +56,7 @@ _ROW_ACTION_CSS = """
     display:inline-flex !important;
     align-items:center !important;
     justify-content:center !important;
+    flex:0 0 auto !important;
     width:1.25rem !important;
     height:1.18rem !important;
     padding:0 !important;
@@ -90,7 +94,7 @@ def _delete_href(ticker: str) -> str:
 
 
 def _inject_row_trash(markup: str) -> str:
-    """Place one clickable trash icon inside every ticker cell in Overview."""
+    """Place one left-aligned clickable trash icon inside every ticker cell."""
     if 'class="gexv3-summary"' not in markup:
         return markup
 
@@ -101,10 +105,10 @@ def _inject_row_trash(markup: str) -> str:
         return (
             '<td class="sym">'
             '<span class="gexv3-symbol-wrap">'
-            f'<span class="gexv3-symbol-text">{ticker_html}</span>'
             f'<a class="gexv3-trash-link" href="{href}" target="_self" '
             f'aria-label="Delete {ticker_html} from GEX" '
             f'title="Delete {ticker_html} from GEX">🗑</a>'
+            f'<span class="gexv3-symbol-text">{ticker_html}</span>'
             '</span>'
             '</td>'
         )
