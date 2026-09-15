@@ -25,3 +25,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-14 firefox-touch-id-readiness-helper-v3
 # clean rebuild marker: 2026-09-15 etrade-gex-workspace-v1
 # clean rebuild marker: 2026-09-15 gex-full-loader-hot-reload-v2
+# clean rebuild marker: 2026-09-15 restore-risk-sizing-part-2-v1
