@@ -37,6 +37,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "risk_sizing_ui_v10.py",
     SRC / "gex_workspace_v2.py",
     SRC / "gex_ui_v3.py",
+    SRC / "gex_ui_v3_base.py",
     SRC / "etrade_connection_ui_v2.py",
     SRC / "holdings_snapshot_mode.py",
     SRC / "tab_bar_v4.py",
