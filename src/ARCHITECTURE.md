@@ -14,6 +14,17 @@ The goal is simple: a change to one feature must not silently change another fea
 6. Historical `*_v2.py`, `*_v4.py`, etc. files are not automatically production. Follow the production map below.
 7. Before merging a feature change, run `python scripts/validate_architecture.py`.
 
+## Standing UI rules
+
+These are durable terminal preferences and should be checked on every UI change:
+
+1. **Do not waste vertical space.** Controls/cards/components should reserve only the height required by their visible content.
+2. **Remove redundant blank space** between navigation and active content, between controls, and inside cards.
+3. **Keep feature fixes isolated.** A GEX request should not modify Risk Sizing, OAuth, Holdings, or navigation unless the production map explicitly identifies a shared dependency.
+4. **Do not fix one feature by globally patching Streamlit.** Scope CSS and widget wrappers to the owning feature/component.
+5. **Retest neighboring top-level tabs after any UI change** so a feature-specific improvement does not regress another tab.
+6. For custom components, explicitly control iframe/component height when the visible UI is compact; do not rely on Streamlit's larger default frame height.
+
 ## Production feature map
 
 | Feature | Production entry / owner | Supporting files | Do not edit for normal feature UI work |
@@ -69,6 +80,16 @@ Production path:
 - Change Holdings UI → `src/holdings_snapshot_mode.py`.
 - Change classification panels → `src/stockanalysis_portfolio_v5.py` and its cache helpers.
 - Do not change Risk Sizing or GEX to fix Holdings.
+
+## Top navigation edit map
+
+Production path:
+
+`streamlit_app.py` → `src/tab_bar_v4.py` → `src/components/terminal_tabs_v3/index.html`
+
+- Change **top-tab width/spacing/frame height/navigation appearance** → `src/tab_bar_v4.py` and/or `src/components/terminal_tabs_v3/index.html` only.
+- The top navigation component is intentionally **48px tall**. Its Streamlit iframe/container must not reserve additional blank height beneath it.
+- Do not edit GEX/Risk/OAuth feature files to correct whitespace caused by the top navigation component.
 
 ## Shared-code warning
 
