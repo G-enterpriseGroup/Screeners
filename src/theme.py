@@ -104,96 +104,118 @@ textarea:not(:disabled),
 
 /*
    TERMINAL-WIDE DROPDOWN READABILITY
-   Selected values and open menu options must never render black-on-black or
-   black-on-dark. BaseWeb renders open menus in a portal, so style both the
-   closed control and the popover/listbox states.
+   BaseWeb changes its nested markup between Streamlit releases. Style the
+   actual select shell AND all nested value nodes so no inherited black text can
+   survive on the terminal's dark background. Open menus render in a portal, so
+   their listbox/option descendants are covered separately below.
 */
 [data-testid="stSelectbox"] [data-baseweb="select"] > div,
 [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
-[data-baseweb="select"] > div[role="combobox"] {
-    background: #050505 !important;
-    border-color: __RAJ_DROPDOWN_ACCENT__ !important;
-    color: #f2f2f2 !important;
-    box-shadow: none !important;
+[data-baseweb="select"] > div,
+[data-baseweb="select"] [role="combobox"] {
+    background:#050505 !important;
+    border-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    -webkit-text-fill-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    box-shadow:none !important;
 }
 
-[data-testid="stSelectbox"] [data-baseweb="select"] span,
-[data-testid="stSelectbox"] [data-baseweb="select"] input,
-[data-testid="stMultiSelect"] [data-baseweb="select"] span,
-[data-testid="stMultiSelect"] [data-baseweb="select"] input,
+[data-testid="stSelectbox"] [data-baseweb="select"] > div *,
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div *,
+[data-baseweb="select"] > div *,
 [data-baseweb="select"] [role="combobox"],
-[data-baseweb="select"] [role="combobox"] * {
-    color: __RAJ_DROPDOWN_ACCENT__ !important;
-    -webkit-text-fill-color: __RAJ_DROPDOWN_ACCENT__ !important;
-    font-family: "Courier New", monospace !important;
-    font-weight: 800 !important;
+[data-baseweb="select"] [role="combobox"] *,
+[data-baseweb="select"] input,
+[data-baseweb="select"] span,
+[data-baseweb="select"] p {
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    -webkit-text-fill-color:__RAJ_DROPDOWN_ACCENT__ !important;
+    font-family:"Courier New",monospace !important;
+    font-weight:800 !important;
 }
 
 [data-baseweb="select"] svg,
 [data-testid="stSelectbox"] svg,
 [data-testid="stMultiSelect"] svg {
-    color: __RAJ_DROPDOWN_ACCENT__ !important;
-    fill: __RAJ_DROPDOWN_ACCENT__ !important;
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    fill:__RAJ_DROPDOWN_ACCENT__ !important;
+}
+
+/* Open BaseWeb menu/listbox portal. */
+[data-baseweb="popover"],
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] ul[role="listbox"],
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="menu"],
+[role="listbox"] {
+    background:#050505 !important;
+    color:#f2f2f2 !important;
 }
 
 [data-baseweb="popover"] [role="listbox"],
 [data-baseweb="popover"] ul[role="listbox"],
-[data-baseweb="popover"] div[data-baseweb="menu"] {
-    background: #050505 !important;
-    border: 1px solid __RAJ_DROPDOWN_ACCENT__ !important;
-    color: #f2f2f2 !important;
+[data-baseweb="popover"] [data-baseweb="menu"] {
+    border:1px solid __RAJ_DROPDOWN_ACCENT__ !important;
 }
 
-[data-baseweb="popover"] [role="option"] {
-    background: #050505 !important;
-    color: #f2f2f2 !important;
-    -webkit-text-fill-color: #f2f2f2 !important;
-    font-family: "Courier New", monospace !important;
-    font-weight: 800 !important;
-}
-
-[data-baseweb="popover"] [role="option"] * {
-    color: inherit !important;
-    -webkit-text-fill-color: currentColor !important;
-    font-family: "Courier New", monospace !important;
-    font-weight: 800 !important;
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] [role="option"] *,
+[data-baseweb="menu"] [role="option"],
+[data-baseweb="menu"] [role="option"] *,
+[role="listbox"] [role="option"],
+[role="listbox"] [role="option"] * {
+    background:#050505 !important;
+    color:#f2f2f2 !important;
+    -webkit-text-fill-color:#f2f2f2 !important;
+    font-family:"Courier New",monospace !important;
+    font-weight:800 !important;
 }
 
 [data-baseweb="popover"] [role="option"]:hover,
-[data-baseweb="popover"] [role="option"]:focus {
-    background: #171007 !important;
-    color: #ffad52 !important;
-    -webkit-text-fill-color: #ffad52 !important;
+[data-baseweb="popover"] [role="option"]:focus,
+[data-baseweb="menu"] [role="option"]:hover,
+[data-baseweb="menu"] [role="option"]:focus,
+[role="listbox"] [role="option"]:hover,
+[role="listbox"] [role="option"]:focus {
+    background:#171007 !important;
+    color:#ffad52 !important;
+    -webkit-text-fill-color:#ffad52 !important;
 }
 
-[data-baseweb="popover"] [role="option"][aria-selected="true"] {
-    background: __RAJ_DROPDOWN_ACCENT__ !important;
-    color: #000000 !important;
-    -webkit-text-fill-color: #000000 !important;
+[data-baseweb="popover"] [role="option"][aria-selected="true"],
+[data-baseweb="popover"] [role="option"][aria-selected="true"] *,
+[data-baseweb="menu"] [role="option"][aria-selected="true"],
+[data-baseweb="menu"] [role="option"][aria-selected="true"] *,
+[role="listbox"] [role="option"][aria-selected="true"],
+[role="listbox"] [role="option"][aria-selected="true"] * {
+    background:__RAJ_DROPDOWN_ACCENT__ !important;
+    color:#000000 !important;
+    -webkit-text-fill-color:#000000 !important;
 }
 
+/* Native select fallback for any non-BaseWeb controls. */
 select:not(:disabled) {
-    background: #050505 !important;
-    color: __RAJ_DROPDOWN_ACCENT__ !important;
-    border-color: __RAJ_DROPDOWN_ACCENT__ !important;
+    background:#050505 !important;
+    color:__RAJ_DROPDOWN_ACCENT__ !important;
+    border-color:__RAJ_DROPDOWN_ACCENT__ !important;
 }
 select:not(:disabled) option {
-    background: #050505 !important;
-    color: #f2f2f2 !important;
+    background:#050505 !important;
+    color:#f2f2f2 !important;
 }
 </style>
 """.replace("__RAJ_CARET_COLOR__", BB_ORANGE).replace("__RAJ_DROPDOWN_ACCENT__", BB_ORANGE)
 
 
 def install_typing_caret_theme() -> None:
-    """Install shared editable-field and dropdown styling once per process."""
-    if getattr(st, "_raj_typing_caret_theme", False):
-        return
+    """Emit shared editable-field/dropdown CSS for the current Streamlit render.
 
-    # st.html with style-only content applies CSS without consuming a visible
-    # vertical layout row. This is shared appearance, not a widget monkey-patch.
+    This intentionally runs on every script render/session. Streamlit output is
+    session-scoped; a process-global "already installed" flag can leave later
+    browser sessions or reruns without the stylesheet and cause black-on-black
+    dropdown values.
+    """
     st.html(_TYPING_CARET_CSS)
-    st._raj_typing_caret_theme = True
 
 
 # ==============================
@@ -299,8 +321,8 @@ def install_bloomberg_dataframe_theme() -> None:
     st._raj_bloomberg_dataframe_theme = True
 
 
-# src.theme is imported before terminal renderers execute, so installing here
-# guarantees one consistent terminal-wide treatment across every tab.
-install_typing_caret_theme()
+# The stylesheet is emitted by streamlit_app.py after the core has completed
+# st.set_page_config, on every rerun/session. Keep only non-layout compatibility
+# installs here; they do not emit visible Streamlit elements.
 _install_components_html_compat()
 install_bloomberg_dataframe_theme()
