@@ -31,3 +31,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-09-15 gex-fragment-live-context-v3
 # clean rebuild marker: 2026-09-15 gex-compact-subtabs-multiticker-v4
 # clean rebuild marker: 2026-09-15 gex-visible-boxed-subtabs-v5
+# clean rebuild marker: 2026-09-15 risk-sizing-v7-compact-company-preview-v2
