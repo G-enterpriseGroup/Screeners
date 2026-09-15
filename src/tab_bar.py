@@ -147,12 +147,32 @@ def _save(vault_key: str, order: Iterable[str], active: Any) -> dict[str, Any]:
 
 
 def _render_builtin_tab(active: str) -> None:
-    """Render lightweight modular tabs that do not live in the legacy app switch."""
+    """Render modular tabs that live outside the legacy app switch.
+
+    GEX used to be a one-line scaffold. Streamlit/Python can keep an already
+    imported module alive across hot reruns, so after replacing that scaffold a
+    worker could continue showing the old placeholder. On the first GEX render
+    of each browser session, explicitly invalidate import caches and reload the
+    module from disk. This guarantees the full current E*TRADE GEX workspace is
+    what the user sees without paying the reload cost on every interaction.
+    """
     if active != "GEX":
         return
-    from src.gex_ui import render_gex
 
-    render_gex()
+    import importlib
+    import src.gex_ui as gex_ui
+
+    reload_key = "_raj_gex_full_workspace_reload_v2"
+    if not st.session_state.get(reload_key):
+        importlib.invalidate_caches()
+        gex_ui = importlib.reload(gex_ui)
+        st.session_state[reload_key] = True
+
+    renderer = getattr(gex_ui, "render_gex", None)
+    if not callable(renderer):
+        st.error("GEX WORKSPACE LOAD ERROR // render_gex() is unavailable")
+        return
+    renderer()
 
 
 def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
