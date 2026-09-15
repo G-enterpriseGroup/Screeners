@@ -71,3 +71,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `7f5dff0`, `233d72f8`.
 - **Lesson:** When a Streamlit custom component shows a 48px UI inside a ~150px black frame, fix the exact component frame and exact component wrappers—not the feature below it and not arbitrary DOM ancestors.
+
+## 2026-09-15 — Remove GEX hidden pre-header spacer rows
+
+- **Feature changed:** GEX wrapper/render-boundary spacing.
+- **Exact production file(s) changed:** `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** A large black blank area still remained between the top terminal tab bar and `GEX // MULTI-TICKER GAMMA WORKSPACE` after the navigation iframe itself had already been constrained.
+- **Root cause:** GEX emitted two standalone style-only `st.markdown(<style>...</style>)` elements before the first visible workspace header: the subtab skin in `gex_workspace_v2.py` and `_css()` in `gex_ui_v3.py`. Streamlit can still allocate normal vertical-stack spacing between those invisible element containers, so the remaining gap was partly GEX-owned rather than only a navigation-frame problem.
+- **What was changed:** `gex_workspace_v2.py` now returns the GEX subtab CSS as text instead of rendering it as a standalone row. During GEX rendering only, a temporary `st.markdown` wrapper buffers leading style-only markdown calls and prepends all of that CSS to the first visible GEX markdown block. The original `st.markdown` is restored in `finally`. The first GEX header also receives a tightly scoped one-element top-gap correction.
+- **Important behavior that must remain:** Do not create standalone invisible style-only Streamlit elements immediately before the first visible GEX content. Any temporary Streamlit wrapper must remain GEX-local and be restored in `finally`. Preserve the prior Touch ID safety rule: never resize arbitrary ancestor DOM wrappers.
+- **Files/features intentionally NOT changed:** Risk Sizing, E*TRADE OAuth, Holdings, Bull Debit, Muni, Touch ID authentication logic, GEX analytics/math, `gex_ui_v3.py`, `terminal_core.py`, and top-navigation files in this pass.
+- **Tests performed:** Re-fetched the exact production GEX wrapper from `main`; confirmed the temporary markdown wrapper is installed only inside the GEX render path and restored in `finally`; GitHub Actions `Terminal Architecture Guard` run `34998470522` passed on commit `7e50074d`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `7e50074d`.
+- **Lesson:** Invisible `st.markdown(<style>...)` calls can still cost vertical-stack spacing in Streamlit. Fold feature CSS into a visible feature element when compact spacing matters instead of adding hidden rows before content.
