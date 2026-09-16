@@ -36,8 +36,29 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from src.etrade_client import ETradeClient, option_expiration_dates
+from src.etrade_client import ETradeClient, option_expiration_dates, quote_summary, walk_dicts
 from src.gex_ui_v3 import render_gex as _render_gex_v3
+
+
+# ==============================
+# GEX BUILD ID
+# ==============================
+# Increment this on every production GEX code push so the live Streamlit page
+# makes it obvious which build is actually deployed.
+GEX_BUILD_VERSION = "v2026.09.16.01"
+GEX_ENGINE_LABEL = "E*TRADE // 4 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
+
+
+def _gex_build_badge() -> str:
+    """Return a compact visible build marker for deployment verification."""
+    return (
+        '<div style="display:inline-block;border:1px solid #5d3605;'
+        'background:#050505;color:#fb8b1e;padding:.18rem .40rem;'
+        'margin:0 0 .22rem 0;font:900 8.5pt/1.05 Courier New,monospace;'
+        'letter-spacing:.02em">'
+        f'GEX BUILD {GEX_BUILD_VERSION} // {GEX_ENGINE_LABEL}'
+        '</div>'
+    )
 
 
 # ==============================
@@ -218,12 +239,11 @@ def _is_style_only_markdown(body: Any) -> bool:
 # start-rate gate spaces live MARKET calls just under 4/sec, so network latency
 # is overlapped without sending bursts above the documented throttle.
 #
-# These TTLs intentionally match the terminal's shared E*TRADE cache:
-# - quotes: 5 seconds
-# - expiration metadata: 6 hours
-# - option chains: 5 minutes
+# Refresh All uses one coherent quote snapshot for the same five-minute window
+# as its option-chain snapshot. Manual single-ticker refresh remains a hard live
+# refresh through the foreground terminal client.
 _GEX_BACKGROUND_TTLS = {
-    "quote": 5,
+    "quote": 5 * 60,
     "option_expirations": 6 * 60 * 60,
     "option_chain": 5 * 60,
 }
@@ -246,6 +266,12 @@ _GEX_CHAIN_PREFETCH_EXECUTOR = ThreadPoolExecutor(
 )
 _GEX_CHAIN_PREFETCH_LOCK = threading.RLock()
 _GEX_CHAIN_PREFETCH_FUTURES: dict[tuple[str, str, str], Future[Any]] = {}
+
+# E*TRADE's quote endpoint accepts up to 50 symbols in one request when
+# overrideSymbolCount=true. Refresh All therefore coalesces the watchlist into
+# one INTRADAY quote request instead of spending one MARKET request per ticker.
+_GEX_BATCH_QUOTE_LOCK = threading.RLock()
+_GEX_BATCH_QUOTE_FUTURES: dict[tuple[str, tuple[str, ...]], Future[Any]] = {}
 
 
 def _gex_cache_namespace(oauth_token: str) -> str:
@@ -379,6 +405,95 @@ def _schedule_gex_prefetch(
         return future
 
 
+def _gex_quote_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract QuoteData records without depending on response-key casing."""
+    for node in walk_dicts(payload):
+        for key, value in node.items():
+            if str(key).casefold() != "quotedata":
+                continue
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+            if isinstance(value, dict):
+                return [value]
+    return []
+
+
+def _schedule_gex_batch_quotes(
+    namespace: str,
+    symbols: list[str],
+    raw_client_factory: Callable[[], ETradeClient],
+) -> Future[Any] | None:
+    """Fetch up to 50 watchlist quotes in one E*TRADE MARKET request."""
+    normalized = tuple(
+        sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+    )[:50]
+    if not normalized:
+        return None
+
+    now = time.time()
+    ttl = int(_GEX_BACKGROUND_TTLS["quote"])
+    with _GEX_BACKGROUND_CACHE_LOCK:
+        missing = []
+        for symbol in normalized:
+            entry = _GEX_BACKGROUND_CACHE.get((namespace, "quote", symbol))
+            age = (
+                now - float(entry.get("loaded_at", 0.0) or 0.0)
+                if entry is not None
+                else float("inf")
+            )
+            if entry is None or age >= ttl:
+                missing.append(symbol)
+    if not missing:
+        return None
+
+    request_symbols = tuple(missing[:50])
+    future_key = (namespace, request_symbols)
+    with _GEX_BATCH_QUOTE_LOCK:
+        existing = _GEX_BATCH_QUOTE_FUTURES.get(future_key)
+        if existing is not None and not existing.done():
+            return existing
+
+        def load_batch() -> int:
+            _gex_market_rate_gate()
+            raw = raw_client_factory()
+            payload = raw._get(
+                "/v1/market/quote/" + ",".join(request_symbols),
+                {
+                    "detailFlag": "INTRADAY",
+                    "overrideSymbolCount": "true",
+                    "skipMiniOptionsCheck": "true",
+                },
+            )
+            loaded_at = time.time()
+            loaded = 0
+            with _GEX_BACKGROUND_CACHE_LOCK:
+                for record in _gex_quote_records(payload):
+                    try:
+                        symbol = str(quote_summary(record).get("symbol") or "").strip().upper()
+                    except Exception:
+                        continue
+                    if not symbol:
+                        continue
+                    _GEX_BACKGROUND_CACHE[(namespace, "quote", symbol)] = {
+                        "loaded_at": loaded_at,
+                        "value": record,
+                    }
+                    loaded += 1
+                _prune_gex_background_cache(namespace, loaded_at)
+            return loaded
+
+        future = _GEX_CHAIN_PREFETCH_EXECUTOR.submit(load_batch)
+        _GEX_BATCH_QUOTE_FUTURES[future_key] = future
+
+        def cleanup(done: Future[Any], _key=future_key) -> None:
+            with _GEX_BATCH_QUOTE_LOCK:
+                if _GEX_BATCH_QUOTE_FUTURES.get(_key) is done:
+                    _GEX_BATCH_QUOTE_FUTURES.pop(_key, None)
+
+        future.add_done_callback(cleanup)
+        return future
+
+
 class _GEXBackgroundCachedClient:
     """Cache-aware market client used only by GEX Refresh All.
 
@@ -473,6 +588,21 @@ class _GEXBackgroundCachedClient:
 
     def get_quote(self, symbol: str, force_refresh: bool = False) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
+        symbols = list(self._dte_by_symbol)
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+        try:
+            future = _schedule_gex_batch_quotes(
+                self._namespace,
+                symbols,
+                self._raw_client_factory,
+            )
+            if future is not None:
+                future.result()
+        except Exception:
+            # If the bulk endpoint ever rejects one symbol, preserve the proven
+            # single-symbol path rather than failing the entire GEX ticker.
+            pass
         return _gex_cached_market_read(
             self._namespace,
             "quote",
@@ -712,6 +842,7 @@ def render_gex() -> None:
 
     # Style-only HTML is applied without creating a visible Streamlit row.
     st.html(_gex_subtab_skin_css())
+    st.html(_gex_build_badge())
     _render_with_style_only_html(
         client,
         vault_key,
