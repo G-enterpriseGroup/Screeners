@@ -918,6 +918,26 @@ _TRADINGVIEW_CODE_CSS = """
     stroke:#020202 !important;
     fill:#020202 !important;
 }
+/* Make Streamlit's real clipboard control unmistakable instead of an icon-only affordance. */
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"],
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"] {
+    min-width:10.4rem !important;
+    width:auto !important;
+    padding:.34rem .58rem !important;
+    gap:.32rem !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCodeBlockCopyButton"]::after,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] button::after,
+.st-key-gexv3_bridge_code [data-testid="stCodeBlock"] [role="button"]::after {
+    content:"COPY MASTER A6" !important;
+    display:inline-block !important;
+    color:inherit !important;
+    -webkit-text-fill-color:inherit !important;
+    font:900 8.5pt/1 "Courier New",monospace !important;
+    letter-spacing:.02em !important;
+    white-space:nowrap !important;
+}
 </style>
 """
 
@@ -1058,7 +1078,12 @@ def _render_tradingview_pine(
     )
 
     block_name = "MASTER A6 BLOCK" if is_master else "A6 / PINE BLOCK"
-    st.markdown(f"**{block_name} // USE THE ORANGE COPY A6 BUTTON IN THE TOP-RIGHT OF THE BLOCK**")
+    if is_master:
+        st.markdown(
+            "**MASTER A6 BLOCK // GOOGLE APPS SCRIPT FORMAT // CLICK COPY MASTER A6 IN THE TOP-RIGHT**"
+        )
+    else:
+        st.markdown(f"**{block_name} // USE THE ORANGE COPY BUTTON IN THE TOP-RIGHT OF THE BLOCK**")
     st.html(_TRADINGVIEW_CODE_CSS)
     with st.container(key="gexv3_bridge_code"):
         st.code(text or "", language=None, wrap_lines=False)

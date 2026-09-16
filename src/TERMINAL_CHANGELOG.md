@@ -309,3 +309,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `d0fc1ec49baf0fd25bdbfb285244e0553b41ef0b` plus this changelog commit.
 - **Lesson:** Making a market-data batch non-blocking does not make it fast. When the data source requires multiple synchronous requests per ticker, improve throughput in the GEX scheduler with conservative bounded concurrency while leaving the calculation engine unchanged.
+
+## 2026-09-16 — MASTER A6 always-copyable Google Apps Script bridge
+
+- **Feature changed:** GEX TradingView MASTER A6 export finishing behavior and copy affordance.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** A failed/no-data ticker could make the older TradingView view say the Pine master was not ready and hide the useful copy block; the native Streamlit clipboard action was also visually an icon instead of the explicit MASTER A6 copy control Raj requested.
+- **Root cause:** The older bridge treated complete-ticker coverage as a prerequisite for presenting MASTER A6 and optimized the transport for a compact Pine-only payload. Raj's supplied Google Apps Script does the opposite: it always assembles A6 in saved-ticker order, emits full `summaryText` for successful symbols, emits `Ticker:` + `ERROR:` for failed symbols, trims the final joined text, and still exposes Copy A6.
+- **What was changed:** Preserved the current Google Apps Script A6 serializer as the default MASTER export, kept failed/no-result symbols as `Ticker:`/`ERROR:` blocks so one bad ticker never removes the master block, and made Streamlit's real code-block clipboard control visibly read `COPY MASTER A6`. The MASTER heading now explicitly says `GOOGLE APPS SCRIPT FORMAT`. Bumped the visible GEX build marker to `v2026.09.16.03`.
+- **Important behavior that must remain:** MASTER A6 must stay copyable whenever saved tickers exist, even when one or more symbols have no GEX data. Successful ticker blocks must remain in the supplied Apps Script field/order contract: `Ticker`, `Mode`, `Spot`, `Max DTE Used`, `Contracts Used`, `Net Current GEX`, `Source URL`, blank line, Pine instruction/separator, then `SPOT`, optional `GFLIP`, `CALLWALL`, `PUTWALL`, `MAXCALLOI`, `MAXPUTOI`, and ranked `GEXPOS/GEXNEG` rows. Failed symbols remain `Ticker:` + `ERROR:` blocks rather than blocking the whole A6.
+- **Files/features intentionally NOT changed:** GEX formulas/math in `src/gex_ui.py`, Risk Sizing, OAuth, Holdings, navigation, Bull Debit, Muni, Orders, shared theme, and `src/terminal_core.py`.
+- **Tests performed:** Python syntax compilation for the changed GEX Python files; `python scripts/validate_architecture.py`; static assertions that MASTER A6 serializer retains Google Apps Script error blocks and the visible clipboard label is present.
+- **Architecture guard result:** PASS if this one-time workflow commit is present on `main`.
+- **Commit SHA:** recorded by the resulting workflow commit.
+- **Lesson:** MASTER A6 is a copy/export contract, not a completeness gate. Match the supplied Apps Script serialization first; failed tickers should degrade locally, never suppress the entire TradingView paste block.
