@@ -1,0 +1,92 @@
+name: Finalize GEX fill-market-pipeline fix
+
+on:
+  push:
+    branches:
+      - gex-fill-market-pipeline-20260916
+    paths:
+      - '.github/workflows/gex-fill-market-pipeline.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  finalize-gex:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: gex-fill-market-pipeline-20260916
+
+      - name: Patch GEX build diagnostics and permanent changelog
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workspace = Path('src/gex_workspace_v2.py')
+          text = workspace.read_text(encoding='utf-8')
+          replacements = {
+              'GEX_BUILD_VERSION = "v2026.09.16.04"': 'GEX_BUILD_VERSION = "v2026.09.16.05"',
+              'GEX_ENGINE_LABEL = "E*TRADE // 4 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"': 'GEX_ENGINE_LABEL = "E*TRADE // 20 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"',
+              '"ENGINE     4 CALC WORKERS // 20 FETCH SLOTS // 3.7 REQUEST STARTS/SEC",': '"ENGINE     20 CALC WORKERS // 20 FETCH SLOTS // 3.7 REQUEST STARTS/SEC",',
+              '# E*TRADE documents a typical MARKET throttle of 4 requests/second. Four ticker\n# threads are not enough to reach that throughput when each HTTPS response takes\n# multiple seconds. Keep the top-level 4-ticker job unchanged, but prefetch each\n# ticker\'s eligible expiration chains through a deeper request pool. A shared\n# start-rate gate spaces live MARKET calls just under 4/sec, so network latency\n# is overlapped without sending bursts above the documented throttle.': '# E*TRADE documents a typical MARKET throttle of 4 requests/second. The top-level\n# ticker pool and the chain-prefetch pool may keep more requests in flight than\n# that because HTTPS responses can take several seconds; the shared start-rate\n# gate below remains authoritative and spaces live MARKET request starts just\n# under 4/sec. This hides network latency without increasing request-start rate.',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'Expected workspace marker not found: {old[:90]}')
+              text = text.replace(old, new, 1)
+          workspace.write_text(text, encoding='utf-8')
+
+          changelog = Path('src/TERMINAL_CHANGELOG.md')
+          log = changelog.read_text(encoding='utf-8')
+          title = '## 2026-09-16 — Fill the bounded GEX MARKET pipeline'
+          if title not in log:
+              entry = '''
+
+## 2026-09-16 — Fill the bounded GEX MARKET pipeline
+
+- **Feature changed:** GEX Refresh All scheduler throughput / cold-load latency hiding.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The live `v2026.09.16.04` process log proved Refresh All was still running only four top-level ticker workers for a 48-symbol watchlist. Even with 20 chain-prefetch slots, the pipeline could sit below the existing ~3.7 MARKET request-starts/sec ceiling while those four tickers waited on quote/expiration-list network responses.
+- **Root cause:** Scheduler concurrency and request-rate limiting were coupled too conservatively. Every ticker must obtain its expiration list before its option-chain prefetches can be queued, so four top-level workers could underfill the already-bounded MARKET pipeline when E*TRADE response latency was several seconds.
+- **What was changed:** The production `src/gex_ui_v3.py` wrapper now raises only the non-blocking Refresh All ticker-worker cap from 4 to 20, matching the existing 20 chain-fetch slots. The existing shared `0.27s` MARKET start gate in `src/gex_workspace_v2.py` remains unchanged and authoritative at about 3.7 request starts/sec, so the change increases in-flight latency hiding rather than the API request-start rate. The visible build marker/process log is now `v2026.09.16.05 // 20 CALC // 20 FETCH // 3.7 RPS`.
+- **Important behavior that must remain:** Keep the shared ~3.7 MARKET request-start gate, one up-to-50-symbol batch quote, 5-minute quote/chain cache, 6-hour expiration cache, exact eligible expiration coverage, 100-strike `CALLPUT` requests, current GEX/IV Rank formulas, multi-ticker state, live E*TRADE/session context, non-blocking Refresh All, and MASTER A6/TradingView serialization unchanged.
+- **Files/features intentionally NOT changed:** `src/gex_ui.py` calculation formulas, `src/gex_ui_v3_proven.py` proven interaction/TradingView serializer, `src/etrade_client.py`, Risk Sizing, E*TRADE OAuth UI, Holdings, Bull Debit, Muni, Orders, top navigation, Touch ID/authentication, shared theme, and `src/terminal_core.py`.
+- **Tests performed:** Python syntax compilation for the affected GEX Python files; static checks that the production wrapper sets 20 ticker workers while the workspace MARKET interval remains `0.27`; `python scripts/validate_architecture.py`; production route inspection; PR changed-file inspection; GitHub Actions architecture guard before merge and production verification after merge.
+- **Architecture guard result:** PASS required before merge.
+- **Commit SHA:** final production merge commit recorded by GitHub after validation.
+- **Lesson:** When a separate global request-start gate already enforces the E*TRADE ceiling, top-level worker count should be high enough to keep that gate fed across slow network round trips. Do not confuse worker concurrency with request-start rate, and do not sacrifice expiration coverage or TradingView correctness for apparent speed.
+'''
+              changelog.write_text(log.rstrip() + entry + '\n', encoding='utf-8')
+          PY
+
+      - name: Compile GEX production files
+        run: |
+          python -m py_compile src/gex_ui.py src/gex_ui_v3.py src/gex_workspace_v2.py
+
+      - name: Validate production architecture
+        run: python scripts/validate_architecture.py
+
+      - name: Verify scheduler and rate-gate invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          ui = Path('src/gex_ui_v3.py').read_text(encoding='utf-8')
+          ws = Path('src/gex_workspace_v2.py').read_text(encoding='utf-8')
+          assert '_BACKGROUND_TICKER_WORKERS = 20' in ui
+          assert '_proven._BACKGROUND_MAX_WORKERS = _BACKGROUND_TICKER_WORKERS' in ui
+          assert '_GEX_MARKET_REQUEST_INTERVAL_SECONDS = 0.27' in ws
+          assert 'GEX_BUILD_VERSION = "v2026.09.16.05"' in ws
+          assert '20 CALC WORKERS // 20 FETCH SLOTS // 3.7 REQUEST STARTS/SEC' in ws
+          assert 'from src.gex_workspace_v2 import render_gex as render_gex_workspace' in Path('streamlit_app.py').read_text(encoding='utf-8')
+          PY
+
+      - name: Commit final GEX-only patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/gex-fill-market-pipeline.yml
+          git add src/gex_ui_v3.py src/gex_workspace_v2.py src/TERMINAL_CHANGELOG.md
+          git commit -m "Fill bounded GEX market pipeline"
+          git push origin HEAD:gex-fill-market-pipeline-20260916
