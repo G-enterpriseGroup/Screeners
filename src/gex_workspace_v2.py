@@ -6,6 +6,7 @@ EDIT THIS FILE ONLY for:
 - obtaining the live E*TRADE client for GEX;
 - resolving the terminal vault/session context;
 - building a dedicated background E*TRADE client snapshot for GEX refresh-all;
+- GEX-only background market-data caching/session plumbing;
 - GEX-only wrapper CSS emitted while the GEX tab renders;
 - keeping GEX style-only CSS out of Streamlit's visible vertical stack.
 
@@ -23,8 +24,11 @@ restored in `finally`.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import sys
+import threading
+import time
 from typing import Any, Callable
 
 import streamlit as st
@@ -196,15 +200,177 @@ def _is_style_only_markdown(body: Any) -> bool:
 
 
 # ==============================
+# BACKGROUND MARKET-DATA CACHE
+# ==============================
+# The original terminal routes live E*TRADE reads through a short-lived smart
+# cache. The detached GEX worker cannot safely call that Streamlit/session-aware
+# wrapper from a background thread, so keep an equivalent GEX-only process cache
+# here. This restores the original fast behavior without touching Streamlit from
+# worker threads and without changing GEX formulas.
+#
+# These TTLs intentionally match the terminal's shared E*TRADE cache:
+# - quotes: 5 seconds
+# - expiration metadata: 6 hours
+# - option chains: 5 minutes
+_GEX_BACKGROUND_TTLS = {
+    "quote": 5,
+    "option_expirations": 6 * 60 * 60,
+    "option_chain": 5 * 60,
+}
+_GEX_BACKGROUND_CACHE_RETENTION = 24 * 60 * 60
+_GEX_BACKGROUND_CACHE_LIMIT = 1200
+_GEX_BACKGROUND_CACHE_LOCK = threading.RLock()
+_GEX_BACKGROUND_CACHE: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def _gex_cache_namespace(oauth_token: str) -> str:
+    """Return a non-reversible namespace; never put the OAuth token in cache keys."""
+    return hashlib.sha256(str(oauth_token).encode("utf-8")).hexdigest()[:32]
+
+
+def _prune_gex_background_cache(namespace: str, now: float) -> None:
+    keys = [key for key in _GEX_BACKGROUND_CACHE if key[0] == namespace]
+    for key in keys:
+        loaded_at = float(_GEX_BACKGROUND_CACHE[key].get("loaded_at", 0.0) or 0.0)
+        if now - loaded_at > _GEX_BACKGROUND_CACHE_RETENTION:
+            _GEX_BACKGROUND_CACHE.pop(key, None)
+
+    keys = [key for key in _GEX_BACKGROUND_CACHE if key[0] == namespace]
+    if len(keys) <= _GEX_BACKGROUND_CACHE_LIMIT:
+        return
+    keys.sort(
+        key=lambda key: float(
+            _GEX_BACKGROUND_CACHE[key].get("loaded_at", 0.0) or 0.0
+        )
+    )
+    for key in keys[: len(keys) - _GEX_BACKGROUND_CACHE_LIMIT]:
+        _GEX_BACKGROUND_CACHE.pop(key, None)
+
+
+def _gex_cached_market_read(
+    namespace: str,
+    resource_type: str,
+    resource_key: str,
+    loader: Callable[[], Any],
+) -> Any:
+    """Return fresh cached market data or load it once from E*TRADE.
+
+    If a live request fails after a prior successful load, keep the last-known
+    payload available to the background calculation instead of losing the whole
+    ticker. This mirrors the terminal's existing stale-safe cache behavior.
+    """
+    ttl = int(_GEX_BACKGROUND_TTLS[resource_type])
+    now = time.time()
+    key = (namespace, resource_type, str(resource_key))
+    stale_value: Any = None
+
+    with _GEX_BACKGROUND_CACHE_LOCK:
+        _prune_gex_background_cache(namespace, now)
+        entry = _GEX_BACKGROUND_CACHE.get(key)
+        if entry is not None:
+            stale_value = entry.get("value")
+            age = now - float(entry.get("loaded_at", 0.0) or 0.0)
+            if age < ttl:
+                return stale_value
+
+    try:
+        value = loader()
+    except Exception:
+        if stale_value is not None:
+            return stale_value
+        raise
+
+    with _GEX_BACKGROUND_CACHE_LOCK:
+        _GEX_BACKGROUND_CACHE[key] = {
+            "loaded_at": time.time(),
+            "value": value,
+        }
+        _prune_gex_background_cache(namespace, time.time())
+    return value
+
+
+class _GEXBackgroundCachedClient:
+    """Thread-safe cache-aware market client used only by GEX Refresh All.
+
+    ``core._build_gex(..., force_refresh=True)`` historically meant that every
+    refresh-all pass bypassed the terminal cache. For a 49-ticker watchlist that
+    can cause hundreds of duplicate option-chain requests. This adapter accepts
+    the force-refresh keyword for compatibility but intentionally treats Refresh
+    All as "ensure data is fresh within the terminal TTL". A manual single-ticker
+    refresh still uses the foreground client and retains its existing hard-refresh
+    behavior.
+    """
+
+    def __init__(self, client: ETradeClient, namespace: str) -> None:
+        self._client = client
+        self._namespace = namespace
+
+    def get_quote(self, symbol: str, force_refresh: bool = False) -> dict[str, Any]:
+        symbol = str(symbol).strip().upper()
+        return _gex_cached_market_read(
+            self._namespace,
+            "quote",
+            symbol,
+            lambda: self._client.get_quote(symbol),
+        )
+
+    def get_option_expirations(
+        self,
+        symbol: str,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        symbol = str(symbol).strip().upper()
+        return _gex_cached_market_read(
+            self._namespace,
+            "option_expirations",
+            symbol,
+            lambda: self._client.get_option_expirations(symbol),
+        )
+
+    def get_option_chain(
+        self,
+        symbol: str,
+        expiry_year: int,
+        expiry_month: int,
+        expiry_day: int,
+        no_of_strikes: int | None = 100,
+        chain_type: str = "CALLPUT",
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        symbol = str(symbol).strip().upper()
+        strikes_key = "ALL" if no_of_strikes is None else str(int(no_of_strikes))
+        chain_type = str(chain_type).upper()
+        resource_key = (
+            f"{symbol}:{int(expiry_year):04d}-{int(expiry_month):02d}-{int(expiry_day):02d}:"
+            f"{chain_type}:{strikes_key}"
+        )
+        return _gex_cached_market_read(
+            self._namespace,
+            "option_chain",
+            resource_key,
+            lambda: self._client.get_option_chain(
+                symbol,
+                int(expiry_year),
+                int(expiry_month),
+                int(expiry_day),
+                no_of_strikes=no_of_strikes,
+                chain_type=chain_type,
+            ),
+        )
+
+
+# ==============================
 # E*TRADE / TERMINAL CONTEXT
 # ==============================
 
 def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | None:
-    """Capture a thread-safe E*TRADE client factory on the Streamlit thread.
+    """Capture a cache-aware thread-safe E*TRADE client factory.
 
     Background workers must not read ``st.session_state`` or call terminal
-    helpers after the worker starts. Capture only credential/token strings here,
-    then create a fresh OAuth session inside the worker thread.
+    helpers after the worker starts. Capture credential/token strings and the
+    non-reversible cache namespace here, then create fresh OAuth sessions inside
+    worker threads. Market payloads are shared only through the GEX process cache
+    above; credentials/tokens are never written to that cache.
     """
     credentials_factory = scope.get("_etrade_credentials")
     if not callable(credentials_factory):
@@ -225,20 +391,24 @@ def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | Non
     if not (consumer_key and consumer_secret and oauth_token and oauth_secret):
         return None
 
+    cache_namespace = _gex_cache_namespace(oauth_token)
+
     def build_client(
         _consumer_key: str = consumer_key,
         _consumer_secret: str = consumer_secret,
         _oauth_token: str = oauth_token,
         _oauth_secret: str = oauth_secret,
         _environment: str = environment,
-    ) -> ETradeClient:
-        return ETradeClient(
+        _cache_namespace: str = cache_namespace,
+    ) -> _GEXBackgroundCachedClient:
+        raw = ETradeClient(
             _consumer_key,
             _consumer_secret,
             _oauth_token,
             _oauth_secret,
             _environment,
         )
+        return _GEXBackgroundCachedClient(raw, _cache_namespace)
 
     return build_client
 
