@@ -35,7 +35,8 @@ These are durable terminal preferences and should be checked on every UI change:
 | Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
-| GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` only when legacy calculation helpers are intentionally reused | `streamlit_app.py` for ordinary GEX layout changes |
+| GEX UI / subtabs / tables / TradingView bridge | `src/gex_ui_v3.py` | `src/gex_ui_v3_proven.py`, `src/gex_ui_v3_base.py` | `streamlit_app.py` for ordinary GEX layout changes |
+| GEX formulas / wall / gamma-flip / IV-rank data | `src/gex_ui.py` | `src/gex_ui_legacy.py` for preserved legacy helpers only | Risk/OAuth/Holdings/navigation files |
 | E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
@@ -61,10 +62,12 @@ Use this decision tree:
 
 Production path:
 
-`streamlit_app.py` → `src/gex_workspace_v2.py` → `src/gex_ui_v3.py`
+`streamlit_app.py` → `src/gex_workspace_v2.py` → `src/gex_ui_v3.py` → preserved `src/gex_ui_v3_proven.py` / `src/gex_ui_v3_base.py`, with calculations supplied by `src/gex_ui.py` and preserved helper compatibility from `src/gex_ui_legacy.py`.
 
-- Change **subtabs, tables, multi-ticker layout, settings, notes, TradingView presentation** → `src/gex_ui_v3.py`.
-- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback** → `src/gex_workspace_v2.py`.
+- Change **subtabs, tables, multi-ticker layout, settings, notes, TradingView presentation** → `src/gex_ui_v3.py`; preserve the proven TradingView/A6 contract unless Raj explicitly requests a bridge change.
+- Change **GEX formulas, Call/Put Wall selection, gamma flip, option parsing fallback math, or IV-rank data derivation** → `src/gex_ui.py`.
+- Treat `src/gex_ui_v3_proven.py` and `src/gex_ui_legacy.py` as preserved compatibility modules; do not casually edit them while fixing a new UI or formula issue.
+- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback or GEX-only request cache/prefetch behavior** → `src/gex_workspace_v2.py`.
 - Do not patch global Streamlit functions from GEX.
 
 ## OAuth edit map
