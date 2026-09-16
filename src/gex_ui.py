@@ -245,9 +245,26 @@ def _normalize_observed_iv(raw: Any) -> float | None:
         return None
     if not math.isfinite(iv) or iv <= 0:
         return None
-    if iv > 5.0:
+    if iv > 3.0:
         iv /= 100.0
     return iv if 0.0 < iv < 5.0 else None
+
+
+def _script_bs_gamma(spot: float, strike: float, dte: int, iv: float) -> float:
+    """Match the supplied Apps Script fallback gamma exactly."""
+    if not spot or not strike or not dte:
+        return 0.0
+    t = max(float(dte) / 365.0, 1.0 / 365.0)
+    sigma = max(float(iv or DEFAULT_IV), 0.05)
+    sqrt_t = math.sqrt(t)
+    d1 = (
+        math.log(float(spot) / float(strike)) + (0.5 * sigma * sigma) * t
+    ) / (sigma * sqrt_t)
+    return (
+        math.exp(-0.5 * d1 * d1)
+        / math.sqrt(2.0 * math.pi)
+        / (float(spot) * sigma * sqrt_t)
+    )
 
 
 def _parse_contracts(chain: dict[str, Any], dte: int, spot: float) -> list[dict[str, Any]]:
@@ -291,7 +308,7 @@ def _parse_contracts(chain: dict[str, Any], dte: int, spot: float) -> list[dict[
             gamma_now = (
                 float(gamma_feed)
                 if gamma_feed is not None and gamma_feed > 0
-                else _legacy._bs_gamma(spot, float(strike), iv, dte)
+                else _script_bs_gamma(spot, float(strike), dte, iv)
             )
             contracts.append(
                 {
