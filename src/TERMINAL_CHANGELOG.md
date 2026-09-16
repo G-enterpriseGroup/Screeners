@@ -295,3 +295,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `1e9f8511f287208a469abe96c951ee3c9e4eb48b` plus this changelog commit.
 - **Lesson:** High-contrast native controls should be styled at the narrowest feature-owned container possible. Dark terminal surfaces need explicit icon/SVG colors as well as text colors so controls never disappear into the background.
+
+## 2026-09-16 — Bounded parallel Refresh All GEX
+
+- **Feature changed:** GEX Refresh All throughput / backend scheduling.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The detached Refresh All job no longer blocked Streamlit, but it still refreshed the 49-symbol watchlist one ticker at a time and therefore took much longer than the Google Apps Script/CBOE workflow.
+- **Root cause:** The CBOE Apps Script typically obtains the entire option universe for one ticker in a single JSON fetch, while the E*TRADE path requires a quote request, an expiration-list request, and then a separate option-chain request for every eligible expiration up to that ticker's DTE. The original background scheduler compounded that network cost by allowing only one ticker to be in flight at a time.
+- **What was changed:** Replaced the serial ticker loop with a bounded `ThreadPoolExecutor` capped at four ticker workers. Each pool thread lazily creates and reuses its own dedicated E*TRADE OAuth client from the existing captured credential/token factory, while each ticker still calls the exact same `core._build_gex()` path with the same DTE, timezone, wall mode, expirations, option-chain inputs, and GEX calculations. Job status now reports `4-WAY`, tracks the active ticker set, increments processed count as futures complete, and keeps result merging on the Streamlit render thread.
+- **Important behavior that must remain:** Keep GEX concurrency bounded at four unless E*TRADE behavior is deliberately re-evaluated. Never share one OAuth session across pool threads, never call `st.*` or access `st.session_state` from background workers, and never change GEX formulas/expiration coverage merely for speed. Continue allowing only one Refresh All batch per vault and continue merging completed results into Streamlit-owned state only on the render thread.
+- **Files/features intentionally NOT changed:** `src/gex_ui.py` formulas/math and expiration selection, `src/gex_workspace_v2.py` credential/session plumbing, Risk Sizing, Holdings, OAuth UI, Bull Debit, Muni, Orders, navigation, Touch ID/authentication, shared theme, and `src/terminal_core.py`.
+- **Tests performed:** Re-fetched the exact committed `src/gex_ui_v3.py` and confirmed the four-worker executor, thread-local E*TRADE clients, unchanged `_base.core._build_gex()` call, active-ticker status, and no Streamlit calls inside worker functions. GitHub Actions `validate-boundaries` passed on code commit `d0fc1ec49baf0fd25bdbfb285244e0553b41ef0b`.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `d0fc1ec49baf0fd25bdbfb285244e0553b41ef0b` plus this changelog commit.
+- **Lesson:** Making a market-data batch non-blocking does not make it fast. When the data source requires multiple synchronous requests per ticker, improve throughput in the GEX scheduler with conservative bounded concurrency while leaving the calculation engine unchanged.
