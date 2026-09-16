@@ -94,16 +94,32 @@ def render_gex(
     vault_key = str(vault_key or "default")
     original_decorate = _proven._decorate_overview
     original_overview = _proven._base._overview_html
+    original_remove = _proven._base._remove_ticker
 
     def overview_with_iv_rank(state: dict[str, Any], result_map: dict[str, Any]) -> str:
-        _core._apply_iv_rank_history(vault_key, state, result_map)
+        saved_state = _core._apply_iv_rank_history(vault_key, state, result_map)
+        if saved_state is not state:
+            state.clear()
+            state.update(saved_state)
         return original_overview(state, result_map)
+
+    def remove_with_iv_rank(
+        key: str,
+        state: dict[str, Any],
+        result_map: dict[str, Any],
+        ticker: str,
+    ) -> dict[str, Any]:
+        normalized = _core._normalize_ticker(ticker)
+        if normalized:
+            state.setdefault("iv_history", {}).pop(normalized, None)
+        return original_remove(key, state, result_map, ticker)
 
     def decorate_with_iv_rank(markup: str, key: str) -> str:
         decorated = original_decorate(markup, key)
         return _inject_iv_rank_column(decorated, key)
 
     _proven._base._overview_html = overview_with_iv_rank
+    _proven._base._remove_ticker = remove_with_iv_rank
     _proven._decorate_overview = decorate_with_iv_rank
     try:
         _proven.render_gex(
@@ -114,6 +130,7 @@ def render_gex(
         )
     finally:
         _proven._decorate_overview = original_decorate
+        _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
 
 
