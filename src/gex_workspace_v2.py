@@ -25,6 +25,7 @@ restored in `finally`.
 from __future__ import annotations
 
 import hashlib
+import html
 import inspect
 import sys
 import threading
@@ -37,7 +38,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from src.etrade_client import ETradeClient, option_expiration_dates, quote_summary, walk_dicts
-from src.gex_ui_v3 import render_gex as _render_gex_v3
+from src.gex_ui_v3 import background_refresh_status, render_gex as _render_gex_v3
 
 
 # ==============================
@@ -45,7 +46,7 @@ from src.gex_ui_v3 import render_gex as _render_gex_v3
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.16.01"
+GEX_BUILD_VERSION = "v2026.09.16.02"
 GEX_ENGINE_LABEL = "E*TRADE // 4 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
 
 
@@ -211,6 +212,57 @@ def _gex_subtab_skin_css() -> str:
             color:#000000 !important;
             -webkit-text-fill-color:#000000 !important;
         }
+
+        /* GEX BACKGROUND PROCESS LOG — hover/focus the spinning icon. */
+        .gexv3-running-status {
+            position:relative !important;
+            overflow:visible !important;
+            z-index:40 !important;
+        }
+        .gexv3-progress-hover {
+            position:relative !important;
+            display:inline-flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+            flex:0 0 auto !important;
+            cursor:help !important;
+            outline:none !important;
+            z-index:80 !important;
+        }
+        .gexv3-progress-hover::after {
+            content:attr(data-log) !important;
+            position:absolute !important;
+            left:-.45rem !important;
+            top:calc(100% + .55rem) !important;
+            width:max-content !important;
+            min-width:34rem !important;
+            max-width:min(68rem, 84vw) !important;
+            padding:.58rem .68rem !important;
+            border:1px solid #fb8b1e !important;
+            background:#030303 !important;
+            color:#f2f2f2 !important;
+            -webkit-text-fill-color:#f2f2f2 !important;
+            box-shadow:0 8px 28px rgba(0,0,0,.72),0 0 0 1px rgba(251,139,30,.16) !important;
+            font:800 8.6pt/1.34 "Courier New",monospace !important;
+            letter-spacing:.01em !important;
+            text-align:left !important;
+            white-space:pre-wrap !important;
+            opacity:0 !important;
+            visibility:hidden !important;
+            pointer-events:none !important;
+            transform:translateY(-3px) !important;
+            transition:opacity .10s ease,transform .10s ease,visibility .10s ease !important;
+            z-index:9999 !important;
+        }
+        .gexv3-progress-hover:hover::after,
+        .gexv3-progress-hover:focus-visible::after {
+            opacity:1 !important;
+            visibility:visible !important;
+            transform:translateY(0) !important;
+        }
+        .gexv3-progress-hover:focus-visible {
+            box-shadow:0 0 0 2px rgba(74,246,195,.36) !important;
+        }
         </style>
     """
 
@@ -221,6 +273,59 @@ def _is_style_only_markdown(body: Any) -> bool:
         return False
     stripped = body.strip()
     return stripped.startswith("<style>") and stripped.endswith("</style>")
+
+
+def _gex_progress_log(vault_key: str) -> str:
+    """Build a compact, non-sensitive live process log for the spinner tooltip."""
+    job = background_refresh_status(str(vault_key or "default")) or {}
+    status = str(job.get("status") or "WAITING")
+    total = int(job.get("total", 0) or 0)
+    completed = int(job.get("completed", 0) or 0)
+    updated = int(job.get("updated", 0) or 0)
+    active = str(job.get("current") or "NONE")
+    failures = dict(job.get("failures") or {})
+    started_at = float(job.get("started_at", 0.0) or 0.0)
+    finished_at = float(job.get("finished_at", 0.0) or 0.0)
+    end_at = finished_at if finished_at > 0 else time.time()
+    elapsed = max(0.0, end_at - started_at) if started_at > 0 else 0.0
+
+    lines = [
+        "GEX PROCESS LOG",
+        f"BUILD      {GEX_BUILD_VERSION}",
+        f"STATUS     {status} // ELAPSED {elapsed:,.1f}s",
+        f"PROGRESS   {completed}/{total} PROCESSED // {updated} UPDATED",
+        f"ACTIVE     {active}",
+        "FLOW       BATCH QUOTES -> EXPIRATIONS -> OPTION CHAINS -> GEX CALC -> MERGE",
+        "ENGINE     4 CALC WORKERS // 20 FETCH SLOTS // 3.7 REQUEST STARTS/SEC",
+        "CACHE      QUOTES 5M // CHAINS 5M // EXPIRATIONS 6H",
+    ]
+    if failures:
+        lines.append(f"FAILURES   {len(failures)}")
+        for ticker, message in list(failures.items())[:3]:
+            clean = " ".join(str(message).split())[:90]
+            lines.append(f"FAIL       {ticker} // {clean}")
+    else:
+        lines.append("FAILURES   0")
+    lines.append("TIP        THIS SNAPSHOT REFRESHES WHEN THE GEX PAGE RERUNS")
+    return "\n".join(lines)
+
+
+def _decorate_gex_running_status(body: Any, vault_key: str) -> Any:
+    """Attach the live process log to the existing spinning GEX status icon."""
+    if not isinstance(body, str) or 'class="gexv3-running-status"' not in body:
+        return body
+    marker = '<span class="gexv3-running-icon">↻</span>'
+    if marker not in body:
+        return body
+    log_attr = html.escape(_gex_progress_log(vault_key), quote=True).replace("\n", "&#10;")
+    wrapped = (
+        '<span class="gexv3-progress-hover" tabindex="0" '
+        'aria-label="Hover for GEX process log" '
+        f'data-log="{log_attr}">'
+        f"{marker}"
+        "</span>"
+    )
+    return body.replace(marker, wrapped, 1)
 
 
 # ==============================
@@ -802,24 +907,32 @@ def _render_with_style_only_html(
     touch: Any,
     background_client_factory: Callable[[], Any] | None,
 ) -> None:
-    """Render GEX while routing only style-only markdown through ``st.html``.
+    """Render GEX while routing style-only markdown and decorating run status.
 
     `src.gex_ui_v3_base.py` emits its feature CSS with a standalone
     ``st.markdown(<style>...</style>)`` call. For GEX only, route that exact
     style-only case through ``st.html`` so Streamlit applies it without adding
-    a visible layout row. All normal markdown is passed through unchanged.
+    a visible layout row. The temporary ``st.html`` wrapper only decorates the
+    GEX background-running status so the spinner exposes the live process log.
 
     This intentionally does NOT concatenate CSS with visible content and does
-    NOT use negative margins. The original ``st.markdown`` is always restored.
+    NOT use negative margins. The original Streamlit functions are always
+    restored.
     """
     original_markdown = st.markdown
+    original_html = st.html
+
+    def gex_html(body: Any, *args: Any, **kwargs: Any):
+        body = _decorate_gex_running_status(body, vault_key)
+        return original_html(body, *args, **kwargs)
 
     def gex_markdown(body: Any, *args: Any, **kwargs: Any):
         if _is_style_only_markdown(body):
-            st.html(str(body))
+            gex_html(str(body))
             return None
         return original_markdown(body, *args, **kwargs)
 
+    st.html = gex_html
     st.markdown = gex_markdown
     try:
         _render_gex_v3(
@@ -830,6 +943,7 @@ def _render_with_style_only_html(
         )
     finally:
         st.markdown = original_markdown
+        st.html = original_html
 
 
 # ==============================
