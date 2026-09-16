@@ -29,11 +29,14 @@ import inspect
 import sys
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from src.etrade_client import ETradeClient
+from src.etrade_client import ETradeClient, option_expiration_dates
 from src.gex_ui_v3 import render_gex as _render_gex_v3
 
 
@@ -200,13 +203,20 @@ def _is_style_only_markdown(body: Any) -> bool:
 
 
 # ==============================
-# BACKGROUND MARKET-DATA CACHE
+# BACKGROUND MARKET-DATA CACHE / PIPELINE
 # ==============================
 # The original terminal routes live E*TRADE reads through a short-lived smart
 # cache. The detached GEX worker cannot safely call that Streamlit/session-aware
 # wrapper from a background thread, so keep an equivalent GEX-only process cache
 # here. This restores the original fast behavior without touching Streamlit from
 # worker threads and without changing GEX formulas.
+#
+# E*TRADE documents a typical MARKET throttle of 4 requests/second. Four ticker
+# threads are not enough to reach that throughput when each HTTPS response takes
+# multiple seconds. Keep the top-level 4-ticker job unchanged, but prefetch each
+# ticker's eligible expiration chains through a deeper request pool. A shared
+# start-rate gate spaces live MARKET calls just under 4/sec, so network latency
+# is overlapped without sending bursts above the documented throttle.
 #
 # These TTLs intentionally match the terminal's shared E*TRADE cache:
 # - quotes: 5 seconds
@@ -222,10 +232,37 @@ _GEX_BACKGROUND_CACHE_LIMIT = 1200
 _GEX_BACKGROUND_CACHE_LOCK = threading.RLock()
 _GEX_BACKGROUND_CACHE: dict[tuple[str, str, str], dict[str, Any]] = {}
 
+# 0.27s between request starts ~= 3.70 MARKET requests/sec. The slight headroom
+# below 4/sec avoids a boundary burst while keeping the pipeline full.
+_GEX_MARKET_REQUEST_INTERVAL_SECONDS = 0.27
+_GEX_MARKET_GATE_LOCK = threading.Lock()
+_GEX_MARKET_NEXT_START = 0.0
+
+# Twenty request workers are enough to hide roughly five seconds of network
+# latency while the global gate still controls the actual E*TRADE request rate.
+_GEX_CHAIN_PREFETCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=20,
+    thread_name_prefix="raj-gex-chain",
+)
+_GEX_CHAIN_PREFETCH_LOCK = threading.RLock()
+_GEX_CHAIN_PREFETCH_FUTURES: dict[tuple[str, str, str], Future[Any]] = {}
+
 
 def _gex_cache_namespace(oauth_token: str) -> str:
     """Return a non-reversible namespace; never put the OAuth token in cache keys."""
     return hashlib.sha256(str(oauth_token).encode("utf-8")).hexdigest()[:32]
+
+
+def _gex_market_rate_gate() -> None:
+    """Space uncached E*TRADE MARKET request starts just below four per second."""
+    global _GEX_MARKET_NEXT_START
+    with _GEX_MARKET_GATE_LOCK:
+        now = time.monotonic()
+        wait_for = max(0.0, _GEX_MARKET_NEXT_START - now)
+        if wait_for > 0:
+            time.sleep(wait_for)
+        started = time.monotonic()
+        _GEX_MARKET_NEXT_START = started + _GEX_MARKET_REQUEST_INTERVAL_SECONDS
 
 
 def _prune_gex_background_cache(namespace: str, now: float) -> None:
@@ -255,9 +292,10 @@ def _gex_cached_market_read(
 ) -> Any:
     """Return fresh cached market data or load it once from E*TRADE.
 
-    If a live request fails after a prior successful load, keep the last-known
-    payload available to the background calculation instead of losing the whole
-    ticker. This mirrors the terminal's existing stale-safe cache behavior.
+    Cache hits return immediately. Only true live requests pass through the
+    shared MARKET rate gate. If a live request fails after a prior successful
+    load, keep the last-known payload available to the calculation instead of
+    losing the whole ticker.
     """
     ttl = int(_GEX_BACKGROUND_TTLS[resource_type])
     now = time.time()
@@ -274,6 +312,7 @@ def _gex_cached_market_read(
                 return stale_value
 
     try:
+        _gex_market_rate_gate()
         value = loader()
     except Exception:
         if stale_value is not None:
@@ -289,8 +328,59 @@ def _gex_cached_market_read(
     return value
 
 
+def _gex_prefetch_future(
+    namespace: str,
+    resource_type: str,
+    resource_key: str,
+) -> Future[Any] | None:
+    key = (namespace, resource_type, str(resource_key))
+    with _GEX_CHAIN_PREFETCH_LOCK:
+        return _GEX_CHAIN_PREFETCH_FUTURES.get(key)
+
+
+def _schedule_gex_prefetch(
+    namespace: str,
+    resource_type: str,
+    resource_key: str,
+    loader: Callable[[], Any],
+) -> Future[Any] | None:
+    """Schedule one cache-coalesced background market read if it is not fresh."""
+    key = (namespace, resource_type, str(resource_key))
+    now = time.time()
+    ttl = int(_GEX_BACKGROUND_TTLS[resource_type])
+
+    with _GEX_BACKGROUND_CACHE_LOCK:
+        entry = _GEX_BACKGROUND_CACHE.get(key)
+        if entry is not None:
+            age = now - float(entry.get("loaded_at", 0.0) or 0.0)
+            if age < ttl:
+                return None
+
+    with _GEX_CHAIN_PREFETCH_LOCK:
+        existing = _GEX_CHAIN_PREFETCH_FUTURES.get(key)
+        if existing is not None and not existing.done():
+            return existing
+
+        future = _GEX_CHAIN_PREFETCH_EXECUTOR.submit(
+            _gex_cached_market_read,
+            namespace,
+            resource_type,
+            str(resource_key),
+            loader,
+        )
+        _GEX_CHAIN_PREFETCH_FUTURES[key] = future
+
+        def cleanup(done: Future[Any], _key=key) -> None:
+            with _GEX_CHAIN_PREFETCH_LOCK:
+                if _GEX_CHAIN_PREFETCH_FUTURES.get(_key) is done:
+                    _GEX_CHAIN_PREFETCH_FUTURES.pop(_key, None)
+
+        future.add_done_callback(cleanup)
+        return future
+
+
 class _GEXBackgroundCachedClient:
-    """Thread-safe cache-aware market client used only by GEX Refresh All.
+    """Cache-aware market client used only by GEX Refresh All.
 
     ``core._build_gex(..., force_refresh=True)`` historically meant that every
     refresh-all pass bypassed the terminal cache. For a 49-ticker watchlist that
@@ -299,11 +389,87 @@ class _GEXBackgroundCachedClient:
     All as "ensure data is fresh within the terminal TTL". A manual single-ticker
     refresh still uses the foreground client and retains its existing hard-refresh
     behavior.
+
+    After the expiration list arrives, every eligible chain for that ticker is
+    queued immediately. ``core._build_gex`` still consumes those expirations in
+    the exact same order and runs the exact same calculation; its synchronous
+    chain calls simply wait on the already-running prefetch future when needed.
     """
 
-    def __init__(self, client: ETradeClient, namespace: str) -> None:
+    def __init__(
+        self,
+        client: ETradeClient,
+        namespace: str,
+        raw_client_factory: Callable[[], ETradeClient],
+        dte_by_symbol: dict[str, int],
+        timezone_name: str,
+    ) -> None:
         self._client = client
         self._namespace = namespace
+        self._raw_client_factory = raw_client_factory
+        self._dte_by_symbol = dict(dte_by_symbol)
+        self._timezone_name = str(timezone_name or "America/New_York")
+
+    @staticmethod
+    def _chain_resource_key(
+        symbol: str,
+        expiry_year: int,
+        expiry_month: int,
+        expiry_day: int,
+        no_of_strikes: int | None,
+        chain_type: str,
+    ) -> str:
+        strikes_key = "ALL" if no_of_strikes is None else str(int(no_of_strikes))
+        return (
+            f"{symbol}:{int(expiry_year):04d}-{int(expiry_month):02d}-{int(expiry_day):02d}:"
+            f"{str(chain_type).upper()}:{strikes_key}"
+        )
+
+    def _prefetch_eligible_chains(self, symbol: str, payload: dict[str, Any]) -> None:
+        max_dte = int(self._dte_by_symbol.get(symbol, 45) or 45)
+        try:
+            tz = ZoneInfo(self._timezone_name)
+        except Exception:
+            tz = ZoneInfo("America/New_York")
+        today = datetime.now(tz).date()
+
+        for year, month, day in option_expiration_dates(payload):
+            expiry = datetime(year, month, day, tzinfo=tz).date()
+            dte = max((expiry - today).days, 0)
+            if not (0 <= dte <= max_dte):
+                continue
+
+            resource_key = self._chain_resource_key(
+                symbol,
+                year,
+                month,
+                day,
+                100,
+                "CALLPUT",
+            )
+
+            def load_chain(
+                _symbol=symbol,
+                _year=year,
+                _month=month,
+                _day=day,
+            ) -> dict[str, Any]:
+                raw = self._raw_client_factory()
+                return raw.get_option_chain(
+                    _symbol,
+                    int(_year),
+                    int(_month),
+                    int(_day),
+                    no_of_strikes=100,
+                    chain_type="CALLPUT",
+                )
+
+            _schedule_gex_prefetch(
+                self._namespace,
+                "option_chain",
+                resource_key,
+                load_chain,
+            )
 
     def get_quote(self, symbol: str, force_refresh: bool = False) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
@@ -320,12 +486,14 @@ class _GEXBackgroundCachedClient:
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
-        return _gex_cached_market_read(
+        payload = _gex_cached_market_read(
             self._namespace,
             "option_expirations",
             symbol,
             lambda: self._client.get_option_expirations(symbol),
         )
+        self._prefetch_eligible_chains(symbol, payload)
+        return payload
 
     def get_option_chain(
         self,
@@ -338,12 +506,30 @@ class _GEXBackgroundCachedClient:
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
-        strikes_key = "ALL" if no_of_strikes is None else str(int(no_of_strikes))
         chain_type = str(chain_type).upper()
-        resource_key = (
-            f"{symbol}:{int(expiry_year):04d}-{int(expiry_month):02d}-{int(expiry_day):02d}:"
-            f"{chain_type}:{strikes_key}"
+        resource_key = self._chain_resource_key(
+            symbol,
+            expiry_year,
+            expiry_month,
+            expiry_day,
+            no_of_strikes,
+            chain_type,
         )
+
+        prefetched = _gex_prefetch_future(
+            self._namespace,
+            "option_chain",
+            resource_key,
+        )
+        if prefetched is not None:
+            try:
+                return prefetched.result()
+            except Exception:
+                # Fall through to the normal stale-safe cache path. If the
+                # prefetch failed transiently, this gives the request one normal
+                # retry without changing calculation semantics.
+                pass
+
         return _gex_cached_market_read(
             self._namespace,
             "option_chain",
@@ -367,10 +553,10 @@ def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | Non
     """Capture a cache-aware thread-safe E*TRADE client factory.
 
     Background workers must not read ``st.session_state`` or call terminal
-    helpers after the worker starts. Capture credential/token strings and the
-    non-reversible cache namespace here, then create fresh OAuth sessions inside
-    worker threads. Market payloads are shared only through the GEX process cache
-    above; credentials/tokens are never written to that cache.
+    helpers after the worker starts. Capture credential/token strings, GEX DTE
+    settings, timezone, and the non-reversible cache namespace here. Every live
+    request in the prefetch pool builds its own OAuth session, so no requests
+    share one ``OAuth1Session`` across threads.
     """
     credentials_factory = scope.get("_etrade_credentials")
     if not callable(credentials_factory):
@@ -391,24 +577,52 @@ def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | Non
     if not (consumer_key and consumer_secret and oauth_token and oauth_secret):
         return None
 
+    state = st.session_state.get("_gex_state") or {}
+    try:
+        global_dte = int(state.get("global_dte", 45) or 45)
+    except Exception:
+        global_dte = 45
+    overrides = state.get("dte_overrides") or {}
+    dte_by_symbol: dict[str, int] = {}
+    for raw_symbol in state.get("tickers", []) or []:
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            dte_by_symbol[symbol] = int(overrides.get(symbol, global_dte) or global_dte)
+        except Exception:
+            dte_by_symbol[symbol] = global_dte
+    timezone_name = str(state.get("timezone") or "America/New_York")
+
     cache_namespace = _gex_cache_namespace(oauth_token)
 
-    def build_client(
+    def raw_client_factory(
         _consumer_key: str = consumer_key,
         _consumer_secret: str = consumer_secret,
         _oauth_token: str = oauth_token,
         _oauth_secret: str = oauth_secret,
         _environment: str = environment,
-        _cache_namespace: str = cache_namespace,
-    ) -> _GEXBackgroundCachedClient:
-        raw = ETradeClient(
+    ) -> ETradeClient:
+        return ETradeClient(
             _consumer_key,
             _consumer_secret,
             _oauth_token,
             _oauth_secret,
             _environment,
         )
-        return _GEXBackgroundCachedClient(raw, _cache_namespace)
+
+    def build_client(
+        _cache_namespace: str = cache_namespace,
+        _dte_by_symbol: dict[str, int] = dte_by_symbol,
+        _timezone_name: str = timezone_name,
+    ) -> _GEXBackgroundCachedClient:
+        return _GEXBackgroundCachedClient(
+            raw_client_factory(),
+            _cache_namespace,
+            raw_client_factory,
+            _dte_by_symbol,
+            _timezone_name,
+        )
 
     return build_client
 
