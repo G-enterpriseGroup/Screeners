@@ -26,6 +26,7 @@ import html
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 from urllib.parse import urlencode
 
@@ -42,6 +43,13 @@ from src import gex_ui_v3_base as _base
 # from a main-thread credential/token snapshot and writes only to this
 # thread-safe process-memory job registry. Completed results are merged into the
 # normal GEX result vault later from the Streamlit render thread.
+#
+# E*TRADE requires separate quote, expiration-list, and per-expiration chain
+# requests for each ticker. Refreshing 49 symbols serially therefore spends most
+# of its time waiting on network round-trips. Keep concurrency deliberately
+# bounded: four independent OAuth clients can refresh four tickers at once
+# without changing which expirations or calculations are used.
+_BACKGROUND_MAX_WORKERS = 4
 _BACKGROUND_LOCK = threading.RLock()
 _BACKGROUND_JOBS: dict[str, dict[str, Any]] = {}
 
@@ -51,12 +59,15 @@ def _background_job(vault_key: str) -> dict[str, Any] | None:
         job = _BACKGROUND_JOBS.get(str(vault_key or "default"))
         if not job:
             return None
+        active = sorted(str(value) for value in (job.get("active") or set()) if value)
+        current = ", ".join(active) if active else str(job.get("current") or "")
         return {
             "status": str(job.get("status") or ""),
             "total": int(job.get("total", 0) or 0),
             "completed": int(job.get("completed", 0) or 0),
             "updated": int(job.get("updated", 0) or 0),
-            "current": str(job.get("current") or ""),
+            "current": current,
+            "workers": int(job.get("workers", 1) or 1),
             "failures": dict(job.get("failures") or {}),
             "started_at": float(job.get("started_at", 0.0) or 0.0),
             "finished_at": float(job.get("finished_at", 0.0) or 0.0),
@@ -79,12 +90,79 @@ def _run_background_refresh(
     tickers: list[str],
     client_factory: Callable[[], Any],
 ) -> None:
-    """Refresh a stable ticker/settings snapshot without using Streamlit APIs."""
+    """Refresh tickers in a small parallel pool without using Streamlit APIs."""
     key = str(vault_key or "default")
-    try:
-        client = client_factory()
+    workers = max(1, min(_BACKGROUND_MAX_WORKERS, len(tickers)))
+    thread_local = threading.local()
+
+    def worker_client() -> Any:
+        client = getattr(thread_local, "client", None)
         if client is None:
-            raise RuntimeError("E*TRADE background client is unavailable")
+            client = client_factory()
+            if client is None:
+                raise RuntimeError("E*TRADE background client is unavailable")
+            thread_local.client = client
+        return client
+
+    def refresh_ticker(ticker: str) -> tuple[str, Any | None, str | None]:
+        with _BACKGROUND_LOCK:
+            job = _BACKGROUND_JOBS.get(key)
+            if job is None:
+                return ticker, None, "Background GEX job was cancelled"
+            job.setdefault("active", set()).add(ticker)
+
+        try:
+            dte = int(
+                state_snapshot.get("dte_overrides", {}).get(
+                    ticker,
+                    state_snapshot["global_dte"],
+                )
+            )
+            result = _base.core._build_gex(
+                worker_client(),
+                ticker,
+                dte,
+                state_snapshot["timezone"],
+                state_snapshot["wall_value_mode"],
+                force_refresh=True,
+            )
+            return ticker, result, None
+        except Exception as exc:
+            return ticker, None, str(exc)[:500]
+        finally:
+            with _BACKGROUND_LOCK:
+                job = _BACKGROUND_JOBS.get(key)
+                if job is not None:
+                    job.setdefault("active", set()).discard(ticker)
+
+    with _BACKGROUND_LOCK:
+        job = _BACKGROUND_JOBS.get(key)
+        if job is not None:
+            job["status"] = "RUNNING"
+            job["workers"] = workers
+
+    try:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="raj-gex-fetch",
+        ) as pool:
+            futures = [pool.submit(refresh_ticker, ticker) for ticker in tickers]
+            for future in as_completed(futures):
+                try:
+                    ticker, result, error = future.result()
+                except Exception as exc:
+                    ticker, result, error = "E*TRADE", None, str(exc)[:500]
+
+                with _BACKGROUND_LOCK:
+                    job = _BACKGROUND_JOBS.get(key)
+                    if job is None:
+                        return
+                    job["completed"] = int(job.get("completed", 0) or 0) + 1
+                    if error:
+                        job["failures"][ticker] = error
+                    elif result is not None:
+                        job["results"][ticker] = result
+                        job["updated"] = len(job["results"])
     except Exception as exc:
         with _BACKGROUND_LOCK:
             job = _BACKGROUND_JOBS.get(key)
@@ -97,51 +175,8 @@ def _run_background_refresh(
     with _BACKGROUND_LOCK:
         job = _BACKGROUND_JOBS.get(key)
         if job is not None:
-            job["status"] = "RUNNING"
-
-    for index, ticker in enumerate(tickers, 1):
-        with _BACKGROUND_LOCK:
-            job = _BACKGROUND_JOBS.get(key)
-            if job is None:
-                return
-            job["current"] = ticker
-
-        try:
-            dte = int(
-                state_snapshot.get("dte_overrides", {}).get(
-                    ticker,
-                    state_snapshot["global_dte"],
-                )
-            )
-            result = _base.core._build_gex(
-                client,
-                ticker,
-                dte,
-                state_snapshot["timezone"],
-                state_snapshot["wall_value_mode"],
-                force_refresh=True,
-            )
-        except Exception as exc:
-            with _BACKGROUND_LOCK:
-                job = _BACKGROUND_JOBS.get(key)
-                if job is not None:
-                    job["failures"][ticker] = str(exc)[:500]
-        else:
-            with _BACKGROUND_LOCK:
-                job = _BACKGROUND_JOBS.get(key)
-                if job is not None:
-                    job["results"][ticker] = result
-                    job["updated"] = len(job["results"])
-        finally:
-            with _BACKGROUND_LOCK:
-                job = _BACKGROUND_JOBS.get(key)
-                if job is not None:
-                    job["completed"] = index
-
-    with _BACKGROUND_LOCK:
-        job = _BACKGROUND_JOBS.get(key)
-        if job is not None:
             job["current"] = ""
+            job["active"] = set()
             job["status"] = "DONE_WITH_ERRORS" if job["failures"] else "DONE"
             job["finished_at"] = time.time()
 
@@ -151,7 +186,7 @@ def _start_background_refresh(
     state_snapshot: dict[str, Any],
     client_factory: Callable[[], Any],
 ) -> bool:
-    """Start at most one refresh-all worker for a GEX vault."""
+    """Start at most one bounded-parallel refresh-all worker for a GEX vault."""
     key = str(vault_key or "default")
     tickers = [
         _base.core._normalize_ticker(value)
@@ -160,6 +195,7 @@ def _start_background_refresh(
     ]
     if not tickers:
         return False
+    workers = max(1, min(_BACKGROUND_MAX_WORKERS, len(tickers)))
 
     with _BACKGROUND_LOCK:
         existing = _BACKGROUND_JOBS.get(key)
@@ -171,6 +207,8 @@ def _start_background_refresh(
             "completed": 0,
             "updated": 0,
             "current": "",
+            "active": set(),
+            "workers": workers,
             "failures": {},
             "results": {},
             "synced": set(),
@@ -218,13 +256,13 @@ def _render_background_status(vault_key: str) -> None:
 
     status = job["status"]
     if status in {"QUEUED", "RUNNING"}:
-        current = f" // {html.escape(job['current'])}" if job["current"] else ""
+        current = f" // ACTIVE {html.escape(job['current'])}" if job["current"] else ""
         st.html(
             '<div class="gexv3-running-status">'
             '<span class="gexv3-running-icon">↻</span>'
             '<span>BACKGROUND GEX // '
-            f"{job['completed']}/{job['total']} PROCESSED // {job['updated']} UPDATED"
-            f"{current} // YOU CAN SWITCH TABS WHILE THIS RUNS"
+            f"{job['workers']}-WAY // {job['completed']}/{job['total']} PROCESSED // "
+            f"{job['updated']} UPDATED{current} // YOU CAN SWITCH TABS WHILE THIS RUNS"
             "</span></div>"
         )
         return
@@ -992,7 +1030,7 @@ def render_gex(
         job = _background_job(vault_key)
         if job and job.get("status") in {"QUEUED", "RUNNING"}:
             kwargs["disabled"] = True
-            label = f"↻ GEX RUNNING {job['completed']}/{job['total']}"
+            label = f"↻ GEX {job['workers']}-WAY {job['completed']}/{job['total']}"
         clicked = original_button(label, *args, **kwargs)
         if clicked:
             start_requested["value"] = True
@@ -1026,7 +1064,7 @@ def render_gex(
                     touch_session()
                 except Exception:
                     pass
-            st.toast("BACKGROUND GEX REFRESH STARTED // switch tabs and keep working")
+            st.toast("4-WAY BACKGROUND GEX REFRESH STARTED // switch tabs and keep working")
             st.rerun()
 
 
