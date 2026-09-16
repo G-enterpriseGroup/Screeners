@@ -46,7 +46,7 @@ from src.gex_ui_v3 import background_refresh_status, render_gex as _render_gex_v
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.16.03"
+GEX_BUILD_VERSION = "v2026.09.16.04"
 GEX_ENGINE_LABEL = "E*TRADE // 4 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
 
 
