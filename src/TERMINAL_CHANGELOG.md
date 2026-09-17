@@ -351,3 +351,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS required before merge.
 - **Commit SHA:** final production merge commit recorded by GitHub after validation.
 - **Lesson:** When a separate global request-start gate already enforces the E*TRADE ceiling, top-level worker count should be high enough to keep that gate fed across slow network round trips. Do not confuse worker concurrency with request-start rate, and do not sacrifice expiration coverage or TradingView correctness for apparent speed.
+
+## 2026-09-17 — Restore Pine-router-safe GEX MASTER A6
+
+- **Feature changed:** GEX TradingView bridge / MASTER A6 transport compatibility.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Pasting the default terminal MASTER A6 into the existing `GEX TEST` TradingView indicator could leave the chart blank even though GEX data had refreshed.
+- **Root cause:** The default copy payload had regressed to the verbose Google-Sheets-style A6 report. The verified Pine router routes on exact `Ticker: SYMBOL` headers and consumes packed rows: `SPOT`, `GFLIP`, `CALLWALL`, `PUTWALL`, `MAXCALLOI`, `MAXPUTOI`, `GEXPOS*`, and `GEXNEG*`.
+- **What was changed:** Restored compact Pine-router transport as the first/default MASTER A6 choice. Kept the verbose linked-Google-Sheet A6 as a separate reference option. Added transport and per-chart ticker parser checks.
+- **Important behavior that must remain:** Default TradingView copy output must be exact `Ticker:` headers plus packed parser rows only. Never make the verbose Sheets report the default Pine payload again. Do not change GEX math or E*TRADE/session behavior to fix transport.
+- **Files/features intentionally NOT changed:** `src/gex_ui.py` formulas, `src/gex_ui_v3_proven.py`, Risk Sizing, OAuth, Holdings, navigation, Bull Debit, Muni, Orders, shared theme, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Linked Google Sheet `TradingView Bridge!A6` and `Packed Gamma Levels` inspected; prior Pine-router contract compared line-by-line; production Python syntax check and architecture guard run in CI.
+- **Architecture guard result:** PASS on PR validation.
+- **Commit SHA:** code staging commit `abff5891893a6b20e7183a1099165f9f0e70d881`; final production merge SHA recorded by GitHub after merge.
+- **Lesson:** Human-readable Google Sheets A6 and Pine transport are different representations. Keep TradingView default minimal and parser-native; retain the full sheet-shaped block only for reference/audit.
