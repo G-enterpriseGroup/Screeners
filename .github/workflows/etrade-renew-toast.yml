@@ -1,0 +1,58 @@
+name: Stage compact ETRADE renew feedback
+
+on:
+  push:
+    branches:
+      - etrade-renew-toast-20260917
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: etrade-renew-toast-20260917
+          fetch-depth: 0
+
+      - name: Apply isolated OAuth UI fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/etrade_connection_ui_v2.py')
+          t = p.read_text()
+          old = '''                live_client_factory().renew()\n                touch_session()\n                st.success("E*TRADE session renewed.")'''
+          new = '''                live_client_factory().renew()\n                touch_session()\n                # Toast is overlay-only: renewal feedback must never push the\n                # compact RENEW button row down or create a tall message box.\n                st.toast("E*TRADE SESSION RENEWED", icon="✅")'''
+          if old not in t:
+              raise SystemExit('renew success block not found')
+          t = t.replace(old, new, 1)
+          p.write_text(t)
+
+          c = Path('src/TERMINAL_CHANGELOG.md')
+          entry = '''\n\n## 2026-09-17 — Non-shifting E*TRADE renew feedback\n\n- **Feature changed:** E*TRADE OAuth/session utility bar UI.\n- **Exact production file(s) changed:** `src/etrade_connection_ui_v2.py`, `src/TERMINAL_CHANGELOG.md`.\n- **What was broken:** Clicking `RENEW` rendered a full `st.success` block inside the narrow renew column, increasing row height and visually offsetting the button strip.\n- **Root cause:** Renewal confirmation was implemented as an in-layout Streamlit status element instead of transient overlay feedback.\n- **What was changed:** Replaced only the successful renewal message with a compact `st.toast` overlay. The `RENEW` button position and the rest of the OAuth row remain unchanged.\n- **Important behavior that must remain:** Verification code + `VERIFY & CONNECT` stay on one compact row; do not add an `OPEN LOGIN` button; renew feedback must not consume layout height.\n- **Files/features intentionally NOT changed:** GEX, Risk Sizing, Holdings, navigation, E*TRADE token semantics, session persistence, and `src/terminal_core.py`.\n- **Tests performed:** Python syntax compilation; `python scripts/validate_architecture.py`; changed-file inspection; post-merge architecture guard required.\n- **Architecture guard result:** PASS required before merge.\n- **Commit SHA:** staging commit recorded on branch; final production merge SHA recorded after merge.\n- **Lesson:** Transient utility-bar confirmations belong in overlay/toast feedback, not a narrow button column that changes the terminal layout.\n'''
+          c.write_text(c.read_text().rstrip() + entry)
+          PY
+
+      - name: Validate
+        run: |
+          python -m py_compile src/etrade_connection_ui_v2.py
+          python scripts/validate_architecture.py
+          python - <<'PY'
+          from pathlib import Path
+          t = Path('src/etrade_connection_ui_v2.py').read_text()
+          assert 'st.toast("E*TRADE SESSION RENEWED", icon="✅")' in t
+          assert 'st.success("E*TRADE session renewed.")' not in t
+          PY
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/etrade_connection_ui_v2.py src/TERMINAL_CHANGELOG.md
+          git diff --cached --quiet && exit 0
+          git commit -m "Keep ETRADE renew feedback compact"
+          git push
