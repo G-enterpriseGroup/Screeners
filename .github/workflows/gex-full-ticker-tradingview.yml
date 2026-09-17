@@ -1,3 +1,4 @@
+# one-time staging trigger
 name: Stage full ticker TradingView transport
 
 on:
@@ -23,6 +24,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import textwrap
 
           ui = Path('src/gex_ui_v3.py')
           text = ui.read_text()
@@ -100,26 +102,15 @@ jobs:
                   parser_expected = [choice]
                   mode_text = f"{choice} // FULL TICKER METADATA + PACKED GAMMA LEVELS"
 
-              # TradingView input is pasted as one multiline string value. Keep
-              # exactly one opening quote before the first Ticker: and one closing
-              # quote after the final row; never quote individual lines.
               text = f'"{parser_text}"'
 
               byte_count = len(text.encode("utf-8"))
               headers = _proven._pine_router_headers(parser_text)
               missing_headers = [ticker for ticker in expected_headers if ticker not in headers]
-              pine_issues, parsed_counts = _proven._pine_master_issues(
-                  parser_text,
-                  parser_expected,
-              )
+              pine_issues, parsed_counts = _proven._pine_master_issues(parser_text, parser_expected)
               too_large = byte_count > _proven._PINE_TEXT_LIMIT
               quoted_transport_ok = text.startswith('"') and text.endswith('"')
-              transport_ok = (
-                  not missing_headers
-                  and not pine_issues
-                  and not too_large
-                  and quoted_transport_ok
-              )
+              transport_ok = not missing_headers and not pine_issues and not too_large and quoted_transport_ok
 
               st.caption(
                   "TRADINGVIEW BRIDGE // "
@@ -141,9 +132,7 @@ jobs:
                           f"{min_rows}-{max_rows} DRAWABLE PACKED ROWS EACH"
                       )
                   elif is_compact:
-                      st.success(
-                          f"COMPACT DIAGNOSTIC CHECK PASS // {len(available)} TICKERS"
-                      )
+                      st.success(f"COMPACT DIAGNOSTIC CHECK PASS // {len(available)} TICKERS")
                   else:
                       st.success(
                           f"{choice} // PINE ROUTER CHECK PASS // {parsed_counts.get(choice, 0)} DRAWABLE PACKED ROWS"
@@ -162,10 +151,7 @@ jobs:
                   key="gexv3_pine_chart_ticker_check_full_v5",
                   help="Pick the same symbol as the TradingView chart. This validates the exact full ticker block you should paste.",
               )
-              target_issues, target_count = _proven._pine_ticker_issues(
-                  parser_text,
-                  verify_ticker,
-              )
+              target_issues, target_count = _proven._pine_ticker_issues(parser_text, verify_ticker)
               if target_issues:
                   st.error(f"{verify_ticker} // PINE TARGET FAIL // " + ", ".join(target_issues))
               else:
@@ -198,8 +184,6 @@ jobs:
                   key="gexv3_download_bridge",
               )
           '''
-          # Strip the workflow indentation baked into the raw literal.
-          import textwrap
           new_func = textwrap.dedent(new_func)
           text = text[:start] + new_func + text[end:]
           text = text.replace(
