@@ -168,12 +168,21 @@ def _render_tradingview_pine_compatible(
         expected = [choice]
         mode_text = f"{choice} // PINE ROUTER SAFE SINGLE TICKER"
 
+    # TradingView/Pine treats the complete pasted multiline transport as one
+    # string value only when it has one opening and one closing double quote.
+    # Keep parser checks on the unquoted payload so the internal router grammar
+    # remains exact: Ticker: headers plus packed rows only.
+    parser_text = text
+    if not is_full:
+        text = f'"{parser_text.strip()}"'
+
     byte_count = len(text.encode("utf-8"))
-    headers = _proven._pine_router_headers(text)
+    headers = _proven._pine_router_headers(parser_text)
     missing_headers = [ticker for ticker in expected if ticker not in headers]
-    pine_issues, parsed_counts = _proven._pine_master_issues(text, expected)
+    pine_issues, parsed_counts = _proven._pine_master_issues(parser_text, expected)
     too_large = byte_count > _proven._PINE_TEXT_LIMIT
-    transport_ok = not missing_headers and not pine_issues and not too_large
+    quoted_transport_ok = is_full or (text.startswith('"') and text.endswith('"'))
+    transport_ok = not missing_headers and not pine_issues and not too_large and quoted_transport_ok
 
     st.caption(
         "TRADINGVIEW BRIDGE // "
@@ -201,6 +210,8 @@ def _render_tradingview_pine_compatible(
         details = list(missing_headers) + list(pine_issues)
         if too_large:
             details.append("TEXT_LIMIT")
+        if not quoted_transport_ok:
+            details.append("MISSING_OUTER_DOUBLE_QUOTES")
         st.error("PINE ROUTER CHECK FAILED // " + ", ".join(details[:16]))
 
     verify_ticker = st.selectbox(
@@ -218,14 +229,14 @@ def _render_tradingview_pine_compatible(
 
     if is_master:
         st.markdown(
-            "**COPY THIS BLOCK INTO GEX TEST → Packed Gamma Levels. It intentionally contains only `Ticker:` headers and packed rows.**"
+            "**COPY THIS ENTIRE BLOCK INTO GEX TEST → Packed Gamma Levels. The opening and closing double quotes are required and are already included.**"
         )
     elif is_full:
         st.markdown(
             "**REFERENCE ONLY // this mirrors the Google Sheet A6, but use the PINE ROUTER SAFE master for TradingView.**"
         )
     else:
-        st.markdown("**COPY THIS SINGLE-TICKER BLOCK INTO GEX TEST → Packed Gamma Levels.**")
+        st.markdown("**COPY THIS ENTIRE SINGLE-TICKER BLOCK INTO GEX TEST → Packed Gamma Levels. Keep the opening and closing double quotes.**")
 
     st.html(_proven._TRADINGVIEW_CODE_CSS)
     with st.container(key="gexv3_bridge_code"):
