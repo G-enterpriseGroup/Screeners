@@ -394,3 +394,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS on staging before merge.
 - **Commit SHA:** staging commit recorded by GitHub; final production merge SHA recorded after merge.
 - **Lesson:** Do not replace a working clipboard mechanism with a custom/fake button. Improve the existing `st.code` clipboard action and scope presentation to the GEX bridge only.
+
+## 2026-09-17 — Full per-ticker TradingView GEX blocks
+
+- **Feature changed:** GEX TradingView Bridge copy/paste transport.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The default TradingView copy payload had become too compact and omitted the metadata header used by the proven working multi-ticker paste.
+- **Root cause:** The prior export optimized for parser-minimal `Ticker:` plus packed rows even though the uploaded Pine script safely ignores summary rows and reads `Mode`, `Max DTE Used`, `Contracts Used`, and `Net Current GEX` metadata inside the matched ticker block.
+- **What was changed:** Default MASTER now emits, for every refreshed ticker, `Ticker`, `Mode`, `Spot`, `Max DTE Used`, `Contracts Used`, `Net Current GEX`, `Source URL`, then the existing Pine instruction/separator and packed gamma rows. The complete multi-ticker payload is wrapped exactly once with one opening and one closing double quote. Compact Pine remains optional diagnostic only. Build bumped to `v2026.09.17.09`.
+- **Important behavior that must remain:** Keep metadata + gamma levels together for each ticker, preserve exact `Ticker:` boundaries, and never quote each line individually.
+- **Files/features intentionally NOT changed:** GEX math, IV Rank, E*TRADE/session plumbing, refresh concurrency/rate limits, Pine script, Risk Sizing, OAuth, Holdings, navigation, Bull Debit, Muni, Orders, theme, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Python syntax compilation, quote/metadata source assertions, `python scripts/validate_architecture.py`, PR changed-file inspection, and post-merge architecture guard.
+- **Architecture guard result:** PASS required before merge.
+- **Commit SHA:** code commit recorded on staging branch; final production merge SHA recorded by GitHub after merge.
+- **Lesson:** Match the proven full ticker block for TradingView: metadata first, gamma rows second, one quoted multiline payload.
