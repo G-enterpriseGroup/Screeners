@@ -1,0 +1,179 @@
+name: Stage live GEX refresh and compact renew toast
+
+on:
+  push:
+    branches:
+      - gex-live-refresh-oauth-toast-20260917
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gex-live-refresh-oauth-toast-20260917
+          fetch-depth: 0
+
+      - name: Apply isolated UI fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # OAuth-owned compact renew feedback: remove layout-shifting success box.
+          oauth = Path('src/etrade_connection_ui_v2.py')
+          t = oauth.read_text()
+          old = '                st.success("E*TRADE session renewed.")'
+          new = '                st.toast("E*TRADE session renewed.")'
+          if old not in t:
+              raise SystemExit('Renew success marker not found')
+          oauth.write_text(t.replace(old, new, 1))
+
+          # GEX-owned live background status fragment. Keep base renderer and math untouched.
+          ui = Path('src/gex_ui_v3.py')
+          t = ui.read_text()
+          marker = '\n\n# ==============================\n# PUBLIC RENDER WRAPPER\n# ==============================\n'
+          helper = r'''
+
+# ==============================
+# LIVE BACKGROUND REFRESH STATUS
+# ==============================
+def _completed_background_tickers(vault_key: str) -> list[str]:
+    """Return completed result tickers without touching Streamlit from workers."""
+    key = str(vault_key or "default")
+    with _proven._BACKGROUND_LOCK:
+        job = _proven._BACKGROUND_JOBS.get(key) or {}
+        return sorted(str(ticker) for ticker in (job.get("results") or {}) if ticker)
+
+
+def _live_background_status_renderer(
+    vault_key: str,
+    original_renderer: Callable[[str], None],
+) -> None:
+    """Poll GEX progress in a fragment and refresh the full page once on completion."""
+    key = str(vault_key or "default")
+
+    @st.fragment(run_every=1.0)
+    def _status_fragment() -> None:
+        _proven._sync_background_results(key)
+        original_renderer(key)
+        job = _proven._background_job(key)
+        if not job:
+            return
+
+        completed = _completed_background_tickers(key)
+        if completed:
+            tail = completed[-12:]
+            suffix = " ..." if len(completed) > len(tail) else ""
+            st.caption(
+                "UPDATED SO FAR // "
+                + ", ".join(tail)
+                + suffix
+                + f" // {len(completed)}/{int(job.get('total', 0) or 0)}"
+            )
+
+        if str(job.get("status") or "") in {"QUEUED", "RUNNING"}:
+            return
+
+        started_at = float(job.get("started_at", 0.0) or 0.0)
+        finalized_key = f"_gex_live_refresh_finalized_{key}"
+        if started_at and st.session_state.get(finalized_key) != started_at:
+            st.session_state[finalized_key] = started_at
+            st.rerun()
+
+    _status_fragment()
+'''
+          if helper.strip() not in t:
+              if marker not in t:
+                  raise SystemExit('Public render marker not found')
+              t = t.replace(marker, helper + marker, 1)
+
+          old_block = '''    original_remove = _proven._base._remove_ticker\n    original_tradingview = _proven._render_tradingview_pine\n'''
+          new_block = '''    original_remove = _proven._base._remove_ticker\n    original_tradingview = _proven._render_tradingview_pine\n    original_background_status = _proven._render_background_status\n'''
+          if old_block not in t:
+              raise SystemExit('Original renderer capture block not found')
+          t = t.replace(old_block, new_block, 1)
+
+          old_assign = '''    _proven._decorate_overview = decorate_with_iv_rank\n    _proven._render_tradingview_pine = _render_tradingview_pine_compatible\n    try:\n'''
+          new_assign = '''    _proven._decorate_overview = decorate_with_iv_rank\n    _proven._render_tradingview_pine = _render_tradingview_pine_compatible\n    _proven._render_background_status = lambda key: _live_background_status_renderer(\n        key, original_background_status\n    )\n    try:\n'''
+          if old_assign not in t:
+              raise SystemExit('Renderer assignment block not found')
+          t = t.replace(old_assign, new_assign, 1)
+
+          old_final = '''    finally:\n        _proven._render_tradingview_pine = original_tradingview\n        _proven._decorate_overview = original_decorate\n'''
+          new_final = '''    finally:\n        _proven._render_background_status = original_background_status\n        _proven._render_tradingview_pine = original_tradingview\n        _proven._decorate_overview = original_decorate\n'''
+          if old_final not in t:
+              raise SystemExit('Renderer restore block not found')
+          t = t.replace(old_final, new_final, 1)
+          ui.write_text(t)
+
+          workspace = Path('src/gex_workspace_v2.py')
+          w = workspace.read_text()
+          old = 'GEX_BUILD_VERSION = "v2026.09.17.09"'
+          new = 'GEX_BUILD_VERSION = "v2026.09.17.10"'
+          if old not in w:
+              raise SystemExit('Expected .09 build marker not found')
+          workspace.write_text(w.replace(old, new, 1))
+
+          changelog = Path('src/TERMINAL_CHANGELOG.md')
+          entry = r'''
+
+## 2026-09-17 — Compact E*TRADE renew feedback
+
+- **Feature changed:** E*TRADE OAuth/session utility bar.
+- **Exact production file(s) changed:** `src/etrade_connection_ui_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Clicking RENEW rendered a large `st.success` box inside the narrow renew column, pushing/offsetting the utility-bar layout.
+- **Root cause:** A layout-bound success component was used for transient session feedback.
+- **What was changed:** Replaced the in-column success box with a non-layout-shifting Streamlit toast. The RENEW button position and session renewal semantics are unchanged.
+- **Important behavior that must remain:** RENEW stays on the compact utility row; renewal feedback must not reserve vertical space or move adjacent controls.
+- **Files/features intentionally NOT changed:** GEX calculations, Risk Sizing, Holdings, navigation, Bull Debit, Muni, Orders, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Python syntax compilation and architecture guard in CI.
+- **Architecture guard result:** PASS required before merge.
+- **Commit SHA:** final production merge SHA recorded by GitHub.
+- **Lesson:** Transient session confirmations belong in a toast, not a layout-bearing message box inside a compact control row.
+
+## 2026-09-17 — Live non-blocking GEX refresh status
+
+- **Feature changed:** GEX background Refresh All interaction.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Background GEX did not lock Streamlit, but its progress snapshot only changed when the whole GEX page reran, so users could not see completed tickers arrive in real time and the overview could remain stale after the worker finished.
+- **Root cause:** The background worker registry was live, but the production UI rendered its status only once per app rerun.
+- **What was changed:** Added a GEX-local one-second `st.fragment` poller that syncs completed results, shows the tickers updated so far, leaves the rest of the page interactive, and performs one full app rerun when the batch finishes so the overview/TradingView data refreshes automatically. Build bumped to `v2026.09.17.10`.
+- **Important behavior that must remain:** Background workers never call Streamlit or session state; only the render thread syncs results. Do not globally patch Streamlit. Do not increase E*TRADE rate limits or change GEX math/expiration coverage for this UI behavior.
+- **Files/features intentionally NOT changed:** GEX formulas/math, E*TRADE market throttling/session client plumbing, TradingView serializer, IV Rank math, Risk Sizing, Holdings, navigation, Bull Debit, Muni, Orders, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Python syntax compilation, source assertions for fragment polling/final rerun, `python scripts/validate_architecture.py`, PR changed-file inspection, and post-merge architecture guard.
+- **Architecture guard result:** PASS required before merge.
+- **Commit SHA:** final production merge SHA recorded by GitHub.
+- **Lesson:** Keep long market-data refreshes detached from Streamlit, but poll status from a render-thread fragment and refresh the full page exactly once at completion.
+'''
+          changelog.write_text(changelog.read_text().rstrip() + entry)
+          PY
+
+      - name: Validate
+        run: |
+          python -m py_compile src/etrade_connection_ui_v2.py src/gex_ui_v3.py src/gex_workspace_v2.py
+          python - <<'PY'
+          from pathlib import Path
+          oauth = Path('src/etrade_connection_ui_v2.py').read_text()
+          gex = Path('src/gex_ui_v3.py').read_text()
+          workspace = Path('src/gex_workspace_v2.py').read_text()
+          assert 'st.toast("E*TRADE session renewed.")' in oauth
+          assert 'st.success("E*TRADE session renewed.")' not in oauth
+          assert '@st.fragment(run_every=1.0)' in gex
+          assert 'UPDATED SO FAR //' in gex
+          assert '_proven._render_background_status = original_background_status' in gex
+          assert 'GEX_BUILD_VERSION = "v2026.09.17.10"' in workspace
+          PY
+          python scripts/validate_architecture.py
+
+      - name: Commit production files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/etrade_connection_ui_v2.py src/gex_ui_v3.py src/gex_workspace_v2.py src/TERMINAL_CHANGELOG.md
+          git diff --cached --quiet && exit 0
+          git commit -m "Polish renew feedback and live GEX refresh status"
+          git push origin HEAD:gex-live-refresh-oauth-toast-20260917
