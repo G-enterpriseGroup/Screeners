@@ -379,3 +379,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS on staging before code commit.
 - **Commit SHA:** `e456f1fb4b0bd25e1b22226d92c54742843f8b57` (production code stage); final merge SHA recorded by GitHub after merge.
 - **Lesson:** The TradingView contract has two layers: parser-native packed rows internally and one pair of outer double quotes around the complete multiline paste externally.
+
+
+## 2026-09-17 — Larger TradingView copy control
+
+- **Feature changed:** GEX TradingView Bridge copy/paste interaction.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The Pine-safe payload was correctly wrapped in one opening and one closing double quote, but the actual Streamlit copy control remained a tiny icon that was easy to miss during the TradingView paste workflow.
+- **Root cause:** The bridge relied on the default `st.code` copy-button presentation even though copy/paste is the primary action in this subtab.
+- **What was changed:** Kept Streamlit's real working clipboard action and enlarged/styled that exact copy control inside only the keyed GEX TradingView bridge container. Its visible label is `COPY FOR TRADINGVIEW`. The instruction line is now a compact three-step copy → TradingView field → paste flow and explicitly says the outer double quotes are already included. Visible GEX build bumped to `v2026.09.17.08`.
+- **Important behavior that must remain:** Pine-safe MASTER and single-ticker output must still begin with one `"` before the first `Ticker:` and end with one `"` immediately after the final packed row. Do not quote each line and do not strip the outer quotes when copying.
+- **Files/features intentionally NOT changed:** GEX calculations, IV Rank, E*TRADE/session plumbing, Refresh All concurrency/rate limits, TradingView Pine script, Google Sheets full/reference serialization, Risk Sizing, OAuth, Holdings, navigation, Bull Debit, Muni, Orders, shared theme, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Python syntax compilation of changed GEX production files; exact quote-contract source assertions; scoped copy-button CSS assertions; `python scripts/validate_architecture.py`; PR changed-file inspection; post-merge architecture guard required.
+- **Architecture guard result:** PASS on staging before merge.
+- **Commit SHA:** staging commit recorded by GitHub; final production merge SHA recorded after merge.
+- **Lesson:** Do not replace a working clipboard mechanism with a custom/fake button. Improve the existing `st.code` clipboard action and scope presentation to the GEX bridge only.

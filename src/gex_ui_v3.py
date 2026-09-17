@@ -106,6 +106,50 @@ def _inject_iv_rank_column(markup: str, vault_key: str) -> str:
 # ==============================
 # TRADINGVIEW / PINE ROUTER COMPATIBILITY
 # ==============================
+# GEX-only styling for Streamlit's real code-block clipboard control.
+# This does not create a fake copy button; it makes the existing working copy
+# action large, obvious, and scoped to the keyed TradingView bridge container.
+_TRADINGVIEW_COPY_BUTTON_CSS = """
+<style>
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[aria-label*="Copy"],
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[title*="Copy"] {
+    min-width: 12.8rem !important;
+    min-height: 2.35rem !important;
+    padding: .38rem .68rem !important;
+    border: 1px solid #fb8b1e !important;
+    border-radius: 0 !important;
+    background: #fb8b1e !important;
+    color: #000000 !important;
+    box-shadow: none !important;
+    font-family: "Courier New", monospace !important;
+    font-size: 0 !important;
+    font-weight: 900 !important;
+    opacity: 1 !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[aria-label*="Copy"]::after,
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[title*="Copy"]::after {
+    content: "COPY FOR TRADINGVIEW" !important;
+    font: 900 .76rem/1 "Courier New", monospace !important;
+    letter-spacing: .025em !important;
+    color: #000000 !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[aria-label*="Copy"] svg,
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[title*="Copy"] svg {
+    width: 1rem !important;
+    height: 1rem !important;
+    margin-right: .34rem !important;
+    color: #000000 !important;
+    stroke: #000000 !important;
+}
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[aria-label*="Copy"]:hover,
+.st-key-gexv3_bridge_code [data-testid="stCode"] button[title*="Copy"]:hover {
+    background: #ffad52 !important;
+    border-color: #ffad52 !important;
+}
+</style>
+"""
+
+
 def _render_tradingview_pine_compatible(
     state: dict[str, Any],
     result_map: dict[str, Any],
@@ -229,16 +273,19 @@ def _render_tradingview_pine_compatible(
 
     if is_master:
         st.markdown(
-            "**COPY THIS ENTIRE BLOCK INTO GEX TEST → Packed Gamma Levels. The opening and closing double quotes are required and are already included.**"
+            '**1) CLICK `COPY FOR TRADINGVIEW`  →  2) TradingView `GEX TEST` → `Packed Gamma Levels`  →  3) PASTE. The opening and closing `"` are already included.**'
         )
     elif is_full:
         st.markdown(
             "**REFERENCE ONLY // this mirrors the Google Sheet A6, but use the PINE ROUTER SAFE master for TradingView.**"
         )
     else:
-        st.markdown("**COPY THIS ENTIRE SINGLE-TICKER BLOCK INTO GEX TEST → Packed Gamma Levels. Keep the opening and closing double quotes.**")
+        st.markdown(
+            '**1) CLICK `COPY FOR TRADINGVIEW`  →  2) TradingView `GEX TEST` → `Packed Gamma Levels`  →  3) PASTE. Keep both outer `"` characters.**'
+        )
 
     st.html(_proven._TRADINGVIEW_CODE_CSS)
+    st.html(_TRADINGVIEW_COPY_BUTTON_CSS)
     with st.container(key="gexv3_bridge_code"):
         st.code(text or "", language=None, wrap_lines=False)
     st.download_button(
