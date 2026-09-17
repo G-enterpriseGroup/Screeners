@@ -46,8 +46,8 @@ from src.gex_ui_v3 import background_refresh_status, render_gex as _render_gex_v
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.16.04"
-GEX_ENGINE_LABEL = "E*TRADE // 4 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
+GEX_BUILD_VERSION = "v2026.09.16.05"
+GEX_ENGINE_LABEL = "E*TRADE // 20 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
 
 
 def _gex_build_badge() -> str:
@@ -296,7 +296,7 @@ def _gex_progress_log(vault_key: str) -> str:
         f"PROGRESS   {completed}/{total} PROCESSED // {updated} UPDATED",
         f"ACTIVE     {active}",
         "FLOW       BATCH QUOTES -> EXPIRATIONS -> OPTION CHAINS -> GEX CALC -> MERGE",
-        "ENGINE     4 CALC WORKERS // 20 FETCH SLOTS // 3.7 REQUEST STARTS/SEC",
+        "ENGINE     20 CALC WORKERS // 20 FETCH SLOTS // 3.7 REQUEST STARTS/SEC",
         "CACHE      QUOTES 5M // CHAINS 5M // EXPIRATIONS 6H",
     ]
     if failures:
@@ -337,12 +337,11 @@ def _decorate_gex_running_status(body: Any, vault_key: str) -> Any:
 # here. This restores the original fast behavior without touching Streamlit from
 # worker threads and without changing GEX formulas.
 #
-# E*TRADE documents a typical MARKET throttle of 4 requests/second. Four ticker
-# threads are not enough to reach that throughput when each HTTPS response takes
-# multiple seconds. Keep the top-level 4-ticker job unchanged, but prefetch each
-# ticker's eligible expiration chains through a deeper request pool. A shared
-# start-rate gate spaces live MARKET calls just under 4/sec, so network latency
-# is overlapped without sending bursts above the documented throttle.
+# E*TRADE documents a typical MARKET throttle of 4 requests/second. The top-level
+# ticker pool and the chain-prefetch pool may keep more requests in flight than
+# that because HTTPS responses can take several seconds; the shared start-rate
+# gate below remains authoritative and spaces live MARKET request starts just
+# under 4/sec. This hides network latency without increasing request-start rate.
 #
 # Refresh All uses one coherent quote snapshot for the same five-minute window
 # as its option-chain snapshot. Manual single-ticker refresh remains a hard live
