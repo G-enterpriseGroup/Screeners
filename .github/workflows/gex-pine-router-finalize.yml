@@ -1,0 +1,45 @@
+name: Finalize GEX Pine Router Restore
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: gex-pine-quoted-master-20260916
+          fetch-depth: 0
+      - name: Repair changelog and validate production files
+        run: |
+          python scripts/tmp_fix_gex_changelog.py
+          python -m py_compile src/gex_ui_v3.py src/gex_workspace_v2.py
+          python scripts/validate_architecture.py
+      - name: Verify exact quote transport contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          ui = Path('src/gex_ui_v3.py').read_text()
+          log = Path('src/TERMINAL_CHANGELOG.md').read_text()
+          assert "text = f'\"{parser_text.strip()}\"'" in ui
+          assert "headers = _proven._pine_router_headers(parser_text)" in ui
+          assert "MISSING_OUTER_DOUBLE_QUOTES" in ui
+          assert '`"Ticker: SYMBOL`' in log
+          assert '`v2026.09.17.07`' in log
+          assert '`e456f1fb4b0bd25e1b22226d92c54742843f8b57`' in log
+          PY
+      - name: Commit repaired changelog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/TERMINAL_CHANGELOG.md
+          git commit -m "Repair quoted GEX changelog entry"
+          git push origin HEAD:gex-pine-quoted-master-20260916
