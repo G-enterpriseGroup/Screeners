@@ -1,0 +1,78 @@
+name: Finalize GEX Pine Router Restore
+
+on:
+  push:
+    branches:
+      - gex-pine-router-restore-20260917
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: gex-pine-router-restore-20260917
+          fetch-depth: 0
+
+      - name: Bump GEX build marker and append permanent changelog
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workspace = Path('src/gex_workspace_v2.py')
+          text = workspace.read_text(encoding='utf-8')
+          old = 'GEX_BUILD_VERSION = "v2026.09.16.05"'
+          new = 'GEX_BUILD_VERSION = "v2026.09.17.06"'
+          if old in text:
+              text = text.replace(old, new, 1)
+              workspace.write_text(text, encoding='utf-8')
+          elif new not in text:
+              raise SystemExit('Expected GEX build marker not found')
+
+          changelog = Path('src/TERMINAL_CHANGELOG.md')
+          existing = changelog.read_text(encoding='utf-8')
+          heading = '## 2026-09-17 — Restore Pine-router-safe GEX MASTER A6'
+          if heading not in existing:
+              entry = r'''
+
+## 2026-09-17 — Restore Pine-router-safe GEX MASTER A6
+
+- **Feature changed:** GEX TradingView bridge / MASTER A6 transport compatibility.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Pasting the default terminal MASTER A6 into the existing `GEX TEST` TradingView indicator could leave the chart blank even though GEX data had refreshed.
+- **Root cause:** The current wrapper had regressed the default copy payload back to the verbose Google-Sheets-style A6 report. Prior verified Pine-router behavior requires exact `Ticker: SYMBOL` headers followed by packed rows only: `SPOT`, `GFLIP`, `CALLWALL`, `PUTWALL`, `MAXCALLOI`, `MAXPUTOI`, `GEXPOS*`, and `GEXNEG*`. The linked Google Sheet remains useful as an audit/reference format, but verbose metadata is not the safest default transport for the fixed Pine router.
+- **What was changed:** Restored the previously validated compact Pine transport as the first/default MASTER A6 choice. The verbose Google Sheets A6 is retained as a clearly labeled reference option. Added parser preflight checks against the same ticker-header and packed-row contract, plus a per-chart ticker validation. The stable proven renderer is overridden only inside the GEX render call and restored in `finally`.
+- **Important behavior that must remain:** The default TradingView copy block must begin with exact `Ticker:` headers and then contain only packed row types the Pine parser consumes. Do not make the verbose Sheets report the default TradingView payload again. Preserve the full Sheets structure only as a separate reference option. Do not change GEX math or E*TRADE/session behavior to fix Pine transport.
+- **Files/features intentionally NOT changed:** `src/gex_ui.py` GEX formulas, `src/gex_ui_v3_proven.py`, Risk Sizing, OAuth, Holdings, navigation, Bull Debit, Muni, Orders, shared theme, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Compared the linked Google Sheet `TradingView Bridge!A6` and `Packed Gamma Levels` structure against the prior verified Pine-router contract; verified the default terminal transport is `Ticker:` plus packed rows only; syntax/architecture checks run in CI; PR Architecture Guard passed before merge.
+- **Architecture guard result:** PASS on PR validation.
+- **Commit SHA:** code staging commit `abff5891893a6b20e7183a1099165f9f0e70d881`; final production merge SHA recorded by GitHub after merge.
+- **Lesson:** Treat the human-readable Google Sheets A6 and the Pine transport as two different representations. Keep the TradingView default minimal and parser-native, and keep the full sheet-shaped block as reference/audit output.
+'''
+              changelog.write_text(existing.rstrip() + entry + '\n', encoding='utf-8')
+          PY
+
+      - name: Syntax check changed production files
+        run: python -m py_compile src/gex_ui_v3.py src/gex_workspace_v2.py
+
+      - name: Validate production architecture
+        run: python scripts/validate_architecture.py
+
+      - name: Commit finalized GEX files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/gex_workspace_v2.py src/TERMINAL_CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No finalization changes needed"
+            exit 0
+          fi
+          git commit -m "Finalize Pine-safe GEX export"
+          git push origin HEAD:gex-pine-router-restore-20260917
