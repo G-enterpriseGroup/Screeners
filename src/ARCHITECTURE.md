@@ -32,7 +32,8 @@ These are durable terminal preferences and should be checked on every UI change:
 | Feature | Production entry / owner | Supporting files | Do not edit for normal feature UI work |
 |---|---|---|---|
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
-| Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings files |
+| E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
+| Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
 | GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` only when legacy calculation helpers are intentionally reused | `streamlit_app.py` for ordinary GEX layout changes |
@@ -45,9 +46,11 @@ These are durable terminal preferences and should be checked on every UI change:
 
 ## Risk Sizing edit map
 
-Risk Sizing has several historical versions. The current production import path is:
+E*TRADE Risk Sizing has several historical versions. The current production import path is:
 
 `streamlit_app.py` → `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` → v9/v2 helpers
+
+The visible top-tab label is **E*TRADE RISK SIZING**, while the stable internal route key remains `RISK SIZING` so saved tab order/state is preserved. Schwab is a separate route: `streamlit_app.py` → `src/schwab_risk_sizing_ui.py`.
 
 Use this decision tree:
 
@@ -55,7 +58,9 @@ Use this decision tree:
 - Change **compact card styling / Part 2 presentation inherited from v9** → `src/risk_sizing_ui_v9.py`.
 - Change **existing Part 1 / Part 2 base widget sequence** → `src/risk_sizing_ui_v2.py`, only if a wrapper cannot safely solve it.
 - Change **risk formulas** → `src/risk_sizing.py`.
-- Do **not** edit GEX/OAuth/navigation to fix Risk Sizing.
+- Change **Schwab Risk Sizing setup/readiness UI or future Schwab data binding** → `src/schwab_risk_sizing_ui.py` and future Schwab-specific API modules only.
+- Keep Schwab holdings/session state separate from E*TRADE holdings/session state; never point the Schwab tab at E*TRADE data as a temporary shortcut.
+- Do **not** edit GEX/OAuth/navigation to fix Risk Sizing content. Navigation may be edited only for the top-tab label/order itself.
 
 ## GEX edit map
 

@@ -42,11 +42,17 @@ from src.layout_guardrails import install_layout_guardrails
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
     "RISK SIZING",
+    "SCHWAB RISK SIZING",
     "GEX",
     "BULL DEBIT SPREAD",
     "MUNI SCREENERS",
     "ORDERS",
 ]
+
+TAB_DISPLAY_LABELS = {
+    # Keep the stable internal route key so existing saved tab state/order survives.
+    "RISK SIZING": "E*TRADE RISK SIZING",
+}
 
 NAV_FRAME_HEIGHT = 48
 
@@ -281,6 +287,7 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
     result = _terminal_tabs(
         tabs=state["order"],
         active=state["active"],
+        display_labels=TAB_DISPLAY_LABELS,
         storage_key=storage_key,
         height=NAV_FRAME_HEIGHT,
         key="raj_terminal_draggable_tabs_v4_h48_gapfix_exact",

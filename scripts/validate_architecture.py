@@ -35,6 +35,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "layout_guardrails.py",
     SRC / "risk_sizing_ui_v7.py",
     SRC / "risk_sizing_ui_v10.py",
+    SRC / "schwab_risk_sizing_ui.py",
     SRC / "gex_workspace_v2.py",
     SRC / "gex_ui_v3.py",
     SRC / "gex_ui_v3_base.py",
@@ -50,6 +51,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.gex_workspace_v2 import render_gex as render_gex_workspace",
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
     "from src.risk_sizing_ui_v7 import render_risk_sizing",
+    "from src.schwab_risk_sizing_ui import render_schwab_risk_sizing",
     "from src.tab_bar_v4 import render_terminal_tab_bar",
 ]
 
@@ -197,6 +199,16 @@ def main() -> int:
         for required in REQUIRED_APP_IMPORTS:
             if required not in app_text:
                 errors.append(f"APP ROUTE MISSING: {required}")
+        if 'elif active_tab == "SCHWAB RISK SIZING":' not in app_text:
+            errors.append("APP ROUTE MISSING: SCHWAB RISK SIZING dispatch")
+
+    nav_path = SRC / "tab_bar_v4.py"
+    if nav_path.exists():
+        nav_text = nav_path.read_text(encoding="utf-8")
+        if '"SCHWAB RISK SIZING"' not in nav_text:
+            errors.append("NAV ROUTE MISSING: SCHWAB RISK SIZING tab")
+        if '"RISK SIZING": "E*TRADE RISK SIZING"' not in nav_text:
+            errors.append("NAV LABEL MISSING: E*TRADE RISK SIZING display label")
 
     risk_route = SRC / "risk_sizing_ui_v7.py"
     if risk_route.exists():

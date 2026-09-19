@@ -201,6 +201,7 @@
 
     let tabs = [];
     let active = "";
+    let displayLabels = {};
     let storageKey = "raj-terminal-tabs-v3";
     let storageHydrated = false;
     let interaction = null;
@@ -285,7 +286,7 @@
       tabs.forEach((label, index) => {
         const el = document.createElement("div");
         el.className = "tab" + (label === active ? " active" : "");
-        el.textContent = label;
+        el.textContent = displayLabels[label] || label;
         el.setAttribute("role", "tab");
         el.setAttribute("aria-selected", label === active ? "true" : "false");
         el.setAttribute("tabindex", "0");
@@ -390,6 +391,16 @@
     function applyServer(args) {
       const allowed = Array.isArray(args.tabs) ? args.tabs.map(String) : [];
       if (!allowed.length) return;
+
+      const rawDisplayLabels = args.display_labels && typeof args.display_labels === "object"
+        ? args.display_labels
+        : {};
+      displayLabels = {};
+      allowed.forEach((label) => {
+        if (Object.prototype.hasOwnProperty.call(rawDisplayLabels, label)) {
+          displayLabels[label] = String(rawDisplayLabels[label]);
+        }
+      });
 
       storageKey = String(args.storage_key || storageKey);
       const serverOrder = cleanOrder(allowed, allowed);
