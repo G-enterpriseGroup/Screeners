@@ -28,6 +28,11 @@ FEATURE_ROUTES = {
             "src/ticker_autocomplete.py",
         ],
     },
+    "schwab_risk_sizing": {
+        "entry": "src/schwab_risk_sizing_ui.py",
+        "owner": "src/schwab_risk_sizing_ui.py",
+        "support": ["src/risk_sizing.py"],
+    },
     "gex": {
         "entry": "src/gex_workspace_v2.py",
         "owner": "src/gex_ui_v3.py",

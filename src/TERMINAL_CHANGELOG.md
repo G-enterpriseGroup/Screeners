@@ -408,3 +408,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS required before merge.
 - **Commit SHA:** code commit recorded on staging branch; final production merge SHA recorded by GitHub after merge.
 - **Lesson:** Match the proven full ticker block for TradingView: metadata first, gamma rows second, one quoted multiline payload.
+
+## 2026-09-19 — Separate E*TRADE and Schwab Risk Sizing tabs
+
+- **Feature changed:** Risk Sizing broker separation / top-level navigation.
+- **Exact production file(s) changed:** `streamlit_app.py`, `src/tab_bar_v4.py`, `src/components/terminal_tabs_v3/index.html`, `src/schwab_risk_sizing_ui.py`, `src/ARCHITECTURE.md`, `src/production_manifest.py`, `scripts/validate_architecture.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The terminal had only one generic `RISK SIZING` tab, so there was no separate place to add a future Charles Schwab holdings/quote-backed risk workflow without risking E*TRADE state crossover.
+- **Root cause:** Risk Sizing had only the existing E*TRADE production route and no broker-specific top-level separation or Schwab-owned module.
+- **What was changed:** Kept the stable internal `RISK SIZING` route and existing E*TRADE renderer unchanged, but display it as `E*TRADE RISK SIZING`. Added a separate `SCHWAB RISK SIZING` top-level route and an isolated Schwab-owned readiness shell. The Schwab shell explicitly does not read E*TRADE holdings, quotes, or account state while Schwab developer/API credentials are unavailable. Updated architecture/manifest ownership and extended the architecture guard so the Schwab route and E*TRADE display label cannot silently disappear.
+- **Important behavior that must remain:** Existing E*TRADE Risk Sizing continues to use `streamlit_app.py → src/risk_sizing_ui_v7.py → src/risk_sizing_ui_v10.py`; its saved tab state/order remains compatible because the internal route key stays `RISK SIZING`. Schwab must keep separate broker state and must eventually use Schwab holdings/balances/quotes with the same shared formulas in `src/risk_sizing.py`; never substitute E*TRADE data into the Schwab tab.
+- **Files/features intentionally NOT changed:** `src/risk_sizing_ui_v10.py`, `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/risk_sizing.py`, `src/trade_math.py`, GEX, E*TRADE OAuth, Holdings, Bull Debit, Muni, Orders, shared theme, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Exact production import path and prior Risk Sizing history reviewed; changed-file diff inspected; existing E*TRADE dispatch confirmed unchanged; new Schwab dispatch and navigation label checked; navigation component JavaScript syntax-checked; PR #9 Terminal Architecture Guard run `35459085420` passed and parsed all production Python files including the new Schwab module.
+- **Architecture guard result:** PASS on code commit `f8806cee58984fb953444e84de6feab5672f01eb`; final changelog-state guard required before merge.
+- **Commit SHA:** feature code commit `f8806cee58984fb953444e84de6feab5672f01eb`; final production merge SHA recorded by GitHub after merge.
+- **Lesson:** Keep broker-specific Risk Sizing state and data sources isolated. A second broker gets its own route/owner module; shared formulas may be reused, but holdings, balances, quotes, and session state must never cross between E*TRADE and Schwab.
+

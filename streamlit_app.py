@@ -33,6 +33,7 @@ from src.etrade_data_cache import (
 from src.gex_workspace_v2 import render_gex as render_gex_workspace
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.risk_sizing_ui_v7 import render_risk_sizing
+from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
 from src.session_persistence import (
     clear_etrade_session,
     restore_etrade_session,
@@ -410,8 +411,12 @@ _TERMINAL_PAGE_HEADERS = {
         "BROKERAGE POSITIONS // MANUAL SNAPSHOT // E*TRADE ACCOUNT",
     ),
     "RISK SIZING": (
-        "RISK SIZING",
-        "CROWN MACRO RISK ENGINE // PORTFOLIO SLEEVE CONTROL // STOP-BASED POSITION SIZING // RAJ CLASSIFICATION RULE",
+        "E*TRADE RISK SIZING",
+        "CROWN MACRO RISK ENGINE // E*TRADE HOLDINGS + QUOTES // PORTFOLIO SLEEVE CONTROL // STOP-BASED POSITION SIZING // RAJ CLASSIFICATION RULE",
+    ),
+    "SCHWAB RISK SIZING": (
+        "SCHWAB RISK SIZING",
+        "CROWN MACRO RISK ENGINE // SCHWAB API-READY ROUTE // SEPARATE HOLDINGS + QUOTES // SAME RISK FORMULAS",
     ),
     "BULL DEBIT SPREAD": (
         "BULL DEBIT SPREAD",
@@ -434,12 +439,14 @@ _TERMINAL_PAGE_HEADERS = {
 _LEGACY_PAGE_TITLES = {
     "HOLDINGS": {"E*TRADE HOLDINGS"},
     "RISK SIZING": {"RISK SIZING"},
+    "SCHWAB RISK SIZING": {"RISK SIZING"},
     "BULL DEBIT SPREAD": {"BULL DEBIT SPREAD"},
     "ORDERS": {"TRIGGERS – OCO ORDER SIMULATOR", "TRIGGERS — OCO ORDER SIMULATOR"},
 }
 
 _LEGACY_PAGE_CAPTION_PREFIXES = {
     "RISK SIZING": ("CROWN MACRO RISK ENGINE //",),
+    "SCHWAB RISK SIZING": ("CROWN MACRO RISK ENGINE //",),
     "BULL DEBIT SPREAD": ("HIGH-TECH BULL CALL DEBIT SPREAD OPTIMIZER //",),
     "ORDERS": ("BUY LIMIT → WHEN FILLED, ACTIVATES A TAKE-PROFIT LIMIT AND STOP-MARKET EXIT.",),
 }
@@ -549,6 +556,12 @@ elif active_tab == "RISK SIZING":
             balance_snapshot=_balance_snapshot,
             touch_session=_touch_etrade_session,
         ),
+    )
+
+elif active_tab == "SCHWAB RISK SIZING":
+    _render_without_legacy_page_header(
+        "SCHWAB RISK SIZING",
+        render_schwab_risk_sizing,
     )
 
 elif active_tab == "GEX":
