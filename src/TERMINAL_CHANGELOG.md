@@ -423,3 +423,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Commit SHA:** feature code commit `f8806cee58984fb953444e84de6feab5672f01eb`; final production merge SHA recorded by GitHub after merge.
 - **Lesson:** Keep broker-specific Risk Sizing state and data sources isolated. A second broker gets its own route/owner module; shared formulas may be reused, but holdings, balances, quotes, and session state must never cross between E*TRADE and Schwab.
 
+## 2026-09-19 — Force-remount navigation after Schwab tab split
+
+- **Feature changed:** Top navigation deployment/remount behavior for the new broker-separated Risk Sizing tabs.
+- **Exact production file(s) changed:** `src/tab_bar_v4.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** After the Schwab Risk Sizing split was merged to `main`, the live Streamlit page still displayed the older six-tab navigation with `RISK SIZING` and no `SCHWAB RISK SIZING` tab.
+- **Root cause:** GitHub `main` contained the new navigation and routing, so the observed page was still using an older mounted/deployed navigation instance rather than the current committed tab definition.
+- **What was changed:** Changed only the custom navigation component key so Streamlit must create a fresh navigation component instance on the next production code load. This preserves the existing tab order logic, E*TRADE internal route key, Schwab route, 48px navigation height, and saved-order cleanup behavior.
+- **Important behavior that must remain:** Visible `E*TRADE RISK SIZING` must continue to map to the stable internal `RISK SIZING` route; `SCHWAB RISK SIZING` remains a separate top-level route; navigation remains exactly 48px high and must not resize arbitrary ancestors.
+- **Files/features intentionally NOT changed:** Risk Sizing renderer/math files, GEX, E*TRADE OAuth, Holdings, Bull Debit, Muni, Orders, shared theme, authentication, component HTML, and `src/terminal_core.py`.
+- **Tests performed:** Current `main` architecture and prior change history re-read; production routing re-fetched and confirmed; navigation-only component-key change reviewed; architecture guard required on PR and after merge.
+- **Architecture guard result:** Pending PR validation.
+- **Commit SHA:** final production merge SHA recorded after validation.
+- **Lesson:** When current GitHub routing is correct but an existing Streamlit session still shows a prior custom-component mount, force a new component key rather than stacking changes into feature content.
+
