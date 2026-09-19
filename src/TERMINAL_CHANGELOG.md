@@ -433,7 +433,7 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Important behavior that must remain:** Visible `E*TRADE RISK SIZING` must continue to map to the stable internal `RISK SIZING` route; `SCHWAB RISK SIZING` remains a separate top-level route; navigation remains exactly 48px high and must not resize arbitrary ancestors.
 - **Files/features intentionally NOT changed:** Risk Sizing renderer/math files, GEX, E*TRADE OAuth, Holdings, Bull Debit, Muni, Orders, shared theme, authentication, component HTML, and `src/terminal_core.py`.
 - **Tests performed:** Current `main` architecture and prior change history re-read; production routing re-fetched and confirmed; navigation-only component-key change reviewed; architecture guard required on PR and after merge.
-- **Architecture guard result:** Pending PR validation.
+- **Architecture guard result:** PASS on PR run `35463961043`.
 - **Commit SHA:** final production merge SHA recorded after validation.
 - **Lesson:** When current GitHub routing is correct but an existing Streamlit session still shows a prior custom-component mount, force a new component key rather than stacking changes into feature content.
 
