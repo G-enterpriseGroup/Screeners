@@ -30,6 +30,7 @@ import streamlit as st
 
 from src import gex_ui as _core
 from src import gex_ui_v3_proven as _proven
+from src.gex_github_bridge import publish_latest_gex
 
 
 # ==============================
@@ -57,6 +58,13 @@ _MASTER_A6_STATIC_PATH = (
     Path(__file__).resolve().parents[1] / "static" / "latest_gex.txt"
 )
 _ORIGINAL_RUN_BACKGROUND_REFRESH = _proven._run_background_refresh
+
+try:
+    _GEX_GITHUB_TOKEN = str(
+        st.secrets.get("github", {}).get("bridge_token", "")
+    ).strip()
+except Exception:
+    _GEX_GITHUB_TOKEN = ""
 
 
 def _write_master_a6_static(
@@ -113,9 +121,24 @@ def _run_background_refresh_with_master_export(
     try:
         _write_master_a6_static(results, tickers, failures)
     except Exception:
-        # The bridge export is additive only. A filesystem/export issue must
-        # never change or fail the existing GEX refresh path.
-        return
+        # Local static export is best-effort only.
+        pass
+
+    try:
+        parser_text = _proven._google_sheets_master_text(
+            results,
+            tickers,
+            failures,
+        ).strip()
+        if parser_text and _GEX_GITHUB_TOKEN:
+            publish_latest_gex(
+                _GEX_GITHUB_TOKEN,
+                f'"{parser_text}"',
+            )
+    except Exception:
+        # GitHub transport is additive only. A bridge publish problem must
+        # never change or fail the existing GEX refresh/calculation path.
+        pass
 
 
 _proven._run_background_refresh = _run_background_refresh_with_master_export
