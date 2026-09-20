@@ -57,6 +57,9 @@ from src.etrade_data_cache import (
     offline_snapshot_status,
 )
 from src.gex_workspace_v2 import render_gex as render_gex_workspace
+from src.gex_workspace_v2 import (
+    maybe_auto_refresh_on_login as maybe_auto_refresh_gex_on_login,
+)
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.risk_sizing_ui_v7 import render_risk_sizing
 from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
@@ -566,6 +569,13 @@ _render_cache_status()
 _render_offline_snapshot_notice()
 
 tab_order, active_tab = render_terminal_tab_bar(_trade_access_code_hash())
+
+# GEX owns this login-triggered background action. When another top-level tab is
+# active, invoke only the zero-height GEX state reader/start hook; the normal GEX
+# render path handles the same behavior itself to avoid duplicate component keys.
+if active_tab != "GEX":
+    maybe_auto_refresh_gex_on_login()
+
 _render_terminal_page_header(active_tab)
 
 if active_tab == "HOLDINGS":
