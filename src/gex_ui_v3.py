@@ -506,8 +506,8 @@ def _render_auto_refresh_setting(
         "AUTO REFRESH ALL GEX ON E*TRADE LOGIN",
         key=_GEX_AUTO_REFRESH_WIDGET_KEY,
         help=(
-            "When enabled, Raj's Terminal starts one background Refresh All the "
-            "first time the GEX workspace loads after an authenticated E*TRADE login."
+            "When enabled, Raj's Terminal starts one background Refresh All after "
+            "an authenticated E*TRADE login, even if another top-level tab is active."
         ),
     )
     saved = bool(state.get("auto_refresh_on_login", True))
