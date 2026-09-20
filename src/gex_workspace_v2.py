@@ -6,6 +6,7 @@ EDIT THIS FILE ONLY for:
 - obtaining the live E*TRADE client for GEX;
 - resolving the terminal vault/session context;
 - building a dedicated background E*TRADE client snapshot for GEX refresh-all;
+- deriving a non-sensitive per-login marker for GEX auto-refresh;
 - GEX-only background market-data caching/session plumbing;
 - GEX-only wrapper CSS emitted while the GEX tab renders;
 - keeping GEX style-only CSS out of Streamlit's visible vertical stack.
@@ -46,7 +47,7 @@ from src.gex_ui_v3 import background_refresh_status, render_gex as _render_gex_v
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.19.10"
+GEX_BUILD_VERSION = "v2026.09.20.11"
 GEX_ENGINE_LABEL = "E*TRADE // 20 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
 
 
@@ -861,8 +862,14 @@ def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | Non
     return build_client
 
 
-def _discover_terminal_context() -> tuple[Any, str, Any, Callable[[], Any] | None]:
-    """Resolve live GEX context plus a dedicated background-client factory."""
+def _discover_terminal_context() -> tuple[
+    Any,
+    str,
+    Any,
+    Callable[[], Any] | None,
+    str,
+]:
+    """Resolve live GEX context, background-client factory, and login marker."""
     candidates: list[dict[str, Any]] = []
     main = sys.modules.get("__main__")
     if main is not None:
@@ -886,14 +893,24 @@ def _discover_terminal_context() -> tuple[Any, str, Any, Callable[[], Any] | Non
             vault_key = str(hash_fn()) if callable(hash_fn) else "default"
         except Exception:
             vault_key = "default"
+        token = st.session_state.get("etrade_access_token") or {}
+        oauth_token = str(token.get("oauth_token") or "").strip()
+        issued_at = str(token.get("issued_at") or "").strip()
+        login_marker = ""
+        if oauth_token:
+            login_marker = hashlib.sha256(
+                f"{oauth_token}|{issued_at}".encode("utf-8")
+            ).hexdigest()[:24]
+
         return (
             client,
             vault_key or "default",
             touch,
             _background_client_factory(scope),
+            login_marker,
         )
 
-    return None, "default", None, None
+    return None, "default", None, None, ""
 
 
 # ==============================
@@ -905,6 +922,7 @@ def _render_with_style_only_html(
     vault_key: str,
     touch: Any,
     background_client_factory: Callable[[], Any] | None,
+    login_marker: str,
 ) -> None:
     """Render GEX while routing style-only markdown and decorating run status.
 
@@ -939,6 +957,7 @@ def _render_with_style_only_html(
             vault_key,
             touch,
             background_client_factory=background_client_factory,
+            login_marker=login_marker,
         )
     finally:
         st.markdown = original_markdown
@@ -951,7 +970,7 @@ def _render_with_style_only_html(
 
 def render_gex() -> None:
     """Render GEX with non-blocking refresh-all support and compact styling."""
-    client, vault_key, touch, background_factory = _discover_terminal_context()
+    client, vault_key, touch, background_factory, login_marker = _discover_terminal_context()
 
     # Style-only HTML is applied without creating a visible Streamlit row.
     st.html(_gex_subtab_skin_css())
@@ -961,6 +980,7 @@ def render_gex() -> None:
         vault_key,
         touch,
         background_factory,
+        login_marker,
     )
 
 
