@@ -47,6 +47,7 @@ IV_RANK_FULL_SPAN_DAYS = 330
 
 DEFAULT_STATE = copy.deepcopy(_legacy.DEFAULT_STATE)
 DEFAULT_STATE["iv_history"] = {}
+DEFAULT_STATE["auto_refresh_on_login"] = True
 
 
 # ==============================
@@ -85,6 +86,22 @@ def _clean_state(raw: Any) -> dict[str, Any]:
             if cleaned:
                 history_map[ticker] = cleaned
     state["iv_history"] = history_map
+
+    raw_auto_refresh = (
+        raw.get("auto_refresh_on_login", True)
+        if isinstance(raw, dict)
+        else True
+    )
+    if isinstance(raw_auto_refresh, bool):
+        auto_refresh_on_login = raw_auto_refresh
+    else:
+        auto_refresh_on_login = str(raw_auto_refresh).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    state["auto_refresh_on_login"] = auto_refresh_on_login
     return state
 
 
