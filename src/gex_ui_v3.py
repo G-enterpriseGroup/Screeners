@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import html
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 import streamlit as st
@@ -44,6 +45,79 @@ _proven._base.core = _core
 # without increasing the request-start rate or changing any GEX calculation.
 _BACKGROUND_TICKER_WORKERS = 20
 _proven._BACKGROUND_MAX_WORKERS = _BACKGROUND_TICKER_WORKERS
+
+# ==============================
+# TRADINGVIEW CLOUD BRIDGE EXPORT
+# ==============================
+# Keep the existing MASTER A6 serialization unchanged. After Refresh All
+# finishes, write that exact payload to Streamlit's static directory so the
+# browser bridge can fetch it without copy/paste.
+_MASTER_A6_STATIC_PATH = (
+    Path(__file__).resolve().parents[1] / "static" / "latest_gex.txt"
+)
+_ORIGINAL_RUN_BACKGROUND_REFRESH = _proven._run_background_refresh
+
+
+def _write_master_a6_static(
+    result_map: dict[str, Any],
+    tickers: list[str],
+    failures: dict[str, str] | None = None,
+) -> None:
+    """Atomically publish the exact quoted MASTER A6 payload for TradingView."""
+    if not result_map:
+        return
+
+    parser_text = _proven._google_sheets_master_text(
+        result_map,
+        tickers,
+        failures,
+    ).strip()
+    if not parser_text:
+        return
+
+    text = f'"{parser_text}"'
+    path = _MASTER_A6_STATIC_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(path.name + ".tmp")
+    temp_path.write_text(text, encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _run_background_refresh_with_master_export(
+    vault_key: str,
+    state_snapshot: dict[str, Any],
+    tickers: list[str],
+    client_factory: Callable[[], Any],
+) -> None:
+    """Run the proven refresh unchanged, then publish its completed MASTER A6."""
+    _ORIGINAL_RUN_BACKGROUND_REFRESH(
+        vault_key,
+        state_snapshot,
+        tickers,
+        client_factory,
+    )
+
+    key = str(vault_key or "default")
+    with _proven._BACKGROUND_LOCK:
+        job = _proven._BACKGROUND_JOBS.get(key)
+        if not job:
+            return
+        status = str(job.get("status") or "")
+        results = dict(job.get("results") or {})
+        failures = dict(job.get("failures") or {})
+
+    if status not in {"DONE", "DONE_WITH_ERRORS"}:
+        return
+
+    try:
+        _write_master_a6_static(results, tickers, failures)
+    except Exception:
+        # The bridge export is additive only. A filesystem/export issue must
+        # never change or fail the existing GEX refresh path.
+        return
+
+
+_proven._run_background_refresh = _run_background_refresh_with_master_export
 
 
 # ==============================

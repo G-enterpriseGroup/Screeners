@@ -18,3 +18,4 @@ showWidgetBorder = true
 
 [server]
 headless = true
+enableStaticServing = true
