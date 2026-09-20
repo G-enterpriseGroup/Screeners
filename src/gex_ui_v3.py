@@ -437,6 +437,9 @@ def _render_live_background_status_fragment(vault_key: str) -> None:
     progress = min(1.0, completed / total) if total else 0.0
     percent = int(round(progress * 100.0))
     current = str(job.get("current") or "").strip()
+    active_symbols = [value.strip() for value in current.split(",") if value.strip()]
+    if len(active_symbols) > 3:
+        current = ", ".join(active_symbols[:3]) + f" +{len(active_symbols) - 3}"
     active_text = f" // ACTIVE {current}" if current else ""
     st.progress(
         progress,
@@ -532,12 +535,15 @@ def _render_auto_refresh_setting(
 def _maybe_start_login_auto_refresh(
     vault_key: str,
     state: dict[str, Any],
+    live_client: Any,
     background_client_factory: Callable[[], Any] | None,
     login_marker: str,
     touch_session: Any,
 ) -> None:
     """Start exactly one automatic Refresh All for the current authenticated login."""
     if not bool(state.get("auto_refresh_on_login", True)):
+        return
+    if live_client is None:
         return
     if not login_marker or background_client_factory is None:
         return
@@ -625,6 +631,7 @@ def render_gex(
         _maybe_start_login_auto_refresh(
             key,
             state,
+            overview_client,
             background_client_factory,
             login_marker,
             overview_touch,
