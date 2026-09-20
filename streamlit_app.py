@@ -521,6 +521,25 @@ def _render_without_legacy_page_header(active_tab: str, renderer):
 
 
 render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
+
+# Read-only TradingView bridge view. This exposes only the generated MASTER A6
+# market-data payload and stops before terminal unlock/account rendering.
+_bridge_mode = str(st.query_params.get("gex_bridge", "") or "").strip().lower()
+if _bridge_mode in {"1", "true", "latest"}:
+    _bridge_path = Path(__file__).parent / "static" / "latest_gex.txt"
+    try:
+        _bridge_payload = _bridge_path.read_text(encoding="utf-8")
+    except Exception:
+        _bridge_payload = ""
+    st.text_area(
+        "RAJ GEX BRIDGE PAYLOAD",
+        value=_bridge_payload,
+        height=360,
+        disabled=True,
+        key="raj_gex_bridge_payload",
+    )
+    st.stop()
+
 _restore_active_etrade_session_after_unlock()
 
 if not _trade_access_unlocked():
