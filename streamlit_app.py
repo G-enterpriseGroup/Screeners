@@ -56,9 +56,9 @@ from src.etrade_data_cache import (
     offline_snapshot_available,
     offline_snapshot_status,
 )
+from src.gex_workspace_v2 import render_gex as render_gex_workspace
 from src.gex_workspace_v2 import (
     maybe_auto_refresh_on_login as maybe_auto_refresh_gex_on_login,
-    render_gex as render_gex_workspace,
 )
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.risk_sizing_ui_v7 import render_risk_sizing
