@@ -39,7 +39,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from src.etrade_client import ETradeClient, option_expiration_dates, quote_summary, walk_dicts
-from src.gex_ui_v3 import background_refresh_status, render_gex as _render_gex_v3
+from src.gex_ui_v3 import (
+    background_refresh_status,
+    maybe_auto_refresh_on_login as _maybe_auto_refresh_on_login_v3,
+    render_gex as _render_gex_v3,
+)
 
 
 # ==============================
@@ -968,6 +972,18 @@ def _render_with_style_only_html(
 # PUBLIC GEX ENTRYPOINT
 # ==============================
 
+def maybe_auto_refresh_on_login() -> bool:
+    """Start saved GEX auto-refresh after authenticated login from non-GEX tabs."""
+    client, vault_key, touch, background_factory, login_marker = _discover_terminal_context()
+    return _maybe_auto_refresh_on_login_v3(
+        client,
+        vault_key,
+        touch,
+        background_client_factory=background_factory,
+        login_marker=login_marker,
+    )
+
+
 def render_gex() -> None:
     """Render GEX with non-blocking refresh-all support and compact styling."""
     client, vault_key, touch, background_factory, login_marker = _discover_terminal_context()
@@ -984,4 +1000,4 @@ def render_gex() -> None:
     )
 
 
-__all__ = ["render_gex"]
+__all__ = ["render_gex", "maybe_auto_refresh_on_login"]
