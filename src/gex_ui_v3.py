@@ -539,26 +539,28 @@ def _maybe_start_login_auto_refresh(
     background_client_factory: Callable[[], Any] | None,
     login_marker: str,
     touch_session: Any,
-) -> None:
+    *,
+    rerun_on_start: bool = True,
+) -> bool:
     """Start exactly one automatic Refresh All for the current authenticated login."""
     if not bool(state.get("auto_refresh_on_login", True)):
-        return
+        return False
     if live_client is None:
-        return
+        return False
     if not login_marker or background_client_factory is None:
-        return
+        return False
     if not state.get("tickers"):
-        return
+        return False
 
     marker_key = f"{_GEX_AUTO_LOGIN_MARKER_KEY}:{str(vault_key or 'default')[:32]}"
     if st.session_state.get(marker_key) == login_marker:
-        return
+        return False
 
     job = _proven._background_job(vault_key)
     if job and str(job.get("status") or "") in {"QUEUED", "RUNNING"}:
         # A manual Refresh All started first; treat it as satisfying this login.
         st.session_state[marker_key] = login_marker
-        return
+        return False
 
     started = _proven._start_background_refresh(
         vault_key,
@@ -566,7 +568,7 @@ def _maybe_start_login_auto_refresh(
         background_client_factory,
     )
     if not started:
-        return
+        return False
 
     st.session_state[marker_key] = login_marker
     if callable(touch_session):
@@ -575,7 +577,39 @@ def _maybe_start_login_auto_refresh(
         except Exception:
             pass
     st.toast("GEX AUTO REFRESH STARTED // E*TRADE LOGIN DETECTED")
-    st.rerun()
+    if rerun_on_start:
+        st.rerun()
+    return True
+
+
+def maybe_auto_refresh_on_login(
+    client: Any,
+    vault_key: str,
+    touch_session: Any,
+    *,
+    background_client_factory: Callable[[], Any] | None = None,
+    login_marker: str = "",
+) -> bool:
+    """Start saved GEX auto-refresh from a non-GEX top-level tab after login.
+
+    The existing GEX state component is zero-height, so loading the browser-saved
+    setting here does not reserve page space. The normal GEX renderer owns this
+    path when GEX itself is the active top-level tab, avoiding duplicate component
+    keys in one Streamlit run.
+    """
+    vault_key = str(vault_key or "default")
+    state = copy.deepcopy(_core._load_state(vault_key))
+    state = _proven._base._seed_default_tickers(vault_key, state)
+    _core._sync_browser_state(vault_key, state)
+    return _maybe_start_login_auto_refresh(
+        vault_key,
+        state,
+        client,
+        background_client_factory,
+        login_marker,
+        touch_session,
+        rerun_on_start=False,
+    )
 
 
 # ==============================
@@ -678,4 +712,8 @@ def render_gex(
 
 background_refresh_status = _proven.background_refresh_status
 
-__all__ = ["render_gex", "background_refresh_status"]
+__all__ = [
+    "render_gex",
+    "background_refresh_status",
+    "maybe_auto_refresh_on_login",
+]
