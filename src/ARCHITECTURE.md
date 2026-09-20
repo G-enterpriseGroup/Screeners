@@ -69,7 +69,8 @@ Production path:
 `streamlit_app.py` → `src/gex_workspace_v2.py` → `src/gex_ui_v3.py`
 
 - Change **subtabs, tables, multi-ticker layout, settings, notes, TradingView presentation** → `src/gex_ui_v3.py`.
-- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback** → `src/gex_workspace_v2.py`.
+- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback / non-sensitive login marker** → `src/gex_workspace_v2.py`.
+- GEX auto-refresh-on-login is still GEX-owned. When a non-GEX top-level tab is active, `streamlit_app.py` may dispatch the zero-height `gex_workspace_v2.maybe_auto_refresh_on_login()` hook after authenticated E*TRADE context exists; the hook must not modify OAuth/login behavior or other tab content.
 - Do not patch global Streamlit functions from GEX.
 
 ## OAuth edit map
