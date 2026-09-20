@@ -307,7 +307,7 @@ def _gex_progress_log(vault_key: str) -> str:
             lines.append(f"FAIL       {ticker} // {clean}")
     else:
         lines.append("FAILURES   0")
-    lines.append("TIP        THIS SNAPSHOT REFRESHES WHEN THE GEX PAGE RERUNS")
+    lines.append("TIP        LIVE STATUS AUTO-UPDATES WHILE REFRESH ALL RUNS")
     return "\n".join(lines)
 
 
