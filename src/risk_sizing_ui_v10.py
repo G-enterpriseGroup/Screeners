@@ -47,27 +47,37 @@ def _render_css_v10() -> None:
     st.markdown(
         """
         <style>
-        /* The ticker row is the only row collapsed to one column.  Do this in
-           CSS instead of replacing st.columns globally. */
-        [data-testid="stHorizontalBlock"]:has(.risk-v10-ticker-marker){
+        /*
+           Collapse ONLY the inner ticker/quote row to one visible column.
+           IMPORTANT: the marker must be inside the FIRST direct stColumn of the
+           horizontal block. A broad :has(.risk-v10-ticker-marker) selector also
+           matches ancestor layouts (such as the Risk Book + Part 2 split) and
+           can hide the entire Part 2 pane.
+        */
+        [data-testid="stHorizontalBlock"]:has(
+            > [data-testid="stColumn"]:first-child .risk-v10-ticker-marker
+        ){
             display:block!important;
             width:100%!important;
         }
-        [data-testid="stHorizontalBlock"]:has(.risk-v10-ticker-marker)
-        > [data-testid="stColumn"]:first-child{
+        [data-testid="stHorizontalBlock"]:has(
+            > [data-testid="stColumn"]:first-child .risk-v10-ticker-marker
+        ) > [data-testid="stColumn"]:first-child{
             width:100%!important;
             min-width:100%!important;
             flex:1 1 100%!important;
         }
-        [data-testid="stHorizontalBlock"]:has(.risk-v10-ticker-marker)
-        > [data-testid="stColumn"]:nth-child(2){
+        [data-testid="stHorizontalBlock"]:has(
+            > [data-testid="stColumn"]:first-child .risk-v10-ticker-marker
+        ) > [data-testid="stColumn"]:nth-child(2){
             display:none!important;
         }
         .risk-v10-ticker-marker{display:none!important;}
 
         /* Keep the ticker search compact and obviously searchable. */
-        [data-testid="stHorizontalBlock"]:has(.risk-v10-ticker-marker)
-        [data-testid="stSelectbox"]{width:100%!important;}
+        [data-testid="stHorizontalBlock"]:has(
+            > [data-testid="stColumn"]:first-child .risk-v10-ticker-marker
+        ) [data-testid="stSelectbox"]{width:100%!important;}
         </style>
         """,
         unsafe_allow_html=True,
