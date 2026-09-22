@@ -700,23 +700,39 @@ def render_gex(
             # the click and hand it to the existing E*TRADE authorization flow.
             kwargs["disabled"] = False
 
+        request = st.session_state.get("etrade_request") or {}
+        pending_auth_url = (
+            str(request.get("authorization_url") or "").strip()
+            if isinstance(request, dict)
+            else ""
+        )
+
         clicked = original_button(label, *args, **kwargs)
-        if not clicked:
-            return False
+        if clicked:
+            if not callable(connect_etrade):
+                st.warning("Connect E*TRADE before refreshing GEX.")
+            else:
+                try:
+                    started = bool(connect_etrade())
+                except Exception as exc:
+                    st.error(f"E*TRADE connection could not be started: {exc}")
+                    started = False
 
-        if not callable(connect_etrade):
-            st.warning("Connect E*TRADE before refreshing GEX.")
-            return False
+                if started:
+                    st.toast("E*TRADE AUTHORIZATION READY // OPEN THE LINK BELOW")
+                    st.rerun()
 
-        try:
-            started = bool(connect_etrade())
-        except Exception as exc:
-            st.error(f"E*TRADE connection could not be started: {exc}")
-            return False
-
-        if started:
-            st.toast("E*TRADE CONNECTION STARTED // COMPLETE AUTHORIZATION ABOVE")
-            st.rerun()
+        # Disconnected Refresh All is a two-step handoff:
+        # 1) the same button creates the normal E*TRADE OAuth request token;
+        # 2) the returned authorization URL is exposed immediately on rerun so
+        #    Raj can get the verification code. The top OAuth strip owns code
+        #    entry/verification and remains unchanged.
+        if pending_auth_url:
+            st.link_button(
+                "OPEN E*TRADE AUTHORIZATION ↗",
+                pending_auth_url,
+                width="stretch",
+            )
         return False
 
     _proven._base._overview_html = overview_with_iv_rank
