@@ -196,7 +196,23 @@ def _inject_iv_rank_column(markup: str, vault_key: str) -> str:
         tone = str(result.get("ivRankTone") or "orange")
         if tone not in {"green", "red", "orange"}:
             tone = "orange"
-        iv_cell = f'<td class="{tone}">{display}</td>'
+
+        tooltip_parts = ["SOURCE E*TRADE OptionGreeks.iv"]
+        try:
+            current_iv = float(result.get("ivRankCurrentIv"))
+        except (TypeError, ValueError):
+            current_iv = 0.0
+        if current_iv > 0:
+            tooltip_parts.append(f"30D ATM IV {current_iv * 100.0:.2f}%")
+        history_count = int(result.get("ivRankHistoryCount") or 0)
+        if history_count:
+            tooltip_parts.append(f"{history_count} DAILY OBS")
+        iv_expiry = str(result.get("ivExpiry") or "").strip()
+        if iv_expiry:
+            tooltip_parts.append(f"EXPIRY BRACKET {iv_expiry}")
+        tooltip_parts.append(str(result.get("ivMethod") or "365D IV RANGE").strip())
+        tooltip = html.escape(" // ".join(tooltip_parts), quote=True)
+        iv_cell = f'<td class="{tone}" title="{tooltip}">{display}</td>'
         marker = '<td class="gexv3-range-col">'
         if marker in inner:
             inner = inner.replace(marker, iv_cell + marker, 1)
