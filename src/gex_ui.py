@@ -816,9 +816,9 @@ def _build_gex(
     )
     if iv_hv_ratio is None:
         iv_hv_label, iv_hv_tone = "HV N/A", "orange"
-    elif iv_hv_ratio > 1.005:
+    elif iv_hv_ratio > 1.0:
         iv_hv_label, iv_hv_tone = "RICH", "red"
-    elif iv_hv_ratio < 0.995:
+    elif iv_hv_ratio < 1.0:
         iv_hv_label, iv_hv_tone = "CHEAP", "green"
     else:
         iv_hv_label, iv_hv_tone = "FAIR", "orange"
