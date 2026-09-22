@@ -7,7 +7,7 @@ module owns the production interaction layer for Part 2:
 - no manual PULL E*TRADE QUOTE button
 - ASK seeds Entry and a 5%-below-ASK Stop once per selected symbol
 - exactly one live stop-distance badge
-- compact radio controls and content-height number cards
+- compact dropdown controls, clear +/- steppers, and content-height number cards
 
 Part 1 portfolio/risk calculations are intentionally unchanged.
 """
@@ -193,13 +193,49 @@ def _render_css() -> None:
         [data-testid="stRadio"] label:has(input:checked){background:#fb8b1e!important;border-color:#fb8b1e!important;}
         [data-testid="stRadio"] label:has(input:checked) p{color:#000!important;}
 
-        .risk-v9-stop-row{display:flex;justify-content:flex-end;align-items:center;margin:-.14rem 0 .01rem;font-family:"Courier New",monospace;}
-        .risk-v9-stop-pct{border:1px solid #5d3605;background:#050505;padding:.07rem .28rem;font-size:.59rem;font-weight:900;line-height:1;}
+        .risk-v9-stop-row{display:flex;justify-content:flex-end;align-items:center;margin:-.10rem 0 .02rem;font-family:"Courier New",monospace;}
+        .risk-v9-stop-pct{border:1px solid #5d3605;background:#050505;padding:.08rem .30rem;font-size:.60rem;font-weight:900;line-height:1;}
         [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct) ~ [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct){display:none!important;}
-        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button>*{display:none!important;}
-        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button{position:relative!important;min-width:28px!important;flex:0 0 28px!important;background:#050505!important;border-color:#fb8b1e!important;}
-        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:first-of-type::after{content:"▼";color:#fb8b1e!important;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.64rem;}
-        div[data-testid="stNumberInput"]:has(input[aria-label="Stop Loss"]) button:last-of-type::after{content:"▲";color:#4af6c3!important;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.64rem;}
+
+        /* PART 2 ONLY: compact professional workspace; never leak into Part 1. */
+        .st-key-risk_part2_panel [data-testid="stVerticalBlock"]{gap:.30rem!important;}
+        .st-key-risk_part2_panel [data-testid="stHorizontalBlock"]{gap:.38rem!important;}
+        .st-key-risk_part2_panel .rs9-card{padding:.28rem .42rem .30rem!important;}
+        .st-key-risk_part2_panel .rs9-label{font-size:.65rem!important;}
+        .st-key-risk_part2_panel .rs9-value{font-size:1.08rem!important;}
+        .st-key-risk_part2_panel [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:34px!important;height:34px!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] input{font-family:"Courier New",monospace!important;font-weight:900!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button>*{display:none!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button{
+            position:relative!important;
+            min-width:36px!important;
+            width:36px!important;
+            flex:0 0 36px!important;
+            padding:0!important;
+            background:#050505!important;
+            border-color:#fb8b1e!important;
+            border-radius:0!important;
+            box-shadow:none!important;
+        }
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:first-of-type::after,
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:last-of-type::after{
+            position:absolute;
+            inset:0;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            color:#fb8b1e!important;
+            font-family:"Courier New",monospace!important;
+            font-size:1.02rem;
+            font-weight:900;
+            line-height:1;
+        }
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:first-of-type::after{content:"−";}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:last-of-type::after{content:"+";}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:hover,
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:focus-visible{background:#fb8b1e!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:hover::after,
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:focus-visible::after{color:#000!important;}
         </style>
         """,
         unsafe_allow_html=True,
@@ -213,27 +249,10 @@ def _tooltip_css_after_v2(base_css):
     return wrapped
 
 
-def _compact_selectbox(original_selectbox, original_radio):
+def _compact_selectbox(original_selectbox, _original_radio):
+    """Keep Part 2 structure and size controls compact as native dropdowns."""
     def wrapped(label, options, *args, **kwargs):
-        key = kwargs.get("key")
-        if key not in {"risk_trade_structure", "risk_size_multiplier"}:
-            return original_selectbox(label, options, *args, **kwargs)
-
-        choices = list(options)
-        default_index = min(max(int(kwargs.get("index", 0) or 0), 0), max(len(choices) - 1, 0))
-        current = st.session_state.get(key, choices[default_index] if choices else None)
-        selected_index = choices.index(current) if current in choices else default_index
-        value = original_radio(
-            label,
-            choices,
-            index=selected_index,
-            format_func=kwargs.get("format_func", str),
-            key=f"_{key}_choice_v9",
-            horizontal=True,
-            help=kwargs.get("help"),
-        )
-        st.session_state[key] = value
-        return value
+        return original_selectbox(label, options, *args, **kwargs)
     return wrapped
 
 
