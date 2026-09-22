@@ -37,7 +37,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
-| GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` only when legacy calculation helpers are intentionally reused | `streamlit_app.py` for ordinary GEX layout changes |
+| GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` for GEX formulas/IV calculations; `src/gex_realized_vol.py` for GEX-only historical-volatility data/math | `streamlit_app.py` for ordinary GEX layout changes |
 | Option Book options ticket | `src/option_book_ui.py` | `src/option_book.py`, `src/etrade_client.py` preview transport, `src/ticker_autocomplete.py` | Risk/GEX/Holdings/OAuth UI/legacy Orders simulator |
 | E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
@@ -71,7 +71,9 @@ Production path:
 `streamlit_app.py` → `src/gex_workspace_v2.py` → `src/gex_ui_v3.py`
 
 - Change **subtabs, tables, multi-ticker layout, settings, notes, TradingView presentation** → `src/gex_ui_v3.py`.
-- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback / non-sensitive login marker** → `src/gex_workspace_v2.py`.
+- Change **GEX IV Rank / IV-HV formulas and E*TRADE option-IV aggregation** → `src/gex_ui.py`.
+- Change **GEX-only adjusted-close retrieval or 30-day historical-volatility math** → `src/gex_realized_vol.py`.
+- Change **how GEX obtains the live E*TRADE client / vault key / session touch callback / non-sensitive login marker, or loads the optional GEX historical-data token** → `src/gex_workspace_v2.py`.
 - GEX auto-refresh-on-login is still GEX-owned. When a non-GEX top-level tab is active, `streamlit_app.py` may dispatch the zero-height `gex_workspace_v2.maybe_auto_refresh_on_login()` hook after authenticated E*TRADE context exists; the hook must not modify OAuth/login behavior or other tab content.
 - Do not patch global Streamlit functions from GEX.
 

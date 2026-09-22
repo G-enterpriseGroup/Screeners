@@ -149,23 +149,93 @@ _proven._run_background_refresh = _run_background_refresh_with_master_export
 
 
 # ==============================
-# IV RANK OVERVIEW OVERLAY
+# IV RANK / IV-HV OVERVIEW OVERLAY
 # ==============================
+_IV_REFERENCE_HELP_HTML = """
+<span class="gexv3-iv-help" tabindex="0" aria-label="How IV Rank and IV/HV are calculated">?
+  <span class="gexv3-iv-help-tip">
+    <b>IV RANK</b><br>
+    Where today's 30-day implied volatility sits inside its own 52-week range.<br>
+    <b>Formula:</b> (Current IV − 52W Low IV) ÷ (52W High IV − 52W Low IV) × 100.<br>
+    <b>Current IV:</b> standardized 30-day IV from E*TRADE OptionGreeks.iv.
+    For each expiry around 30 DTE, the 4 strikes nearest spot are weighted by
+    E*TRADE Vega on calls and puts; those expiry IVs are interpolated by √DTE
+    to 30 days, then call/put are averaged.<br>
+    <b>52W Low / High IV:</b> lowest / highest standardized 30-day IV saved during
+    the trailing 365 days.<br>
+    <b>P:</b> provisional IV Rank while the terminal is still building roughly one year
+    of standardized E*TRADE IV history.<br><br>
+    <b>IV/HV REFERENCE</b><br>
+    Compares forward-looking option IV with the stock's latest 30-day historical movement.<br>
+    <b>Formula:</b> IV/HV % = Current 30D IV ÷ 30D HV × 100.<br>
+    <b>HV30:</b> 30 daily log returns ln(Pt/Pt−1), sample standard deviation using n−1,
+    annualized by × √252 from licensed Tiingo adjusted daily closes.<br>
+    <b>Pt:</b> adjusted close on day t. <b>n:</b> 30 daily returns.
+    <b>252:</b> trading days used for annualization.<br>
+    <b>RICH:</b> IV/HV &gt; 100%. <b>CHEAP:</b> IV/HV &lt; 100%.
+    <b>FAIR:</b> IV/HV = 100%. This is a relative volatility comparison, not proof
+    that an option is mispriced.<br>
+    <b>HV N/A:</b> an authorized historical-price token is not configured, history is
+    insufficient, or the historical-price request failed. No value is fabricated.
+  </span>
+</span>
+"""
+
+_IV_REFERENCE_CSS = """
+<style>
+.gexv3-summary th.gexv3-iv-head{position:relative;overflow:visible!important}
+.gexv3-iv-help{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:1.05rem;height:1.05rem;margin-left:.22rem;
+    border:1px solid #fb8b1e;border-radius:50%;
+    color:#fb8b1e!important;background:#020202;
+    font:900 .64rem/1 "Courier New",monospace;
+    cursor:help;position:relative;vertical-align:middle;outline:none;
+}
+.gexv3-iv-help-tip{
+    position:absolute;right:-.35rem;top:calc(100% + .48rem);
+    width:min(42rem,78vw);padding:.62rem .72rem;
+    border:1px solid #fb8b1e;background:#030303;
+    color:#eeeeee!important;-webkit-text-fill-color:#eeeeee!important;
+    box-shadow:0 8px 28px rgba(0,0,0,.78);
+    font:700 .68rem/1.38 "Courier New",monospace;
+    letter-spacing:0;text-align:left;white-space:normal;
+    opacity:0;visibility:hidden;pointer-events:none;
+    transform:translateY(-3px);transition:opacity .10s ease,transform .10s ease;
+    z-index:9999;
+}
+.gexv3-iv-help-tip b{color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important}
+.gexv3-iv-help:hover .gexv3-iv-help-tip,
+.gexv3-iv-help:focus-visible .gexv3-iv-help-tip{
+    opacity:1;visibility:visible;transform:translateY(0);
+}
+.gexv3-iv-help:focus-visible{box-shadow:0 0 0 2px rgba(74,246,195,.34)}
+.gexv3-iv-cell-main{font-weight:900;line-height:1.05}
+.gexv3-iv-cell-sub{font-size:.61rem;line-height:1.05;margin-top:.12rem;white-space:nowrap}
+</style>
+"""
+
+
 def _inject_iv_rank_column(markup: str, vault_key: str) -> str:
-    """Add one compact ``IV RANK / REF`` cell without touching Pine/A6 output."""
-    if 'class="gexv3-summary"' not in markup or "<th>IV RANK / REF</th>" in markup:
+    """Add compact IV Rank + IV/HV reference without touching Pine/A6 output."""
+    if 'class="gexv3-summary"' not in markup or "gexv3-iv-help" in markup:
         return markup
 
+    header = (
+        '<th class="gexv3-iv-head">IV RANK / REF '
+        + _IV_REFERENCE_HELP_HTML
+        + "</th>"
+    )
     markup = markup.replace(
         "<th>CALL WALL</th><th>RANGE</th>",
-        "<th>CALL WALL</th><th>IV RANK / REF</th><th>RANGE</th>",
+        "<th>CALL WALL</th>" + header + "<th>RANGE</th>",
         1,
     )
     new_colgroup = (
         "<colgroup>"
         '<col style="width:11%"><col style="width:5%"><col style="width:9%">'
         '<col style="width:9%"><col style="width:9%"><col style="width:9%">'
-        '<col style="width:13%"><col style="width:26%"><col style="width:9%">'
+        '<col style="width:16%"><col style="width:23%"><col style="width:9%">'
         "</colgroup>"
     )
     markup = re.sub(
@@ -193,32 +263,64 @@ def _inject_iv_rank_column(markup: str, vault_key: str) -> str:
             return "<tr>" + inner + "</tr>"
 
         display = html.escape(str(result.get("ivRankDisplay") or "N/A | Building"))
-        tone = str(result.get("ivRankTone") or "orange")
+        rank_tone = str(result.get("ivRankTone") or "orange")
+        if rank_tone not in {"green", "red", "orange"}:
+            rank_tone = "orange"
+
+        try:
+            iv_hv_percent = float(result.get("ivHvPercent"))
+        except (TypeError, ValueError):
+            iv_hv_percent = 0.0
+        iv_hv_label = str(result.get("ivHvLabel") or "HV N/A").strip().upper()
+        tone = str(result.get("ivHvTone") or rank_tone)
         if tone not in {"green", "red", "orange"}:
             tone = "orange"
 
-        tooltip_parts = ["SOURCE E*TRADE OptionGreeks.iv"]
+        if iv_hv_percent > 0:
+            ref_display = f"IV/HV {iv_hv_percent:.1f}% | {iv_hv_label}"
+        else:
+            ref_display = "IV/HV N/A"
+
+        tooltip_parts = ["IV SOURCE E*TRADE OptionGreeks.iv + Vega"]
         try:
             current_iv = float(result.get("ivRankCurrentIv"))
         except (TypeError, ValueError):
             current_iv = 0.0
+        try:
+            historical_vol = float(result.get("historicalVolatility30"))
+        except (TypeError, ValueError):
+            historical_vol = 0.0
         if current_iv > 0:
-            tooltip_parts.append(f"30D ATM IV {current_iv * 100.0:.2f}%")
+            tooltip_parts.append(f"30D IV {current_iv * 100.0:.2f}%")
+        if historical_vol > 0:
+            tooltip_parts.append(f"30D HV {historical_vol * 100.0:.2f}%")
         history_count = int(result.get("ivRankHistoryCount") or 0)
         if history_count:
-            tooltip_parts.append(f"{history_count} DAILY OBS")
+            tooltip_parts.append(f"IVR HISTORY {history_count} DAYS")
+        hv_as_of = str(result.get("historicalVolatilityAsOf") or "").strip()
+        if hv_as_of:
+            tooltip_parts.append(f"HV CLOSES THROUGH {hv_as_of}")
+        hv_status = str(result.get("historicalVolatilityStatus") or "").strip()
+        if hv_status and historical_vol <= 0:
+            tooltip_parts.append(f"HV STATUS {hv_status}")
         iv_expiry = str(result.get("ivExpiry") or "").strip()
         if iv_expiry:
-            tooltip_parts.append(f"EXPIRY BRACKET {iv_expiry}")
-        tooltip_parts.append(str(result.get("ivMethod") or "365D IV RANGE").strip())
+            tooltip_parts.append(f"IV EXPIRY BRACKET {iv_expiry}")
+        tooltip_parts.append(str(result.get("ivMethod") or "E*TRADE IV").strip())
         tooltip = html.escape(" // ".join(tooltip_parts), quote=True)
-        iv_cell = f'<td class="{tone}" title="{tooltip}">{display}</td>'
+        iv_cell = (
+            f'<td class="{tone}" title="{tooltip}">'
+            f'<div class="gexv3-iv-cell-main">{display}</div>'
+            f'<div class="gexv3-iv-cell-sub">{html.escape(ref_display)}</div>'
+            "</td>"
+        )
         marker = '<td class="gexv3-range-col">'
         if marker in inner:
             inner = inner.replace(marker, iv_cell + marker, 1)
         return "<tr>" + inner + "</tr>"
 
-    return re.sub(r"<tr>(.*?)</tr>", add_cell, markup, flags=re.DOTALL)
+    markup = re.sub(r"<tr>(.*?)</tr>", add_cell, markup, flags=re.DOTALL)
+    return _IV_REFERENCE_CSS + markup
 
 
 # ==============================
