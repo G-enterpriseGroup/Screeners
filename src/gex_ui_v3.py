@@ -707,32 +707,35 @@ def render_gex(
             else ""
         )
 
-        clicked = original_button(label, *args, **kwargs)
-        if clicked:
-            if not callable(connect_etrade):
-                st.warning("Connect E*TRADE before refreshing GEX.")
-            else:
-                try:
-                    started = bool(connect_etrade())
-                except Exception as exc:
-                    st.error(f"E*TRADE connection could not be started: {exc}")
-                    started = False
-
-                if started:
-                    st.toast("E*TRADE AUTHORIZATION READY // OPEN THE LINK BELOW")
-                    st.rerun()
-
-        # Disconnected Refresh All is a two-step handoff:
-        # 1) the same button creates the normal E*TRADE OAuth request token;
-        # 2) the returned authorization URL is exposed immediately on rerun so
-        #    Raj can get the verification code. The top OAuth strip owns code
-        #    entry/verification and remains unchanged.
+        # Keep exactly one action in the Refresh All slot. Once the OAuth
+        # request exists, replace the disconnected Refresh All button with the
+        # returned E*TRADE authorization link. After verification succeeds and
+        # a live client exists, the normal Refresh All button returns unchanged.
         if pending_auth_url:
             st.link_button(
                 "OPEN E*TRADE AUTHORIZATION ↗",
                 pending_auth_url,
                 width="stretch",
             )
+            return False
+
+        clicked = original_button(label, *args, **kwargs)
+        if not clicked:
+            return False
+
+        if not callable(connect_etrade):
+            st.warning("Connect E*TRADE before refreshing GEX.")
+            return False
+
+        try:
+            started = bool(connect_etrade())
+        except Exception as exc:
+            st.error(f"E*TRADE connection could not be started: {exc}")
+            return False
+
+        if started:
+            st.toast("E*TRADE AUTHORIZATION READY // OPEN THE AUTHORIZATION LINK")
+            st.rerun()
         return False
 
     _proven._base._overview_html = overview_with_iv_rank
