@@ -42,10 +42,117 @@ from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_se
 
 _OPTION_BOOK_CSS = """
 <style>
-.ob-card{border:1px solid #394554;background:#050505;padding:.42rem .52rem;margin:.05rem 0 .35rem;font-family:"Courier New",monospace}
-.ob-name{font-size:.78rem;font-weight:900;color:#b9c0ca!important}.ob-quote{font-size:.78rem;font-weight:900;color:#eee!important;margin-top:.18rem}.ob-quote b{color:#4af6c3!important;margin-right:1rem}
-.ob-note{border-left:3px solid #fb8b1e;background:#101216;padding:.3rem .48rem;margin:.08rem 0 .38rem;font:.70rem/1.25 "Courier New",monospace;color:#c8ced8!important}.ob-note strong{color:#fb8b1e!important}
-.ob-price{border-top:1px solid #a970ff;padding-top:.24rem;margin:.28rem 0 .08rem;font:.75rem "Courier New",monospace;font-weight:900}.ob-price b{color:#a970ff!important}
+.ob-card{
+    border:1px solid #394554;
+    background:#050505;
+    padding:.42rem .52rem;
+    margin:.05rem 0 .34rem;
+    font-family:"Courier New",monospace;
+}
+.ob-name{
+    font-size:.76rem;
+    line-height:1.15;
+    font-weight:900;
+    color:#b9c0ca!important;
+    overflow-wrap:anywhere;
+}
+.ob-quote{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.18rem 1rem;
+    margin-top:.16rem;
+    font-size:.74rem;
+    line-height:1.15;
+    font-weight:900;
+    color:#eee!important;
+}
+.ob-quote b{color:#4af6c3!important;margin-left:.18rem}
+.ob-note{
+    border-left:3px solid #fb8b1e;
+    background:#101216;
+    padding:.28rem .46rem;
+    margin:.06rem 0 .34rem;
+    font:.68rem/1.22 "Courier New",monospace;
+    color:#c8ced8!important;
+}
+.ob-note strong{color:#fb8b1e!important}
+.ob-leg-quote{
+    border:1px solid #394554;
+    background:#08090b;
+    min-height:58px;
+    padding:.34rem .42rem;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    overflow:hidden;
+    font-family:"Courier New",monospace;
+}
+.ob-leg-quote-label{
+    color:#fb8b1e!important;
+    font-size:.62rem;
+    line-height:1;
+    font-weight:900;
+    text-transform:uppercase;
+    margin-bottom:.2rem;
+}
+.ob-leg-quote-value{
+    color:#4af6c3!important;
+    font-size:1rem;
+    line-height:1.05;
+    font-weight:900;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.ob-price{
+    border-top:1px solid #a970ff;
+    padding-top:.24rem;
+    margin:.28rem 0 .08rem;
+    font:.73rem/1.22 "Courier New",monospace;
+    font-weight:900;
+    overflow-wrap:anywhere;
+}
+.ob-price b{color:#a970ff!important}
+.ob-ticket-summary{
+    border-left:2px solid #fb8b1e;
+    padding:.22rem .42rem;
+    margin:.16rem 0 .3rem;
+    font:.72rem/1.25 "Courier New",monospace;
+    color:#c07a1e!important;
+    overflow-wrap:anywhere;
+}
+.ob-action-note{
+    padding-top:.35rem;
+    font:.64rem/1.2 "Courier New",monospace;
+    color:#8f99a8!important;
+}
+.ob-preview-stats{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:.35rem;
+    margin:.28rem 0;
+}
+.ob-preview-stat{
+    border:1px solid #394554;
+    background:#08090b;
+    padding:.34rem .46rem;
+    min-width:0;
+}
+.ob-preview-stat-label{
+    color:#fb8b1e!important;
+    font:.62rem/1 "Courier New",monospace;
+    font-weight:900;
+    text-transform:uppercase;
+}
+.ob-preview-stat-value{
+    color:#4af6c3!important;
+    font:.96rem/1.1 "Courier New",monospace;
+    font-weight:900;
+    margin-top:.18rem;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
 </style>
 """
 
@@ -74,10 +181,39 @@ def _money(value: Any) -> str:
         return "—"
 
 
+_DEFAULT_ACCOUNT_SUFFIX = "5474"
+
+
 def _account_label(account: dict[str, Any]) -> str:
     name = str(account.get("accountDesc") or account.get("accountName") or "E*TRADE")
     ident = str(account.get("accountId") or account.get("accountIdKey") or "")
     return f"{name} // x{ident[-4:]}" if ident else name
+
+
+def _account_matches_default(account: dict[str, Any]) -> bool:
+    """Prefer Raj's x5474 account without overriding later manual selections."""
+    for key in ("accountId", "accountDesc", "accountName", "accountIdKey"):
+        raw = str(account.get(key) or "")
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if digits.endswith(_DEFAULT_ACCOUNT_SUFFIX):
+            return True
+    return False
+
+
+def _default_account_index(accounts: list[dict[str, Any]]) -> int:
+    return next(
+        (index for index, account in enumerate(accounts) if _account_matches_default(account)),
+        0,
+    )
+
+
+def _leg_quote_markup(label: str, value: Any) -> str:
+    return (
+        '<div class="ob-leg-quote">'
+        '<div class="ob-leg-quote-label">' + html.escape(str(label)) + "</div>"
+        '<div class="ob-leg-quote-value">' + html.escape(_money(value)) + "</div>"
+        "</div>"
+    )
 
 
 def _date_label(expiry: date) -> str:
@@ -211,7 +347,17 @@ def render_option_book(client, touch_session) -> None:
         st.error(f"E*TRADE accounts unavailable: {exc}")
     with c2:
         labels = [_account_label(a) for a in accounts] or ["No account loaded"]
-        selected_account = st.selectbox("Account", labels, disabled=not accounts, key="ob_account")
+        default_account_index = _default_account_index(accounts) if accounts else 0
+        if accounts and st.session_state.get("ob_account") not in labels:
+            st.session_state["ob_account"] = labels[default_account_index]
+        selected_account = st.selectbox(
+            "Account",
+            labels,
+            index=default_account_index,
+            disabled=not accounts,
+            key="ob_account",
+            help="Defaults to the E*TRADE account ending in 5474 when available.",
+        )
         account = accounts[labels.index(selected_account)] if accounts else {}
         account_key = str(account.get("accountIdKey") or "")
     with c3:
@@ -238,10 +384,16 @@ def render_option_book(client, touch_session) -> None:
         except Exception:
             pass
     st.markdown(
-        '<div class="ob-card"><div class="ob-name">' + html.escape(f"{symbol} — {name or 'COMPANY NAME UNAVAILABLE'}") + '</div>'
-        '<div class="ob-quote">LAST <b>' + html.escape(_money(quote.get("last"))) + '</b>BID <b>' + html.escape(_money(quote.get("bid"))) +
-        '</b>ASK <b>' + html.escape(_money(quote.get("ask"))) + '</b>ACCOUNT <b>' + html.escape(_money(account_value)) +
-        '</b>BUYING POWER <b>' + html.escape(_money(buying_power)) + '</b></div></div>', unsafe_allow_html=True,
+        '<div class="ob-card"><div class="ob-name">'
+        + html.escape(f"{symbol} — {name or 'COMPANY NAME UNAVAILABLE'}")
+        + '</div><div class="ob-quote">'
+        + '<span>LAST <b>' + html.escape(_money(quote.get("last"))) + "</b></span>"
+        + '<span>BID <b>' + html.escape(_money(quote.get("bid"))) + "</b></span>"
+        + '<span>ASK <b>' + html.escape(_money(quote.get("ask"))) + "</b></span>"
+        + '<span>ACCOUNT <b>' + html.escape(_money(account_value)) + "</b></span>"
+        + '<span>BUYING POWER <b>' + html.escape(_money(buying_power)) + "</b></span>"
+        + "</div></div>",
+        unsafe_allow_html=True,
     )
 
     try:
@@ -257,8 +409,13 @@ def render_option_book(client, touch_session) -> None:
     # OPTION LEGS
     # ==============================
     add_col, hint_col = st.columns([1.15, 4.85], gap="small")
-    add_col.button("+ ADD OPTION LEG", on_click=_add_leg, key="ob_add", width="stretch",
-                   disabled=int(st.session_state.get("ob_leg_count", 1) or 1) >= 4)
+    add_col.button(
+        "+ ADD OPTION LEG",
+        on_click=_add_leg,
+        key="ob_add",
+        width="content",
+        disabled=int(st.session_state.get("ob_leg_count", 1) or 1) >= 4,
+    )
     hint_col.caption("1–4 legs // expiration and strike selections come from the E*TRADE option chain")
     count = int(st.session_state.get("ob_leg_count", 1) or 1)
     chains: dict[date, list[dict[str, Any]]] = {}
@@ -270,7 +427,7 @@ def render_option_book(client, touch_session) -> None:
             st.session_state[exp_key] = _default_expiry(expirations)
         if st.session_state.get(type_key) not in {"CALL", "PUT"}:
             st.session_state[type_key] = "CALL"
-        row = st.columns([1.35, .56, 1.18, .82, .68, .66, .66, .26], gap="small")
+        row = st.columns([1.42, .56, 1.18, .84, .7, .72, .72, .4], gap="small")
         action = row[0].selectbox("Action" if i == 0 else "Action ", list(_ACTIONS), key=f"ob_{i}_action", format_func=_ACTIONS.get)
         qty = int(row[1].number_input("Qty" if i == 0 else "Qty ", 1, 5000, 1, key=f"ob_{i}_qty"))
         expiry = row[2].selectbox("Expiration" if i == 0 else "Expiration ", expirations, key=exp_key, format_func=_date_label)
@@ -290,9 +447,17 @@ def render_option_book(client, touch_session) -> None:
             st.session_state[strike_key] = _closest(strikes, spot or strikes[len(strikes)//2], offset)
         strike = float(row[3].selectbox("Strike" if i == 0 else "Strike ", strikes, key=strike_key, format_func=lambda x: f"{x:,.2f}"))
         market = contract_quote(chains[expiry], call_put, strike) or {}
-        row[5].metric("Bid", _money(market.get("bid")))
-        row[6].metric("Ask", _money(market.get("ask")))
-        row[7].button("×", key=f"ob_remove_{i}", on_click=_remove_leg, args=(i,), disabled=count <= 1, width="stretch")
+        row[5].markdown(_leg_quote_markup("Bid", market.get("bid")), unsafe_allow_html=True)
+        row[6].markdown(_leg_quote_markup("Ask", market.get("ask")), unsafe_allow_html=True)
+        row[7].button(
+            "REMOVE",
+            key=f"ob_remove_{i}",
+            on_click=_remove_leg,
+            args=(i,),
+            disabled=count <= 1,
+            width="content",
+            help="Remove this option leg.",
+        )
         legs.append({"action": action, "quantity": qty, "expiry": expiry, "call_put": call_put,
                      "strike": strike, "bid": market.get("bid"), "ask": market.get("ask")})
     if len(legs) != count:
@@ -333,12 +498,26 @@ def render_option_book(client, touch_session) -> None:
     description = " | ".join(
         f"{_ACTIONS[x['action']]} {x['quantity']} {_date_label(x['expiry'])} {x['strike']:g} {x['call_put'].title()}" for x in legs
     )
-    st.caption("TICKET // " + description)
-    b1, b2, b3 = st.columns([1.1, 1.25, 3.65], gap="small")
-    local_click = b1.button("SAVE LOCAL DRAFT", key="ob_save", width="stretch")
-    preview_click = b2.button("SAVE DRAFT + PREVIEW", key="ob_preview", type="primary", width="stretch",
-                              disabled=offline or not account_key, help="Broker-validates with E*TRADE Preview; never places the order.")
-    b3.caption("BROKER PREVIEW ONLY // no live-order submission path is implemented")
+    st.markdown(
+        '<div class="ob-ticket-summary">TICKET // '
+        + html.escape(description)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    b1, b2, b3 = st.columns([1.0, 1.15, 3.85], gap="small")
+    local_click = b1.button("SAVE DRAFT", key="ob_save", width="content")
+    preview_click = b2.button(
+        "PREVIEW IN E*TRADE",
+        key="ob_preview",
+        type="primary",
+        width="content",
+        disabled=offline or not account_key,
+        help="Broker-validates with E*TRADE Preview; never places the order.",
+    )
+    b3.markdown(
+        '<div class="ob-action-note">BROKER PREVIEW ONLY // no live-order submission path is implemented</div>',
+        unsafe_allow_html=True,
+    )
     ticket = {
         "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"), "symbol": symbol,
         "strategy": strategy, "description": description, "price_type": price_type,
@@ -361,9 +540,18 @@ def render_option_book(client, touch_session) -> None:
                            "estimated_commission": details.get("estimated_commission")})
             _save(dict(ticket))
             st.success(f"E*TRADE PREVIEW ACCEPTED // Preview ID {details.get('preview_id') or 'N/A'} // NOT PLACED")
-            m1, m2 = st.columns(2)
-            m1.metric("Estimated Order Value", _money(details.get("total_order_value")))
-            m2.metric("Estimated Commission", _money(details.get("estimated_commission")))
+            st.markdown(
+                '<div class="ob-preview-stats">'
+                '<div class="ob-preview-stat"><div class="ob-preview-stat-label">Estimated Order Value</div>'
+                '<div class="ob-preview-stat-value">'
+                + html.escape(_money(details.get("total_order_value")))
+                + '</div></div>'
+                '<div class="ob-preview-stat"><div class="ob-preview-stat-label">Estimated Commission</div>'
+                '<div class="ob-preview-stat-value">'
+                + html.escape(_money(details.get("estimated_commission")))
+                + "</div></div></div>",
+                unsafe_allow_html=True,
+            )
             for message in details.get("messages") or []:
                 st.warning(str(message))
         except (ETradeError, ValueError) as exc:
