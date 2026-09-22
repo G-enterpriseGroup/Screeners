@@ -40,6 +40,9 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "gex_ui_v3.py",
     SRC / "gex_ui_v3_base.py",
     SRC / "etrade_connection_ui_v2.py",
+    SRC / "etrade_client.py",
+    SRC / "option_book.py",
+    SRC / "option_book_ui.py",
     SRC / "holdings_snapshot_mode.py",
     SRC / "tab_bar_v4.py",
     SRC / "bull_debit_ui.py",
@@ -50,6 +53,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.etrade_connection_ui_v2 import render_compact_etrade_connection",
     "from src.gex_workspace_v2 import render_gex as render_gex_workspace",
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
+    "from src.option_book_ui import render_option_book",
     "from src.risk_sizing_ui_v7 import render_risk_sizing",
     "from src.schwab_risk_sizing_ui import render_schwab_risk_sizing",
     "from src.tab_bar_v4 import render_terminal_tab_bar",
@@ -201,6 +205,8 @@ def main() -> int:
                 errors.append(f"APP ROUTE MISSING: {required}")
         if 'elif active_tab == "SCHWAB RISK SIZING":' not in app_text:
             errors.append("APP ROUTE MISSING: SCHWAB RISK SIZING dispatch")
+        if 'elif active_tab == "OPTION BOOK":' not in app_text:
+            errors.append("APP ROUTE MISSING: OPTION BOOK dispatch")
 
     nav_path = SRC / "tab_bar_v4.py"
     if nav_path.exists():
@@ -209,6 +215,8 @@ def main() -> int:
             errors.append("NAV ROUTE MISSING: SCHWAB RISK SIZING tab")
         if '"RISK SIZING": "E*TRADE RISK SIZING"' not in nav_text:
             errors.append("NAV LABEL MISSING: E*TRADE RISK SIZING display label")
+        if '"OPTION BOOK"' not in nav_text:
+            errors.append("NAV ROUTE MISSING: OPTION BOOK tab")
 
     risk_route = SRC / "risk_sizing_ui_v7.py"
     if risk_route.exists():
@@ -219,6 +227,20 @@ def main() -> int:
                 "RISK ROUTE CHANGED: src/risk_sizing_ui_v7.py must route production "
                 "Risk Sizing to src/risk_sizing_ui_v10.py"
             )
+
+    option_book = SRC / "option_book.py"
+    option_book_ui = SRC / "option_book_ui.py"
+    etrade_client = SRC / "etrade_client.py"
+    if option_book.exists() and '"PlaceOrderRequest":' in option_book.read_text(encoding="utf-8"):
+        errors.append("OPTION BOOK SAFETY: helper must not construct a PlaceOrderRequest payload")
+    if option_book_ui.exists() and "place_order(" in option_book_ui.read_text(encoding="utf-8"):
+        errors.append("OPTION BOOK SAFETY: UI must not call live place_order")
+    if etrade_client.exists():
+        client_text = etrade_client.read_text(encoding="utf-8")
+        if "def preview_order(" not in client_text:
+            errors.append("OPTION BOOK ROUTE MISSING: ETradeClient.preview_order")
+        if "def place_order(" in client_text:
+            errors.append("OPTION BOOK SAFETY: ETradeClient must not expose place_order")
 
     architecture = SRC / "ARCHITECTURE.md"
     manifest = SRC / "production_manifest.py"
