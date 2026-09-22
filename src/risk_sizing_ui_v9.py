@@ -162,8 +162,45 @@ def _render_css() -> None:
     st.markdown(
         """
         <style>
-        .risk-v9-section{display:flex;align-items:center;width:100%;box-sizing:border-box;margin:.14rem 0 .16rem;padding:.25rem .48rem;border:1px solid #fb8b1e;background:#050505;color:#fb8b1e!important;font-family:"Courier New",monospace;font-weight:900;line-height:1;}
-        .risk-v9-section::before{content:"−";margin-right:.40rem;color:#fb8b1e!important;font-size:.92rem;font-weight:900;}
+        /* Internal Risk headers use the exact orange/black table-header language. */
+        .risk-v9-section{
+            display:flex;
+            align-items:center;
+            width:100%;
+            height:30px;
+            min-height:30px;
+            box-sizing:border-box;
+            margin:0 0 5px 0;
+            padding:0 10px;
+            border:1px solid #fb8b1e;
+            background:#fb8b1e;
+            color:#000!important;
+            -webkit-text-fill-color:#000!important;
+            font-family:"Courier New",monospace;
+            font-size:.78rem;
+            font-weight:900;
+            line-height:1;
+            text-transform:uppercase;
+        }
+        .risk-v9-section::before{content:none!important;display:none!important;}
+        .risk-v9-book-note{
+            display:flex;
+            align-items:center;
+            height:22px;
+            min-height:22px;
+            box-sizing:border-box;
+            margin:0 0 5px 0;
+            padding:0;
+            color:#fb8b1e!important;
+            -webkit-text-fill-color:#fb8b1e!important;
+            font-family:"Courier New",monospace;
+            font-size:.61rem;
+            font-weight:800;
+            line-height:1;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
 
         .rs9-card{position:relative;background:#000;border:1px solid #fb8b1e;padding:.24rem .38rem .27rem;min-height:0!important;height:auto!important;font-family:"Courier New",monospace;overflow:visible!important;}
         .rs9-head{display:flex;align-items:center;justify-content:space-between;gap:.28rem;}
@@ -197,45 +234,89 @@ def _render_css() -> None:
         .risk-v9-stop-pct{border:1px solid #5d3605;background:#050505;padding:.08rem .30rem;font-size:.60rem;font-weight:900;line-height:1;}
         [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct) ~ [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct){display:none!important;}
 
-        /* PART 2 ONLY: compact professional workspace; never leak into Part 1. */
-        .st-key-risk_part2_panel [data-testid="stVerticalBlock"]{gap:.30rem!important;}
-        .st-key-risk_part2_panel [data-testid="stHorizontalBlock"]{gap:.38rem!important;}
-        .st-key-risk_part2_panel .rs9-card{padding:.28rem .42rem .30rem!important;}
-        .st-key-risk_part2_panel .rs9-label{font-size:.65rem!important;}
-        .st-key-risk_part2_panel .rs9-value{font-size:1.08rem!important;}
-        .st-key-risk_part2_panel [data-testid="stSelectbox"] div[data-baseweb="select"]>div{min-height:34px!important;height:34px!important;}
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] input{font-family:"Courier New",monospace!important;font-weight:900!important;}
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button>*{display:none!important;}
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button{
+        /* PART 2 ONLY: one grid, one baseline, no inherited offsets. */
+        .st-key-risk_part2_panel{margin:0!important;padding:0!important;}
+        .st-key-risk_part2_panel [data-testid="stVerticalBlock"]{gap:4px!important;}
+        .st-key-risk_part2_panel [data-testid="stHorizontalBlock"]{gap:8px!important;}
+        .st-key-risk_part2_panel [data-testid="stWidgetLabel"]{
+            min-height:20px!important;
+            margin:0 0 3px 0!important;
+            padding:0!important;
+            display:flex!important;
+            align-items:center!important;
+        }
+        .st-key-risk_part2_panel [data-testid="stWidgetLabel"] p{
+            margin:0!important;
+            padding:0!important;
+            line-height:1!important;
+        }
+        .st-key-risk_part2_panel .rs9-card{
+            height:52px!important;
+            min-height:52px!important;
+            box-sizing:border-box!important;
+            padding:6px 8px!important;
+        }
+        .st-key-risk_part2_panel .rs9-head{min-height:13px!important;}
+        .st-key-risk_part2_panel .rs9-label{font-size:.64rem!important;line-height:1!important;}
+        .st-key-risk_part2_panel .rs9-value{font-size:1.06rem!important;line-height:1!important;margin-top:4px!important;}
+        .st-key-risk_part2_panel [data-testid="stSelectbox"]{margin:0!important;}
+        .st-key-risk_part2_panel [data-testid="stSelectbox"] div[data-baseweb="select"]>div{
+            min-height:38px!important;
+            height:38px!important;
+        }
+        .st-key-risk_part2_panel [data-testid="stNumberInput"]{margin:0!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInput"] input{
+            height:38px!important;
+            min-height:38px!important;
+            padding-top:0!important;
+            padding-bottom:0!important;
+            font-family:"Courier New",monospace!important;
+            font-weight:900!important;
+        }
+
+        /* Target Streamlit's actual step buttons only. Never style label/help buttons. */
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"],
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]{
             position:relative!important;
-            min-width:36px!important;
-            width:36px!important;
-            flex:0 0 36px!important;
+            min-width:38px!important;
+            width:38px!important;
+            height:38px!important;
+            flex:0 0 38px!important;
             padding:0!important;
             background:#050505!important;
             border-color:#fb8b1e!important;
             border-radius:0!important;
             box-shadow:none!important;
         }
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:first-of-type::after,
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:last-of-type::after{
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]>*,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]>*{display:none!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]::after,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]::after{
             position:absolute;
             inset:0;
             display:flex;
             align-items:center;
             justify-content:center;
             color:#fb8b1e!important;
+            -webkit-text-fill-color:#fb8b1e!important;
             font-family:"Courier New",monospace!important;
-            font-size:1.02rem;
+            font-size:1.05rem;
             font-weight:900;
             line-height:1;
         }
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:first-of-type::after{content:"−";}
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:last-of-type::after{content:"+";}
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:hover,
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:focus-visible{background:#fb8b1e!important;}
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:hover::after,
-        .st-key-risk_part2_panel [data-testid="stNumberInput"] button:focus-visible::after{color:#000!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]::after{content:"−";}
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]::after{content:"+";}
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]:hover,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]:focus-visible,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]:hover,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]:focus-visible{background:#fb8b1e!important;}
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]:hover::after,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepDown"]:focus-visible::after,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]:hover::after,
+        .st-key-risk_part2_panel [data-testid="stNumberInputStepUp"]:focus-visible::after{
+            color:#000!important;
+            -webkit-text-fill-color:#000!important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
