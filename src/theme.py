@@ -197,6 +197,53 @@ select:not(:disabled) option {
 }
 
 /*
+   DATAFRAME COLUMN-MENU READABILITY
+   Streamlit renders dataframe column actions in its shared overlay portal.
+   The app-level textColor is intentionally black for black-on-orange dataframe
+   headers, so these dark overlay panels need an explicit light foreground.
+   Keep the selectors tied to Streamlit's dataframe-menu testids so unrelated
+   buttons/popovers are not recolored.
+*/
+[data-testid="stDataFrameColumnMenu"],
+[data-testid="stDataFrameStatisticsMenu"],
+[data-testid="stDataFrameColumnFormattingMenu"] {
+    background:#050505 !important;
+    color:#f2f2f2 !important;
+    border:1px solid __RAJ_DROPDOWN_ACCENT__ !important;
+}
+
+[data-testid="stDataFrameColumnMenu"] *,
+[data-testid="stDataFrameStatisticsMenu"] *,
+[data-testid="stDataFrameColumnFormattingMenu"] * {
+    color:#f2f2f2 !important;
+    -webkit-text-fill-color:#f2f2f2 !important;
+}
+
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"],
+[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"] {
+    background:transparent !important;
+}
+
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"]:hover,
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"]:focus,
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"][aria-expanded="true"],
+[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"]:hover,
+[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"]:focus {
+    background:#171007 !important;
+    color:#ffad52 !important;
+    -webkit-text-fill-color:#ffad52 !important;
+}
+
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"]:hover *,
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"]:focus *,
+[data-testid="stDataFrameColumnMenu"] [role="menuitem"][aria-expanded="true"] *,
+[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"]:hover *,
+[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"]:focus * {
+    color:#ffad52 !important;
+    -webkit-text-fill-color:#ffad52 !important;
+}
+
+/*
    STREAMLIT TOOLBAR / RUNNING CONTROL
    Global textColor is intentionally black elsewhere for dataframe headers, but
    the native top-right Stop/running control sits on a dark toolbar. Force all
