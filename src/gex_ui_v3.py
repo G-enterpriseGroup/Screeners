@@ -173,8 +173,10 @@ _IV_REFERENCE_HELP_HTML = """
     <b>Pt:</b> adjusted close on day t. <b>n:</b> 30 daily returns.
     <b>252:</b> trading days used for annualization.<br>
     <b>RICH:</b> IV/HV &gt; 100%. <b>CHEAP:</b> IV/HV &lt; 100%.
-    <b>FAIR:</b> approximately 100%. This is a relative volatility comparison, not proof
-    that an option is mispriced.
+    <b>FAIR:</b> IV/HV = 100%. This is a relative volatility comparison, not proof
+    that an option is mispriced.<br>
+    <b>HV N/A:</b> an authorized historical-price token is not configured, history is
+    insufficient, or the historical-price request failed. No value is fabricated.
   </span>
 </span>
 """
