@@ -275,7 +275,7 @@ def _inject_iv_rank_column(markup: str, vault_key: str) -> str:
             tone = "orange"
 
         if iv_hv_percent > 0:
-            ref_display = f"IV/HV {iv_hv_percent:.0f}% | {iv_hv_label}"
+            ref_display = f"IV/HV {iv_hv_percent:.1f}% | {iv_hv_label}"
         else:
             ref_display = "IV/HV N/A"
 
