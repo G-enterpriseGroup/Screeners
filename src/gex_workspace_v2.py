@@ -52,7 +52,7 @@ from src.gex_ui_v3 import (
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.22.12"
+GEX_BUILD_VERSION = "v2026.09.22.13"
 GEX_ENGINE_LABEL = "E*TRADE // 20 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
 
 
