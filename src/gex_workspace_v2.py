@@ -6,6 +6,7 @@ EDIT THIS FILE ONLY for:
 - obtaining the live E*TRADE client for GEX;
 - resolving the terminal vault/session context;
 - building a dedicated background E*TRADE client snapshot for GEX refresh-all;
+- starting the existing E*TRADE authorization flow when GEX Refresh All is clicked while disconnected;
 - deriving a non-sensitive per-login marker for GEX auto-refresh;
 - GEX-only background market-data caching/session plumbing;
 - GEX-only wrapper CSS emitted while the GEX tab renders;
@@ -51,7 +52,7 @@ from src.gex_ui_v3 import (
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.20.11"
+GEX_BUILD_VERSION = "v2026.09.22.12"
 GEX_ENGINE_LABEL = "E*TRADE // 20 CALC // 20 FETCH // 3.7 RPS // 50-SYMBOL BATCH QUOTES"
 
 
@@ -788,6 +789,50 @@ class _GEXBackgroundCachedClient:
 # E*TRADE / TERMINAL CONTEXT
 # ==============================
 
+def _gex_connect_callback(scope: dict[str, Any]) -> Callable[[], bool] | None:
+    """Reuse the terminal's existing E*TRADE authorization start behavior for GEX."""
+    credentials_factory = scope.get("_etrade_credentials")
+    authorization_starter = scope.get("begin_authorization")
+    if not callable(credentials_factory) or not callable(authorization_starter):
+        return None
+
+    def start_connection() -> bool:
+        try:
+            consumer_key, consumer_secret, environment = credentials_factory()
+        except Exception as exc:
+            st.error(str(exc))
+            return False
+
+        consumer_key = str(consumer_key or "").strip()
+        consumer_secret = str(consumer_secret or "").strip()
+        environment = str(environment or "live").strip() or "live"
+        if not consumer_key or not consumer_secret:
+            st.warning(
+                "Add E*TRADE consumer_key and consumer_secret in Streamlit App Settings → Secrets. "
+                "Credentials are intentionally excluded from GitHub."
+            )
+            return False
+
+        try:
+            request = authorization_starter(
+                consumer_key,
+                consumer_secret,
+                environment,
+            )
+        except Exception as exc:
+            st.error(str(exc))
+            return False
+
+        st.session_state["etrade_request"] = {
+            "oauth_token": request.oauth_token,
+            "oauth_token_secret": request.oauth_token_secret,
+            "authorization_url": request.authorization_url,
+        }
+        return True
+
+    return start_connection
+
+
 def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | None:
     """Capture a cache-aware thread-safe E*TRADE client factory.
 
@@ -872,6 +917,7 @@ def _discover_terminal_context() -> tuple[
     Any,
     Callable[[], Any] | None,
     str,
+    Callable[[], bool] | None,
 ]:
     """Resolve live GEX context, background-client factory, and login marker."""
     candidates: list[dict[str, Any]] = []
@@ -886,6 +932,7 @@ def _discover_terminal_context() -> tuple[
         factory = live_factory if callable(live_factory) else scope.get("_etrade_client")
         hash_fn = scope.get("_trade_access_code_hash")
         touch = scope.get("_touch_etrade_session")
+        connect_etrade = _gex_connect_callback(scope)
         if not callable(factory):
             continue
 
@@ -912,9 +959,10 @@ def _discover_terminal_context() -> tuple[
             touch,
             _background_client_factory(scope),
             login_marker,
+            connect_etrade,
         )
 
-    return None, "default", None, None, ""
+    return None, "default", None, None, "", None
 
 
 # ==============================
@@ -927,6 +975,7 @@ def _render_with_style_only_html(
     touch: Any,
     background_client_factory: Callable[[], Any] | None,
     login_marker: str,
+    connect_etrade: Callable[[], bool] | None,
 ) -> None:
     """Render GEX while routing style-only markdown and decorating run status.
 
@@ -962,6 +1011,7 @@ def _render_with_style_only_html(
             touch,
             background_client_factory=background_client_factory,
             login_marker=login_marker,
+            connect_etrade=connect_etrade,
         )
     finally:
         st.markdown = original_markdown
@@ -974,7 +1024,14 @@ def _render_with_style_only_html(
 
 def maybe_auto_refresh_on_login() -> bool:
     """Start saved GEX auto-refresh after authenticated login from non-GEX tabs."""
-    client, vault_key, touch, background_factory, login_marker = _discover_terminal_context()
+    (
+        client,
+        vault_key,
+        touch,
+        background_factory,
+        login_marker,
+        _connect_etrade,
+    ) = _discover_terminal_context()
     return _maybe_auto_refresh_on_login_v3(
         client,
         vault_key,
@@ -986,7 +1043,14 @@ def maybe_auto_refresh_on_login() -> bool:
 
 def render_gex() -> None:
     """Render GEX with non-blocking refresh-all support and compact styling."""
-    client, vault_key, touch, background_factory, login_marker = _discover_terminal_context()
+    (
+        client,
+        vault_key,
+        touch,
+        background_factory,
+        login_marker,
+        connect_etrade,
+    ) = _discover_terminal_context()
 
     # Style-only HTML is applied without creating a visible Streamlit row.
     st.html(_gex_subtab_skin_css())
@@ -997,6 +1061,7 @@ def render_gex() -> None:
         touch,
         background_factory,
         login_marker,
+        connect_etrade,
     )
 
 
