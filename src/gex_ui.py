@@ -45,9 +45,13 @@ GAMMA_FLIP_STEPS = 160
 IV_RANK_LOOKBACK_DAYS = 365
 IV_RANK_MIN_OBSERVATIONS = 10
 IV_RANK_FULL_SPAN_DAYS = 330
+IV_RANK_TARGET_DTE = 30
+IV_RANK_ATM_STRIKES = 12
+IV_RANK_HISTORY_METHOD = "ETRADE_30D_ATM_VAR_V1"
 
 DEFAULT_STATE = copy.deepcopy(_legacy.DEFAULT_STATE)
 DEFAULT_STATE["iv_history"] = {}
+DEFAULT_STATE["iv_history_method"] = IV_RANK_HISTORY_METHOD
 DEFAULT_STATE["auto_refresh_on_login"] = True
 
 
@@ -62,8 +66,13 @@ def _clean_state(raw: Any) -> dict[str, Any]:
     """Preserve legacy state plus production GEX-only settings and IV history."""
     state = _legacy._clean_state(raw)
     history_map: dict[str, list[dict[str, Any]]] = {}
+    raw_method = (
+        str(raw.get("iv_history_method") or "").strip()
+        if isinstance(raw, dict)
+        else ""
+    )
     raw_history = raw.get("iv_history") if isinstance(raw, dict) else None
-    if isinstance(raw_history, dict):
+    if raw_method == IV_RANK_HISTORY_METHOD and isinstance(raw_history, dict):
         for raw_ticker, rows in raw_history.items():
             ticker = _normalize_ticker(raw_ticker)
             if not ticker or not isinstance(rows, list):
@@ -87,6 +96,7 @@ def _clean_state(raw: Any) -> dict[str, Any]:
             if cleaned:
                 history_map[ticker] = cleaned
     state["iv_history"] = history_map
+    state["iv_history_method"] = IV_RANK_HISTORY_METHOD
 
     raw_auto_refresh = (
         raw.get("auto_refresh_on_login", True)
@@ -162,13 +172,13 @@ def _apply_iv_rank_history(
     state: dict[str, Any],
     result_map: dict[str, Any],
 ) -> dict[str, Any]:
-    """Attach rolling IV Rank + valuation text without any extra market calls.
+    """Attach rolling IV Rank + valuation text from E*TRADE IV observations.
 
-    Current IV is a consistent ATM observation already present in the fetched
-    E*TRADE option chains. One observation per ticker/day is kept for 365 days.
-    Until ten daily observations exist, the UI explicitly says BUILDING instead
-    of fabricating a historical rank. A trailing ``P`` marks ranks whose stored
-    history does not yet span roughly a full year.
+    Current IV is a constant-30-day ATM observation built from E*TRADE
+    OptionGreeks.iv. One observation per ticker/day is kept for 365 days.
+    Until ten daily observations exist, the column shows the current E*TRADE IV
+    plus history progress instead of fabricating a rank. A trailing ``P`` marks
+    ranks whose stored history does not yet span roughly a full year.
     """
     history_map = state.setdefault("iv_history", {})
     changed = False
@@ -219,10 +229,16 @@ def _apply_iv_rank_history(
         values = [float(row["iv"]) for row in compact]
         count = len(values)
         result["ivRankHistoryCount"] = count
+        result["ivRankCurrentIv"] = current_iv
+        result["ivRankLowIv"] = min(values)
+        result["ivRankHighIv"] = max(values)
         if count < IV_RANK_MIN_OBSERVATIONS:
             result["ivRank"] = None
-            result["ivRankDisplay"] = "N/A | Building"
+            result["ivRankDisplay"] = (
+                f"IV {current_iv * 100.0:.1f}% | {count}/{IV_RANK_MIN_OBSERVATIONS}"
+            )
             result["ivRankTone"] = "orange"
+            result["ivRankProvisional"] = True
             continue
 
         low_iv = min(values)
@@ -256,6 +272,86 @@ def _apply_iv_rank_history(
 # ==============================
 # OPTION PARSING / CURRENT IV
 # ==============================
+def _iv_rank_expirations(
+    expiration_payload: dict[str, Any],
+    today: date,
+) -> list[tuple[int, int, int, int, str]]:
+    """Return E*TRADE expiries that bracket a constant 30-day IV observation.
+
+    The documented E*TRADE API gives contract-level OptionGreeks.iv but not a
+    ready-made historical IV Rank. Using the nearest expiry below and above 30
+    calendar days lets us build a stable 30-day ATM IV series from E*TRADE data
+    without coupling IV Rank to the user's GEX max-DTE setting.
+    """
+    candidates: list[tuple[int, int, int, int, str]] = []
+    raw_dates = _legacy._as_list(_legacy._find_key(expiration_payload, "ExpirationDate"))
+    for item in raw_dates:
+        if not isinstance(item, dict):
+            continue
+        try:
+            year = int(item.get("year"))
+            month = int(item.get("month"))
+            day = int(item.get("day"))
+            expiry = date(year, month, day)
+        except (TypeError, ValueError):
+            continue
+        dte = (expiry - today).days
+        if dte <= 0:
+            continue
+        expiry_type = str(item.get("expiryType") or "").strip().upper()
+        candidates.append((year, month, day, dte, expiry_type))
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda row: (row[3], row[0], row[1], row[2]))
+    exact = [row for row in candidates if row[3] == IV_RANK_TARGET_DTE]
+    if exact:
+        return [exact[0]]
+
+    lower = [row for row in candidates if row[3] < IV_RANK_TARGET_DTE]
+    upper = [row for row in candidates if row[3] > IV_RANK_TARGET_DTE]
+    selected: list[tuple[int, int, int, int, str]] = []
+    if lower:
+        selected.append(max(lower, key=lambda row: row[3]))
+    if upper:
+        selected.append(min(upper, key=lambda row: row[3]))
+    return selected or [min(candidates, key=lambda row: abs(row[3] - IV_RANK_TARGET_DTE))]
+
+
+def _constant_30d_iv(observations: dict[int, float]) -> float | None:
+    """Interpolate E*TRADE ATM implied variance to a constant 30-day tenor."""
+    clean = {
+        int(dte): float(iv)
+        for dte, iv in observations.items()
+        if int(dte) > 0 and math.isfinite(float(iv)) and 0.0 < float(iv) < 5.0
+    }
+    if not clean:
+        return None
+    if IV_RANK_TARGET_DTE in clean:
+        return clean[IV_RANK_TARGET_DTE]
+
+    lower = [dte for dte in clean if dte < IV_RANK_TARGET_DTE]
+    upper = [dte for dte in clean if dte > IV_RANK_TARGET_DTE]
+    if lower and upper:
+        d1 = max(lower)
+        d2 = min(upper)
+        iv1 = clean[d1]
+        iv2 = clean[d2]
+        target = float(IV_RANK_TARGET_DTE)
+        span = float(d2 - d1)
+        weight1 = float(d2 - IV_RANK_TARGET_DTE) / span
+        weight2 = float(IV_RANK_TARGET_DTE - d1) / span
+        total_variance = (
+            weight1 * float(d1) * iv1 * iv1
+            + weight2 * float(d2) * iv2 * iv2
+        )
+        return math.sqrt(max(total_variance / target, 0.0))
+
+    nearest = min(clean, key=lambda dte: abs(dte - IV_RANK_TARGET_DTE))
+    return clean[nearest]
+
+
 def _normalize_observed_iv(raw: Any) -> float | None:
     try:
         iv = float(raw)
@@ -266,6 +362,54 @@ def _normalize_observed_iv(raw: Any) -> float | None:
     if iv > 5.0:
         iv /= 100.0
     return iv if 0.0 < iv < 5.0 else None
+
+
+def _atm_iv_from_chain(chain: dict[str, Any], spot: float) -> float | None:
+    """Return E*TRADE ATM call/put IV for one expiry without requiring OI."""
+    if spot <= 0:
+        return None
+
+    observations: list[tuple[float, float]] = []
+    pairs = _legacy._as_list(_legacy._find_key(chain, "OptionPair"))
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        for side_name in ("Call", "Put"):
+            option = pair.get(side_name) or pair.get(side_name.lower())
+            if not isinstance(option, dict):
+                continue
+            strike = _legacy._number(option, "strikePrice", "strike")
+            if strike is None or float(strike) <= 0:
+                continue
+            greeks = (
+                option.get("OptionGreeks")
+                or option.get("optionGreeks")
+                or option.get("optionGreek")
+                or {}
+            )
+            iv_raw = None
+            if isinstance(greeks, dict):
+                iv_raw = (
+                    _legacy._find_key(greeks, "iv")
+                    or _legacy._find_key(greeks, "impliedVolatility")
+                    or _legacy._find_key(greeks, "implied_volatility")
+                )
+            if iv_raw is None:
+                iv_raw = (
+                    _legacy._find_key(option, "iv")
+                    or _legacy._find_key(option, "impliedVolatility")
+                    or _legacy._find_key(option, "implied_volatility")
+                )
+            iv = _normalize_observed_iv(iv_raw)
+            if iv is not None:
+                observations.append((abs(float(strike) - spot), iv))
+
+    if not observations:
+        return None
+
+    nearest = min(distance for distance, _ in observations)
+    atm = [iv for distance, iv in observations if abs(distance - nearest) <= 1e-9]
+    return float(sum(atm) / len(atm)) if atm else None
 
 
 def _parse_contracts(chain: dict[str, Any], dte: int, spot: float) -> list[dict[str, Any]]:
@@ -443,6 +587,8 @@ def _build_gex(
     tz = ZoneInfo(timezone_name)
     today = datetime.now(tz).date()
 
+    iv_targets = _iv_rank_expirations(expiration_payload, today)
+
     eligible: list[tuple[int, int, int, int]] = []
     for year, month, day in expirations:
         expiry = datetime(year, month, day, tzinfo=tz).date()
@@ -457,6 +603,18 @@ def _build_gex(
     contracts: list[dict[str, Any]] = []
     expiries_used: list[str] = []
     chain_errors: list[str] = []
+    representative_iv: float | None = None
+    iv_expiry = ""
+    iv_dte: int | None = IV_RANK_TARGET_DTE
+    iv_expiry_type = ""
+    iv_target_map = {
+        (year, month, day): (target_dte, expiry_type)
+        for year, month, day, target_dte, expiry_type in iv_targets
+    }
+    iv_observations: dict[int, float] = {}
+    iv_observation_meta: dict[int, tuple[str, str]] = {}
+    iv_target_attempted: set[tuple[int, int, int]] = set()
+
     for year, month, day, dte in eligible:
         try:
             chain = _legacy._call_api(
@@ -470,6 +628,18 @@ def _build_gex(
                 chain_type="CALLPUT",
                 force_refresh=force_refresh,
             )
+            target_meta = iv_target_map.get((year, month, day))
+            if target_meta is not None:
+                iv_target_attempted.add((year, month, day))
+                target_dte, expiry_type = target_meta
+                observed_iv = _atm_iv_from_chain(chain, spot)
+                if observed_iv is not None:
+                    iv_observations[int(target_dte)] = observed_iv
+                    iv_observation_meta[int(target_dte)] = (
+                        f"{year:04d}-{month:02d}-{day:02d}",
+                        str(expiry_type or ""),
+                    )
+
             parsed = _parse_contracts(chain, dte, spot)
             if parsed:
                 contracts.extend(parsed)
@@ -483,7 +653,64 @@ def _build_gex(
             f"No usable E*TRADE option contracts with open interest were found for {symbol}.{detail}"
         )
 
-    representative_iv = _representative_iv(contracts, spot)
+    # IV Rank must not change definition when Raj changes GEX max DTE.
+    # Reuse already-fetched GEX chains first. For any missing 30-day bracket,
+    # fetch one compact E*TRADE CALLPUT chain (12 strikes) for that expiry.
+    for year, month, day, target_dte, expiry_type in iv_targets:
+        target_key = (year, month, day)
+        if int(target_dte) in iv_observations or target_key in iv_target_attempted:
+            continue
+        try:
+            iv_chain = _legacy._call_api(
+                client,
+                "get_option_chain",
+                symbol,
+                year,
+                month,
+                day,
+                no_of_strikes=IV_RANK_ATM_STRIKES,
+                chain_type="CALLPUT",
+                force_refresh=force_refresh,
+            )
+            observed_iv = _atm_iv_from_chain(iv_chain, spot)
+            if observed_iv is not None:
+                iv_observations[int(target_dte)] = observed_iv
+                iv_observation_meta[int(target_dte)] = (
+                    f"{year:04d}-{month:02d}-{day:02d}",
+                    str(expiry_type or ""),
+                )
+        except Exception as exc:
+            chain_errors.append(
+                f"IV {year:04d}-{month:02d}-{day:02d}: {exc}"
+            )
+
+    representative_iv = _constant_30d_iv(iv_observations)
+    if representative_iv is not None and iv_observation_meta:
+        ordered_dtes = sorted(iv_observation_meta)
+        iv_expiry = " / ".join(iv_observation_meta[dte][0] for dte in ordered_dtes)
+        iv_expiry_type = " / ".join(
+            iv_observation_meta[dte][1] or "UNSPECIFIED"
+            for dte in ordered_dtes
+        )
+
+    # Last-resort fallback preserves the prior behavior for symbols whose
+    # E*TRADE chain does not expose usable IV on the 30-day bracket.
+    if representative_iv is None:
+        representative_iv = _representative_iv(contracts, spot)
+        if representative_iv is not None:
+            observed_dtes = sorted(
+                {
+                    int(contract.get("dte", 0) or 0)
+                    for contract in contracts
+                    if contract.get("iv_from_feed")
+                }
+            )
+            if observed_dtes:
+                thirty_plus = [value for value in observed_dtes if value >= IV_RANK_TARGET_DTE]
+                iv_dte = min(thirty_plus) if thirty_plus else max(observed_dtes)
+            iv_expiry_type = "GEX_FALLBACK"
+
+
     aggregate: dict[float, dict[str, float]] = {}
     for contract in contracts:
         strike = contract["strike"]
@@ -584,6 +811,11 @@ def _build_gex(
         "netCurrent": net_current,
         "sourceUrl": "E*TRADE API /v1/market/optionchains",
         "representativeIv": representative_iv,
+        "ivSource": "E*TRADE OptionGreeks.iv",
+        "ivMethod": "30D ATM VARIANCE INTERPOLATION",
+        "ivExpiry": iv_expiry,
+        "ivDte": iv_dte,
+        "ivExpiryType": iv_expiry_type,
         "gammaFlip": gamma_flip,
         "callWall": call_wall,
         "putWall": put_wall,
