@@ -46,7 +46,7 @@ GAMMA_FLIP_RANGE_PCT = 0.20
 GAMMA_FLIP_STEPS = 160
 IV_RANK_LOOKBACK_DAYS = 365
 IV_RANK_MIN_OBSERVATIONS = 10
-IV_RANK_FULL_SPAN_DAYS = 330
+IV_RANK_FULL_SPAN_DAYS = 365
 IV_RANK_TARGET_DTE = 30
 IV_RANK_ATM_STRIKES = 12
 IV_RANK_NEAR_CONTRACTS_PER_SIDE = 4
@@ -181,7 +181,7 @@ def _apply_iv_rank_history(
     OptionGreeks.iv. One observation per ticker/day is kept for 365 days.
     Until ten daily observations exist, the column shows the current E*TRADE IV
     plus history progress instead of fabricating a rank. A trailing ``P`` marks
-    ranks whose stored history does not yet span roughly a full year.
+    ranks whose stored history does not yet span a full 365 calendar days.
     """
     history_map = state.setdefault("iv_history", {})
     changed = False
