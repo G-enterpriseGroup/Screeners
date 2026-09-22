@@ -700,6 +700,25 @@ def render_gex(
             # the click and hand it to the existing E*TRADE authorization flow.
             kwargs["disabled"] = False
 
+        request = st.session_state.get("etrade_request") or {}
+        pending_auth_url = (
+            str(request.get("authorization_url") or "").strip()
+            if isinstance(request, dict)
+            else ""
+        )
+
+        # Keep exactly one action in the Refresh All slot. Once the OAuth
+        # request exists, replace the disconnected Refresh All button with the
+        # returned E*TRADE authorization link. After verification succeeds and
+        # a live client exists, the normal Refresh All button returns unchanged.
+        if pending_auth_url:
+            st.link_button(
+                "OPEN E*TRADE AUTHORIZATION ↗",
+                pending_auth_url,
+                width="stretch",
+            )
+            return False
+
         clicked = original_button(label, *args, **kwargs)
         if not clicked:
             return False
@@ -715,7 +734,7 @@ def render_gex(
             return False
 
         if started:
-            st.toast("E*TRADE CONNECTION STARTED // COMPLETE AUTHORIZATION ABOVE")
+            st.toast("E*TRADE AUTHORIZATION READY // OPEN THE AUTHORIZATION LINK")
             st.rerun()
         return False
 
