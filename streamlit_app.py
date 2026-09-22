@@ -61,6 +61,7 @@ from src.gex_workspace_v2 import (
     maybe_auto_refresh_on_login as maybe_auto_refresh_gex_on_login,
 )
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
+from src.option_book_ui import render_option_book
 from src.risk_sizing_ui_v7 import render_risk_sizing
 from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
 from src.session_persistence import (
@@ -447,6 +448,10 @@ _TERMINAL_PAGE_HEADERS = {
         "SCHWAB RISK SIZING",
         "CROWN MACRO RISK ENGINE // SCHWAB API-READY ROUTE // SEPARATE HOLDINGS + QUOTES // SAME RISK FORMULAS",
     ),
+    "OPTION BOOK": (
+        "OPTION BOOK",
+        "E*TRADE OPTIONS TICKET // LIVE QUOTES + CHAINS // 1–4 LEGS // DEBIT/CREDIT + STOP PRICING // BROKER PREVIEW VALIDATION",
+    ),
     "BULL DEBIT SPREAD": (
         "BULL DEBIT SPREAD",
         "HIGH-TECH BULL CALL DEBIT SPREAD OPTIMIZER // E*TRADE OPTION CHAINS // READ-ONLY ANALYTICS // NATURAL PRICING = LONG ASK - SHORT BID",
@@ -602,6 +607,9 @@ elif active_tab == "SCHWAB RISK SIZING":
 
 elif active_tab == "GEX":
     _render_without_legacy_page_header("GEX", render_gex_workspace)
+
+elif active_tab == "OPTION BOOK":
+    render_option_book(_etrade_client(), _touch_etrade_session)
 
 elif active_tab == "BULL DEBIT SPREAD":
     _render_without_legacy_page_header(

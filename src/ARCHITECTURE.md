@@ -25,7 +25,7 @@ These are durable terminal preferences and should be checked on every UI change:
 5. **Retest neighboring top-level tabs after any UI change** so a feature-specific improvement does not regress another tab.
 6. For custom components, explicitly control iframe/component height when the visible UI is compact; do not rely on Streamlit's larger default frame height.
 7. **Every editable text field must keep a clearly visible native blinking insertion caret.** Shared caret styling belongs in `src/theme.py`; do not fake the typing cursor with JavaScript or feature-specific pseudo-elements.
-8. **All top-level terminal tabs use one shared page-header system owned by `streamlit_app.py`.** Holdings, Risk Sizing, Bull Debit Spread, Muni Screeners, Orders, and GEX must use the same full-width orange title bar, compact subtitle spacing, typography, and left alignment. Do not add competing one-off top-level headers inside feature files; internal feature section headers remain feature-owned.
+8. **All top-level terminal tabs use one shared page-header system owned by `streamlit_app.py`.** Holdings, Risk Sizing, Option Book, Bull Debit Spread, Muni Screeners, Orders, and GEX must use the same full-width orange title bar, compact subtitle spacing, typography, and left alignment. Do not add competing one-off top-level headers inside feature files; internal feature section headers remain feature-owned.
 
 ## Production feature map
 
@@ -37,6 +37,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
 | GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` only when legacy calculation helpers are intentionally reused | `streamlit_app.py` for ordinary GEX layout changes |
+| Option Book options ticket | `src/option_book_ui.py` | `src/option_book.py`, `src/etrade_client.py` preview transport, `src/ticker_autocomplete.py` | Risk/GEX/Holdings/OAuth UI/legacy Orders simulator |
 | E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
@@ -72,6 +73,20 @@ Production path:
 - Change **how GEX obtains the live E*TRADE client / vault key / session touch callback / non-sensitive login marker** → `src/gex_workspace_v2.py`.
 - GEX auto-refresh-on-login is still GEX-owned. When a non-GEX top-level tab is active, `streamlit_app.py` may dispatch the zero-height `gex_workspace_v2.maybe_auto_refresh_on_login()` hook after authenticated E*TRADE context exists; the hook must not modify OAuth/login behavior or other tab content.
 - Do not patch global Streamlit functions from GEX.
+
+## Option Book edit map
+
+Production path:
+
+`streamlit_app.py` → `src/option_book_ui.py` → `src/option_book.py` + `src/etrade_client.py` broker preview transport
+
+- Change **ticket layout, strategy controls, legs, quote presentation, local drafts** → `src/option_book_ui.py`.
+- Change **net debit/credit math, option-chain normalization, PreviewOrderRequest construction** → `src/option_book.py`.
+- Change **authenticated E*TRADE Preview Order POST transport** → `src/etrade_client.py`; keep OAuth UI changes in `src/etrade_connection_ui_v2.py`.
+- Reuse `src/ticker_autocomplete.py` for ticker/company-name search; do not create a second symbol directory.
+- The public E*TRADE Order API documents Preview and Place endpoints but not a Power E*TRADE Saved Orders endpoint. Option Book therefore stores drafts locally and may broker-preview them, but must not map a Save button to live Place Order submission.
+- Preserve single-leg LIMIT/STOP/STOP_LIMIT/MARKET and multi-leg NET_DEBIT/NET_CREDIT/MARKET behavior. E*TRADE rejects multi-leg stop/stop-limit orders.
+- Do not modify the legacy `ORDERS` OCO simulator when changing Option Book.
 
 ## OAuth edit map
 

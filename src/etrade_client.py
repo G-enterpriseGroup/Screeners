@@ -1,7 +1,8 @@
-"""Small, read-only E*TRADE OAuth 1.0a client for Streamlit.
+"""E*TRADE OAuth 1.0a client for Raj's Terminal.
 
-This module deliberately has no order-preview or order-placement methods. The
-app is an OTOCO simulator and cannot transmit a trade.
+Account and market calls are read-only. Option Book may send non-transmitting
+Preview Order requests, but this client intentionally exposes no live-order
+placement method.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def complete_authorization(
 
 
 class ETradeClient:
-    """Authenticated E*TRADE client exposing read-only account and market calls."""
+    """Authenticated client for account/market reads and non-transmitting previews."""
 
     def __init__(
         self,
@@ -126,6 +127,16 @@ class ETradeClient:
             f"{self.base}{path}",
             params=params or {},
             headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        return _json_response(response)
+
+    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST JSON to an authenticated E*TRADE endpoint."""
+        response = self.session.post(
+            f"{self.base}{path}",
+            json=payload,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
             timeout=30,
         )
         return _json_response(response)
@@ -178,6 +189,22 @@ class ETradeClient:
         return self._get(
             f"/v1/market/quote/{quote(symbol, safe='')}",
             {"detailFlag": "ALL"},
+        )
+
+    def preview_order(
+        self,
+        account_id_key: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Broker-validate an order without placing or executing it."""
+        account_id_key = str(account_id_key or "").strip()
+        if not account_id_key:
+            raise ETradeError("A valid E*TRADE account is required for order preview.")
+        if not isinstance(payload, dict) or "PreviewOrderRequest" not in payload:
+            raise ETradeError("A valid PreviewOrderRequest payload is required.")
+        return self._post(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/orders/preview.json",
+            payload,
         )
 
     def get_option_expirations(self, symbol: str) -> dict[str, Any]:
