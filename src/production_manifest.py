@@ -51,6 +51,15 @@ FEATURE_ROUTES = {
             "src/stockanalysis_cache.py",
         ],
     },
+    "option_book": {
+        "entry": "src/option_book_ui.py",
+        "owner": "src/option_book_ui.py",
+        "support": [
+            "src/option_book.py",
+            "src/etrade_client.py",
+            "src/ticker_autocomplete.py",
+        ],
+    },
     "navigation": {
         "entry": "src/tab_bar_v4.py",
         "owner": "src/tab_bar_v4.py",
