@@ -450,7 +450,7 @@ def render_option_book(client, touch_session) -> None:
         row[5].markdown(_leg_quote_markup("Bid", market.get("bid")), unsafe_allow_html=True)
         row[6].markdown(_leg_quote_markup("Ask", market.get("ask")), unsafe_allow_html=True)
         row[7].button(
-            "REMOVE",
+            "✕",
             key=f"ob_remove_{i}",
             on_click=_remove_leg,
             args=(i,),
