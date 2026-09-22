@@ -49,280 +49,331 @@ from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_se
 
 _OPTION_BOOK_CSS = """
 <style>
-/* Everything below is scoped to Option Book. Never promote these rules globally. */
-.st-key-option_book_workspace {
+/*
+   OPTION BOOK VISUAL CONTRACT
+   E*TRADE Risk Sizing is the reference surface:
+   - Courier New
+   - orange filled section bars with black text
+   - 38px controls
+   - 52px metric cards
+   - 4px vertical / 8px horizontal grid rhythm
+   - black surfaces + orange borders; green/red/blue only for financial meaning
+*/
+.st-key-option_book_workspace{
     --ob-orange:#fb8b1e;
     --ob-green:#4af6c3;
-    --ob-purple:#a970ff;
-    --ob-line:#343d49;
-    --ob-panel:#07090c;
+    --ob-red:#ff433d;
+    --ob-blue:#0068ff;
+    --ob-border:#5d3605;
+    --ob-black:#000000;
+    --ob-panel:#050505;
     --ob-muted:#8f99a8;
+    margin:0!important;
+    padding:0!important;
+    font-family:"Courier New",monospace!important;
 }
 
-.st-key-option_book_workspace [data-testid="stWidgetLabel"] p {
-    color:#d9dde3 !important;
-    -webkit-text-fill-color:#d9dde3 !important;
-    font-family:"Courier New",monospace !important;
-    font-size:.69rem !important;
-    line-height:1.05 !important;
-    font-weight:900 !important;
+.st-key-option_book_workspace [data-testid="stVerticalBlock"]{gap:4px!important;}
+.st-key-option_book_workspace [data-testid="stHorizontalBlock"]{gap:8px!important;}
+.st-key-option_book_workspace [data-testid="stColumn"]{min-width:0!important;}
+
+.st-key-option_book_workspace [data-testid="stWidgetLabel"]{
+    min-height:20px!important;
+    margin:0 0 3px 0!important;
+    padding:0!important;
+    display:flex!important;
+    align-items:center!important;
+}
+.st-key-option_book_workspace [data-testid="stWidgetLabel"] p{
+    margin:0!important;
+    padding:0!important;
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+    font-family:"Courier New",monospace!important;
+    font-size:.64rem!important;
+    font-weight:900!important;
+    line-height:1!important;
 }
 
-.st-key-option_book_workspace [data-testid="stWidgetLabel"] {
-    margin-bottom:.08rem !important;
+.st-key-option_book_workspace [data-testid="stSelectbox"]{margin:0!important;min-width:0!important;}
+.st-key-option_book_workspace [data-testid="stSelectbox"] div[data-baseweb="select"]>div{
+    min-height:38px!important;
+    height:38px!important;
+    background:var(--ob-panel)!important;
+    border-color:var(--ob-orange)!important;
+    border-radius:0!important;
+    box-shadow:none!important;
+}
+.st-key-option_book_workspace [data-testid="stSelectbox"] div[data-baseweb="select"] span,
+.st-key-option_book_workspace [data-testid="stSelectbox"] div[data-baseweb="select"] input{
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font-family:"Courier New",monospace!important;
+    font-size:.72rem!important;
+    font-weight:900!important;
+    white-space:nowrap!important;
+    overflow:hidden!important;
+    text-overflow:ellipsis!important;
 }
 
-.st-key-option_book_workspace [data-testid="stButton"] button {
-    width:auto !important;
-    min-width:0 !important;
-    min-height:34px !important;
-    height:34px !important;
-    padding:0 .72rem !important;
-    border:1px solid var(--ob-orange) !important;
-    border-radius:0 !important;
-    background:#050505 !important;
-    color:var(--ob-orange) !important;
-    -webkit-text-fill-color:var(--ob-orange) !important;
-    box-shadow:none !important;
-    font-family:"Courier New",monospace !important;
-    font-size:.72rem !important;
-    line-height:1 !important;
-    font-weight:900 !important;
-    white-space:nowrap !important;
+.st-key-option_book_workspace [data-testid="stNumberInput"]{margin:0!important;min-width:0!important;}
+.st-key-option_book_workspace [data-testid="stNumberInput"] input{
+    height:38px!important;
+    min-height:38px!important;
+    padding-top:0!important;
+    padding-bottom:0!important;
+    background:var(--ob-panel)!important;
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    border-color:var(--ob-orange)!important;
+    font-family:"Courier New",monospace!important;
+    font-size:.72rem!important;
+    font-weight:900!important;
 }
-
-.st-key-option_book_workspace [data-testid="stButton"] button * {
-    color:inherit !important;
-    -webkit-text-fill-color:inherit !important;
+.st-key-option_book_workspace [data-testid="stNumberInputStepDown"],
+.st-key-option_book_workspace [data-testid="stNumberInputStepUp"]{
+    position:relative!important;
+    min-width:38px!important;
+    width:38px!important;
+    height:38px!important;
+    flex:0 0 38px!important;
+    padding:0!important;
+    background:var(--ob-panel)!important;
+    border-color:var(--ob-orange)!important;
+    border-radius:0!important;
+    box-shadow:none!important;
 }
-
-.st-key-option_book_workspace [data-testid="stButton"] button:hover:not(:disabled) {
-    background:#171007 !important;
-    color:#ffad52 !important;
-    -webkit-text-fill-color:#ffad52 !important;
-}
-
-.st-key-option_book_workspace .st-key-ob_preview button {
-    background:var(--ob-orange) !important;
-    color:#000 !important;
-    -webkit-text-fill-color:#000 !important;
-    border-color:var(--ob-orange) !important;
-}
-
-.st-key-option_book_workspace .st-key-ob_preview button:hover:not(:disabled) {
-    background:#ffad52 !important;
-    color:#000 !important;
-    -webkit-text-fill-color:#000 !important;
-}
-
-.st-key-option_book_workspace [data-testid="stButton"] button:disabled {
-    background:#0b0d10 !important;
-    color:#535d69 !important;
-    -webkit-text-fill-color:#535d69 !important;
-    border-color:#2b333e !important;
-    opacity:1 !important;
-}
-
-.st-key-option_book_workspace [class*="st-key-ob_remove_"] {
-    padding-top:1.02rem !important;
-}
-
-.st-key-option_book_workspace [class*="st-key-ob_leg_box_"] {
-    border-color:var(--ob-line) !important;
-    border-radius:0 !important;
-    background:#020304 !important;
-}
-
-.ob-mode-line {
+.st-key-option_book_workspace [data-testid="stNumberInputStepDown"]>*,
+.st-key-option_book_workspace [data-testid="stNumberInputStepUp"]>*{display:none!important;}
+.st-key-option_book_workspace [data-testid="stNumberInputStepDown"]::after,
+.st-key-option_book_workspace [data-testid="stNumberInputStepUp"]::after{
+    position:absolute;
+    inset:0;
     display:flex;
     align-items:center;
-    flex-wrap:wrap;
-    gap:.22rem .65rem;
-    padding:.12rem 0 .3rem;
-    color:var(--ob-muted) !important;
-    font:.64rem/1.15 "Courier New",monospace;
-    font-weight:800;
-}
-.ob-mode-line b {
-    color:var(--ob-orange) !important;
+    justify-content:center;
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font-family:"Courier New",monospace!important;
+    font-size:1.05rem;
     font-weight:900;
-}
-
-.ob-underlier {
-    border-top:1px solid var(--ob-line);
-    border-bottom:1px solid var(--ob-line);
-    background:#030405;
-    padding:.38rem .5rem;
-    margin:.16rem 0 .38rem;
-    font-family:"Courier New",monospace;
-}
-.ob-underlier-name {
-    color:#b8c0cb !important;
-    font-size:.69rem;
-    line-height:1.15;
-    font-weight:900;
-    overflow-wrap:anywhere;
-}
-.ob-underlier-stats {
-    display:flex;
-    flex-wrap:wrap;
-    gap:.15rem 1.15rem;
-    margin-top:.2rem;
-    color:#e4e7eb !important;
-    font-size:.72rem;
-    line-height:1.15;
-    font-weight:900;
-}
-.ob-underlier-stats span {
-    white-space:nowrap;
-}
-.ob-underlier-stats b {
-    color:var(--ob-green) !important;
-    margin-left:.2rem;
-}
-
-.ob-section-line {
-    display:flex;
-    align-items:flex-end;
-    justify-content:space-between;
-    gap:.5rem;
-    border-bottom:1px solid #262d36;
-    margin:.34rem 0 .28rem;
-    padding-bottom:.18rem;
-    font-family:"Courier New",monospace;
-}
-.ob-section-line strong {
-    color:var(--ob-orange) !important;
-    font-size:.72rem;
     line-height:1;
-    letter-spacing:.05rem;
 }
-.ob-section-line span {
-    color:var(--ob-muted) !important;
+.st-key-option_book_workspace [data-testid="stNumberInputStepDown"]::after{content:"−";}
+.st-key-option_book_workspace [data-testid="stNumberInputStepUp"]::after{content:"+";}
+.st-key-option_book_workspace [data-testid="stNumberInputStepDown"]:hover,
+.st-key-option_book_workspace [data-testid="stNumberInputStepUp"]:hover{
+    background:var(--ob-orange)!important;
+}
+.st-key-option_book_workspace [data-testid="stNumberInputStepDown"]:hover::after,
+.st-key-option_book_workspace [data-testid="stNumberInputStepUp"]:hover::after{
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+}
+
+.st-key-option_book_workspace [data-testid="stButton"] button{
+    width:auto!important;
+    min-width:0!important;
+    min-height:38px!important;
+    height:38px!important;
+    padding:0 .72rem!important;
+    border:1px solid var(--ob-orange)!important;
+    border-radius:0!important;
+    background:var(--ob-panel)!important;
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    box-shadow:none!important;
+    font-family:"Courier New",monospace!important;
+    font-size:.70rem!important;
+    font-weight:900!important;
+    line-height:1!important;
+    white-space:nowrap!important;
+}
+.st-key-option_book_workspace [data-testid="stButton"] button *{
+    color:inherit!important;
+    -webkit-text-fill-color:inherit!important;
+}
+.st-key-option_book_workspace [data-testid="stButton"] button:hover:not(:disabled){
+    background:#171007!important;
+    color:#ffad52!important;
+    -webkit-text-fill-color:#ffad52!important;
+}
+.st-key-option_book_workspace .st-key-ob_preview button{
+    background:var(--ob-orange)!important;
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+}
+.st-key-option_book_workspace .st-key-ob_preview button:hover:not(:disabled){
+    background:#ffad52!important;
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+}
+.st-key-option_book_workspace [data-testid="stButton"] button:disabled{
+    background:#0b0d10!important;
+    color:#535d69!important;
+    -webkit-text-fill-color:#535d69!important;
+    border-color:#2b333e!important;
+    opacity:1!important;
+}
+.st-key-option_book_workspace [class*="st-key-ob_remove_"]{padding-top:23px!important;}
+
+.st-key-option_book_workspace [class*="st-key-ob_leg_box_"]{
+    border:1px solid var(--ob-border)!important;
+    border-radius:0!important;
+    background:#000!important;
+    padding:6px 8px!important;
+    margin:0 0 5px 0!important;
+    box-sizing:border-box!important;
+    min-width:0!important;
+}
+
+.ob-risk-note{
+    display:flex;
+    align-items:center;
+    min-height:22px;
+    box-sizing:border-box;
+    margin:0 0 5px 0;
+    padding:0;
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font-family:"Courier New",monospace;
     font-size:.61rem;
+    font-weight:800;
     line-height:1.1;
-    text-align:right;
-}
-
-.ob-leg-label {
-    color:var(--ob-muted) !important;
-    font:.61rem/1 "Courier New",monospace;
-    font-weight:900;
-    letter-spacing:.04rem;
-    margin:0 0 .18rem;
-}
-
-.ob-market-strip {
-    display:grid;
-    grid-template-columns:repeat(6,minmax(0,1fr));
-    gap:.28rem;
-    margin-top:.24rem;
-}
-.ob-market-cell {
-    min-width:0;
-    border-top:1px solid #252c35;
-    background:#06080a;
-    padding:.28rem .36rem;
-    font-family:"Courier New",monospace;
-}
-.ob-market-label {
-    color:var(--ob-orange) !important;
-    font-size:.56rem;
-    line-height:1;
-    font-weight:900;
-    text-transform:uppercase;
-    letter-spacing:.03rem;
-}
-.ob-market-value {
-    color:var(--ob-green) !important;
-    font-size:.84rem;
-    line-height:1.05;
-    font-weight:900;
-    margin-top:.14rem;
     white-space:nowrap;
     overflow:hidden;
     text-overflow:ellipsis;
 }
+.ob-risk-note .muted{color:var(--ob-muted)!important;-webkit-text-fill-color:var(--ob-muted)!important;}
 
-.ob-net-strip {
+.ob-section{
     display:flex;
-    flex-wrap:wrap;
-    gap:.22rem 1.35rem;
-    border-top:1px solid var(--ob-purple);
-    padding:.34rem .08rem .05rem;
-    margin:.22rem 0 .08rem;
-    font:.7rem/1.15 "Courier New",monospace;
+    align-items:center;
+    width:100%;
+    height:30px;
+    min-height:30px;
+    box-sizing:border-box;
+    margin:0 0 5px 0;
+    padding:0 10px;
+    border:1px solid var(--ob-orange);
+    background:var(--ob-orange);
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+    font-family:"Courier New",monospace;
+    font-size:.78rem;
     font-weight:900;
+    line-height:1;
+    text-transform:uppercase;
 }
-.ob-net-strip span {
-    color:#e6e8eb !important;
-    white-space:nowrap;
-}
-.ob-net-strip b {
-    color:var(--ob-purple) !important;
-    margin-right:.25rem;
+.ob-section::before{content:none!important;display:none!important;}
+
+.ob-leg-title{
+    display:flex;
+    align-items:center;
+    min-height:18px;
+    margin:0 0 4px 0;
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font-family:"Courier New",monospace;
+    font-size:.61rem;
+    font-weight:900;
+    line-height:1;
 }
 
-.ob-ticket-summary {
-    border-left:3px solid var(--ob-orange);
-    background:#07090b;
-    padding:.38rem .5rem;
-    margin:.36rem 0 .18rem;
-    font:.71rem/1.28 "Courier New",monospace;
-    color:#d69545 !important;
+.ob-metric-grid{
+    display:grid;
+    gap:8px;
+    margin:0 0 5px 0;
+    min-width:0;
+}
+.ob-metric-grid-6{grid-template-columns:repeat(6,minmax(0,1fr));}
+.ob-metric-grid-5{grid-template-columns:repeat(5,minmax(0,1fr));}
+.ob-metric-grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
+.ob-metric-grid-2{grid-template-columns:repeat(2,minmax(0,1fr));}
+
+.ob-metric-card{
+    position:relative;
+    min-width:0;
+    min-height:52px;
+    height:52px;
+    box-sizing:border-box;
+    padding:6px 8px;
+    border:1px solid var(--ob-orange);
+    background:#000;
+    font-family:"Courier New",monospace;
+    overflow:hidden;
+}
+.ob-metric-label{
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font-size:.64rem;
+    font-weight:900;
+    line-height:1;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.ob-metric-value{
+    color:var(--ob-green)!important;
+    -webkit-text-fill-color:var(--ob-green)!important;
+    font-size:1.06rem;
+    font-weight:900;
+    line-height:1;
+    margin-top:4px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.ob-tone-orange .ob-metric-value{color:var(--ob-orange)!important;-webkit-text-fill-color:var(--ob-orange)!important;}
+.ob-tone-blue .ob-metric-value{color:var(--ob-blue)!important;-webkit-text-fill-color:var(--ob-blue)!important;}
+.ob-tone-red .ob-metric-value{color:var(--ob-red)!important;-webkit-text-fill-color:var(--ob-red)!important;}
+
+.ob-ticket-summary{
+    border:1px solid var(--ob-orange);
+    background:#000;
+    padding:6px 8px;
+    min-height:38px;
+    box-sizing:border-box;
+    margin:0 0 5px 0;
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font:900 .68rem/1.25 "Courier New",monospace;
     overflow-wrap:anywhere;
 }
-.ob-ticket-summary b {
-    color:var(--ob-orange) !important;
+.ob-ticket-summary b{color:var(--ob-orange)!important;-webkit-text-fill-color:var(--ob-orange)!important;}
+
+.ob-action-note{
+    display:flex;
+    justify-content:flex-end;
+    align-items:center;
+    min-height:18px;
+    margin:0 0 3px 0;
+    color:var(--ob-muted)!important;
+    -webkit-text-fill-color:var(--ob-muted)!important;
+    font:800 .60rem/1 "Courier New",monospace;
 }
 
-.ob-action-note {
-    color:var(--ob-muted) !important;
-    font:.61rem/1.15 "Courier New",monospace;
-    text-align:right;
-    margin:.05rem 0 .16rem;
+.st-key-option_book_workspace [data-testid="stExpander"]{
+    border-color:var(--ob-orange)!important;
+    border-radius:0!important;
+    margin-top:0!important;
+}
+.st-key-option_book_workspace [data-testid="stExpander"] summary,
+.st-key-option_book_workspace [data-testid="stExpander"] summary *{
+    color:var(--ob-orange)!important;
+    -webkit-text-fill-color:var(--ob-orange)!important;
+    font-family:"Courier New",monospace!important;
+    font-size:.68rem!important;
+    font-weight:900!important;
 }
 
-.ob-preview-stats {
-    display:grid;
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:.3rem;
-    margin:.3rem 0;
+@media (max-width:1100px){
+    .ob-metric-grid-6,.ob-metric-grid-5{grid-template-columns:repeat(3,minmax(0,1fr));}
 }
-.ob-preview-stat {
-    border:1px solid var(--ob-line);
-    background:#06080a;
-    padding:.32rem .42rem;
-    min-width:0;
-}
-.ob-preview-stat-label {
-    color:var(--ob-orange) !important;
-    font:.57rem/1 "Courier New",monospace;
-    font-weight:900;
-    text-transform:uppercase;
-}
-.ob-preview-stat-value {
-    color:var(--ob-green) !important;
-    font:.9rem/1.1 "Courier New",monospace;
-    font-weight:900;
-    margin-top:.15rem;
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-}
-
-.st-key-option_book_workspace [data-testid="stExpander"] {
-    border-color:#2f3742 !important;
-    border-radius:0 !important;
-}
-
-@media (max-width: 1050px) {
-    .ob-market-strip { grid-template-columns:repeat(3,minmax(0,1fr)); }
-}
-@media (max-width: 700px) {
-    .ob-market-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .ob-preview-stats { grid-template-columns:1fr; }
-    .ob-underlier-stats { gap:.25rem .7rem; }
+@media (max-width:760px){
+    .ob-metric-grid-6,.ob-metric-grid-5,.ob-metric-grid-4{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .ob-risk-note{white-space:normal;}
+    .ob-action-note{justify-content:flex-start;text-align:left;}
 }
 </style>
 """
@@ -361,6 +412,26 @@ def _plain_number(value: Any, digits: int = 2) -> str:
     if abs(number - round(number)) < 1e-9:
         return f"{int(round(number)):,}"
     return f"{number:,.{digits}f}"
+
+
+def _metric_grid_markup(
+    items: list[tuple[str, str, str]],
+    columns: int,
+) -> str:
+    cells = "".join(
+        '<div class="ob-metric-card ob-tone-' + html.escape(str(tone)) + '">'
+        '<div class="ob-metric-label">' + html.escape(str(label)) + "</div>"
+        '<div class="ob-metric-value">' + html.escape(str(value)) + "</div>"
+        "</div>"
+        for label, value, tone in items
+    )
+    return (
+        '<div class="ob-metric-grid ob-metric-grid-'
+        + str(int(columns))
+        + '">'
+        + cells
+        + "</div>"
+    )
 
 
 def _account_label(account: dict[str, Any]) -> str:
@@ -421,22 +492,17 @@ def _market_strip_markup(market: dict[str, Any]) -> str:
         mid = None
         spread = None
 
-    values = (
-        ("Bid", _money(bid)),
-        ("Ask", _money(ask)),
-        ("Mid", _money(mid)),
-        ("Spread", _money(spread)),
-        ("Volume", _plain_number(market.get("volume"), 0)),
-        ("Open Int", _plain_number(market.get("open_interest"), 0)),
+    return _metric_grid_markup(
+        [
+            ("BID", _money(bid), "green"),
+            ("ASK", _money(ask), "green"),
+            ("MID", _money(mid), "green"),
+            ("SPREAD", _money(spread), "orange"),
+            ("VOLUME", _plain_number(market.get("volume"), 0), "blue"),
+            ("OPEN INT", _plain_number(market.get("open_interest"), 0), "blue"),
+        ],
+        6,
     )
-    cells = "".join(
-        '<div class="ob-market-cell">'
-        '<div class="ob-market-label">' + html.escape(label) + "</div>"
-        '<div class="ob-market-value">' + html.escape(value) + "</div>"
-        "</div>"
-        for label, value in values
-    )
-    return '<div class="ob-market-strip">' + cells + "</div>"
 
 
 def _strategy_defaults(strategy: str, symbol: str) -> None:
@@ -532,10 +598,10 @@ def render_option_book(client, touch_session) -> None:
 
     with st.container(key="option_book_workspace"):
         st.markdown(
-            '<div class="ob-mode-line"><b>PREVIEW ONLY</b>'
-            "<span>E*TRADE broker validation</span>"
-            "<span>•</span><span>Save Draft stays local</span>"
-            "<span>•</span><span>no live-order submission path</span></div>",
+            '<div class="ob-risk-note">'
+            'PREVIEW ONLY // E*TRADE BROKER VALIDATION // '
+            '<span class="muted">SAVE DRAFT STAYS LOCAL // NO LIVE-ORDER SUBMISSION PATH</span>'
+            "</div>",
             unsafe_allow_html=True,
         )
 
@@ -641,16 +707,24 @@ def render_option_book(client, touch_session) -> None:
                 pass
 
         st.markdown(
-            '<div class="ob-underlier">'
-            '<div class="ob-underlier-name">'
+            '<div class="ob-risk-note">'
             + html.escape(f"{symbol} — {name or 'COMPANY NAME UNAVAILABLE'}")
-            + '</div><div class="ob-underlier-stats">'
-            + '<span>LAST <b>' + html.escape(_money(quote.get("last"))) + "</b></span>"
-            + '<span>BID <b>' + html.escape(_money(quote.get("bid"))) + "</b></span>"
-            + '<span>ASK <b>' + html.escape(_money(quote.get("ask"))) + "</b></span>"
-            + '<span>ACCOUNT <b>' + html.escape(_money(account_value)) + "</b></span>"
-            + '<span>BUYING POWER <b>' + html.escape(_money(buying_power)) + "</b></span>"
-            + "</div></div>",
+            + " // ACCOUNT "
+            + html.escape(_account_label(account) if account else "NO ACCOUNT")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            _metric_grid_markup(
+                [
+                    ("LAST", _money(quote.get("last")), "green"),
+                    ("BID", _money(quote.get("bid")), "green"),
+                    ("ASK", _money(quote.get("ask")), "green"),
+                    ("ACCOUNT VALUE", _money(account_value), "blue"),
+                    ("BUYING POWER", _money(buying_power), "green"),
+                ],
+                5,
+            ),
             unsafe_allow_html=True,
         )
 
@@ -666,9 +740,9 @@ def render_option_book(client, touch_session) -> None:
         # ==============================
         # OPTION LEGS
         # ==============================
+        st.markdown('<div class="ob-section">OPTION LEGS</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="ob-section-line"><strong>OPTION LEGS</strong>'
-            "<span>1–4 legs · expiration + strike come directly from E*TRADE</span></div>",
+            '<div class="ob-risk-note">1–4 LEGS // EXPIRATION + STRIKE COME DIRECTLY FROM E*TRADE</div>',
             unsafe_allow_html=True,
         )
         with st.container(
@@ -701,7 +775,7 @@ def render_option_book(client, touch_session) -> None:
 
             with st.container(border=True, key=f"ob_leg_box_{i}"):
                 st.markdown(
-                    f'<div class="ob-leg-label">LEG {i + 1}</div>',
+                    f'<div class="ob-leg-title">LEG {i + 1}</div>',
                     unsafe_allow_html=True,
                 )
                 row = st.columns([1.5, .55, 1.18, .82, .68, .34], gap="small")
@@ -822,7 +896,7 @@ def render_option_book(client, touch_session) -> None:
         if st.session_state.get("ob_price_type") not in price_choices:
             st.session_state["ob_price_type"] = default_price
 
-        signature = "|".join(
+        signature = "v3|" + symbol + "|" + "|".join(
             f"{leg['action']}:{leg['call_put']}:{leg['expiry']}:"
             f"{leg['strike']}:{leg['quantity']}"
             for leg in legs
@@ -843,9 +917,9 @@ def render_option_book(client, touch_session) -> None:
                 st.session_state["ob_stop"] = st.session_state["ob_limit"]
             st.session_state["_ob_price_seed"] = signature
 
+        st.markdown('<div class="ob-section">PRICE & DURATION</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="ob-section-line"><strong>PRICE & DURATION</strong>'
-            "<span>Only fields required by the selected order type are shown</span></div>",
+            '<div class="ob-risk-note">ONLY FIELDS REQUIRED BY THE SELECTED ORDER TYPE ARE SHOWN</div>',
             unsafe_allow_html=True,
         )
 
@@ -916,12 +990,15 @@ def render_option_book(client, touch_session) -> None:
             else "—"
         )
         st.markdown(
-            '<div class="ob-net-strip">'
-            '<span><b>NATURAL</b>' + html.escape(natural_text) + "</span>"
-            '<span><b>MID</b>' + html.escape(mid_text) + "</span>"
-            '<span><b>OPPOSITE</b>' + html.escape(opposite_text) + "</span>"
-            '<span><b>NET</b>' + html.escape(str(net.get("side") or "UNKNOWN")) + "</span>"
-            "</div>",
+            _metric_grid_markup(
+                [
+                    ("NATURAL", natural_text, "orange"),
+                    ("MID", mid_text, "green"),
+                    ("OPPOSITE", opposite_text, "orange"),
+                    ("NET", str(net.get("side") or "UNKNOWN"), "blue"),
+                ],
+                4,
+            ),
             unsafe_allow_html=True,
         )
 
@@ -934,6 +1011,7 @@ def render_option_book(client, touch_session) -> None:
             f"{leg['call_put'].title()}"
             for leg in legs
         )
+        st.markdown('<div class="ob-section">ORDER REVIEW</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="ob-ticket-summary"><b>TICKET //</b> '
             + html.escape(description)
@@ -942,7 +1020,7 @@ def render_option_book(client, touch_session) -> None:
         )
         st.markdown(
             '<div class="ob-action-note">'
-            "E*TRADE PREVIEW validates the ticket only · no live order is placed"
+            "E*TRADE PREVIEW VALIDATES ONLY // NO LIVE ORDER IS PLACED"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1011,17 +1089,21 @@ def render_option_book(client, touch_session) -> None:
                     f"{details.get('preview_id') or 'N/A'} // NOT PLACED"
                 )
                 st.markdown(
-                    '<div class="ob-preview-stats">'
-                    '<div class="ob-preview-stat">'
-                    '<div class="ob-preview-stat-label">Estimated Order Value</div>'
-                    '<div class="ob-preview-stat-value">'
-                    + html.escape(_money(details.get("total_order_value")))
-                    + "</div></div>"
-                    '<div class="ob-preview-stat">'
-                    '<div class="ob-preview-stat-label">Estimated Commission</div>'
-                    '<div class="ob-preview-stat-value">'
-                    + html.escape(_money(details.get("estimated_commission")))
-                    + "</div></div></div>",
+                    _metric_grid_markup(
+                        [
+                            (
+                                "ESTIMATED ORDER VALUE",
+                                _money(details.get("total_order_value")),
+                                "green",
+                            ),
+                            (
+                                "ESTIMATED COMMISSION",
+                                _money(details.get("estimated_commission")),
+                                "orange",
+                            ),
+                        ],
+                        2,
+                    ),
                     unsafe_allow_html=True,
                 )
                 for message in details.get("messages") or []:
