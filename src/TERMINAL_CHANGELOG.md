@@ -614,3 +614,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Commit SHA:** GEX UI routing `3045c17ec6a45feef421adc064d008a4705a5cf1`; E*TRADE/GEX context bridge `07f290eec196faf0fbf7f29ac12c9d161d63c936`.
 - **Lesson:** A disconnected GEX action should hand off to the terminal's established OAuth request-token flow at the GEX context boundary. Do not duplicate OAuth UI or change token semantics, and do not let the disconnected Refresh All button enter legacy calculation code.
 
+## 2026-09-22 — Make disconnected Refresh All GEX actually clickable
+
+- **Feature changed:** GEX Refresh All disconnected-session handoff to E*TRADE OAuth.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_workspace_v2.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The prior handoff code existed, but `REFRESH ALL GEX` still did nothing when E*TRADE was disconnected.
+- **Root cause:** `src/gex_ui_v3_base.py` creates `gexv3_refresh_all` with `disabled=not state["tickers"] or client is None`. Because Streamlit disables the widget before the GEX wrapper receives a click, the disconnected OAuth handoff added in PR #23 could never execute.
+- **What was changed:** In the GEX render-scoped button wrapper only, when the target widget is `gexv3_refresh_all`, the live client is absent, and the existing GEX E*TRADE connect callback is available, the inherited disabled flag is cleared before rendering the button. The click can now enter the already-implemented OAuth handoff. Connected Refresh All remains unchanged. Visible GEX build bumped to `v2026.09.22.13`.
+- **Important behavior that must remain:** Do not remove the base renderer's normal disabled logic globally. Only the production GEX wrapper may override the disconnected `gexv3_refresh_all` instance, and only while the connect callback exists. Preserve the existing background refresh, rate gate, cache, progress, auto-refresh-on-login, IV Rank, and TradingView behavior.
+- **Files/features intentionally NOT changed:** `src/gex_ui_v3_base.py`, OAuth UI/client/session files, `streamlit_app.py`, Risk Sizing, Schwab Risk Sizing, Holdings, navigation, Option Book, Bull Debit, Muni, Orders, shared theme, authentication, and `src/terminal_core.py`.
+- **Tests performed:** Re-read `src/ARCHITECTURE.md` and the prior GEX change history; traced `streamlit_app.py → src/gex_workspace_v2.py → src/gex_ui_v3.py → src/gex_ui_v3_proven.py → src/gex_ui_v3_base.py`; verified the exact base line that disabled the button on `client is None`; verified the production wrapper now clears that disabled flag only for the disconnected GEX Refresh All case; PR #24 Terminal Architecture Guard run `35767935771` executed `python scripts/validate_architecture.py` successfully.
+- **Architecture guard result:** PASS on PR #24 run `35767935771`.
+- **Commit SHA:** enablement fix `3ce233270f26146dea9572cf7c0df44611bdec94`; build marker `80c05dc3b461a067731b3f0bead3a56ccf2f69b5`.
+- **Lesson:** A wrapper cannot react to a Streamlit button that the base renderer has already disabled. When adding a feature-local handoff, inspect the final widget kwargs passed by the base layer, not only the click callback path.
+
