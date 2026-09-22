@@ -694,6 +694,12 @@ def render_gex(
         if kwargs.get("key") != "gexv3_refresh_all" or client is not None:
             return original_button(label, *args, **kwargs)
 
+        if callable(connect_etrade):
+            # The base GEX renderer disables Refresh All whenever client is None.
+            # Override only that disconnected state so this wrapper can receive
+            # the click and hand it to the existing E*TRADE authorization flow.
+            kwargs["disabled"] = False
+
         clicked = original_button(label, *args, **kwargs)
         if not clicked:
             return False
