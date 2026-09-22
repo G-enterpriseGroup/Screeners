@@ -68,6 +68,10 @@ _OPTION_BOOK_CSS = """
     font-weight:900 !important;
 }
 
+.st-key-option_book_workspace [data-testid="stWidgetLabel"] {
+    margin-bottom:.08rem !important;
+}
+
 .st-key-option_book_workspace [data-testid="stButton"] button {
     width:auto !important;
     min-width:0 !important;
@@ -117,6 +121,10 @@ _OPTION_BOOK_CSS = """
     -webkit-text-fill-color:#535d69 !important;
     border-color:#2b333e !important;
     opacity:1 !important;
+}
+
+.st-key-option_book_workspace [class*="st-key-ob_remove_"] {
+    padding-top:1.02rem !important;
 }
 
 .st-key-option_book_workspace [class*="st-key-ob_leg_box_"] {
