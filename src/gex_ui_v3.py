@@ -157,16 +157,21 @@ _IV_REFERENCE_HELP_HTML = """
     <b>IV RANK</b><br>
     Where today's 30-day implied volatility sits inside its own 52-week range.<br>
     <b>Formula:</b> (Current IV − 52W Low IV) ÷ (52W High IV − 52W Low IV) × 100.<br>
-    <b>Current IV:</b> E*TRADE OptionGreeks.iv. For each expiry around 30 DTE,
-    the 4 strikes nearest spot are weighted by E*TRADE Vega on calls and puts;
-    those expiry IVs are interpolated by √DTE to 30 days, then call/put are averaged.<br>
+    <b>Current IV:</b> standardized 30-day IV from E*TRADE OptionGreeks.iv.
+    For each expiry around 30 DTE, the 4 strikes nearest spot are weighted by
+    E*TRADE Vega on calls and puts; those expiry IVs are interpolated by √DTE
+    to 30 days, then call/put are averaged.<br>
+    <b>52W Low / High IV:</b> lowest / highest standardized 30-day IV saved during
+    the trailing 365 days.<br>
     <b>P:</b> provisional IV Rank while the terminal is still building roughly one year
     of standardized E*TRADE IV history.<br><br>
     <b>IV/HV REFERENCE</b><br>
     Compares forward-looking option IV with the stock's latest 30-day historical movement.<br>
     <b>Formula:</b> IV/HV % = Current 30D IV ÷ 30D HV × 100.<br>
     <b>HV30:</b> 30 daily log returns ln(Pt/Pt−1), sample standard deviation using n−1,
-    annualized by × √252 from adjusted daily closes.<br>
+    annualized by × √252 from licensed Tiingo adjusted daily closes.<br>
+    <b>Pt:</b> adjusted close on day t. <b>n:</b> 30 daily returns.
+    <b>252:</b> trading days used for annualization.<br>
     <b>RICH:</b> IV/HV &gt; 100%. <b>CHEAP:</b> IV/HV &lt; 100%.
     <b>FAIR:</b> approximately 100%. This is a relative volatility comparison, not proof
     that an option is mispriced.
