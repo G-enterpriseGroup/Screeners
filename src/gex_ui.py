@@ -47,9 +47,11 @@ IV_RANK_MIN_OBSERVATIONS = 10
 IV_RANK_FULL_SPAN_DAYS = 330
 IV_RANK_TARGET_DTE = 30
 IV_RANK_ATM_STRIKES = 12
+IV_RANK_HISTORY_METHOD = "ETRADE_30D_ATM_VAR_V1"
 
 DEFAULT_STATE = copy.deepcopy(_legacy.DEFAULT_STATE)
 DEFAULT_STATE["iv_history"] = {}
+DEFAULT_STATE["iv_history_method"] = IV_RANK_HISTORY_METHOD
 DEFAULT_STATE["auto_refresh_on_login"] = True
 
 
@@ -64,8 +66,13 @@ def _clean_state(raw: Any) -> dict[str, Any]:
     """Preserve legacy state plus production GEX-only settings and IV history."""
     state = _legacy._clean_state(raw)
     history_map: dict[str, list[dict[str, Any]]] = {}
+    raw_method = (
+        str(raw.get("iv_history_method") or "").strip()
+        if isinstance(raw, dict)
+        else ""
+    )
     raw_history = raw.get("iv_history") if isinstance(raw, dict) else None
-    if isinstance(raw_history, dict):
+    if raw_method == IV_RANK_HISTORY_METHOD and isinstance(raw_history, dict):
         for raw_ticker, rows in raw_history.items():
             ticker = _normalize_ticker(raw_ticker)
             if not ticker or not isinstance(rows, list):
@@ -89,6 +96,7 @@ def _clean_state(raw: Any) -> dict[str, Any]:
             if cleaned:
                 history_map[ticker] = cleaned
     state["iv_history"] = history_map
+    state["iv_history_method"] = IV_RANK_HISTORY_METHOD
 
     raw_auto_refresh = (
         raw.get("auto_refresh_on_login", True)
@@ -342,6 +350,7 @@ def _constant_30d_iv(observations: dict[int, float]) -> float | None:
 
     nearest = min(clean, key=lambda dte: abs(dte - IV_RANK_TARGET_DTE))
     return clean[nearest]
+
 
 def _normalize_observed_iv(raw: Any) -> float | None:
     try:
