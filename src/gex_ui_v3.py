@@ -6,6 +6,7 @@ EDIT THIS FILE FOR:
 - production GEX overview overlays, including IV Rank / valuation reference;
 - routing the stable GEX v3 renderer to the production GEX calculation adapter;
 - GEX Refresh All scheduler concurrency when the E*TRADE request-rate gate remains authoritative;
+- GEX Refresh All disconnected behavior that launches the existing E*TRADE authorization flow;
 - live GEX Refresh All progress polling / automatic result rerenders;
 - persisted GEX Settings controls such as auto-refresh-on-login;
 - one-per-login automatic Refresh All startup;
@@ -622,6 +623,7 @@ def render_gex(
     *,
     background_client_factory: Callable[[], Any] | None = None,
     login_marker: str = "",
+    connect_etrade: Callable[[], bool] | None = None,
 ) -> None:
     """Render the proven GEX workspace with calculation parity + IV Rank."""
     vault_key = str(vault_key or "default")
@@ -632,6 +634,7 @@ def render_gex(
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
     original_background_status = _proven._render_background_status
+    original_button = st.button
 
     def overview_with_iv_rank(state: dict[str, Any], result_map: dict[str, Any]) -> str:
         saved_state = _core._apply_iv_rank_history(vault_key, state, result_map)
@@ -686,6 +689,30 @@ def render_gex(
         state = _render_auto_refresh_setting(key, state)
         return original_render_settings(key, state, result_map)
 
+    def refresh_all_connect_button(label: Any, *args: Any, **kwargs: Any):
+        """Route disconnected Refresh All clicks into the existing OAuth start flow."""
+        if kwargs.get("key") != "gexv3_refresh_all" or client is not None:
+            return original_button(label, *args, **kwargs)
+
+        clicked = original_button(label, *args, **kwargs)
+        if not clicked:
+            return False
+
+        if not callable(connect_etrade):
+            st.warning("Connect E*TRADE before refreshing GEX.")
+            return False
+
+        try:
+            started = bool(connect_etrade())
+        except Exception as exc:
+            st.error(f"E*TRADE connection could not be started: {exc}")
+            return False
+
+        if started:
+            st.toast("E*TRADE CONNECTION STARTED // COMPLETE AUTHORIZATION ABOVE")
+            st.rerun()
+        return False
+
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
@@ -693,6 +720,7 @@ def render_gex(
     _proven._decorate_overview = decorate_with_iv_rank
     _proven._render_tradingview_pine = _render_tradingview_pine_compatible
     _proven._render_background_status = _render_background_status_live
+    st.button = refresh_all_connect_button
     try:
         _proven.render_gex(
             client,
@@ -701,6 +729,7 @@ def render_gex(
             background_client_factory=background_client_factory,
         )
     finally:
+        st.button = original_button
         _proven._render_background_status = original_background_status
         _proven._render_tradingview_pine = original_tradingview
         _proven._decorate_overview = original_decorate
