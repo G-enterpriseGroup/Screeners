@@ -491,13 +491,17 @@ _LEGACY_PAGE_MARKDOWN_FRAGMENTS = {
 
 
 def _render_terminal_page_header(active_tab: str) -> None:
-    """Render exactly one compact, consistent header for the active top-level tab."""
+    """Render exactly one compact, consistent header for the active top-level tab.
+
+    Streamlit output is browser-session/rerun scoped, so emit this stylesheet on
+    every render. A process-global "already installed" flag can leave later
+    sessions with unstyled header markup even though another browser received
+    the CSS earlier.
+    """
     spec = _TERMINAL_PAGE_HEADERS.get(str(active_tab))
     if not spec:
         return
-    if not getattr(st, "_raj_page_header_css_installed", False):
-        st.html(_TERMINAL_PAGE_HEADER_CSS)
-        st._raj_page_header_css_installed = True
+    st.html(_TERMINAL_PAGE_HEADER_CSS)
 
     title, subtitle = spec
     markup = (

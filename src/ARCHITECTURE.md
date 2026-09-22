@@ -26,6 +26,7 @@ These are durable terminal preferences and should be checked on every UI change:
 6. For custom components, explicitly control iframe/component height when the visible UI is compact; do not rely on Streamlit's larger default frame height.
 7. **Every editable text field must keep a clearly visible native blinking insertion caret.** Shared caret styling belongs in `src/theme.py`; do not fake the typing cursor with JavaScript or feature-specific pseudo-elements.
 8. **All top-level terminal tabs use one shared page-header system owned by `streamlit_app.py`.** Holdings, Risk Sizing, Option Book, Bull Debit Spread, Muni Screeners, Orders, and GEX must use the same full-width orange title bar, compact subtitle spacing, typography, and left alignment. Do not add competing one-off top-level headers inside feature files; internal feature section headers remain feature-owned.
+9. **Session-scoped CSS must be emitted on every Streamlit render/session.** Do not use process-global "CSS already installed" flags for page/header styles; a later browser session may otherwise receive the markup without the stylesheet.
 
 ## Production feature map
 
@@ -81,6 +82,7 @@ Production path:
 `streamlit_app.py` → `src/option_book_ui.py` → `src/option_book.py` + `src/etrade_client.py` broker preview transport
 
 - Change **ticket layout, strategy controls, legs, quote presentation, local drafts** → `src/option_book_ui.py`.
+- **Visual reference:** E*TRADE Risk Sizing is the canonical Option Book UI reference. Match its orange-filled internal section bars, Courier New typography, 38px control height, 52px metric-card height, 4px vertical rhythm, 8px horizontal rhythm, black surfaces, orange borders, and green/red/blue financial meaning. Copy the visual contract into Option Book locally; do not edit Risk Sizing to style Option Book.
 - Change **net debit/credit math, option-chain normalization, PreviewOrderRequest construction** → `src/option_book.py`.
 - Change **authenticated E*TRADE Preview Order POST transport** → `src/etrade_client.py`; keep OAuth UI changes in `src/etrade_connection_ui_v2.py`.
 - Reuse `src/ticker_autocomplete.py` for ticker/company-name search; do not create a second symbol directory.
