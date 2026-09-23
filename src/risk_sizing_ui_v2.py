@@ -807,103 +807,166 @@ def render_risk_sizing(
             '</div>',
             unsafe_allow_html=True,
         )
-        override_col, table_col = st.columns(
-            [0.17, 1.0],
-            gap="small",
-            vertical_alignment="top",
-        )
-        with override_col:
-            with st.container(key="risk_book_override_controls"):
-                st.html(
-                    """
-                    <style>
-                    .st-key-risk_book_override_controls [data-testid="stVerticalBlock"] {
-                        gap:0 !important;
-                    }
-                    .st-key-risk_book_override_controls .risk-long-term-head {
-                        height:35px;
-                        display:flex;
-                        align-items:center;
-                        justify-content:center;
-                        background:#fb8b1e;
-                        border:1px solid #fb8b1e;
-                        color:#000000 !important;
-                        font-family:"Courier New",monospace;
-                        font-size:.68rem;
-                        font-weight:900;
-                        white-space:nowrap;
-                    }
-                    .st-key-risk_book_override_controls [data-testid="stCheckbox"] {
-                        min-height:35px !important;
-                        height:35px !important;
-                        display:flex !important;
-                        align-items:center !important;
-                        justify-content:center !important;
-                    }
-                    .st-key-risk_book_override_controls [data-testid="stCheckbox"] label {
-                        margin:0 !important;
-                        padding:0 !important;
-                        gap:0 !important;
-                    }
-                    .st-key-risk_book_override_controls [data-testid="stCheckbox"] label > div:first-child {
-                        border:1px solid #fb8b1e !important;
-                        background:#000000 !important;
-                        box-shadow:none !important;
-                    }
-                    .st-key-risk_book_override_controls [data-testid="stCheckbox"] label[data-selected] > div:first-child {
-                        border-color:#fb8b1e !important;
-                        background:#fb8b1e !important;
-                    }
-                    </style>
-                    <div class="risk-long-term-head">LONG-TERM</div>
-                    """
-                )
-                for row_uid, raw_symbol in override_rows.itertuples(index=False, name=None):
-                    row_uid = str(row_uid)
-                    symbol = str(raw_symbol or "").strip().upper()
-                    widget_key = _risk_override_widget_key(account_key, symbol, row_uid)
-                    selected = (
-                        str(account_overrides.get(symbol) or "").upper()
-                        == RISK_INTENT_LONG_TERM
-                    )
-                    # Synchronize duplicate lots of the same ticker before the
-                    # widget is instantiated. This is safe and does not fire
-                    # callbacks; user clicks still cause only Streamlit's normal
-                    # single rerun.
-                    if st.session_state.get(widget_key) != selected:
-                        st.session_state[widget_key] = selected
-                    st.checkbox(
-                        f"{symbol or 'POSITION'} LONG-TERM",
-                        key=widget_key,
-                        label_visibility="collapsed",
-                        on_change=_set_long_term_override,
-                        args=(account_key, symbol, widget_key),
-                        help=(
-                            f"Check to treat {symbol or 'this position'} as a one-off LONG-TERM holding. "
-                            "Unchecked uses the normal classification rule."
-                        ),
-                    )
-
-        with table_col:
-            st.dataframe(
-                view.style.apply(style_risk_book, axis=1),
-                hide_index=True,
-                width="content",
-                height=min(700, max(250, 35 * len(view) + 35)),
-                column_config={
-                    "Sleeve": st.column_config.TextColumn(
-                        "SLEEVE",
-                        width="small",
-                        help="Effective classification after the normal rule plus any manual LONG-TERM override.",
-                    ),
-                    "Symbol": st.column_config.TextColumn("SYMBOL", width="small"),
-                    "Gain/Loss %": st.column_config.NumberColumn(format="%.2f%%"),
-                    "Gain/Loss": st.column_config.NumberColumn(format="$%.2f"),
-                    "Market Value": st.column_config.NumberColumn(format="$%.2f"),
-                    "% Account": st.column_config.NumberColumn(format="%.2f%%"),
-                    "% Tactical Sleeve": st.column_config.NumberColumn(format="%.2f%%"),
-                },
+        with st.container(key="risk_book_grid"):
+            st.html(
+                """
+                <style>
+                /* Risk Book only: make the override cells and dataframe read as one grid. */
+                .st-key-risk_book_grid [data-testid="stHorizontalBlock"] {
+                    gap:0 !important;
+                    align-items:flex-start !important;
+                }
+                .st-key-risk_book_grid [data-testid="stColumn"]:first-child {
+                    flex:0 0 92px !important;
+                    width:92px !important;
+                    min-width:92px !important;
+                }
+                .st-key-risk_book_grid [data-testid="stColumn"]:nth-child(2) {
+                    flex:1 1 auto !important;
+                    min-width:0 !important;
+                }
+                .st-key-risk_book_override_controls > [data-testid="stVerticalBlock"] {
+                    gap:0 !important;
+                }
+                .st-key-risk_book_override_controls [data-testid="stElementContainer"] {
+                    margin:0 !important;
+                    padding:0 !important;
+                    min-height:35px !important;
+                    height:35px !important;
+                }
+                .st-key-risk_book_override_controls .risk-long-term-head {
+                    box-sizing:border-box;
+                    width:92px;
+                    height:35px;
+                    min-height:35px;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    background:#fb8b1e;
+                    border:1px solid #fb8b1e;
+                    color:#000000 !important;
+                    -webkit-text-fill-color:#000000 !important;
+                    font-family:"Courier New",monospace;
+                    font-size:.66rem;
+                    font-weight:900;
+                    line-height:1;
+                    white-space:nowrap;
+                }
+                .st-key-risk_book_override_controls [data-testid="stCheckbox"] {
+                    box-sizing:border-box !important;
+                    width:92px !important;
+                    min-width:92px !important;
+                    min-height:35px !important;
+                    height:35px !important;
+                    margin:0 !important;
+                    padding:0 !important;
+                    display:flex !important;
+                    align-items:center !important;
+                    justify-content:center !important;
+                    background:#000000 !important;
+                    border-left:1px solid #fb8b1e !important;
+                    border-right:1px solid #fb8b1e !important;
+                    border-bottom:1px solid #fb8b1e !important;
+                }
+                .st-key-risk_book_override_controls [data-testid="stCheckbox"] label {
+                    margin:0 !important;
+                    padding:0 !important;
+                    gap:0 !important;
+                    display:flex !important;
+                    align-items:center !important;
+                    justify-content:center !important;
+                }
+                .st-key-risk_book_override_controls [data-testid="stCheckbox"] label > div:first-child {
+                    width:15px !important;
+                    height:15px !important;
+                    min-width:15px !important;
+                    border:1px solid #fb8b1e !important;
+                    border-radius:0 !important;
+                    background:#000000 !important;
+                    box-shadow:none !important;
+                }
+                .st-key-risk_book_override_controls [data-testid="stCheckbox"] label[data-selected] > div:first-child {
+                    border-color:#fb8b1e !important;
+                    background:#fb8b1e !important;
+                }
+                </style>
+                """
             )
+            override_col, table_col = st.columns(
+                [0.13, 1.0],
+                gap="small",
+                vertical_alignment="top",
+            )
+            with override_col:
+                with st.container(key="risk_book_override_controls"):
+                    st.html('<div class="risk-long-term-head">LONG-TERM</div>')
+                    for row_uid, raw_symbol in override_rows.itertuples(index=False, name=None):
+                        row_uid = str(row_uid)
+                        symbol = str(raw_symbol or "").strip().upper()
+                        widget_key = _risk_override_widget_key(account_key, symbol, row_uid)
+                        selected = (
+                            str(account_overrides.get(symbol) or "").upper()
+                            == RISK_INTENT_LONG_TERM
+                        )
+                        # Synchronize duplicate lots of the same ticker before the
+                        # widget is instantiated. This is safe and does not fire
+                        # callbacks; user clicks still cause only Streamlit's normal
+                        # single rerun.
+                        if st.session_state.get(widget_key) != selected:
+                            st.session_state[widget_key] = selected
+                        st.checkbox(
+                            f"{symbol or 'POSITION'} LONG-TERM",
+                            key=widget_key,
+                            label_visibility="collapsed",
+                            on_change=_set_long_term_override,
+                            args=(account_key, symbol, widget_key),
+                            help=(
+                                f"Check to treat {symbol or 'this position'} as a one-off LONG-TERM holding. "
+                                "Unchecked uses the normal classification rule."
+                            ),
+                        )
+
+            with table_col:
+                st.dataframe(
+                    view.style.apply(style_risk_book, axis=1),
+                    hide_index=True,
+                    width="stretch",
+                    height=max(70, 35 * (len(view) + 1)),
+                    row_height=35,
+                    column_config={
+                        "Sleeve": st.column_config.TextColumn(
+                            "SLEEVE",
+                            width="small",
+                            help="Effective classification after the normal rule plus any manual LONG-TERM override.",
+                        ),
+                        "Symbol": st.column_config.TextColumn("SYMBOL", width="small"),
+                        "Gain/Loss %": st.column_config.NumberColumn(
+                            "Gain/Loss %",
+                            format="%.2f%%",
+                            width="small",
+                        ),
+                        "Gain/Loss": st.column_config.NumberColumn(
+                            "Gain/Loss",
+                            format="$%.2f",
+                            width="small",
+                        ),
+                        "Market Value": st.column_config.NumberColumn(
+                            "Market Value",
+                            format="$%.2f",
+                            width="small",
+                        ),
+                        "% Account": st.column_config.NumberColumn(
+                            "% Account",
+                            format="%.2f%%",
+                            width="small",
+                        ),
+                        "% Tactical Sleeve": st.column_config.NumberColumn(
+                            "% Tactical Sleeve",
+                            format="%.2f%%",
+                            width="small",
+                        ),
+                    },
+                )
 
 
     with trade_col:
