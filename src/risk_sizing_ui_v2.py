@@ -92,7 +92,7 @@ def _save_editor_intents(
     """Apply current Risk Book editor choices; return True when state changed."""
     if not isinstance(edited_view, pd.DataFrame):
         return False
-    if "Symbol" not in edited_view.columns or "Intent" not in edited_view.columns:
+    if "Symbol" not in edited_view.columns or "Long-Term?" not in edited_view.columns:
         return False
 
     changed = False
@@ -100,10 +100,10 @@ def _save_editor_intents(
         symbol = str(row.get("Symbol") or "").strip().upper()
         if not symbol:
             continue
-        intent = str(row.get("Intent") or RISK_INTENT_AUTO).strip().upper()
+        wants_long_term = bool(row.get("Long-Term?", False))
         current = str(account_overrides.get(symbol) or "").strip().upper()
 
-        if intent == RISK_INTENT_LONG_TERM:
+        if wants_long_term:
             if current != RISK_INTENT_LONG_TERM:
                 account_overrides[symbol] = RISK_INTENT_LONG_TERM
                 changed = True
@@ -737,6 +737,7 @@ def render_risk_sizing(
         )
     view.loc[~tactical_mask, "% Tactical Sleeve"] = float("nan")
 
+    view["Long-Term?"] = view["Intent"].astype(str).eq(RISK_INTENT_LONG_TERM)
     view["_sleeve_rank"] = view["Sleeve"].map({"TACTICAL": 0, "LONG-TERM": 1}).fillna(2)
     view = view.sort_values(
         ["_sleeve_rank", "Market Value"],
@@ -746,7 +747,7 @@ def render_risk_sizing(
     view = view[
         [
             "Sleeve",
-            "Intent",
+            "Long-Term?",
             "Symbol",
             "Gain/Loss %",
             "Gain/Loss",
@@ -757,7 +758,10 @@ def render_risk_sizing(
     ].reset_index(drop=True)
 
     def style_risk_book(row):
-        styles = [""] * len(row)
+        # st.data_editor does not pass through the terminal's st.dataframe body-color
+        # wrapper. Seed every non-financial cell with the same Bloomberg orange
+        # used by the original Risk Book, then override P&L/sleeve columns below.
+        styles = ["color:" + BB_ORANGE + ";"] * len(row)
         for idx, column in enumerate(row.index):
             value = row.get(column)
             if column == "Sleeve":
@@ -794,7 +798,7 @@ def render_risk_sizing(
         )
         st.markdown(
             '<div class="risk-v9-book-note">'
-            'INTENT: AUTO = NORMAL RULE // LONG-TERM = ONE-OFF OVERRIDE // '
+            'LONG-TERM CHECK = ONE-OFF OVERRIDE // UNCHECKED = NORMAL RULE // '
             'TACTICAL FIRST // P&amp;L RED/GREEN // % ACCOUNT = PORTFOLIO WEIGHT'
             '</div>',
             unsafe_allow_html=True,
@@ -820,14 +824,12 @@ def render_risk_sizing(
                     width="small",
                     help="Effective classification after the normal rule plus any manual INTENT override.",
                 ),
-                "Intent": st.column_config.SelectboxColumn(
-                    "INTENT",
-                    options=list(RISK_INTENT_OPTIONS),
-                    required=True,
+                "Long-Term?": st.column_config.CheckboxColumn(
+                    "LONG-TERM",
                     width="small",
                     help=(
-                        "AUTO follows the normal classification rule. LONG-TERM is a one-off manual override "
-                        "for a ticker you intend to hold structurally even when its current P&L would classify it as tactical."
+                        "Check this only when you want this ticker treated as a one-off LONG-TERM holding. "
+                        "Unchecked follows the normal bond/CUSIP + gain-threshold classification rule."
                     ),
                 ),
                 "Symbol": st.column_config.TextColumn("SYMBOL", width="small"),
