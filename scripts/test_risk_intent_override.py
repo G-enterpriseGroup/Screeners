@@ -60,12 +60,13 @@ def main() -> None:
     assert summary["long_term_value"] == 30_000.0
     assert summary["target_room"] == 15_000.0
 
-    edited = adjusted[["Symbol", "Intent"]].copy()
-    edited.loc[edited["Symbol"].eq("GLD"), "Intent"] = RISK_INTENT_AUTO
+    edited = adjusted[["Symbol"]].copy()
+    edited["Long-Term?"] = adjusted["Intent"].eq(RISK_INTENT_LONG_TERM)
+    edited.loc[edited["Symbol"].eq("GLD"), "Long-Term?"] = False
     assert _save_editor_intents(edited, overrides) is True
     assert "GLD" not in overrides
 
-    edited.loc[edited["Symbol"].eq("GLD"), "Intent"] = RISK_INTENT_LONG_TERM
+    edited.loc[edited["Symbol"].eq("GLD"), "Long-Term?"] = True
     assert _save_editor_intents(edited, overrides) is True
     assert overrides["GLD"] == RISK_INTENT_LONG_TERM
     assert _save_editor_intents(edited, overrides) is False
