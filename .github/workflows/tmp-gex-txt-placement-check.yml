@@ -1,0 +1,46 @@
+name: Temporary GEX TXT Placement Check
+
+on:
+  push:
+    branches:
+      - fix/gex-txt-beside-add
+
+permissions:
+  contents: read
+
+jobs:
+  validate-gex-txt-placement:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+      - name: Syntax check affected production files
+        run: python -m py_compile src/gex_ui_v3.py src/gex_ui_v3_base.py streamlit_app.py
+      - name: Verify TXT links are beside Add Tickers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          base = Path("src/gex_ui_v3_base.py").read_text(encoding="utf-8")
+          ui = Path("src/gex_ui_v3.py").read_text(encoding="utf-8")
+          assert 'add_button_col, etrade_txt_col, cboe_txt_col, saved_col, trash_col = st.columns' in base
+          assert 'with add_button_col:' in base
+          assert 'with etrade_txt_col:' in base
+          assert 'with cboe_txt_col:' in base
+          assert '_render_etrade_txt_control()' in base
+          assert '_render_cboe_txt_control()' in base
+          assert '_render_overview_txt_link' not in ui
+          assert 'f"{source_label} TXT ↗"' in ui
+          print("GEX TXT placement: PASS")
+          PY
+      - name: Run CBOE regression tests
+        run: python scripts/test_gex_cboe.py
+      - name: Run GEX DTE regression tests
+        run: python scripts/test_gex_dte.py
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
