@@ -1,0 +1,45 @@
+name: Temporary GEX CBOE Validation
+
+on:
+  pull_request:
+    paths:
+      - "src/gex_**"
+      - "scripts/test_gex_cboe.py"
+      - "scripts/test_tab_layout.py"
+      - ".github/workflows/gex-cboe-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  gex-cboe-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile changed GEX production files
+        run: >-
+          python -m py_compile
+          src/gex_cboe.py
+          src/gex_github_bridge.py
+          src/gex_ui.py
+          src/gex_ui_v3.py
+          src/gex_ui_v3_base.py
+
+      - name: Test CBOE GEX source
+        run: python scripts/test_gex_cboe.py
+
+      - name: Re-run GEX DTE regression tests
+        run: python scripts/test_gex_dte.py
+
+      - name: Render every production top-level tab
+        run: python scripts/test_tab_layout.py
