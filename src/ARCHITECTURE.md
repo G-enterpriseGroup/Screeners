@@ -4,6 +4,19 @@ This file is the **first place to check before editing the terminal**.
 
 The goal is simple: a change to one feature must not silently change another feature.
 
+## Mandatory pre-edit gate
+
+Before any coding or repository edit:
+
+1. Read the root `AGENTS.md` completely.
+2. Read this `src/ARCHITECTURE.md`.
+3. Read the relevant feature history in `src/TERMINAL_CHANGELOG.md`.
+4. Trace `streamlit_app.py -> feature route -> production owner file`.
+5. Establish an explicit file whitelist for the task.
+6. Do not edit files outside that whitelist unless a proven production dependency requires it.
+
+`AGENTS.md` is the repository-wide change-isolation contract. These architecture rules refine it for Raj's Terminal. If two rules differ, follow the more restrictive scope-preservation rule.
+
 ## Golden rules
 
 1. **Edit the feature owner file, not `terminal_core.py`, for feature UI changes.**
