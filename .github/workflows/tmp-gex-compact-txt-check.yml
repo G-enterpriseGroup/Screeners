@@ -1,0 +1,38 @@
+name: Temporary GEX Compact TXT Check
+
+on:
+  push:
+    branches:
+      - fix/gex-compact-txt-button
+
+permissions:
+  contents: read
+
+jobs:
+  validate-gex-compact-txt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+      - name: Syntax check affected production files
+        run: python -m py_compile src/gex_ui_v3.py streamlit_app.py
+      - name: Verify compact TXT geometry
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/gex_ui_v3.py").read_text(encoding="utf-8")
+          assert '[0.72, 5.28]' in source
+          assert '_render_overview_txt_link("E*TRADE", _ETRADE_BRIDGE_URL)' in source
+          assert '_render_overview_txt_link("CBOE", _CBOE_BRIDGE_URL)' in source
+          print("compact TXT geometry: PASS")
+          PY
+      - name: Run CBOE regression tests
+        run: python scripts/test_gex_cboe.py
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
