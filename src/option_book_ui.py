@@ -110,7 +110,7 @@ _OPTION_BOOK_CSS = """
     -webkit-text-fill-color:var(--ob-orange)!important;
     font-family:"Courier New",monospace!important;
     font-size:.72rem!important;
-    font-weight:900!important;
+    font-weight:800!important;
     white-space:nowrap!important;
     overflow:hidden!important;
     text-overflow:ellipsis!important;
