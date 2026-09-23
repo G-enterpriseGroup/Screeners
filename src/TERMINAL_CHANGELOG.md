@@ -788,3 +788,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS on implementation head in run `35884202256`; final PR head revalidated after temporary CI removal.
 - **Commit SHA:** UI implementation `b6e3bf5e9541c0a426b5f8534ac458c64c21bbdb`.
 - **Lesson:** Source links should remain accessible without competing visually with primary workflow controls.
+
+
+## 2026-09-23 — Move GEX TXT links beside ADD TICKER(S)
+
+- **Feature changed:** GEX top control-row layout.
+- **Exact production file(s) changed:** `src/gex_ui_v3.py`, `src/gex_ui_v3_base.py`; documentation in `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The E*TRADE/CBOE raw TXT links were rendered as a separate row below the GEX subtabs instead of sitting with the related ticker-management controls.
+- **Root cause:** The TXT controls were originally injected inside the two Overview renderers, so they could not share the existing `ADD TICKER(S)` control row.
+- **What was changed:** Removed the separate Overview TXT rows. The shared ticker-management row now renders `ADD TICKER(S)`, `E*TRADE TXT ↗`, and `CBOE TXT ↗` directly beside each other, followed by the saved-ticker selector and delete control. The raw bridge URLs and bridge publishing behavior are unchanged.
+- **Important behavior that must remain:** Both raw TXT links stay separate, remain compact, and keep pointing to the existing E*TRADE and CBOE bridge files. The two Overview tabs themselves no longer reserve an extra TXT-link row.
+- **Files/features intentionally NOT changed:** GEX calculations, CBOE normalization, bridge publishing, TradingView source selection, DTE logic, IV Rank, E*TRADE OAuth/session plumbing, Risk Sizing, Holdings, navigation, and `src/terminal_core.py`.
+- **Tests performed:** Re-read `src/ARCHITECTURE.md` and current GEX change history; traced the production GEX route. Temporary CI run `35894650708` installed production requirements, byte-compiled `src/gex_ui_v3.py`, `src/gex_ui_v3_base.py`, and `streamlit_app.py`; verified both TXT controls are in the same row immediately after `ADD TICKER(S)`; passed `scripts/test_gex_cboe.py`; passed `scripts/test_gex_dte.py`; and rendered all production top-level tabs via `scripts/test_tab_layout.py`.
+- **Architecture guard result:** PASS on implementation head `e6aad34b3255b43d3cd1885a1da683fd85e90313`; final PR head is revalidated before merge.
+- **Commit SHA:** layout hook `878ad8516f21b64e82fa177f680fc26e80d58284`; production wiring `e6aad34b3255b43d3cd1885a1da683fd85e90313`.
+- **Lesson:** Related secondary controls should live in the same control row as the primary action rather than creating a separate row and wasting vertical space.
