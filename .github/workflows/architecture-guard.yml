@@ -7,13 +7,15 @@ on:
       - "streamlit_app.py"
       - "src/**"
       - "scripts/validate_architecture.py"
-      - ".github/workflows/architecture-guard.yml"
+      - ".github/workflows/**"
+      - "scripts/validate_workflows.py"
   pull_request:
     paths:
       - "streamlit_app.py"
       - "src/**"
       - "scripts/validate_architecture.py"
-      - ".github/workflows/architecture-guard.yml"
+      - ".github/workflows/**"
+      - "scripts/validate_workflows.py"
 
 permissions:
   contents: read
@@ -32,3 +34,9 @@ jobs:
 
       - name: Validate production architecture
         run: python scripts/validate_architecture.py
+
+      - name: Install workflow YAML validator dependency
+        run: python -m pip install PyYAML==6.0.3
+
+      - name: Validate active workflow YAML
+        run: python scripts/validate_workflows.py
