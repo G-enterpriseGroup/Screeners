@@ -14,11 +14,14 @@ step-by-step workflow and hoverable, number-specific calculation explanations.
 
 from __future__ import annotations
 
+import hashlib
 import html
+from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, quote_summary
 from src.risk_sizing import (
@@ -42,6 +45,54 @@ RISK_INTENT_AUTO = "AUTO"
 RISK_INTENT_LONG_TERM = "LONG-TERM"
 RISK_INTENT_OPTIONS = (RISK_INTENT_AUTO, RISK_INTENT_LONG_TERM)
 
+_RISK_INTENT_COMPONENT_PATH = (
+    Path(__file__).parent / "components" / "risk_intent_state_v1"
+)
+_risk_intent_state_component = components.declare_component(
+    "raj_risk_intent_state_v1",
+    path=str(_RISK_INTENT_COMPONENT_PATH),
+)
+
+
+@st.cache_resource
+def _risk_intent_vault() -> dict[str, dict[str, Any]]:
+    """Process-local fallback for LONG-TERM intent across page refreshes."""
+    return {}
+
+
+def _normalize_intent_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _risk_intent_account_token(account_key: str) -> str:
+    """Hash the broker account key before using it in browser-storage keys."""
+    raw = str(account_key or "default").encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _risk_intent_session_key(account_key: str) -> str:
+    return "_risk_intent_state::" + _risk_intent_account_token(account_key)
+
+
+def _risk_intent_storage_key(account_key: str) -> str:
+    return "raj-terminal-risk-intent-v1:" + _risk_intent_account_token(account_key)
+
+
+def _clean_risk_intent_state(raw: Any) -> dict[str, Any]:
+    """Return the tiny persisted schema: revision + checked ticker symbols."""
+    revision = 0
+    tickers: list[str] = []
+    if isinstance(raw, dict):
+        try:
+            revision = max(0, int(raw.get("revision", 0) or 0))
+        except (TypeError, ValueError):
+            revision = 0
+        for value in raw.get("tickers", []) or []:
+            ticker = _normalize_intent_symbol(value)
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+    return {"revision": revision, "tickers": tickers[:500]}
+
 
 def _account_intent_overrides(account_key: str) -> dict[str, str]:
     """Return account-scoped one-off holding-intent overrides for this session."""
@@ -56,6 +107,136 @@ def _account_intent_overrides(account_key: str) -> dict[str, str]:
         account_overrides = {}
         all_overrides[key] = account_overrides
     return account_overrides
+
+
+def _store_risk_intent_state(
+    account_key: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    cleaned = _clean_risk_intent_state(state)
+    st.session_state[_risk_intent_session_key(account_key)] = cleaned
+    _risk_intent_vault()[_risk_intent_storage_key(account_key)] = dict(cleaned)
+    return cleaned
+
+
+def _current_risk_intent_state(account_key: str) -> dict[str, Any]:
+    session_state = st.session_state.get(_risk_intent_session_key(account_key))
+    if isinstance(session_state, dict):
+        return _clean_risk_intent_state(session_state)
+
+    vault_state = _risk_intent_vault().get(_risk_intent_storage_key(account_key))
+    if isinstance(vault_state, dict):
+        return _store_risk_intent_state(account_key, vault_state)
+
+    # Seamlessly migrate any LONG-TERM choices already made in this live
+    # session before browser persistence existed.
+    account_overrides = _account_intent_overrides(account_key)
+    tickers = sorted(
+        ticker
+        for ticker, intent in account_overrides.items()
+        if _normalize_intent_symbol(intent) == RISK_INTENT_LONG_TERM
+        and _normalize_intent_symbol(ticker)
+    )
+    return _store_risk_intent_state(
+        account_key,
+        {"revision": 0, "tickers": tickers},
+    )
+
+
+def _reconcile_risk_intent_state(
+    state: dict[str, Any],
+    active_symbols: list[str],
+) -> tuple[dict[str, Any], bool]:
+    """Drop saved LONG-TERM tickers only after they disappear from holdings."""
+    cleaned = _clean_risk_intent_state(state)
+    active = {
+        _normalize_intent_symbol(symbol)
+        for symbol in active_symbols
+        if _normalize_intent_symbol(symbol)
+    }
+    kept = [ticker for ticker in cleaned["tickers"] if ticker in active]
+    changed = kept != cleaned["tickers"]
+    if changed:
+        cleaned["revision"] += 1
+        cleaned["tickers"] = kept
+    return cleaned, changed
+
+
+def _hydrate_account_overrides(
+    account_key: str,
+    state: dict[str, Any],
+) -> dict[str, str]:
+    account_overrides = _account_intent_overrides(account_key)
+    saved = set(_clean_risk_intent_state(state)["tickers"])
+
+    for ticker in list(account_overrides):
+        if (
+            _normalize_intent_symbol(account_overrides.get(ticker))
+            == RISK_INTENT_LONG_TERM
+            and _normalize_intent_symbol(ticker) not in saved
+        ):
+            account_overrides.pop(ticker, None)
+
+    for ticker in saved:
+        account_overrides[ticker] = RISK_INTENT_LONG_TERM
+    return account_overrides
+
+
+def _load_persisted_intent_overrides(
+    account_key: str,
+    active_symbols: list[str],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Load browser-backed LONG-TERM choices and prune sold positions."""
+    state = _current_risk_intent_state(account_key)
+    browser = _risk_intent_state_component(
+        storage_key=_risk_intent_storage_key(account_key),
+        server_state=state,
+        key="raj_risk_intent_state_reader_" + _risk_intent_account_token(account_key),
+        default=None,
+    )
+    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
+        browser_state = _clean_risk_intent_state(browser["state"])
+        if browser_state["revision"] > state["revision"] or (
+            state["revision"] == 0
+            and not state["tickers"]
+            and browser_state["tickers"]
+        ):
+            state = browser_state
+
+    state, _ = _reconcile_risk_intent_state(state, active_symbols)
+    state = _store_risk_intent_state(account_key, state)
+    return _hydrate_account_overrides(account_key, state), state
+
+
+def _sync_risk_intent_browser(
+    account_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Write checked tickers to this browser without exposing brokerage data."""
+    _risk_intent_state_component(
+        storage_key=_risk_intent_storage_key(account_key),
+        server_state=_clean_risk_intent_state(state),
+        key="raj_risk_intent_state_writer_" + _risk_intent_account_token(account_key),
+        default=None,
+    )
+
+
+def _save_risk_intent_overrides(
+    account_key: str,
+    account_overrides: dict[str, str],
+) -> dict[str, Any]:
+    state = _current_risk_intent_state(account_key)
+    tickers = sorted(
+        {
+            _normalize_intent_symbol(ticker)
+            for ticker, intent in account_overrides.items()
+            if _normalize_intent_symbol(intent) == RISK_INTENT_LONG_TERM
+            and _normalize_intent_symbol(ticker)
+        }
+    )
+    state["revision"] += 1
+    state["tickers"] = tickers
+    return _store_risk_intent_state(account_key, state)
 
 
 def _apply_intent_overrides(
@@ -113,6 +294,7 @@ def _set_long_term_override(
         account_overrides[normalized_symbol] = RISK_INTENT_LONG_TERM
     else:
         account_overrides.pop(normalized_symbol, None)
+    _save_risk_intent_overrides(account_key, account_overrides)
 
 
 # ==============================
@@ -563,6 +745,16 @@ def render_risk_sizing(
 
     raw_holdings = holdings_cache.get(account_key) or []
     normalized = _normalized_holdings(raw_holdings)
+    active_symbols = (
+        normalized["Symbol"].astype(str).str.strip().str.upper().tolist()
+        if "Symbol" in normalized.columns
+        else []
+    )
+    account_overrides, risk_intent_state = _load_persisted_intent_overrides(
+        account_key,
+        active_symbols,
+    )
+    _sync_risk_intent_browser(account_key, risk_intent_state)
     if normalized.empty:
         st.info("No positions were returned for the selected account.")
         return
@@ -642,7 +834,6 @@ def render_risk_sizing(
             )
         )
 
-    account_overrides = _account_intent_overrides(account_key)
     classified = classify_holdings(normalized, gain_threshold)
     # Preserve automatic-rule order and source-row identity before manual
     # overrides. A manual checkbox may change Sleeve, but it must never change
