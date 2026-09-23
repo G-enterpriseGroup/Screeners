@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    html,body{margin:0;padding:0;background:transparent;overflow:hidden}
+  </style>
+</head>
+<body>
+<script>
+(function(){
+  let lastEvent = "";
+  function post(type,data){
+    window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},data),"*");
+  }
+  function ready(){post("streamlit:componentReady",{apiVersion:1});}
+  function height(){post("streamlit:setFrameHeight",{height:0});}
+  function send(value){post("streamlit:setComponentValue",{value:value,dataType:"json"});}
+  function clean(obj){
+    if(!obj || typeof obj!=="object") return null;
+    return obj;
+  }
+  function read(key){
+    try{
+      const raw = localStorage.getItem(key);
+      return raw ? clean(JSON.parse(raw)) : null;
+    }catch(_){return null;}
+  }
+  function write(key,state){
+    try{localStorage.setItem(key,JSON.stringify(state));return true}catch(_){return false}
+  }
+  function rev(state){
+    const n = Number(state && state.revision || 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function tickers(state){
+    return Array.isArray(state && state.tickers) ? state.tickers.join(",") : "";
+  }
+  function apply(args){
+    const key = String(args.storage_key || "raj-terminal-risk-intent-v1");
+    const server = clean(args.server_state) || {};
+    const browser = read(key);
+    const sr = rev(server), br = rev(browser);
+    const event = key+"|"+sr+"|"+br+"|"+tickers(server)+"|"+tickers(browser);
+    if(event===lastEvent){height();return}
+    lastEvent = event;
+
+    if(browser && (br > sr || (sr===0 && !tickers(server) && tickers(browser)))){
+      send({state:browser,source:"browser"});
+      height();
+      return;
+    }
+    write(key,server);
+    height();
+  }
+  window.addEventListener("message",e=>{
+    if(e.data && e.data.type==="streamlit:render") apply(e.data.args||{});
+  });
+  ready();height();
+})();
+</script>
+</body>
+</html>
