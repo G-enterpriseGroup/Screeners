@@ -1262,6 +1262,8 @@ def render_gex(
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
+    original_cboe_refresh_control = _proven._base._render_cboe_refresh_all_control
+    original_cboe_refresh_runner = _proven._base._run_cboe_refresh_all
     original_render_cboe_overview = _proven._base._render_cboe_overview
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
@@ -1391,6 +1393,8 @@ def render_gex(
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
+    _proven._base._render_cboe_refresh_all_control = _render_cboe_refresh_all_control
+    _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
     _proven._base._render_settings = render_settings_with_auto_refresh
     _proven._decorate_overview = decorate_with_iv_rank
@@ -1411,6 +1415,8 @@ def render_gex(
         _proven._decorate_overview = original_decorate
         _proven._base._render_settings = original_render_settings
         _proven._base._render_cboe_overview = original_render_cboe_overview
+        _proven._base._run_cboe_refresh_all = original_cboe_refresh_runner
+        _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
