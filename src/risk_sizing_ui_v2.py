@@ -785,12 +785,24 @@ def render_risk_sizing(
                 .st-key-risk_book_native_grid > [data-testid="stVerticalBlock"]{
                     gap:0!important;
                 }
+                /*
+                   RISK BOOK TYPOGRAPHY / RHYTHM
+                   Keep this local grid on the same production tokens already
+                   used by the v9 Risk interface: Courier New, 35px data rows,
+                   8px horizontal cell padding, and one 0.70rem table type size.
+                   Section bars remain owned by .risk-v9-section at 0.78rem.
+                */
+                .st-key-risk_book_native_grid{
+                    --risk-book-row-height:35px;
+                    --risk-book-font-size:.70rem;
+                    --risk-book-cell-pad:8px;
+                }
                 .st-key-risk_book_native_grid [data-testid="stHorizontalBlock"]{
                     gap:0!important;
                     margin:0!important;
                     padding:0!important;
-                    min-height:35px!important;
-                    height:35px!important;
+                    min-height:var(--risk-book-row-height)!important;
+                    height:var(--risk-book-row-height)!important;
                     align-items:stretch!important;
                 }
                 .st-key-risk_book_native_grid [data-testid="stColumn"]{
@@ -799,8 +811,8 @@ def render_risk_sizing(
                     margin:0!important;
                 }
                 .st-key-risk_book_native_grid [data-testid="stElementContainer"]{
-                    min-height:35px!important;
-                    height:35px!important;
+                    min-height:var(--risk-book-row-height)!important;
+                    height:var(--risk-book-row-height)!important;
                     margin:0!important;
                     padding:0!important;
                 }
@@ -809,9 +821,9 @@ def render_risk_sizing(
                     display:flex;
                     align-items:center;
                     width:100%;
-                    height:35px;
-                    min-height:35px;
-                    padding:0 6px;
+                    height:var(--risk-book-row-height);
+                    min-height:var(--risk-book-row-height);
+                    padding:0 var(--risk-book-cell-pad);
                     margin:0;
                     overflow:hidden;
                     white-space:nowrap;
@@ -822,9 +834,11 @@ def render_risk_sizing(
                     color:#fb8b1e!important;
                     -webkit-text-fill-color:#fb8b1e!important;
                     font-family:"Courier New",monospace;
-                    font-size:.66rem;
+                    font-size:var(--risk-book-font-size);
                     font-weight:800;
                     line-height:1;
+                    letter-spacing:0;
+                    font-variant-numeric:tabular-nums;
                 }
                 .st-key-risk_book_native_grid .risk-book-left{
                     border-left:1px solid #fb8b1e;
@@ -835,7 +849,7 @@ def render_risk_sizing(
                     color:#000000!important;
                     -webkit-text-fill-color:#000000!important;
                     font-weight:900;
-                    font-size:.62rem;
+                    font-size:var(--risk-book-font-size);
                     justify-content:flex-start;
                     text-transform:uppercase;
                 }
@@ -865,8 +879,8 @@ def render_risk_sizing(
                 .st-key-risk_book_native_grid [data-testid="stCheckbox"]{
                     box-sizing:border-box!important;
                     width:100%!important;
-                    height:35px!important;
-                    min-height:35px!important;
+                    height:var(--risk-book-row-height)!important;
+                    min-height:var(--risk-book-row-height)!important;
                     margin:0!important;
                     padding:0!important;
                     display:flex!important;
@@ -879,7 +893,7 @@ def render_risk_sizing(
                 }
                 .st-key-risk_book_native_grid [data-testid="stCheckbox"] label{
                     width:100%!important;
-                    height:35px!important;
+                    height:var(--risk-book-row-height)!important;
                     margin:0!important;
                     padding:0!important;
                     gap:0!important;
@@ -920,8 +934,12 @@ def render_risk_sizing(
                 """
             )
 
-            grid_spec = [0.18, 0.64, 0.27, 0.36, 0.37, 0.46, 0.34]
-            header = st.columns(grid_spec, gap="small", vertical_alignment="center")
+            # Match the 8px/compact Risk rhythm without squeezing the
+            # interactive LONG-TERM heading. gap=None is the native Streamlit
+            # no-gap contract, so the grid does not depend on overriding a
+            # default 1rem column gap.
+            grid_spec = [0.32, 0.78, 0.34, 0.44, 0.48, 0.58, 0.42]
+            header = st.columns(grid_spec, gap=None, vertical_alignment="center")
             header_labels = (
                 "LONG-TERM",
                 "SLEEVE / % TACTICAL",
@@ -952,7 +970,7 @@ def render_risk_sizing(
                 market_value = float(source_row.get("Market Value") or 0.0)
                 account_pct = float(source_row.get("% Account") or 0.0)
 
-                cells = st.columns(grid_spec, gap="small", vertical_alignment="center")
+                cells = st.columns(grid_spec, gap=None, vertical_alignment="center")
                 widget_key = _risk_override_widget_key(account_key, symbol, row_uid)
                 selected = (
                     str(account_overrides.get(symbol) or "").upper()
@@ -965,6 +983,7 @@ def render_risk_sizing(
                         f"{symbol or 'POSITION'} LONG-TERM",
                         key=widget_key,
                         label_visibility="collapsed",
+                        width="stretch",
                         disabled=not bool(symbol),
                         on_change=_set_long_term_override,
                         args=(account_key, symbol, widget_key),
