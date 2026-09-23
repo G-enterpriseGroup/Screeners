@@ -1023,7 +1023,7 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Important behavior that must remain:** A feature request authorizes only the smallest owner-file patch needed for that feature. Theme/global CSS/shared infrastructure are not authorized unless explicitly requested or proven unavoidable. Convenience never justifies cross-feature edits.
 - **Files/features intentionally NOT changed:** All Streamlit runtime code, Risk Sizing behavior/math/UI, GEX, Holdings, OAuth/session logic, navigation, Option Book, Bull Debit, Muni, Orders, `src/theme.py`, `src/terminal_core.py`, `.streamlit/config.toml`, and `streamlit_app.py`.
 - **Tests / verification:** Read the production architecture and prior changelog before changes; confirmed no prior `AGENTS.md` or `.github/copilot-instructions.md`; branch diff is restricted to instruction/documentation files; no runtime code was modified, so feature syntax/runtime behavior is unchanged. Architecture guard/CI is checked on the PR/head before merge.
-- **Architecture guard result:** Pending branch/PR CI at entry creation; must pass before merge.
+- **Architecture guard result:** PASS on PR #51 instruction head `887c815a8ca64bb659850118d5e9236d9e630f52` in Terminal Architecture Guard run `35929150533`.
 - **Commit SHAs:** `AGENTS.md` commit `1cf213ee72fc4d575f185276a20f4e73b1acc291`; GitHub agent instruction commit `3af198952b526cf8c6341111a0ece8b0518ee3b5`; architecture pre-edit gate commit `45af51b3c08a2a82e9a583a95c9e3f1a0a7bb7f5`.
 - **Lesson:** Instruction safety must be repository-visible and checked before coding, not only remembered conversationally. Future agents must establish scope before editing and reject their own unrelated diff lines before commit.
 
