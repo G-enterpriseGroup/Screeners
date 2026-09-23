@@ -767,8 +767,7 @@ def render_risk_sizing(
         )
         st.html(
             '<div class="risk-v9-book-note">'
-            'LONG-TERM CHECK = ONE-OFF OVERRIDE // CHECK/UNCHECK UPDATES SLEEVE MATH // '
-            'P&amp;L RED/GREEN // % ACCOUNT = PORTFOLIO WEIGHT'
+            'Check LONG-TERM to override classification.'
             '</div>',
         )
 
@@ -785,10 +784,10 @@ def render_risk_sizing(
                    RISK BOOK TYPOGRAPHY / RHYTHM
                    Match workspace metric values and section bars at 1.02rem.
                    Native zero-gap rows and HTML avoid Markdown's negative
-                   margin. Keep 56px padded rows, without boxed cell artifacts.
+                   margin. Keep readable 48px rows and continuous single-pixel cell borders.
                 */
                 .st-key-risk_book_native_grid{
-                    --risk-book-row-height:56px;
+                    --risk-book-row-height:48px;
                     --risk-book-font-size:1.02rem;
                     --risk-book-cell-pad:8px;
                 }
@@ -821,20 +820,21 @@ def render_risk_sizing(
                     width:100%;
                     height:var(--risk-book-row-height);
                     min-height:var(--risk-book-row-height);
-                    padding:6px var(--risk-book-cell-pad);
+                    padding:4px var(--risk-book-cell-pad);
                     margin:0;
                     overflow:hidden;
                     white-space:normal;
                     overflow-wrap:anywhere;
                     text-overflow:ellipsis;
                     background:#000000;
-                    border-bottom:1px solid rgba(251,139,30,.28);
+                    border-right:1px solid #a65c16;
+                    border-bottom:1px solid #a65c16;
                     color:#fb8b1e!important;
                     -webkit-text-fill-color:#fb8b1e!important;
                     font-family:"Courier New",monospace;
                     font-size:var(--risk-book-font-size);
                     font-weight:800;
-                    line-height:1.25;
+                    line-height:1.15;
                     letter-spacing:0;
                     font-variant-numeric:tabular-nums;
                 }
@@ -844,6 +844,8 @@ def render_risk_sizing(
                 .st-key-risk_book_native_grid .risk-book-head{
                     background:#fb8b1e;
                     border-top:1px solid #fb8b1e;
+                    border-right-color:#7c430d;
+                    border-bottom-color:#7c430d;
                     color:#000000!important;
                     -webkit-text-fill-color:#000000!important;
                     font-weight:900;
@@ -886,7 +888,8 @@ def render_risk_sizing(
                     justify-content:center!important;
                     background:#000000!important;
                     border-left:1px solid #fb8b1e!important;
-                    border-bottom:1px solid rgba(251,139,30,.28)!important;
+                    border-right:1px solid #a65c16!important;
+                    border-bottom:1px solid #a65c16!important;
                 }
                 .st-key-risk_book_native_grid [data-testid="stCheckbox"] label{
                     width:100%!important;
@@ -935,16 +938,25 @@ def render_risk_sizing(
             # interactive LONG-TERM heading. gap=None is the native Streamlit
             # no-gap contract, so the grid does not depend on overriding a
             # default 1rem column gap.
-            grid_spec = [0.42, 0.65, 0.45, 0.46, 0.50, 0.56, 0.43]
+            grid_spec = [0.40, 0.68, 0.50, 0.42, 0.49, 0.57, 0.38]
             header = st.columns(grid_spec, gap=None, vertical_alignment="center")
             header_labels = (
                 "LONG-TERM",
-                "SLEEVE / % TACTICAL",
+                "SLEEVE / %",
                 "SYMBOL",
-                "GAIN/LOSS %",
-                "GAIN/LOSS",
-                "MARKET VALUE",
-                "% ACCOUNT",
+                "P&L %",
+                "P&L",
+                "VALUE",
+                "% ACCT",
+            )
+            header_descriptions = (
+                "Long-term classification override",
+                "Sleeve and percentage of target tactical sleeve",
+                "Symbol",
+                "Gain/loss percentage",
+                "Gain/loss dollars",
+                "Market value",
+                "Percentage of account value",
             )
             for idx, (column, label) in enumerate(zip(header, header_labels)):
                 css_class = "risk-book-cell risk-book-head"
@@ -953,7 +965,7 @@ def render_risk_sizing(
                 elif idx >= 3:
                     css_class += " risk-book-right"
                 column.html(
-                    f'<div class="{css_class}">{html.escape(label)}</div>',
+                    f'<div class="{css_class}" title="{header_descriptions[idx]}">{html.escape(label)}</div>',
                 )
 
             for _, source_row in view.iterrows():
@@ -991,7 +1003,7 @@ def render_risk_sizing(
 
                 if sleeve == "TACTICAL" and pd.notna(tactical_pct):
                     sleeve_html = (
-                        'TACTICAL <span class="risk-book-blue">// '
+                        'TACTICAL <span class="risk-book-blue">'
                         + f"{float(tactical_pct):.2f}%"
                         + "</span>"
                     )
@@ -1055,8 +1067,7 @@ def render_risk_sizing(
             )
 
     st.caption(
-        "RISK ENGINE // hover any circled ? on the number cards for the exact formula using the current values. "
-        "For stocks/ETFs, risk = shares x distance to stop. For defined-risk spreads, max loss is the risk."
+        "Hover ? for formulas. Stock risk = shares × stop distance; spread risk = maximum loss."
     )
 
     _render_crown_reference()

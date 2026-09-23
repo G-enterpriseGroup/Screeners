@@ -128,7 +128,7 @@ def _unused_risk_value(label: str, value: str, help_text: str) -> tuple[str, str
             if budget > 0:
                 pct = unused / budget * 100.0
                 return (
-                    f"{value} // {pct:.2f}%",
+                    f"{value} ({pct:.2f}%)",
                     f"{help_text} UNUSED RISK % = {unused:,.2f} / {budget:,.2f} x 100 = {pct:.2f}%.",
                 )
     except (TypeError, ValueError):
@@ -167,6 +167,7 @@ def _render_css() -> None:
         <style>
         /* Stack only this two-pane workspace when readable columns cannot fit. */
         .st-key-risk_workspace{container-type:inline-size;}
+        .st-key-risk_workspace > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] > [data-testid="stVerticalBlock"]{gap:8px!important;}
         @container (max-width:1300px){
             .st-key-risk_workspace > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]{
                 flex-direction:column!important;
@@ -183,7 +184,7 @@ def _render_css() -> None:
             height:36px;
             min-height:36px;
             box-sizing:border-box;
-            margin:0 0 5px 0;
+            margin:0;
             padding:0 10px;
             border:1px solid #fb8b1e;
             background:#fb8b1e;
@@ -199,9 +200,9 @@ def _render_css() -> None:
         .risk-v9-book-note{
             display:flex;
             align-items:center;
-            min-height:24px;
+            min-height:20px;
             box-sizing:border-box;
-            margin:0 0 5px 0;
+            margin:0;
             padding:0;
             color:#fb8b1e!important;
             -webkit-text-fill-color:#fb8b1e!important;
@@ -264,7 +265,7 @@ def _render_css() -> None:
         }
         .st-key-risk_part2_panel .rs9-card{
             height:auto!important;
-            min-height:60px!important;
+            min-height:56px!important;
             box-sizing:border-box!important;
             padding:6px 8px!important;
         }
@@ -357,9 +358,9 @@ def _section_header_markdown(original_markdown):
     def wrapped(body, *args, **kwargs):
         text = str(body).strip()
         if text == "**1 // CLASSIFY THE CURRENT BOOK**":
-            return st.html('<div class="risk-v9-section">1 // CLASSIFY THE CURRENT BOOK</div>')
+            return st.html('<div class="risk-v9-section">1. CLASSIFY THE CURRENT BOOK</div>')
         if text == "**2 // SIZE THE NEXT TRADE**":
-            return st.html('<div class="risk-v9-section">2 // SIZE THE NEXT TRADE</div>')
+            return st.html('<div class="risk-v9-section">2. SIZE THE NEXT TRADE</div>')
         return original_markdown(body, *args, **kwargs)
     return wrapped
 
