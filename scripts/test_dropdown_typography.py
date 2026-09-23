@@ -51,4 +51,30 @@ require(CORE, '_account_picker("holdings_account")', "Holdings shared account pi
 require(CORE, '_account_picker("orders_account")', "Orders shared account picker")
 require(RISK, 'account_picker("risk_sizing_account")', "Risk shared account picker")
 
+
+
+# The shared E*TRADE account picker must use one explicit typography contract
+# across its label, React Aria closed value, and detached opened listbox rows.
+require(
+    THEME,
+    '[data-testid="stSelectbox"] input[role="combobox"][aria-label="E*TRADE Account"]',
+    "E*TRADE account combobox selector",
+)
+require(
+    THEME,
+    '[role="listbox"][aria-label="E*TRADE Account"] [role="option"] *',
+    "E*TRADE account listbox selector",
+)
+account_block_start = THEME.index("E*TRADE ACCOUNT PICKER TYPOGRAPHY")
+account_block_end = THEME.index("select:not(:disabled)", account_block_start)
+account_css = THEME[account_block_start:account_block_end]
+for declaration in (
+    'font-family:"Courier New",Courier,monospace !important;',
+    "font-size:14px !important;",
+    "font-weight:700 !important;",
+    "font-synthesis:none !important;",
+    "text-rendering:geometricPrecision !important;",
+):
+    require(account_css, declaration, f"account typography declaration {declaration}")
+
 print("dropdown typography regression: PASS")
