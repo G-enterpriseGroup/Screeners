@@ -244,6 +244,14 @@ _proven._run_background_refresh = _run_background_refresh_with_master_export
 # CBOE OVERVIEW / SEPARATE MASTER A6
 # ==============================
 _CBOE_MAX_WORKERS = 8
+_ETRADE_BRIDGE_URL = (
+    "https://raw.githubusercontent.com/G-enterpriseGroup/Screeners/"
+    "gex-bridge-data/bridge/latest_gex.txt"
+)
+_CBOE_BRIDGE_URL = (
+    "https://raw.githubusercontent.com/G-enterpriseGroup/Screeners/"
+    "gex-bridge-data/bridge/latest_gex_cboe.txt"
+)
 _CBOE_MASTER_A6_STATIC_PATH = (
     Path(__file__).resolve().parents[1] / "static" / "latest_gex_cboe.txt"
 )
@@ -466,6 +474,23 @@ def _decorate_cboe_overview_markup(
 
     markup = re.sub(r"<tr>(.*?)</tr>", add_source_cell, markup, flags=re.DOTALL)
     return _IV_REFERENCE_CSS + markup
+
+
+def _render_overview_txt_link(source_label: str, url: str) -> None:
+    """Render one compact source TXT row; both source tabs use identical geometry."""
+    link_col, note_col = st.columns(
+        [1.45, 4.55],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with link_col:
+        st.link_button(
+            f"OPEN {source_label} TXT ↗",
+            url,
+            width="stretch",
+        )
+    with note_col:
+        st.caption(f"{source_label} MASTER A6 // RAW TXT")
 
 
 def _render_cboe_refresh_all_control(
@@ -1307,6 +1332,7 @@ def render_gex(
             login_marker,
             overview_touch,
         )
+        _render_overview_txt_link("E*TRADE", _ETRADE_BRIDGE_URL)
         return original_render_overview(
             overview_client,
             key,
@@ -1327,6 +1353,7 @@ def render_gex(
         key: str,
         state: dict[str, Any],
     ) -> None:
+        _render_overview_txt_link("CBOE", _CBOE_BRIDGE_URL)
         _render_cboe_overview(key, state, original_overview)
 
     def render_tradingview_with_sources(
