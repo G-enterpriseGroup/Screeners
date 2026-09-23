@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.risk_sizing import classify_holdings, sleeve_summary
 from src.risk_sizing_ui_v2 import (
