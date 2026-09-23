@@ -241,6 +241,243 @@ _proven._run_background_refresh = _run_background_refresh_with_master_export
 
 
 # ==============================
+# CBOE OVERVIEW / SEPARATE MASTER A6
+# ==============================
+_CBOE_MAX_WORKERS = 8
+_CBOE_MASTER_A6_STATIC_PATH = (
+    Path(__file__).resolve().parents[1] / "static" / "latest_gex_cboe.txt"
+)
+_CBOE_BRIDGE_URL = (
+    "https://raw.githubusercontent.com/G-enterpriseGroup/Screeners/"
+    "gex-bridge-data/bridge/latest_gex_cboe.txt"
+)
+
+
+def _publish_cboe_master_a6(
+    vault_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Publish CBOE results separately; never overwrite the E*TRADE bridge."""
+    snapshot = cboe_snapshot(vault_key)
+    result_map = snapshot.get("results") or {}
+    failures = snapshot.get("failures") or {}
+    tickers = [
+        ticker
+        for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
+        if ticker
+    ]
+    if not result_map or not tickers:
+        return
+
+    parser_text = _proven._google_sheets_master_text(
+        result_map,
+        tickers,
+        failures,
+    ).strip()
+    if not parser_text:
+        return
+
+    quoted = f'"{parser_text}"'
+    try:
+        path = _CBOE_MASTER_A6_STATIC_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(quoted, encoding="utf-8")
+        temporary.replace(path)
+    except Exception:
+        pass
+
+    if _GEX_GITHUB_TOKEN:
+        try:
+            publish_latest_gex_cboe(_GEX_GITHUB_TOKEN, quoted)
+        except Exception:
+            pass
+
+
+def _refresh_cboe_batch(
+    vault_key: str,
+    state: dict[str, Any],
+    tickers: list[str],
+    *,
+    replace_all: bool,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Fetch CBOE tickers concurrently; Streamlit updates stay on the UI thread."""
+    normalized: list[str] = []
+    for raw in tickers:
+        ticker = _core._normalize_ticker(raw)
+        if ticker and ticker not in normalized:
+            normalized.append(ticker)
+    if not normalized:
+        return {}, {}
+
+    results: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    progress = st.progress(0.0, text=f"CBOE GEX // 0/{len(normalized)}")
+    workers = max(1, min(_CBOE_MAX_WORKERS, len(normalized)))
+
+    def calculate(ticker: str) -> dict[str, Any]:
+        dte = int(
+            state.get("dte_overrides", {}).get(
+                ticker,
+                state.get("global_dte", 45),
+            )
+        )
+        return build_cboe_gex(
+            ticker,
+            dte,
+            str(state.get("timezone") or "America/New_York"),
+            str(state.get("wall_value_mode") or "NET_GEX"),
+        )
+
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="raj-cboe-gex",
+    ) as executor:
+        future_map = {
+            executor.submit(calculate, ticker): ticker
+            for ticker in normalized
+        }
+        for completed, future in enumerate(as_completed(future_map), 1):
+            ticker = future_map[future]
+            try:
+                results[ticker] = future.result()
+            except Exception as exc:
+                failures[ticker] = " ".join(str(exc).split())[:500]
+            progress.progress(
+                min(1.0, completed / len(normalized)),
+                text=(
+                    f"CBOE GEX // {completed}/{len(normalized)} // "
+                    f"{len(results)} UPDATED // {len(failures)} ERRORS"
+                ),
+            )
+
+    snapshot = cboe_snapshot(vault_key)
+    if replace_all:
+        snapshot["results"].clear()
+    for ticker in normalized:
+        if ticker in failures:
+            snapshot["results"].pop(ticker, None)
+
+    if replace_all:
+        merged_failures = failures
+    else:
+        merged_failures = dict(snapshot.get("failures") or {})
+        for ticker in normalized:
+            merged_failures.pop(ticker, None)
+        merged_failures.update(failures)
+
+    save_cboe_refresh(
+        vault_key,
+        results,
+        merged_failures,
+        str(state.get("timezone") or "America/New_York"),
+    )
+    _publish_cboe_master_a6(vault_key, state)
+    progress.empty()
+    return results, failures
+
+
+def _render_cboe_overview(
+    vault_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Render source-isolated CBOE GEX in the same compact overview table."""
+    st.caption(
+        "CBOE DELAYED OPTIONS // SAME WALL / FLIP METHOD AS E*TRADE // "
+        "NO E*TRADE LOGIN REQUIRED"
+    )
+
+    tickers = [
+        ticker
+        for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
+        if ticker
+    ]
+    action_col, source_col = st.columns(
+        [1.55, 4.45],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with action_col:
+        refresh_all = st.button(
+            "REFRESH ALL CBOE GEX",
+            key="gexv3_cboe_refresh_all",
+            type="primary",
+            width="stretch",
+            disabled=not bool(tickers),
+        )
+    with source_col:
+        st.caption(
+            f"CBOE BRIDGE // {_CBOE_BRIDGE_URL} // "
+            f"{min(_CBOE_MAX_WORKERS, max(1, len(tickers)))} FETCH WORKERS"
+        )
+
+    if refresh_all:
+        _, failures = _refresh_cboe_batch(
+            vault_key,
+            copy.deepcopy(state),
+            tickers,
+            replace_all=True,
+        )
+        if failures:
+            st.warning(
+                f"CBOE REFRESH COMPLETE // {len(tickers) - len(failures)}/{len(tickers)} UPDATED // "
+                f"{len(failures)} ERRORS"
+            )
+        else:
+            st.success(f"CBOE REFRESH COMPLETE // {len(tickers)}/{len(tickers)} UPDATED")
+
+    result_map = cboe_results(vault_key)
+    st.markdown(
+        _proven._base._overview_html(state, result_map),
+        unsafe_allow_html=True,
+    )
+
+    if tickers:
+        st.caption("PER-TICKER CBOE REFRESH")
+        pick_col, button_col = st.columns(
+            [4.4, 1.35],
+            gap="small",
+            vertical_alignment="bottom",
+        )
+        with pick_col:
+            selected = st.selectbox(
+                "REFRESH CBOE TICKER",
+                tickers,
+                key="gexv3_cboe_refresh_pick",
+            )
+        with button_col:
+            refresh_one = st.button(
+                f"↻ {selected}",
+                key="gexv3_cboe_refresh_selected",
+                width="stretch",
+            )
+        if refresh_one:
+            _, failures = _refresh_cboe_batch(
+                vault_key,
+                copy.deepcopy(state),
+                [selected],
+                replace_all=False,
+            )
+            if selected in failures:
+                st.error(f"{selected} CBOE REFRESH FAILED // {failures[selected]}")
+            else:
+                st.success(f"{selected} CBOE UPDATED")
+
+    snapshot = cboe_snapshot(vault_key)
+    refreshed = [ticker for ticker in tickers if ticker in result_map]
+    failures = snapshot.get("failures") or {}
+    st.caption(
+        f"{len(refreshed)}/{len(tickers)} CBOE TICKERS REFRESHED // "
+        "CBOE RESULTS ARE KEPT SEPARATE FROM E*TRADE RESULTS."
+    )
+    if failures:
+        with st.expander(f"CBOE ERRORS // {len(failures)}", expanded=False):
+            for ticker in tickers:
+                if ticker in failures:
+                    st.caption(f"{ticker} // {failures[ticker]}")
+
+
+# ==============================
 # IV RANK / IV-HV OVERVIEW OVERLAY
 # ==============================
 _IV_REFERENCE_HELP_HTML = """
