@@ -119,3 +119,11 @@ jobs:
               browser.close()
           PY
           PYTHONPATH="$GITHUB_WORKSPACE" python /tmp/probe.py
+      - name: Syntax check affected production files
+        run: python -m py_compile streamlit_app.py src/theme.py
+      - name: Dropdown typography regression
+        run: python scripts/test_dropdown_typography.py
+      - name: Top-level tab smoke test
+        run: python scripts/test_tab_layout.py
+      - name: Architecture validation
+        run: python scripts/validate_architecture.py
