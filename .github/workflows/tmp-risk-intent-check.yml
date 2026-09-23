@@ -1,0 +1,59 @@
+name: Temporary Risk Intent Override Check
+
+on:
+  push:
+    branches:
+      - feature/risk-long-term-intent
+
+permissions:
+  contents: read
+
+jobs:
+  validate-risk-intent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check Risk production path
+        run: python -m py_compile src/risk_sizing_ui_v2.py src/risk_sizing_ui_v9.py src/risk_sizing_ui_v10.py streamlit_app.py
+
+      - name: Run Risk intent regression
+        run: python scripts/test_risk_intent_override.py
+
+      - name: Verify Streamlit editor contract
+        run: |
+          python - <<'PY'
+          import inspect
+          import streamlit as st
+          signature = inspect.signature(st.data_editor)
+          assert "column_config" in signature.parameters
+          assert "disabled" in signature.parameters
+          assert hasattr(st.column_config, "SelectboxColumn")
+          print("Streamlit data editor contract: PASS")
+          PY
+
+      - name: Verify Risk UI source contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/risk_sizing_ui_v2.py").read_text(encoding="utf-8")
+          assert 'RISK_INTENT_OPTIONS = (RISK_INTENT_AUTO, RISK_INTENT_LONG_TERM)' in source
+          assert 'classified = _apply_intent_overrides(classified, account_overrides)' in source
+          assert 'edited_view = st.data_editor(' in source
+          assert 'st.column_config.SelectboxColumn(' in source
+          assert 'if _save_editor_intents(edited_view, account_overrides):' in source
+          assert 'st.rerun()' in source
+          print("Risk UI intent source contract: PASS")
+          PY
+
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
