@@ -427,10 +427,8 @@ def _render_cboe_overview(
             st.success(f"CBOE REFRESH COMPLETE // {len(tickers)}/{len(tickers)} UPDATED")
 
     result_map = cboe_results(vault_key)
-    st.markdown(
-        _proven._base._overview_html(state, result_map),
-        unsafe_allow_html=True,
-    )
+    # Use st.html so the E*TRADE-only overview decorator does not rewrite CBOE rows.
+    st.html(_proven._base._overview_html(state, result_map))
 
     if tickers:
         st.caption("PER-TICKER CBOE REFRESH")
@@ -1162,6 +1160,7 @@ def render_gex(
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
+    original_render_cboe_overview = _proven._base._render_cboe_overview
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
     original_background_status = _proven._render_background_status
@@ -1220,6 +1219,24 @@ def render_gex(
         state = _render_auto_refresh_setting(key, state)
         return original_render_settings(key, state, result_map)
 
+    def render_cboe_overview_production(
+        key: str,
+        state: dict[str, Any],
+    ) -> None:
+        _render_cboe_overview(key, state)
+
+    def render_tradingview_with_sources(
+        state: dict[str, Any],
+        result_map: dict[str, Any],
+        failures: dict[str, str] | None = None,
+    ) -> None:
+        _render_tradingview_pine_compatible(
+            vault_key,
+            state,
+            result_map,
+            failures,
+        )
+
     def refresh_all_connect_button(label: Any, *args: Any, **kwargs: Any):
         """Route disconnected Refresh All clicks into the existing OAuth start flow."""
         if kwargs.get("key") != "gexv3_refresh_all" or client is not None:
@@ -1272,9 +1289,10 @@ def render_gex(
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
+    _proven._base._render_cboe_overview = render_cboe_overview_production
     _proven._base._render_settings = render_settings_with_auto_refresh
     _proven._decorate_overview = decorate_with_iv_rank
-    _proven._render_tradingview_pine = _render_tradingview_pine_compatible
+    _proven._render_tradingview_pine = render_tradingview_with_sources
     _proven._render_background_status = _render_background_status_live
     st.button = refresh_all_connect_button
     try:
@@ -1290,6 +1308,7 @@ def render_gex(
         _proven._render_tradingview_pine = original_tradingview
         _proven._decorate_overview = original_decorate
         _proven._base._render_settings = original_render_settings
+        _proven._base._render_cboe_overview = original_render_cboe_overview
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
