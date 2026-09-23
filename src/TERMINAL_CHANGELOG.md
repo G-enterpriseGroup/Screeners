@@ -960,3 +960,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS locally, including after the implementation commit. GitHub guard and deployed verification follow publication.
 - **Commit SHA:** implementation and tests `84c08e2` (this append-only log follows in a documentation commit).
 - **Lesson:** Measure rendered font sizes, row stride, wrapper margins and current widget DOM rather than assuming CSS selectors apply. Prefer native container gaps and `st.html` for HTML geometry; enlarge type and recover wasted space before shrinking financial content. Keep responsive rules anchored to the exact Risk workspace, never a broad ancestor `:has()` selector.
+
+### 2026-09-23 — Risk readability deployed verification
+
+- **Production merge:** PR #47, `924a56dc9e9b86d8710f6477e77ef0ccf70611b9`; implementation `84c08e2`, initial history `80c566b`.
+- **Post-merge architecture guard:** PASS, GitHub Actions run `35912297042` on the exact merge commit.
+- **Live verification:** Reloaded `terminal8.streamlit.app` with the existing authenticated E*TRADE session and opened the deployed Risk route. The live DOM contains the new keyed Risk workspace; all 127 table/header cells measure 16.32px text and 56px height, with zero clipped cells and a 0px row gap. Both orange pane headings share the same Y coordinate; all five Part 2 control shells measure 38px; exactly one stop-distance badge is present. Entry equals the displayed live ASK and Stop is seeded 5% below it. Visually inspected the populated Risk Book beside Part 2. No live intent overrides or broker actions were changed. The merged v2/v9 files match the tested branch byte-for-byte.
+- **Scope of this follow-up:** Append-only verification record; no production code changes.
