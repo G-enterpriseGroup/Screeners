@@ -146,11 +146,11 @@ with st.container(key="risk_book_native_grid"):
 
     # Risk Book visual contract: use the same compact typography/rhythm tokens
     # as the production v9 Risk interface instead of ad-hoc tiny table text.
-    assert '--risk-book-row-height:35px' in source
-    assert '--risk-book-font-size:.70rem' in source
+    assert '--risk-book-row-height:56px' in source
+    assert '--risk-book-font-size:1.02rem' in source
     assert '--risk-book-cell-pad:8px' in source
     assert 'font-size:var(--risk-book-font-size)' in source
-    assert 'grid_spec = [0.32, 0.78, 0.34, 0.44, 0.48, 0.58, 0.42]' in source
+    assert 'grid_spec = [0.42, 0.65, 0.45, 0.46, 0.50, 0.56, 0.43]' in source
     assert 'st.columns(grid_spec, gap=None, vertical_alignment="center")' in source
     assert 'width="stretch"' in source
 

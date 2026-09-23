@@ -754,23 +754,22 @@ def render_risk_sizing(
         kind="stable",
     ).reset_index(drop=True)
 
-    # Preserve the proven side-by-side Risk Book + Part 2 geometry.
-    book_col, trade_col, _layout_spacer = st.columns(
-        [1.0, 1.0, 0.12],
-        gap="small",
-        vertical_alignment="top",
-    )
-    with book_col:
-        st.markdown(
-            '<div class="risk-v9-section risk-v9-book-section">RISK BOOK</div>',
-            unsafe_allow_html=True,
+    with st.container(key="risk_workspace", gap="small"):
+        # Give the readable table its required width; Part 2 stays beside it on desktop.
+        book_col, trade_col = st.columns(
+            [1.2, 1.0],
+            gap="small",
+            vertical_alignment="top",
         )
-        st.markdown(
+    with book_col:
+        st.html(
+            '<div class="risk-v9-section risk-v9-book-section">RISK BOOK</div>',
+        )
+        st.html(
             '<div class="risk-v9-book-note">'
             'LONG-TERM CHECK = ONE-OFF OVERRIDE // CHECK/UNCHECK UPDATES SLEEVE MATH // '
             'P&amp;L RED/GREEN // % ACCOUNT = PORTFOLIO WEIGHT'
             '</div>',
-            unsafe_allow_html=True,
         )
 
         # DataEditor boolean cells are canvas-rendered and inherit the app's
@@ -778,23 +777,19 @@ def render_risk_sizing(
         # disappear on a black cell. Render the Risk Book as one scoped native
         # Streamlit grid so the checkbox can be styled locally and remains a
         # real interactive st.checkbox.
-        with st.container(key="risk_book_native_grid"):
+        with st.container(key="risk_book_native_grid", gap=None):
             st.html(
                 """
                 <style>
-                .st-key-risk_book_native_grid > [data-testid="stVerticalBlock"]{
-                    gap:0!important;
-                }
                 /*
                    RISK BOOK TYPOGRAPHY / RHYTHM
-                   Keep this local grid on the same production tokens already
-                   used by the v9 Risk interface: Courier New, 35px data rows,
-                   8px horizontal cell padding, and one 0.70rem table type size.
-                   Section bars remain owned by .risk-v9-section at 0.78rem.
+                   Match workspace metric values and section bars at 1.02rem.
+                   Native zero-gap rows and HTML avoid Markdown's negative
+                   margin. Keep 56px padded rows, without boxed cell artifacts.
                 */
                 .st-key-risk_book_native_grid{
-                    --risk-book-row-height:35px;
-                    --risk-book-font-size:.70rem;
+                    --risk-book-row-height:56px;
+                    --risk-book-font-size:1.02rem;
                     --risk-book-cell-pad:8px;
                 }
                 .st-key-risk_book_native_grid [data-testid="stHorizontalBlock"]{
@@ -820,23 +815,26 @@ def render_risk_sizing(
                     box-sizing:border-box;
                     display:flex;
                     align-items:center;
+                    flex-wrap:wrap;
+                    align-content:center;
+                    column-gap:4px;
                     width:100%;
                     height:var(--risk-book-row-height);
                     min-height:var(--risk-book-row-height);
-                    padding:0 var(--risk-book-cell-pad);
+                    padding:6px var(--risk-book-cell-pad);
                     margin:0;
                     overflow:hidden;
-                    white-space:nowrap;
+                    white-space:normal;
+                    overflow-wrap:anywhere;
                     text-overflow:ellipsis;
                     background:#000000;
-                    border-right:1px solid #fb8b1e;
-                    border-bottom:1px solid #fb8b1e;
+                    border-bottom:1px solid rgba(251,139,30,.28);
                     color:#fb8b1e!important;
                     -webkit-text-fill-color:#fb8b1e!important;
                     font-family:"Courier New",monospace;
                     font-size:var(--risk-book-font-size);
                     font-weight:800;
-                    line-height:1;
+                    line-height:1.25;
                     letter-spacing:0;
                     font-variant-numeric:tabular-nums;
                 }
@@ -888,8 +886,7 @@ def render_risk_sizing(
                     justify-content:center!important;
                     background:#000000!important;
                     border-left:1px solid #fb8b1e!important;
-                    border-right:1px solid #fb8b1e!important;
-                    border-bottom:1px solid #fb8b1e!important;
+                    border-bottom:1px solid rgba(251,139,30,.28)!important;
                 }
                 .st-key-risk_book_native_grid [data-testid="stCheckbox"] label{
                     width:100%!important;
@@ -938,7 +935,7 @@ def render_risk_sizing(
             # interactive LONG-TERM heading. gap=None is the native Streamlit
             # no-gap contract, so the grid does not depend on overriding a
             # default 1rem column gap.
-            grid_spec = [0.32, 0.78, 0.34, 0.44, 0.48, 0.58, 0.42]
+            grid_spec = [0.42, 0.65, 0.45, 0.46, 0.50, 0.56, 0.43]
             header = st.columns(grid_spec, gap=None, vertical_alignment="center")
             header_labels = (
                 "LONG-TERM",
@@ -955,9 +952,8 @@ def render_risk_sizing(
                     css_class += " risk-book-left risk-book-center"
                 elif idx >= 3:
                     css_class += " risk-book-right"
-                column.markdown(
+                column.html(
                     f'<div class="{css_class}">{html.escape(label)}</div>',
-                    unsafe_allow_html=True,
                 )
 
             for _, source_row in view.iterrows():
@@ -1019,37 +1015,31 @@ def render_risk_sizing(
                     else ""
                 )
 
-                cells[1].markdown(
+                cells[1].html(
                     f'<div class="{sleeve_class}">{sleeve_html}</div>',
-                    unsafe_allow_html=True,
                 )
-                cells[2].markdown(
+                cells[2].html(
                     '<div class="risk-book-cell">'
                     + html.escape(symbol or "—")
                     + "</div>",
-                    unsafe_allow_html=True,
                 )
-                cells[3].markdown(
+                cells[3].html(
                     f'<div class="risk-book-cell risk-book-right {pct_class}">{gain_pct:.2f}%</div>',
-                    unsafe_allow_html=True,
                 )
-                cells[4].markdown(
+                cells[4].html(
                     '<div class="risk-book-cell risk-book-right '
                     + pnl_class
                     + '">$'
                     + f"{gain_loss:,.2f}"
                     + "</div>",
-                    unsafe_allow_html=True,
                 )
-                cells[5].markdown(
+                cells[5].html(
                     '<div class="risk-book-cell risk-book-right">$'
                     + f"{market_value:,.2f}"
                     + "</div>",
-                    unsafe_allow_html=True,
                 )
-                cells[6].markdown(
+                cells[6].html(
                     f'<div class="risk-book-cell risk-book-right">{account_pct:.2f}%</div>',
-                    unsafe_allow_html=True,
                 )
 
 
