@@ -377,6 +377,103 @@ def _refresh_cboe_batch(
     return results, failures
 
 
+def _decorate_cboe_overview_markup(
+    markup: str,
+    result_map: dict[str, Any],
+) -> str:
+    """Match the E*TRADE Overview geometry without mixing E*TRADE IV into CBOE."""
+    if 'class="gexv3-summary"' not in markup:
+        return markup
+
+    if "<colgroup>" not in markup:
+        colgroup = (
+            "<colgroup>"
+            '<col style="width:12%"><col style="width:6%"><col style="width:10%">'
+            '<col style="width:10%"><col style="width:10%"><col style="width:10%">'
+            '<col style="width:28%"><col style="width:14%">'
+            "</colgroup>"
+        )
+        markup = markup.replace(
+            '<table class="gexv3-summary"><thead>',
+            '<table class="gexv3-summary">' + colgroup + "<thead>",
+            1,
+        )
+
+    def decorate_row(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        ticker_match = re.search(r'<td class="sym">([^<]+)</td>', inner)
+        if ticker_match is None:
+            return match.group(0)
+        ticker = html.unescape(ticker_match.group(1)).strip().upper()
+        result = result_map.get(ticker)
+        if not isinstance(result, dict):
+            return match.group(0)
+        status, tone = _proven._base._range_status(result)
+        legacy = f'<td class="{tone}">{status}</td>'
+        inner = inner.replace(
+            legacy,
+            f'<td class="gexv3-range-col">{_proven._range_visual(result)}</td>',
+            1,
+        )
+        return "<tr>" + inner + "</tr>"
+
+    markup = re.sub(r"<tr>(.*?)</tr>", decorate_row, markup, flags=re.DOTALL)
+    markup = _proven._inject_row_trash(markup)
+
+    cboe_help = (
+        '<span class="gexv3-iv-help" tabindex="0" '
+        'aria-label="CBOE source note">?'
+        '<span class="gexv3-iv-help-tip"><b>CBOE SOURCE VIEW</b><br>'
+        'GEX levels in this tab come only from CBOE delayed options. '
+        'E*TRADE IV Rank / IV-HV is intentionally not mixed into this source view.'
+        '</span></span>'
+    )
+    header = '<th class="gexv3-iv-head">IV RANK / REF ' + cboe_help + "</th>"
+    markup = markup.replace(
+        "<th>CALL WALL</th><th>RANGE</th>",
+        "<th>CALL WALL</th>" + header + "<th>RANGE</th>",
+        1,
+    )
+    new_colgroup = (
+        "<colgroup>"
+        '<col style="width:11%"><col style="width:5%"><col style="width:9%">'
+        '<col style="width:9%"><col style="width:9%"><col style="width:9%">'
+        '<col style="width:16%"><col style="width:23%"><col style="width:9%">'
+        "</colgroup>"
+    )
+    markup = re.sub(
+        r"<colgroup>.*?</colgroup>",
+        new_colgroup,
+        markup,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+    def add_source_cell(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        ticker_match = re.search(r'gexv3-symbol-text">([^<]+)</span>', inner)
+        if ticker_match is None:
+            return match.group(0)
+        ticker = html.unescape(ticker_match.group(1)).strip().upper()
+        result = result_map.get(ticker)
+        source_cell = (
+            '<td class="orange" title="CBOE GEX source only; E*TRADE IV Rank is not mixed here.">'
+            '<div class="gexv3-iv-cell-main">CBOE GEX</div>'
+            '<div class="gexv3-iv-cell-sub">IV REF N/A</div>'
+            "</td>"
+        )
+        if isinstance(result, dict):
+            marker = '<td class="gexv3-range-col">'
+        else:
+            marker = '<td class="orange">REFRESH</td>'
+        if marker in inner:
+            inner = inner.replace(marker, source_cell + marker, 1)
+        return "<tr>" + inner + "</tr>"
+
+    markup = re.sub(r"<tr>(.*?)</tr>", add_source_cell, markup, flags=re.DOTALL)
+    return _IV_REFERENCE_CSS + markup
+
+
 def _render_cboe_overview(
     vault_key: str,
     state: dict[str, Any],
@@ -429,7 +526,7 @@ def _render_cboe_overview(
 
     result_map = cboe_results(vault_key)
     # Use st.html so the E*TRADE-only overview decorator does not rewrite CBOE rows.
-    st.html(overview_renderer(state, result_map))
+    st.html(_decorate_cboe_overview_markup(overview_renderer(state, result_map), result_map))
 
     if tickers:
         st.caption("PER-TICKER CBOE REFRESH")
