@@ -197,6 +197,30 @@ textarea:not(:disabled),
     -webkit-text-fill-color:#000000 !important;
 }
 
+/*
+   E*TRADE ACCOUNT PICKER TYPOGRAPHY
+   Streamlit 1.61+ renders the closed selected value as a React Aria input,
+   while opened choices render as divs in a detached listbox portal. Browsers
+   can rasterize those element types differently even when inherited weight
+   values match. Give the shared account picker one explicit real-bold Courier
+   face and rendering contract for its label, closed value, and open rows.
+*/
+[data-testid="stSelectbox"]:has(input[aria-label="E*TRADE Account"]) [data-testid="stWidgetLabel"] p,
+[data-testid="stSelectbox"] input[role="combobox"][aria-label="E*TRADE Account"],
+[role="listbox"][aria-label="E*TRADE Account"] [role="option"],
+[role="listbox"][aria-label="E*TRADE Account"] [role="option"] * {
+    font-family:"Courier New",Courier,monospace !important;
+    font-size:14px !important;
+    font-weight:700 !important;
+    font-style:normal !important;
+    font-stretch:normal !important;
+    letter-spacing:0 !important;
+    line-height:1.2 !important;
+    font-synthesis:none !important;
+    text-rendering:geometricPrecision !important;
+    -webkit-font-smoothing:auto !important;
+}
+
 select:not(:disabled) {
     background:#050505 !important;
     color:__RAJ_DROPDOWN_ACCENT__ !important;
