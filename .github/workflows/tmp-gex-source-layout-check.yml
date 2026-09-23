@@ -1,0 +1,52 @@
+name: Temporary GEX Source Layout Check
+
+on:
+  push:
+    branches:
+      - fix/gex-source-layout-consistency
+
+permissions:
+  contents: read
+
+jobs:
+  validate-gex-layout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check affected GEX production files
+        run: python -m py_compile src/gex_ui_v3.py src/gex_ui_v3_base.py streamlit_app.py
+
+      - name: Verify source layout contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          ui = Path("src/gex_ui_v3.py").read_text(encoding="utf-8")
+          base = Path("src/gex_ui_v3_base.py").read_text(encoding="utf-8")
+          assert '"REFRESH E*TRADE GEX"' in base
+          assert '"REFRESH CBOE GEX"' in ui
+          assert "CBOE BRIDGE //" not in ui
+          assert "CBOE DELAYED OPTIONS // SAME WALL" not in ui
+          assert "_inject_dte_editor_links(overview_renderer(state, result_map))" in ui
+          assert "_render_cboe_refresh_all_control(vault_key, state)" in base
+          assert "_run_cboe_refresh_all(vault_key, state)" in base
+          print("GEX source layout contract: PASS")
+          PY
+
+      - name: Run CBOE regression tests
+        run: python scripts/test_gex_cboe.py
+
+      - name: Run GEX DTE regression tests
+        run: python scripts/test_gex_dte.py
+
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
