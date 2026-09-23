@@ -12,11 +12,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.risk_sizing import classify_holdings, sleeve_summary
-import src.risk_sizing_ui_v2 as risk_ui
 from src.risk_sizing_ui_v2 import (
     RISK_INTENT_AUTO,
     RISK_INTENT_LONG_TERM,
     _apply_intent_overrides,
+    _save_editor_intents,
 )
 
 
@@ -60,21 +60,16 @@ def main() -> None:
     assert summary["long_term_value"] == 30_000.0
     assert summary["target_room"] == 15_000.0
 
-    original_session_state = risk_ui.st.session_state
-    try:
-        risk_ui.st.session_state = {}
-        widget_key = "risk_long_term_override_test_SGOL"
+    edited = adjusted[["Symbol"]].copy()
+    edited["Long-Term?"] = adjusted["Intent"].eq(RISK_INTENT_LONG_TERM)
+    edited.loc[edited["Symbol"].eq("GLD"), "Long-Term?"] = False
+    assert _save_editor_intents(edited, overrides) is True
+    assert "GLD" not in overrides
 
-        risk_ui.st.session_state[widget_key] = True
-        risk_ui._set_long_term_override("test-account", "SGOL", widget_key)
-        session_overrides = risk_ui._account_intent_overrides("test-account")
-        assert session_overrides["SGOL"] == RISK_INTENT_LONG_TERM
-
-        risk_ui.st.session_state[widget_key] = False
-        risk_ui._set_long_term_override("test-account", "SGOL", widget_key)
-        assert "SGOL" not in session_overrides
-    finally:
-        risk_ui.st.session_state = original_session_state
+    edited.loc[edited["Symbol"].eq("GLD"), "Long-Term?"] = True
+    assert _save_editor_intents(edited, overrides) is True
+    assert overrides["GLD"] == RISK_INTENT_LONG_TERM
+    assert _save_editor_intents(edited, overrides) is False
 
     print("risk long-term intent override: PASS")
 

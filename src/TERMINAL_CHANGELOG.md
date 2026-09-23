@@ -848,3 +848,15 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS on implementation head via Terminal Architecture Guard run `35901622944`; final PR head is revalidated after the temporary workflow removal and changelog append.
 - **Commit SHA:** production implementation `bf4999ae08f122d531e20df61d355415e112392f`; callback regression update `88aa68600019d863c519406d75e334fbd74c88a1`.
 - **Lesson:** Do not change the shared Raj's Terminal theme for a feature-local visual request unless Raj explicitly asks for a global theme change. Keep Risk Book overrides keyed to account+ticker, never to row position, because classification changes can re-sort the table.
+
+
+## 2026-09-23 — Emergency rollback of Risk Book checkbox-column implementation
+
+- **Feature changed:** E*TRADE Risk Sizing Risk Book rollback only.
+- **Exact production file(s) restored:** `src/risk_sizing_ui_v2.py`, `scripts/test_risk_intent_override.py`; documentation appended in `src/TERMINAL_CHANGELOG.md`.
+- **What broke:** PR #39 replaced the Risk Book editor checkbox with separate native checkboxes keyed by account + symbol. Accounts containing repeated symbol rows produced duplicate Streamlit element keys and crashed the Risk Sizing tab.
+- **Root cause:** The widget key assumed one Risk Book row per symbol. That assumption was invalid for portfolios with repeated symbol rows/lots.
+- **What was changed:** Restored the exact pre-PR39 Risk Book implementation from main commit `60b620bbb7333bc40ace8fcf86fac60e23daeef3` before attempting any further checkbox fix.
+- **Important behavior that must remain:** Do not introduce per-row native widgets unless their keys are proven unique for duplicate-symbol holdings. Do not alter shared theme files for a Risk Book-only visual request.
+- **Files/features intentionally NOT changed:** all GEX, OAuth, Holdings, navigation, Schwab, Option Book, formulas, shared theme, and `src/terminal_core.py`.
+- **Lesson:** Duplicate symbols/lots are valid portfolio data. Risk UI state must never assume symbol alone uniquely identifies a rendered row.
