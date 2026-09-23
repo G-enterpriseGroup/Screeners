@@ -3,7 +3,7 @@
 OWNERSHIP / EDITING NOTES
 -------------------------
 EDIT THIS FILE FOR:
-- GEX multi-ticker watchlist controls;
+- GEX multi-ticker watchlist controls, including aligned E*TRADE/CBOE refresh controls;
 - GEX overview/analytics/raw-strike subtabs, including source-specific overview slots;
 - TradingView bridge presentation and copy/download output;
 - GEX settings, notes, and compact layout.
@@ -783,8 +783,16 @@ def _render_notes(vault_key: str, state: dict[str, Any]) -> dict[str, Any]:
 
 
 # ==============================
-# SOURCE-SPECIFIC OVERVIEW HOOK
+# SOURCE-SPECIFIC REFRESH / OVERVIEW HOOKS
 # ==============================
+def _render_cboe_refresh_all_control(
+    vault_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Production adapter replaces this with the isolated CBOE refresh control."""
+    del vault_key, state
+
+
 def _render_cboe_overview(
     vault_key: str,
     state: dict[str, Any],
@@ -820,7 +828,11 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         unsafe_allow_html=True,
     )
 
-    add_col, refresh_col = st.columns([4.4, 1.35], gap="small", vertical_alignment="bottom")
+    add_col, etrade_refresh_col, cboe_refresh_col = st.columns(
+        [3.7, 1.15, 1.15],
+        gap="small",
+        vertical_alignment="bottom",
+    )
     with add_col:
         batch = st.text_input(
             "ADD TICKERS",
@@ -828,14 +840,16 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
             placeholder="SPY, QQQ, NVDA, MSFT",
             help="Add one or many tickers separated by commas or spaces.",
         )
-    with refresh_col:
+    with etrade_refresh_col:
         refresh_all = st.button(
-            "REFRESH ALL GEX",
+            "REFRESH E*TRADE GEX",
             type="primary",
             width="stretch",
             disabled=not state["tickers"] or client is None,
             key="gexv3_refresh_all",
         )
+    with cboe_refresh_col:
+        _render_cboe_refresh_all_control(vault_key, state)
 
     add_button_col, saved_col, trash_col = st.columns(
         [1.35, 3.85, 0.55],
