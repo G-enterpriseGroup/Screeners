@@ -979,3 +979,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS locally; GitHub guard and deployed verification follow publication.
 - **Commit SHA:** `2996595d8fc302c38d79f190a98f119c7f65b9b4`.
 - **Lesson:** Readability and table structure must be delivered together. Do not remove cell boundaries when simplifying a financial grid. Preserve full information through concise labels and hover descriptions instead of repeated ornamental separators.
+
+### 2026-09-23 — Rebuild stale Streamlit deployment after Risk cell-border merge
+
+- **Issue / evidence:** PR #48 merged as `702dc3f404cdc391e2d1026e2df69588433eb8fa`; post-merge Architecture Guard passed in run `35921772934`. More than five minutes after merge, both a reloaded session and a fresh authenticated live session still displayed the old `SLEEVE / % TACTICAL` / `GAIN/LOSS` headings, repeated `//` percentages and verbose instruction strip. These strings are absent from the merged Risk Book path. The tested/merged v2/v9 files match exactly.
+- **Action:** Append a comment-only rebuild marker to `requirements.txt`, using the repository's established Streamlit Cloud clean-rebuild mechanism. No dependency names/versions, formulas, shared styles, session logic or other features changed. Preserve the cell-border implementation `2996595` and PR #48.
+- **Validation:** Production UI tests and responsive/browser measurements are recorded above; this follow-up changes no runtime code. Architecture guard and diff checks pass. Deployed completion must be confirmed by the new short headings, 48px bordered cells and separator-free sleeve percentages.
+- **Lesson:** A merged/green repository does not prove that a running Streamlit process loaded changed imported modules. Verify rendered version-specific UI before claiming deployment completion.
