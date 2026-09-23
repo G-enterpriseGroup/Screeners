@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -17,8 +18,8 @@ from src.risk_sizing_ui_v2 import (
     RISK_INTENT_AUTO,
     RISK_INTENT_LONG_TERM,
     _apply_intent_overrides,
-    _apply_risk_editor_changes,
-    _risk_editor_key,
+    _risk_override_widget_key,
+    _set_long_term_override,
 )
 
 
@@ -62,46 +63,88 @@ def main() -> None:
     assert summary["long_term_value"] == 30_000.0
     assert summary["target_room"] == 15_000.0
 
-    # The integrated editor callback must update ticker-level intent before the
-    # full Streamlit rerun, then rotate the widget key so stale row edits cannot
-    # be applied to a different holding.
+    # Duplicate holdings/lots must never share one rendered Streamlit key.
+    sgol_key_1 = _risk_override_widget_key("acct", "SGOL", "0")
+    sgol_key_2 = _risk_override_widget_key("acct", "SGOL", "1")
+    assert sgol_key_1 != sgol_key_2
+
     original_session_state = risk_ui.st.session_state
     try:
         risk_ui.st.session_state = {}
-        editor_key = _risk_editor_key("acct")
-        risk_ui.st.session_state[editor_key] = {
-            "edited_rows": {0: {"Long-Term?": True}}
-        }
-        _apply_risk_editor_changes("acct", editor_key, ("SGOL", "SGOL"))
+        risk_ui.st.session_state[sgol_key_1] = True
+        _set_long_term_override("acct", "SGOL", sgol_key_1)
         session_overrides = risk_ui._account_intent_overrides("acct")
         assert session_overrides["SGOL"] == RISK_INTENT_LONG_TERM
 
-        next_editor_key = _risk_editor_key("acct")
-        assert next_editor_key != editor_key
-
-        # Duplicate SGOL lots intentionally share ticker-level intent. Unchecking
-        # either displayed row removes the override for both lots.
-        risk_ui.st.session_state[next_editor_key] = {
-            "edited_rows": {1: {"Long-Term?": False}}
-        }
-        _apply_risk_editor_changes("acct", next_editor_key, ("SGOL", "SGOL"))
+        risk_ui.st.session_state[sgol_key_2] = False
+        _set_long_term_override("acct", "SGOL", sgol_key_2)
         assert "SGOL" not in session_overrides
-        assert _risk_editor_key("acct") != next_editor_key
     finally:
         risk_ui.st.session_state = original_session_state
 
-    # Source-level layout contract: one integrated table/editor, no detached
-    # checkbox strip, and Sleeve + % Tactical Sleeve are presented together.
-    source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
-    assert "risk_book_grid" not in source
-    assert "risk_book_override_controls" not in source
-    assert 'st.data_editor(' in source
-    assert 'on_change=_apply_risk_editor_changes' in source
-    assert '"Sleeve / % Tactical"' in source
-    assert '"SLEEVE / % TACTICAL"' in source
-    assert 'row_height=35' in source
+    # Exercise Streamlit's actual checkbox registry with duplicate SGOL lots.
+    smoke_path = ROOT / "scripts" / "_tmp_risk_visible_checkbox_app.py"
+    smoke_path.write_text(
+        """from __future__ import annotations
+import streamlit as st
+from src.risk_sizing_ui_v2 import (
+    RISK_INTENT_LONG_TERM,
+    _account_intent_overrides,
+    _risk_override_widget_key,
+    _set_long_term_override,
+)
 
-    print("risk long-term intent override: PASS")
+account_key = "acct"
+overrides = _account_intent_overrides(account_key)
+with st.container(key="risk_book_native_grid"):
+    for row_uid in ("0", "1"):
+        symbol = "SGOL"
+        key = _risk_override_widget_key(account_key, symbol, row_uid)
+        selected = str(overrides.get(symbol) or "").upper() == RISK_INTENT_LONG_TERM
+        if st.session_state.get(key) != selected:
+            st.session_state[key] = selected
+        st.checkbox(
+            f"{symbol} {row_uid}",
+            key=key,
+            on_change=_set_long_term_override,
+            args=(account_key, symbol, key),
+        )
+""",
+        encoding="utf-8",
+    )
+    try:
+        app = AppTest.from_file(str(smoke_path), default_timeout=10)
+        app.run()
+        assert not app.exception
+        assert len(app.checkbox) == 2
+        assert app.checkbox[0].value is False
+        assert app.checkbox[1].value is False
+
+        app.checkbox[0].check().run()
+        assert not app.exception
+        assert app.checkbox[0].value is True
+        assert app.checkbox[1].value is True
+
+        app.checkbox[1].uncheck().run()
+        assert not app.exception
+        assert app.checkbox[0].value is False
+        assert app.checkbox[1].value is False
+    finally:
+        smoke_path.unlink(missing_ok=True)
+
+    # Source contract: local native grid only. This intentionally avoids the
+    # canvas-rendered CheckboxColumn that disappears under the global black
+    # dataframe text theme.
+    source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
+    assert 'key="risk_book_native_grid"' in source
+    assert 'st.checkbox(' in source
+    assert 'border:2px solid #fb8b1e!important' in source
+    assert 'label:has(input:checked)' in source
+    assert 'st.data_editor(' not in source
+    assert '"SLEEVE / % TACTICAL"' in source
+    assert 'classified["_risk_row_uid"]' in source
+
+    print("risk long-term intent override + visible checkbox: PASS")
 
 
 if __name__ == "__main__":
