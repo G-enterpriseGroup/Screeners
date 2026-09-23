@@ -1,0 +1,25 @@
+name: Temporary Dropdown Typography Validation
+
+on:
+  push:
+    branches:
+      - fix/dropdown-typography-consistency
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install production requirements
+        run: pip install -r requirements.txt
+      - name: Syntax check affected production files
+        run: python -m py_compile streamlit_app.py src/theme.py src/option_book_ui.py
+      - name: Dropdown typography regression
+        run: python scripts/test_dropdown_typography.py
+      - name: Top-level tab smoke test
+        run: python scripts/test_tab_layout.py
+      - name: Architecture validation
+        run: python scripts/validate_architecture.py
