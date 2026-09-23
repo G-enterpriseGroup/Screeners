@@ -112,16 +112,16 @@ def _apply_risk_editor_changes(
     ticker-level: checking any SGOL row promotes every SGOL lot.
     """
     editor_state = st.session_state.get(editor_key)
-    if not isinstance(editor_state, dict):
+    if editor_state is None or not hasattr(editor_state, "get"):
         return
     edited_rows = editor_state.get("edited_rows")
-    if not isinstance(edited_rows, dict):
+    if edited_rows is None or not hasattr(edited_rows, "items"):
         return
 
     account_overrides = _account_intent_overrides(account_key)
     changed = False
     for raw_index, edits in edited_rows.items():
-        if not isinstance(edits, dict) or "Long-Term?" not in edits:
+        if edits is None or not hasattr(edits, "get") or "Long-Term?" not in edits:
             continue
         try:
             row_index = int(raw_index)
