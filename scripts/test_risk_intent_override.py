@@ -18,6 +18,9 @@ from src.risk_sizing_ui_v2 import (
     RISK_INTENT_AUTO,
     RISK_INTENT_LONG_TERM,
     _apply_intent_overrides,
+    _reconcile_risk_intent_state,
+    _risk_intent_session_key,
+    _risk_intent_storage_key,
     _risk_override_widget_key,
     _set_long_term_override,
 )
@@ -68,18 +71,41 @@ def main() -> None:
     sgol_key_2 = _risk_override_widget_key("acct", "SGOL", "1")
     assert sgol_key_1 != sgol_key_2
 
+    # Persistence is account-scoped without exposing the raw broker account key.
+    storage_key = _risk_intent_storage_key("acct")
+    assert storage_key.startswith("raj-terminal-risk-intent-v1:")
+    assert "acct" not in storage_key
+
+    # A sold ticker is the one automatic removal case: once it is absent from
+    # the holdings symbol set, the persisted check mark is deleted.
+    reconciled, changed = _reconcile_risk_intent_state(
+        {"revision": 7, "tickers": ["SGOL", "SPY"]},
+        ["SPY"],
+    )
+    assert changed is True
+    assert reconciled == {"revision": 8, "tickers": ["SPY"]}
+
     original_session_state = risk_ui.st.session_state
     try:
         risk_ui.st.session_state = {}
+        risk_ui._risk_intent_vault().clear()
+
         risk_ui.st.session_state[sgol_key_1] = True
         _set_long_term_override("acct", "SGOL", sgol_key_1)
         session_overrides = risk_ui._account_intent_overrides("acct")
         assert session_overrides["SGOL"] == RISK_INTENT_LONG_TERM
+        persisted = risk_ui.st.session_state[_risk_intent_session_key("acct")]
+        assert persisted["tickers"] == ["SGOL"]
+        checked_revision = persisted["revision"]
 
         risk_ui.st.session_state[sgol_key_2] = False
         _set_long_term_override("acct", "SGOL", sgol_key_2)
         assert "SGOL" not in session_overrides
+        persisted = risk_ui.st.session_state[_risk_intent_session_key("acct")]
+        assert persisted["tickers"] == []
+        assert persisted["revision"] > checked_revision
     finally:
+        risk_ui._risk_intent_vault().clear()
         risk_ui.st.session_state = original_session_state
 
     # Exercise Streamlit's actual checkbox registry with duplicate SGOL lots.
@@ -143,6 +169,14 @@ with st.container(key="risk_book_native_grid"):
     assert 'st.data_editor(' not in source
     assert '"SLEEVE / %"' in source
     assert 'classified["_risk_row_uid"]' in source
+    assert '_load_persisted_intent_overrides(' in source
+    assert '_sync_risk_intent_browser(' in source
+
+    persistence_component = (
+        ROOT / "src" / "components" / "risk_intent_state_v1" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert "localStorage.getItem" in persistence_component
+    assert "localStorage.setItem" in persistence_component
 
     # Risk Book visual contract: use the same compact typography/rhythm tokens
     # as the production v9 Risk interface instead of ad-hoc tiny table text.
