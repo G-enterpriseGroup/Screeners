@@ -247,12 +247,6 @@ _CBOE_MAX_WORKERS = 8
 _CBOE_MASTER_A6_STATIC_PATH = (
     Path(__file__).resolve().parents[1] / "static" / "latest_gex_cboe.txt"
 )
-_CBOE_BRIDGE_URL = (
-    "https://raw.githubusercontent.com/G-enterpriseGroup/Screeners/"
-    "gex-bridge-data/bridge/latest_gex_cboe.txt"
-)
-
-
 def _publish_cboe_master_a6(
     vault_key: str,
     state: dict[str, Any],
@@ -474,62 +468,70 @@ def _decorate_cboe_overview_markup(
     return _IV_REFERENCE_CSS + markup
 
 
-def _render_cboe_overview(
+def _render_cboe_refresh_all_control(
     vault_key: str,
     state: dict[str, Any],
-    overview_renderer: Callable[[dict[str, Any], dict[str, Any]], str],
-) -> None:
-    """Render source-isolated CBOE GEX in the same compact overview table."""
-    st.caption(
-        "CBOE DELAYED OPTIONS // SAME WALL / FLIP METHOD AS E*TRADE // "
-        "NO E*TRADE LOGIN REQUIRED"
+) -> bool:
+    """Render CBOE refresh beside the existing E*TRADE refresh control."""
+    del vault_key
+    return st.button(
+        "REFRESH CBOE GEX",
+        key="gexv3_cboe_refresh_all",
+        type="primary",
+        width="stretch",
+        disabled=not bool(state.get("tickers")),
     )
 
+
+def _run_cboe_refresh_all(
+    vault_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Run CBOE refresh outside the compact control columns."""
     tickers = [
         ticker
         for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
         if ticker
     ]
-    action_col, source_col = st.columns(
-        [1.55, 4.45],
-        gap="small",
-        vertical_alignment="center",
+    if not tickers:
+        return
+
+    _, failures = _refresh_cboe_batch(
+        vault_key,
+        copy.deepcopy(state),
+        tickers,
+        replace_all=True,
     )
-    with action_col:
-        refresh_all = st.button(
-            "REFRESH ALL CBOE GEX",
-            key="gexv3_cboe_refresh_all",
-            type="primary",
-            width="stretch",
-            disabled=not bool(tickers),
+    if failures:
+        st.toast(
+            f"CBOE REFRESH // {len(tickers) - len(failures)}/{len(tickers)} UPDATED // "
+            f"{len(failures)} ERRORS"
         )
-    with source_col:
-        st.caption(
-            f"CBOE BRIDGE // {_CBOE_BRIDGE_URL} // "
-            f"{min(_CBOE_MAX_WORKERS, max(1, len(tickers)))} FETCH WORKERS"
-        )
+    else:
+        st.toast(f"CBOE REFRESH // {len(tickers)}/{len(tickers)} UPDATED")
+    st.rerun()
 
-    if refresh_all:
-        _, failures = _refresh_cboe_batch(
-            vault_key,
-            copy.deepcopy(state),
-            tickers,
-            replace_all=True,
-        )
-        if failures:
-            st.warning(
-                f"CBOE REFRESH COMPLETE // {len(tickers) - len(failures)}/{len(tickers)} UPDATED // "
-                f"{len(failures)} ERRORS"
-            )
-        else:
-            st.success(f"CBOE REFRESH COMPLETE // {len(tickers)}/{len(tickers)} UPDATED")
 
+def _render_cboe_overview(
+    vault_key: str,
+    state: dict[str, Any],
+    overview_renderer: Callable[[dict[str, Any], dict[str, Any]], str],
+) -> None:
+    """Render CBOE with the same table-first layout as E*TRADE Overview."""
+    tickers = [
+        ticker
+        for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
+        if ticker
+    ]
     result_map = cboe_results(vault_key)
-    # Use st.html so the E*TRADE-only overview decorator does not rewrite CBOE rows.
-    st.html(_decorate_cboe_overview_markup(overview_renderer(state, result_map), result_map))
+
+    # Match the E*TRADE overview interaction contract: the DTE cell opens the
+    # same saved per-ticker DTE editor. Only the data source remains different.
+    markup = _inject_dte_editor_links(overview_renderer(state, result_map))
+    st.html(_decorate_cboe_overview_markup(markup, result_map))
 
     if tickers:
-        st.caption("PER-TICKER CBOE REFRESH")
+        st.caption("PER-TICKER REFRESH")
         pick_col, button_col = st.columns(
             [4.4, 1.35],
             gap="small",
@@ -537,7 +539,7 @@ def _render_cboe_overview(
         )
         with pick_col:
             selected = st.selectbox(
-                "REFRESH CBOE TICKER",
+                "REFRESH TICKER",
                 tickers,
                 key="gexv3_cboe_refresh_pick",
             )
@@ -555,17 +557,19 @@ def _render_cboe_overview(
                 replace_all=False,
             )
             if selected in failures:
-                st.error(f"{selected} CBOE REFRESH FAILED // {failures[selected]}")
+                st.toast(f"{selected} CBOE REFRESH FAILED // {failures[selected]}")
             else:
-                st.success(f"{selected} CBOE UPDATED")
+                st.toast(f"{selected} UPDATED")
+            st.rerun()
 
     snapshot = cboe_snapshot(vault_key)
     refreshed = [ticker for ticker in tickers if ticker in result_map]
     failures = snapshot.get("failures") or {}
-    st.caption(
-        f"{len(refreshed)}/{len(tickers)} CBOE TICKERS REFRESHED // "
-        "CBOE RESULTS ARE KEPT SEPARATE FROM E*TRADE RESULTS."
-    )
+    if refreshed:
+        st.caption(
+            f"{len(refreshed)}/{len(tickers)} TICKERS REFRESHED // "
+            "SUMMARY IS INTENTIONALLY COMPACT SO THE PAGE DOES NOT SCROLL LEFT/RIGHT."
+        )
     if failures:
         with st.expander(f"CBOE ERRORS // {len(failures)}", expanded=False):
             for ticker in tickers:
@@ -1258,6 +1262,8 @@ def render_gex(
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
+    original_cboe_refresh_control = _proven._base._render_cboe_refresh_all_control
+    original_cboe_refresh_runner = _proven._base._run_cboe_refresh_all
     original_render_cboe_overview = _proven._base._render_cboe_overview
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
@@ -1387,6 +1393,8 @@ def render_gex(
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
+    _proven._base._render_cboe_refresh_all_control = _render_cboe_refresh_all_control
+    _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
     _proven._base._render_settings = render_settings_with_auto_refresh
     _proven._decorate_overview = decorate_with_iv_rank
@@ -1407,6 +1415,8 @@ def render_gex(
         _proven._decorate_overview = original_decorate
         _proven._base._render_settings = original_render_settings
         _proven._base._render_cboe_overview = original_render_cboe_overview
+        _proven._base._run_cboe_refresh_all = original_cboe_refresh_runner
+        _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
