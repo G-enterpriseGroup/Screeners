@@ -105,6 +105,8 @@ textarea:not(:disabled),
 */
 [data-testid="stSelectbox"] [data-baseweb="select"] > div,
 [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+[data-testid="stSelectbox"] [aria-haspopup="listbox"],
+[data-testid="stMultiSelect"] [aria-haspopup="listbox"],
 [data-baseweb="select"] > div,
 [data-baseweb="select"] [role="combobox"] {
     background:#050505 !important;
@@ -114,8 +116,17 @@ textarea:not(:disabled),
     box-shadow:none !important;
 }
 
+/* Streamlit 1.61+ may render native selects through React Aria instead of
+   BaseWeb. Match the closed trigger to the exact same Courier weight used by
+   the detached menu options so selected/open states never look mismatched. */
 [data-testid="stSelectbox"] [data-baseweb="select"] > div *,
 [data-testid="stMultiSelect"] [data-baseweb="select"] > div *,
+[data-testid="stSelectbox"] [aria-haspopup="listbox"],
+[data-testid="stSelectbox"] [aria-haspopup="listbox"] *,
+[data-testid="stMultiSelect"] [aria-haspopup="listbox"],
+[data-testid="stMultiSelect"] [aria-haspopup="listbox"] *,
+[data-testid="stSelectbox"] [role="group"] *,
+[data-testid="stMultiSelect"] [role="group"] *,
 [data-baseweb="select"] > div *,
 [data-baseweb="select"] [role="combobox"] *,
 [data-baseweb="select"] input,
