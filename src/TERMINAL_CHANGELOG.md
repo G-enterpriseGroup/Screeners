@@ -728,3 +728,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS on production-code head `d7f505a143ddb95f12d697264308705e292053c1`; final changelog-only head must pass again before merge.
 - **Commit SHA:** isolated CBOE engine `f1b5e410645e1c6c22ea526f95e6839ab0af6117`; source-state persistence `d4932274842e019a07b132cd02371bf6a932a7c2`; separate bridge publisher `cd9301ebc076c54021ad2685276fb7d1fdf998b3`; Overview/source-routing production code culminates at `d7f505a143ddb95f12d697264308705e292053c1`; final merge SHA recorded after validation.
 - **Lesson:** Compare broker/data sources with one calculation definition and separate result/transport state. Do not overwrite the established E*TRADE bridge or mix E*TRADE-derived reference metrics into a CBOE-labeled source view.
+
+
+## 2026-09-23 — Keep E*TRADE RENEW button fixed in place
+
+- **Feature changed:** E*TRADE session-renew interaction / connection-strip layout stability.
+- **Exact production file(s) changed:** `src/etrade_connection_ui_v2.py`; documentation in `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Clicking `RENEW` displayed the success message inside the same narrow centered Streamlit column as the button. The column became taller after the click, so Streamlit vertically re-centered the button and the entire RENEW control visibly jumped.
+- **Root cause:** `st.success("E*TRADE session renewed.")` lived inside `renew_col` while the five-column connection row used `vertical_alignment="center"`. Feedback content therefore changed the geometry of the control row.
+- **What was changed:** Successful renewal now stores a one-shot renewal notice, reruns immediately so the session timer reflects the renewed session, and displays the confirmation as a non-layout `st.toast` on the rerun. Renew errors also use a toast instead of inserting a variable-height error box into the RENEW column. No button sizing, column ratios, OAuth controls, or renewal API semantics were changed.
+- **Important behavior that must remain:** The RENEW button must stay at the same position and size before/after a click. Renewal must still call the existing live E*TRADE client's `renew()`, then the existing session-touch callback. CONNECT, DISCONNECT, LOCK, verification-code input, and VERIFY & CONNECT behavior remain unchanged.
+- **Files/features intentionally NOT changed:** `src/etrade_client.py`, `src/session_persistence.py`, `src/terminal_core.py`, GEX, Risk Sizing, Schwab Risk Sizing, Holdings, Option Book, navigation, Bull Debit, Muni, Orders, and shared theme.
+- **Tests performed:** Re-read `src/ARCHITECTURE.md` and traced the production route `streamlit_app.py → src/etrade_connection_ui_v2.py`. Terminal Architecture Guard run `35880545190` passed on implementation head `e93b1c84348a045438767e6d123fb3a9073ad93a`. Temporary CI run `35880672704` installed production requirements, byte-compiled `src/etrade_connection_ui_v2.py` and `streamlit_app.py`, verified the renew-layout source contract, and ran `scripts/test_tab_layout.py` with all production top-level tabs rendering successfully. The temporary workflow was then deleted so it is not part of the production diff.
+- **Architecture guard result:** PASS on the implementation head; the final changelog-only head must pass the guard again before merge.
+- **Commit SHA:** implementation `e93b1c84348a045438767e6d123fb3a9073ad93a`.
+- **Lesson:** Never render variable-height success/error boxes inside a vertically centered compact control column. Use non-layout feedback or a separate row so interaction feedback cannot move the control itself.
