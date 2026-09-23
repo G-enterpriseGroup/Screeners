@@ -125,5 +125,19 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("publish_latest_gex_cboe", ui)
 
 
+def live_source_smoke() -> None:
+    payload, url = gex_cboe._fetch_cboe_chain("SPY")
+    options = ((payload.get("data") or {}).get("options") or [])
+    spot = gex_cboe._extract_spot(payload)
+    if not options:
+        raise AssertionError("CBOE SPY response contained no options")
+    if spot is None or spot <= 0:
+        raise AssertionError("CBOE SPY response contained no usable spot price")
+    print(f"LIVE CBOE PASS // SPY // {len(options)} OPTIONS // SPOT {spot} // {url}")
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if "--live" in sys.argv:
+        live_source_smoke()
+    else:
+        unittest.main()
