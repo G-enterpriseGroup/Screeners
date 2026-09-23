@@ -115,7 +115,10 @@ Production path:
 `streamlit_app.py` → `src/tab_bar_v4.py` → `src/components/terminal_tabs_v3/index.html`
 
 - Change **top-tab width/spacing/frame height/navigation appearance** → `src/tab_bar_v4.py` and/or `src/components/terminal_tabs_v3/index.html` only.
-- The top navigation component is intentionally **48px tall**. Its Streamlit iframe/container must not reserve additional blank height beneath it.
+- The top navigation component is intentionally **48px tall**. Its keyed `terminal_navigation` container and frame CSS are emitted on every render, never only at import time.
+- `streamlit_app.py::_terminal_tab_layout` owns the reusable `terminal_tab_shell`: navigation → shared page heading → feature content, with a fixed 4px shell gap. Background state hooks belong in the nonvisual `terminal_background_hooks` container inside content, never between navigation and heading.
+- Add a tab key in `DEFAULT_TAB_ORDER`, its title/subtitle in `_TERMINAL_PAGE_HEADERS`, and its dispatch inside `_terminal_tab_layout`. New tabs inherit the same shell automatically. Do not add page-level spacer rows or negative margins; feature-owned sections remain inside `terminal_page_content`.
+- The iframe reports its height through Streamlit messages only. Never mutate parent wrappers from component JavaScript.
 - Do not edit GEX/Risk/OAuth feature files to correct whitespace caused by the top navigation component.
 
 ## Shared-code warning
