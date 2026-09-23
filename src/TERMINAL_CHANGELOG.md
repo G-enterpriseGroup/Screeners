@@ -904,3 +904,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS on implementation head via Terminal Architecture Guard run `35905575056`; final PR head is revalidated after this changelog append.
 - **Commit SHA:** integrated Risk Book implementation `c1a3100c87765c1bd28d5fe45c20efed0098f538`; editor-state hardening `a9bbf2d6f1ce87c799af0a938e2b2405a01b8de9`.
 - **Lesson:** When an editable table's state is keyed by row position, keep its visual order stable across the edit and explicitly discard stale edit state after committing the change. Do not bolt native widgets beside a canvas-rendered table when pixel-level row alignment is required.
+
+## 2026-09-23 — Force clean rebuild after stale E*TRADE Risk Book UI
+
+- **Feature changed:** E*TRADE Risk Sizing deployment freshness only; no Risk math or UI logic changed.
+- **Exact production file(s) changed:** `requirements.txt`; documentation in `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The live screenshot still showed the superseded detached LONG-TERM checkbox strip, a separate `SLEEVE` column, and a separate `% Tactical Sleeve` column even though current `main` had already replaced that layout with one integrated Risk Book editor and a combined `SLEEVE / % TACTICAL` column.
+- **Root cause:** The deployed Streamlit build/process was stale relative to `main`. The exact UI structure visible in the screenshot no longer existed in the production source at the repository head, matching the repository's prior documented stale-deploy failure mode.
+- **What was changed:** Added a no-op rebuild marker to `requirements.txt` so Streamlit Cloud performs a clean rebuild from current `main`. No feature code was stacked on top of already-correct source.
+- **Important behavior that must remain:** When the live app visibly renders source structure that no longer exists on `main`, verify the production file first and force a clean rebuild rather than adding another layout workaround. The intended Risk Book remains one integrated table with the LONG-TERM checkbox inside the table and `SLEEVE / % TACTICAL` combined.
+- **Files/features intentionally NOT changed:** `src/risk_sizing_ui_v2.py`, `src/risk_sizing.py`, `src/trade_math.py`, `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v10.py`, ticker autocomplete, shared theme, GEX, OAuth, Holdings, navigation, Schwab Risk Sizing, Option Book, Bull Debit, Muni, Orders, and `src/terminal_core.py`.
+- **Tests performed:** Re-read `src/ARCHITECTURE.md` and the Risk Book fix history; re-fetched current `main`; confirmed the screenshot's detached checkbox strip and separate sleeve columns are absent from current production source; confirmed the repository default branch is `main`.
+- **Architecture guard result:** Current merged Risk Book implementation passed Terminal Architecture Guard on `main` run `35905891578`; this rebuild-only change is revalidated by PR CI before merge.
+- **Commit SHA:** rebuild marker `7c18a963d8b3e490cf6b03d16983bb79246bd2e1`.
+- **Lesson:** A screenshot can prove a deployment is stale when it contains a UI structure that has already been deleted from the current production file. Do not mistake a stale build for a new layout bug.
