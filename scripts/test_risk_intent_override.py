@@ -12,11 +12,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.risk_sizing import classify_holdings, sleeve_summary
+import src.risk_sizing_ui_v2 as risk_ui
 from src.risk_sizing_ui_v2 import (
     RISK_INTENT_AUTO,
     RISK_INTENT_LONG_TERM,
     _apply_intent_overrides,
-    _save_editor_intents,
+    _risk_override_widget_key,
 )
 
 
@@ -60,16 +61,29 @@ def main() -> None:
     assert summary["long_term_value"] == 30_000.0
     assert summary["target_room"] == 15_000.0
 
-    edited = adjusted[["Symbol"]].copy()
-    edited["Long-Term?"] = adjusted["Intent"].eq(RISK_INTENT_LONG_TERM)
-    edited.loc[edited["Symbol"].eq("GLD"), "Long-Term?"] = False
-    assert _save_editor_intents(edited, overrides) is True
-    assert "GLD" not in overrides
+    # Duplicate-symbol rows/lots must produce distinct widget keys.
+    sgol_key_1 = _risk_override_widget_key("acct", "SGOL", "0")
+    sgol_key_2 = _risk_override_widget_key("acct", "SGOL", "1")
+    assert sgol_key_1 != sgol_key_2
 
-    edited.loc[edited["Symbol"].eq("GLD"), "Long-Term?"] = True
-    assert _save_editor_intents(edited, overrides) is True
-    assert overrides["GLD"] == RISK_INTENT_LONG_TERM
-    assert _save_editor_intents(edited, overrides) is False
+    original_session_state = risk_ui.st.session_state
+    try:
+        risk_ui.st.session_state = {}
+        risk_ui.st.session_state[sgol_key_1] = True
+        risk_ui._set_long_term_override("acct", "SGOL", sgol_key_1)
+        session_overrides = risk_ui._account_intent_overrides("acct")
+        assert session_overrides["SGOL"] == RISK_INTENT_LONG_TERM
+
+        # A second duplicate row reflects the same ticker-level intent without
+        # sharing the same widget key.
+        risk_ui.st.session_state[sgol_key_2] = True
+        assert bool(risk_ui.st.session_state[sgol_key_2]) is True
+
+        risk_ui.st.session_state[sgol_key_1] = False
+        risk_ui._set_long_term_override("acct", "SGOL", sgol_key_1)
+        assert "SGOL" not in session_overrides
+    finally:
+        risk_ui.st.session_state = original_session_state
 
     print("risk long-term intent override: PASS")
 
