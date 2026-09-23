@@ -72,14 +72,15 @@ jobs:
               box = page.locator('[data-testid="stSelectbox"]').first
               print("SELECTBOX_HTML", box.evaluate("el => el.outerHTML"))
 
-              selected = page.get_by_text("Raj Singh // 5474", exact=True).first
+              selected = page.locator('[data-testid="stSelectbox"] input[role="combobox"]').first
+              print("SELECTED_VALUE", selected.input_value())
               print("SELECTED_STYLE", json.dumps(style(selected), indent=2))
 
               candidates = [
+                  '[data-testid="stSelectbox"] button[aria-haspopup="listbox"]',
                   '[data-testid="stSelectbox"] [role="combobox"]',
                   '[data-testid="stSelectbox"] [aria-haspopup="listbox"]',
                   '[data-testid="stSelectbox"] [data-baseweb="select"]',
-                  '[data-testid="stSelectbox"] button',
                   '[data-testid="stSelectbox"] [role="group"]',
               ]
               clicked = False
@@ -97,8 +98,11 @@ jobs:
                   box.click()
 
               page.wait_for_timeout(300)
-              option = page.get_by_text("Individual Brokerage // 7022", exact=True).first
+              option = page.locator('[role="option"]').filter(has_text="Individual Brokerage // 7022").first
               print("OPTION_STYLE", json.dumps(style(option), indent=2))
+              option_inner = option.locator("*").filter(has_text="Individual Brokerage // 7022").first
+              if option_inner.count():
+                  print("OPTION_INNER_STYLE", json.dumps(style(option_inner), indent=2))
 
               listboxes = page.locator('[role="listbox"]')
               print("LISTBOX_COUNT", listboxes.count())
