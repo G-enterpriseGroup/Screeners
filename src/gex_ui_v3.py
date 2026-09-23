@@ -380,6 +380,7 @@ def _refresh_cboe_batch(
 def _render_cboe_overview(
     vault_key: str,
     state: dict[str, Any],
+    overview_renderer: Callable[[dict[str, Any], dict[str, Any]], str],
 ) -> None:
     """Render source-isolated CBOE GEX in the same compact overview table."""
     st.caption(
@@ -428,7 +429,7 @@ def _render_cboe_overview(
 
     result_map = cboe_results(vault_key)
     # Use st.html so the E*TRADE-only overview decorator does not rewrite CBOE rows.
-    st.html(_proven._base._overview_html(state, result_map))
+    st.html(overview_renderer(state, result_map))
 
     if tickers:
         st.caption("PER-TICKER CBOE REFRESH")
@@ -1223,7 +1224,7 @@ def render_gex(
         key: str,
         state: dict[str, Any],
     ) -> None:
-        _render_cboe_overview(key, state)
+        _render_cboe_overview(key, state, original_overview)
 
     def render_tradingview_with_sources(
         state: dict[str, Any],
