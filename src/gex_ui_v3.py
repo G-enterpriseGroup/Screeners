@@ -476,21 +476,13 @@ def _decorate_cboe_overview_markup(
     return _IV_REFERENCE_CSS + markup
 
 
-def _render_overview_txt_link(source_label: str, url: str) -> None:
-    """Render one compact source TXT row; both source tabs use identical geometry."""
-    link_col, note_col = st.columns(
-        [0.72, 5.28],
-        gap="small",
-        vertical_alignment="center",
+def _render_txt_control(source_label: str, url: str) -> None:
+    """Render one compact raw TXT button in the shared Add Tickers control row."""
+    st.link_button(
+        f"{source_label} TXT ↗",
+        url,
+        width="stretch",
     )
-    with link_col:
-        st.link_button(
-            f"OPEN {source_label} TXT ↗",
-            url,
-            width="stretch",
-        )
-    with note_col:
-        st.caption(f"{source_label} MASTER A6 // RAW TXT")
 
 
 def _render_cboe_refresh_all_control(
@@ -1287,6 +1279,8 @@ def render_gex(
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
+    original_etrade_txt_control = _proven._base._render_etrade_txt_control
+    original_cboe_txt_control = _proven._base._render_cboe_txt_control
     original_cboe_refresh_control = _proven._base._render_cboe_refresh_all_control
     original_cboe_refresh_runner = _proven._base._run_cboe_refresh_all
     original_render_cboe_overview = _proven._base._render_cboe_overview
@@ -1332,7 +1326,6 @@ def render_gex(
             login_marker,
             overview_touch,
         )
-        _render_overview_txt_link("E*TRADE", _ETRADE_BRIDGE_URL)
         return original_render_overview(
             overview_client,
             key,
@@ -1353,7 +1346,6 @@ def render_gex(
         key: str,
         state: dict[str, Any],
     ) -> None:
-        _render_overview_txt_link("CBOE", _CBOE_BRIDGE_URL)
         _render_cboe_overview(key, state, original_overview)
 
     def render_tradingview_with_sources(
@@ -1420,6 +1412,8 @@ def render_gex(
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
+    _proven._base._render_etrade_txt_control = lambda: _render_txt_control("E*TRADE", _ETRADE_BRIDGE_URL)
+    _proven._base._render_cboe_txt_control = lambda: _render_txt_control("CBOE", _CBOE_BRIDGE_URL)
     _proven._base._render_cboe_refresh_all_control = _render_cboe_refresh_all_control
     _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
@@ -1444,6 +1438,8 @@ def render_gex(
         _proven._base._render_cboe_overview = original_render_cboe_overview
         _proven._base._run_cboe_refresh_all = original_cboe_refresh_runner
         _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
+        _proven._base._render_cboe_txt_control = original_cboe_txt_control
+        _proven._base._render_etrade_txt_control = original_etrade_txt_control
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview

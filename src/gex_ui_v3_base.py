@@ -785,6 +785,16 @@ def _render_notes(vault_key: str, state: dict[str, Any]) -> dict[str, Any]:
 # ==============================
 # SOURCE-SPECIFIC REFRESH / OVERVIEW HOOKS
 # ==============================
+def _render_etrade_txt_control() -> None:
+    """Production adapter replaces this with the E*TRADE raw TXT link."""
+    return None
+
+
+def _render_cboe_txt_control() -> None:
+    """Production adapter replaces this with the CBOE raw TXT link."""
+    return None
+
+
 def _render_cboe_refresh_all_control(
     vault_key: str,
     state: dict[str, Any],
@@ -860,13 +870,17 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     with cboe_refresh_col:
         cboe_refresh_all = _render_cboe_refresh_all_control(vault_key, state)
 
-    add_button_col, saved_col, trash_col = st.columns(
-        [1.35, 3.85, 0.55],
+    add_button_col, etrade_txt_col, cboe_txt_col, saved_col, trash_col = st.columns(
+        [1.35, 0.68, 0.68, 2.49, 0.55],
         gap="small",
         vertical_alignment="bottom",
     )
     with add_button_col:
         add_clicked = st.button("ADD TICKER(S)", width="stretch", key="gexv3_add_many")
+    with etrade_txt_col:
+        _render_etrade_txt_control()
+    with cboe_txt_col:
+        _render_cboe_txt_control()
     with saved_col:
         if state["tickers"]:
             quick_remove = st.selectbox(
