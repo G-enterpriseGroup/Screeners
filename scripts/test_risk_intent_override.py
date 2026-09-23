@@ -141,16 +141,16 @@ with st.container(key="risk_book_native_grid"):
     assert 'border:2px solid #fb8b1e!important' in source
     assert 'label:has(input:checked)' in source
     assert 'st.data_editor(' not in source
-    assert '"SLEEVE / % TACTICAL"' in source
+    assert '"SLEEVE / %"' in source
     assert 'classified["_risk_row_uid"]' in source
 
     # Risk Book visual contract: use the same compact typography/rhythm tokens
     # as the production v9 Risk interface instead of ad-hoc tiny table text.
-    assert '--risk-book-row-height:56px' in source
+    assert '--risk-book-row-height:48px' in source
     assert '--risk-book-font-size:1.02rem' in source
     assert '--risk-book-cell-pad:8px' in source
     assert 'font-size:var(--risk-book-font-size)' in source
-    assert 'grid_spec = [0.42, 0.65, 0.45, 0.46, 0.50, 0.56, 0.43]' in source
+    assert 'grid_spec = [0.40, 0.68, 0.50, 0.42, 0.49, 0.57, 0.38]' in source
     assert 'st.columns(grid_spec, gap=None, vertical_alignment="center")' in source
     assert 'width="stretch"' in source
 
