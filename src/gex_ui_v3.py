@@ -8,7 +8,8 @@ EDIT THIS FILE FOR:
 - GEX Refresh All scheduler concurrency when the E*TRADE request-rate gate remains authoritative;
 - GEX Refresh All disconnected behavior that launches the existing E*TRADE authorization flow;
 - live GEX Refresh All progress polling / automatic result rerenders;
-- persisted GEX Settings controls such as auto-refresh-on-login;
+- persisted GEX Settings controls such as auto-refresh-on-login and MASTER A6 source;
+- isolated CBOE Overview refresh/presentation using the legacy CBOE delayed feed;
 - per-ticker Overview DTE editing, E*TRADE expiration snapping, and saved overrides;
 - one-per-login automatic Refresh All startup;
 - TradingView/Pine transport presentation when explicitly requested.
@@ -28,6 +29,7 @@ from __future__ import annotations
 import copy
 import html
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
@@ -38,7 +40,8 @@ import streamlit as st
 
 from src import gex_ui as _core
 from src import gex_ui_v3_proven as _proven
-from src.gex_github_bridge import publish_latest_gex
+from src.gex_cboe import build_cboe_gex, cboe_results, cboe_snapshot, save_cboe_refresh
+from src.gex_github_bridge import publish_latest_gex, publish_latest_gex_cboe
 
 
 # ==============================
@@ -235,6 +238,339 @@ def _run_background_refresh_with_master_export(
 
 
 _proven._run_background_refresh = _run_background_refresh_with_master_export
+
+
+# ==============================
+# CBOE OVERVIEW / SEPARATE MASTER A6
+# ==============================
+_CBOE_MAX_WORKERS = 8
+_CBOE_MASTER_A6_STATIC_PATH = (
+    Path(__file__).resolve().parents[1] / "static" / "latest_gex_cboe.txt"
+)
+_CBOE_BRIDGE_URL = (
+    "https://raw.githubusercontent.com/G-enterpriseGroup/Screeners/"
+    "gex-bridge-data/bridge/latest_gex_cboe.txt"
+)
+
+
+def _publish_cboe_master_a6(
+    vault_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Publish CBOE results separately; never overwrite the E*TRADE bridge."""
+    snapshot = cboe_snapshot(vault_key)
+    result_map = snapshot.get("results") or {}
+    failures = snapshot.get("failures") or {}
+    tickers = [
+        ticker
+        for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
+        if ticker
+    ]
+    if not result_map or not tickers:
+        return
+
+    parser_text = _proven._google_sheets_master_text(
+        result_map,
+        tickers,
+        failures,
+    ).strip()
+    if not parser_text:
+        return
+
+    quoted = f'"{parser_text}"'
+    try:
+        path = _CBOE_MASTER_A6_STATIC_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(quoted, encoding="utf-8")
+        temporary.replace(path)
+    except Exception:
+        pass
+
+    if _GEX_GITHUB_TOKEN:
+        try:
+            publish_latest_gex_cboe(_GEX_GITHUB_TOKEN, quoted)
+        except Exception:
+            pass
+
+
+def _refresh_cboe_batch(
+    vault_key: str,
+    state: dict[str, Any],
+    tickers: list[str],
+    *,
+    replace_all: bool,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Fetch CBOE tickers concurrently; Streamlit updates stay on the UI thread."""
+    normalized: list[str] = []
+    for raw in tickers:
+        ticker = _core._normalize_ticker(raw)
+        if ticker and ticker not in normalized:
+            normalized.append(ticker)
+    if not normalized:
+        return {}, {}
+
+    results: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    progress = st.progress(0.0, text=f"CBOE GEX // 0/{len(normalized)}")
+    workers = max(1, min(_CBOE_MAX_WORKERS, len(normalized)))
+
+    def calculate(ticker: str) -> dict[str, Any]:
+        dte = int(
+            state.get("dte_overrides", {}).get(
+                ticker,
+                state.get("global_dte", 45),
+            )
+        )
+        return build_cboe_gex(
+            ticker,
+            dte,
+            str(state.get("timezone") or "America/New_York"),
+            str(state.get("wall_value_mode") or "NET_GEX"),
+        )
+
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="raj-cboe-gex",
+    ) as executor:
+        future_map = {
+            executor.submit(calculate, ticker): ticker
+            for ticker in normalized
+        }
+        for completed, future in enumerate(as_completed(future_map), 1):
+            ticker = future_map[future]
+            try:
+                results[ticker] = future.result()
+            except Exception as exc:
+                failures[ticker] = " ".join(str(exc).split())[:500]
+            progress.progress(
+                min(1.0, completed / len(normalized)),
+                text=(
+                    f"CBOE GEX // {completed}/{len(normalized)} // "
+                    f"{len(results)} UPDATED // {len(failures)} ERRORS"
+                ),
+            )
+
+    snapshot = cboe_snapshot(vault_key)
+    if replace_all:
+        snapshot["results"].clear()
+    for ticker in normalized:
+        if ticker in failures:
+            snapshot["results"].pop(ticker, None)
+
+    if replace_all:
+        merged_failures = failures
+    else:
+        merged_failures = dict(snapshot.get("failures") or {})
+        for ticker in normalized:
+            merged_failures.pop(ticker, None)
+        merged_failures.update(failures)
+
+    save_cboe_refresh(
+        vault_key,
+        results,
+        merged_failures,
+        str(state.get("timezone") or "America/New_York"),
+    )
+    _publish_cboe_master_a6(vault_key, state)
+    progress.empty()
+    return results, failures
+
+
+def _decorate_cboe_overview_markup(
+    markup: str,
+    result_map: dict[str, Any],
+) -> str:
+    """Match the E*TRADE Overview geometry without mixing E*TRADE IV into CBOE."""
+    if 'class="gexv3-summary"' not in markup:
+        return markup
+
+    if "<colgroup>" not in markup:
+        colgroup = (
+            "<colgroup>"
+            '<col style="width:12%"><col style="width:6%"><col style="width:10%">'
+            '<col style="width:10%"><col style="width:10%"><col style="width:10%">'
+            '<col style="width:28%"><col style="width:14%">'
+            "</colgroup>"
+        )
+        markup = markup.replace(
+            '<table class="gexv3-summary"><thead>',
+            '<table class="gexv3-summary">' + colgroup + "<thead>",
+            1,
+        )
+
+    def decorate_row(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        ticker_match = re.search(r'<td class="sym">([^<]+)</td>', inner)
+        if ticker_match is None:
+            return match.group(0)
+        ticker = html.unescape(ticker_match.group(1)).strip().upper()
+        result = result_map.get(ticker)
+        if not isinstance(result, dict):
+            return match.group(0)
+        status, tone = _proven._base._range_status(result)
+        legacy = f'<td class="{tone}">{status}</td>'
+        inner = inner.replace(
+            legacy,
+            f'<td class="gexv3-range-col">{_proven._range_visual(result)}</td>',
+            1,
+        )
+        return "<tr>" + inner + "</tr>"
+
+    markup = re.sub(r"<tr>(.*?)</tr>", decorate_row, markup, flags=re.DOTALL)
+    markup = _proven._inject_row_trash(markup)
+
+    cboe_help = (
+        '<span class="gexv3-iv-help" tabindex="0" '
+        'aria-label="CBOE source note">?'
+        '<span class="gexv3-iv-help-tip"><b>CBOE SOURCE VIEW</b><br>'
+        'GEX levels in this tab come only from CBOE delayed options. '
+        'E*TRADE IV Rank / IV-HV is intentionally not mixed into this source view.'
+        '</span></span>'
+    )
+    header = '<th class="gexv3-iv-head">IV RANK / REF ' + cboe_help + "</th>"
+    markup = markup.replace(
+        "<th>CALL WALL</th><th>RANGE</th>",
+        "<th>CALL WALL</th>" + header + "<th>RANGE</th>",
+        1,
+    )
+    new_colgroup = (
+        "<colgroup>"
+        '<col style="width:11%"><col style="width:5%"><col style="width:9%">'
+        '<col style="width:9%"><col style="width:9%"><col style="width:9%">'
+        '<col style="width:16%"><col style="width:23%"><col style="width:9%">'
+        "</colgroup>"
+    )
+    markup = re.sub(
+        r"<colgroup>.*?</colgroup>",
+        new_colgroup,
+        markup,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+    def add_source_cell(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        ticker_match = re.search(r'gexv3-symbol-text">([^<]+)</span>', inner)
+        if ticker_match is None:
+            return match.group(0)
+        ticker = html.unescape(ticker_match.group(1)).strip().upper()
+        result = result_map.get(ticker)
+        source_cell = (
+            '<td class="orange" title="CBOE GEX source only; E*TRADE IV Rank is not mixed here.">'
+            '<div class="gexv3-iv-cell-main">CBOE GEX</div>'
+            '<div class="gexv3-iv-cell-sub">IV REF N/A</div>'
+            "</td>"
+        )
+        if isinstance(result, dict):
+            marker = '<td class="gexv3-range-col">'
+        else:
+            marker = '<td class="orange">REFRESH</td>'
+        if marker in inner:
+            inner = inner.replace(marker, source_cell + marker, 1)
+        return "<tr>" + inner + "</tr>"
+
+    markup = re.sub(r"<tr>(.*?)</tr>", add_source_cell, markup, flags=re.DOTALL)
+    return _IV_REFERENCE_CSS + markup
+
+
+def _render_cboe_overview(
+    vault_key: str,
+    state: dict[str, Any],
+    overview_renderer: Callable[[dict[str, Any], dict[str, Any]], str],
+) -> None:
+    """Render source-isolated CBOE GEX in the same compact overview table."""
+    st.caption(
+        "CBOE DELAYED OPTIONS // SAME WALL / FLIP METHOD AS E*TRADE // "
+        "NO E*TRADE LOGIN REQUIRED"
+    )
+
+    tickers = [
+        ticker
+        for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
+        if ticker
+    ]
+    action_col, source_col = st.columns(
+        [1.55, 4.45],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with action_col:
+        refresh_all = st.button(
+            "REFRESH ALL CBOE GEX",
+            key="gexv3_cboe_refresh_all",
+            type="primary",
+            width="stretch",
+            disabled=not bool(tickers),
+        )
+    with source_col:
+        st.caption(
+            f"CBOE BRIDGE // {_CBOE_BRIDGE_URL} // "
+            f"{min(_CBOE_MAX_WORKERS, max(1, len(tickers)))} FETCH WORKERS"
+        )
+
+    if refresh_all:
+        _, failures = _refresh_cboe_batch(
+            vault_key,
+            copy.deepcopy(state),
+            tickers,
+            replace_all=True,
+        )
+        if failures:
+            st.warning(
+                f"CBOE REFRESH COMPLETE // {len(tickers) - len(failures)}/{len(tickers)} UPDATED // "
+                f"{len(failures)} ERRORS"
+            )
+        else:
+            st.success(f"CBOE REFRESH COMPLETE // {len(tickers)}/{len(tickers)} UPDATED")
+
+    result_map = cboe_results(vault_key)
+    # Use st.html so the E*TRADE-only overview decorator does not rewrite CBOE rows.
+    st.html(_decorate_cboe_overview_markup(overview_renderer(state, result_map), result_map))
+
+    if tickers:
+        st.caption("PER-TICKER CBOE REFRESH")
+        pick_col, button_col = st.columns(
+            [4.4, 1.35],
+            gap="small",
+            vertical_alignment="bottom",
+        )
+        with pick_col:
+            selected = st.selectbox(
+                "REFRESH CBOE TICKER",
+                tickers,
+                key="gexv3_cboe_refresh_pick",
+            )
+        with button_col:
+            refresh_one = st.button(
+                f"↻ {selected}",
+                key="gexv3_cboe_refresh_selected",
+                width="stretch",
+            )
+        if refresh_one:
+            _, failures = _refresh_cboe_batch(
+                vault_key,
+                copy.deepcopy(state),
+                [selected],
+                replace_all=False,
+            )
+            if selected in failures:
+                st.error(f"{selected} CBOE REFRESH FAILED // {failures[selected]}")
+            else:
+                st.success(f"{selected} CBOE UPDATED")
+
+    snapshot = cboe_snapshot(vault_key)
+    refreshed = [ticker for ticker in tickers if ticker in result_map]
+    failures = snapshot.get("failures") or {}
+    st.caption(
+        f"{len(refreshed)}/{len(tickers)} CBOE TICKERS REFRESHED // "
+        "CBOE RESULTS ARE KEPT SEPARATE FROM E*TRADE RESULTS."
+    )
+    if failures:
+        with st.expander(f"CBOE ERRORS // {len(failures)}", expanded=False):
+            for ticker in tickers:
+                if ticker in failures:
+                    st.caption(f"{ticker} // {failures[ticker]}")
 
 
 # ==============================
@@ -460,11 +796,12 @@ _TRADINGVIEW_COPY_BUTTON_CSS = """
 
 
 def _render_tradingview_pine_compatible(
+    vault_key: str,
     state: dict[str, Any],
     result_map: dict[str, Any],
     failures: dict[str, str] | None = None,
 ) -> None:
-    """Emit full metadata + packed gamma rows for every TradingView ticker block."""
+    """Render MASTER A6 from the persisted E*TRADE-or-CBOE source selection."""
     saved: list[str] = []
     for value in state.get("tickers", []):
         ticker = _core._normalize_ticker(value)
@@ -474,17 +811,59 @@ def _render_tradingview_pine_compatible(
         st.info("Add GEX tickers first.")
         return
 
+    saved_source = str(state.get("master_a6_source") or "CBOE").upper()
+    if saved_source not in {"CBOE", "ETRADE"}:
+        saved_source = "CBOE"
+    source_label = st.selectbox(
+        "MASTER A6 SOURCE",
+        ["CBOE", "E*TRADE"],
+        index=0 if saved_source == "CBOE" else 1,
+        key="gexv3_master_a6_source_v1",
+        help=(
+            "CBOE uses the separate delayed CBOE GEX results. E*TRADE uses the "
+            "existing authenticated E*TRADE GEX results. Your last choice is saved."
+        ),
+    )
+    source_key = "CBOE" if source_label == "CBOE" else "ETRADE"
+    if source_key != saved_source:
+        state["master_a6_source"] = source_key
+        saved_state = _core._save_state(vault_key, state)
+        state.clear()
+        state.update(saved_state)
+
+    if source_key == "CBOE":
+        snapshot = cboe_snapshot(vault_key)
+        active_results = snapshot.get("results") or {}
+        active_failures = snapshot.get("failures") or {}
+        source_display = "CBOE"
+        source_slug = "cboe"
+    else:
+        active_results = result_map
+        active_failures = failures or {}
+        source_display = "E*TRADE"
+        source_slug = "etrade"
+
     normalized_failures = {
         _core._normalize_ticker(key): str(value)
-        for key, value in (failures or {}).items()
+        for key, value in active_failures.items()
         if _core._normalize_ticker(key)
     }
     available = [
-        ticker for ticker in saved
-        if ticker in result_map and ticker not in normalized_failures
+        ticker
+        for ticker in saved
+        if ticker in active_results and ticker not in normalized_failures
     ]
     if not available:
-        st.info("Refresh GEX first. The TradingView bridge is built from refreshed ticker results.")
+        if source_key == "CBOE":
+            st.info(
+                "CBOE is the saved MASTER A6 source. Open CBOE OVERVIEW and "
+                "refresh CBOE GEX first, or switch MASTER A6 SOURCE to E*TRADE."
+            )
+        else:
+            st.info(
+                "E*TRADE is the saved MASTER A6 source. Refresh E*TRADE GEX first, "
+                "or switch MASTER A6 SOURCE to CBOE."
+            )
         return
 
     master_label = "MASTER A6 // FULL TICKER BLOCKS — COPY THIS"
@@ -492,44 +871,58 @@ def _render_tradingview_pine_compatible(
     choice = st.selectbox(
         "PACKED GAMMA BLOCK",
         [master_label, compact_label] + available,
-        key="gexv3_bridge_choice_full_ticker_v5",
+        key=f"gexv3_bridge_choice_full_ticker_v6_{source_slug}",
     )
     is_master = choice == master_label
     is_compact = choice == compact_label
 
     if is_master:
         parser_text = _proven._google_sheets_master_text(
-            result_map, saved, normalized_failures
+            active_results,
+            saved,
+            normalized_failures,
         ).strip()
-        filename = "raj_terminal_MASTER_A6_TRADINGVIEW_FULL.txt"
+        filename = f"raj_terminal_MASTER_A6_{source_slug.upper()}_FULL.txt"
         expected_headers = saved
         parser_expected = available
-        mode_text = "FULL TICKER METADATA + PACKED GAMMA LEVELS"
+        mode_text = f"{source_display} // FULL TICKER METADATA + PACKED GAMMA LEVELS"
     elif is_compact:
-        parser_text = _proven._pine_master_bridge_text(result_map, available).strip()
-        filename = "raj_terminal_MASTER_A6_COMPACT_DIAGNOSTIC.txt"
+        parser_text = _proven._pine_master_bridge_text(
+            active_results,
+            available,
+        ).strip()
+        filename = f"raj_terminal_MASTER_A6_{source_slug.upper()}_COMPACT.txt"
         expected_headers = available
         parser_expected = available
-        mode_text = "COMPACT TICKER + PACKED ROWS // OPTIONAL"
+        mode_text = f"{source_display} // COMPACT TICKER + PACKED ROWS // OPTIONAL"
     else:
-        parser_text = _proven._base._google_sheets_summary_text(result_map[choice]).strip()
-        filename = f"{choice}_gex_tradingview_full.txt"
+        parser_text = _proven._base._google_sheets_summary_text(
+            active_results[choice]
+        ).strip()
+        filename = f"{choice}_gex_{source_slug}_tradingview_full.txt"
         expected_headers = [choice]
         parser_expected = [choice]
-        mode_text = f"{choice} // FULL TICKER METADATA + PACKED GAMMA LEVELS"
+        mode_text = (
+            f"{source_display} // {choice} // FULL TICKER METADATA + PACKED GAMMA LEVELS"
+        )
 
-    # Exactly one pair of outer quotes around the complete multiline paste.
     text = f'"{parser_text}"'
     byte_count = len(text.encode("utf-8"))
     headers = _proven._pine_router_headers(parser_text)
     missing_headers = [ticker for ticker in expected_headers if ticker not in headers]
-    pine_issues, parsed_counts = _proven._pine_master_issues(parser_text, parser_expected)
+    pine_issues, parsed_counts = _proven._pine_master_issues(
+        parser_text,
+        parser_expected,
+    )
     too_large = byte_count > _proven._PINE_TEXT_LIMIT
     quoted_ok = text.startswith('"') and text.endswith('"')
     transport_ok = not missing_headers and not pine_issues and not too_large and quoted_ok
 
     st.caption(
-        "TRADINGVIEW BRIDGE // " + mode_text
+        "TRADINGVIEW BRIDGE // SOURCE "
+        + source_display
+        + " // "
+        + mode_text
         + f" // {len(headers)}/{len(expected_headers)} HEADERS // "
         + f"{byte_count:,}/{_proven._PINE_TEXT_LIMIT:,} CHARS"
     )
@@ -539,19 +932,22 @@ def _render_tradingview_pine_compatible(
         max_rows = max(parsed_counts.values()) if parsed_counts else 0
         if is_master and normalized_failures:
             st.warning(
-                f"TRADINGVIEW MASTER READY // {len(available)} DATA BLOCKS // "
-                f"{len(normalized_failures)} ERROR BLOCKS // {min_rows}-{max_rows} DRAWABLE ROWS PER SUCCESSFUL TICKER"
+                f"{source_display} MASTER READY // {len(available)} DATA BLOCKS // "
+                f"{len(normalized_failures)} ERROR BLOCKS // "
+                f"{min_rows}-{max_rows} DRAWABLE ROWS PER SUCCESSFUL TICKER"
             )
         elif is_master:
             st.success(
-                f"TRADINGVIEW MASTER CHECK PASS // {len(available)}/{len(saved)} TICKERS // "
+                f"{source_display} MASTER CHECK PASS // {len(available)}/{len(saved)} TICKERS // "
                 f"{min_rows}-{max_rows} DRAWABLE PACKED ROWS EACH"
             )
         elif is_compact:
-            st.success(f"COMPACT DIAGNOSTIC CHECK PASS // {len(available)} TICKERS")
+            st.success(
+                f"{source_display} COMPACT DIAGNOSTIC CHECK PASS // {len(available)} TICKERS"
+            )
         else:
             st.success(
-                f"{choice} // PINE ROUTER CHECK PASS // "
+                f"{source_display} // {choice} // PINE ROUTER CHECK PASS // "
                 f"{parsed_counts.get(choice, 0)} DRAWABLE PACKED ROWS"
             )
     else:
@@ -565,24 +961,41 @@ def _render_tradingview_pine_compatible(
     verify_ticker = st.selectbox(
         "PINE CHART TICKER CHECK",
         available,
-        key="gexv3_pine_chart_ticker_check_full_v5",
-        help="Pick the same symbol as the TradingView chart. This validates the exact full block you should paste.",
+        key=f"gexv3_pine_chart_ticker_check_full_v6_{source_slug}",
+        help=(
+            "Pick the same symbol as the TradingView chart. "
+            "This validates the selected source's exact full block."
+        ),
     )
-    target_issues, target_count = _proven._pine_ticker_issues(parser_text, verify_ticker)
+    target_issues, target_count = _proven._pine_ticker_issues(
+        parser_text,
+        verify_ticker,
+    )
     if target_issues:
-        st.error(f"{verify_ticker} // PINE TARGET FAIL // " + ", ".join(target_issues))
+        st.error(
+            f"{verify_ticker} // PINE TARGET FAIL // " + ", ".join(target_issues)
+        )
     else:
-        st.success(f"{verify_ticker} // PINE TARGET PASS // {target_count} DRAWABLE PACKED ROWS")
+        st.success(
+            f"{verify_ticker} // PINE TARGET PASS // {target_count} DRAWABLE PACKED ROWS"
+        )
 
     if is_master:
         st.markdown(
-            '**COPY FOR TRADINGVIEW includes for EVERY successful ticker: `Ticker`, `Mode`, `Spot`, `Max DTE Used`, `Contracts Used`, `Net Current GEX`, `Source URL`, then the gamma levels. One opening and one closing `"` are already included around the entire payload.**'
+            f'**COPY FOR TRADINGVIEW // SOURCE: {source_display}. Includes for EVERY '
+            'successful ticker: `Ticker`, `Mode`, `Spot`, `Max DTE Used`, '
+            '`Contracts Used`, `Net Current GEX`, `Source URL`, then the gamma '
+            'levels. One opening and one closing `"` are already included around '
+            'the entire payload.**'
         )
     elif is_compact:
-        st.markdown('**OPTIONAL DIAGNOSTIC ONLY // outer `"` characters are included.**')
+        st.markdown(
+            f'**{source_display} OPTIONAL DIAGNOSTIC ONLY // outer `"` characters are included.**'
+        )
     else:
         st.markdown(
-            f'**{choice} FULL BLOCK // metadata first, gamma levels second. Outer `"` characters are included.**'
+            f'**{source_display} // {choice} FULL BLOCK // metadata first, gamma '
+            'levels second. Outer `"` characters are included.**'
         )
 
     st.html(_proven._TRADINGVIEW_CODE_CSS)
@@ -596,7 +1009,7 @@ def _render_tradingview_pine_compatible(
         mime="text/plain",
         width="stretch",
         disabled=not bool(text.strip()),
-        key="gexv3_download_bridge",
+        key=f"gexv3_download_bridge_{source_slug}",
     )
 
 
@@ -845,6 +1258,7 @@ def render_gex(
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
+    original_render_cboe_overview = _proven._base._render_cboe_overview
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
     original_background_status = _proven._render_background_status
@@ -903,6 +1317,24 @@ def render_gex(
         state = _render_auto_refresh_setting(key, state)
         return original_render_settings(key, state, result_map)
 
+    def render_cboe_overview_production(
+        key: str,
+        state: dict[str, Any],
+    ) -> None:
+        _render_cboe_overview(key, state, original_overview)
+
+    def render_tradingview_with_sources(
+        state: dict[str, Any],
+        result_map: dict[str, Any],
+        failures: dict[str, str] | None = None,
+    ) -> None:
+        _render_tradingview_pine_compatible(
+            vault_key,
+            state,
+            result_map,
+            failures,
+        )
+
     def refresh_all_connect_button(label: Any, *args: Any, **kwargs: Any):
         """Route disconnected Refresh All clicks into the existing OAuth start flow."""
         if kwargs.get("key") != "gexv3_refresh_all" or client is not None:
@@ -955,9 +1387,10 @@ def render_gex(
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
+    _proven._base._render_cboe_overview = render_cboe_overview_production
     _proven._base._render_settings = render_settings_with_auto_refresh
     _proven._decorate_overview = decorate_with_iv_rank
-    _proven._render_tradingview_pine = _render_tradingview_pine_compatible
+    _proven._render_tradingview_pine = render_tradingview_with_sources
     _proven._render_background_status = _render_background_status_live
     st.button = refresh_all_connect_button
     try:
@@ -973,6 +1406,7 @@ def render_gex(
         _proven._render_tradingview_pine = original_tradingview
         _proven._decorate_overview = original_decorate
         _proven._base._render_settings = original_render_settings
+        _proven._base._render_cboe_overview = original_render_cboe_overview
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview

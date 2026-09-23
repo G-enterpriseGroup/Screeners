@@ -4,7 +4,7 @@ OWNERSHIP / EDITING NOTES
 -------------------------
 EDIT THIS FILE FOR:
 - GEX multi-ticker watchlist controls;
-- GEX overview/analytics/raw-strike subtabs;
+- GEX overview/analytics/raw-strike subtabs, including source-specific overview slots;
 - TradingView bridge presentation and copy/download output;
 - GEX settings, notes, and compact layout.
 
@@ -783,6 +783,18 @@ def _render_notes(vault_key: str, state: dict[str, Any]) -> dict[str, Any]:
 
 
 # ==============================
+# SOURCE-SPECIFIC OVERVIEW HOOK
+# ==============================
+def _render_cboe_overview(
+    vault_key: str,
+    state: dict[str, Any],
+) -> None:
+    """Production adapter replaces this with the isolated CBOE renderer."""
+    del vault_key, state
+    st.info("CBOE GEX source is not configured in this renderer.")
+
+
+# ==============================
 # PUBLIC GEX RENDERER
 # ==============================
 def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
@@ -889,12 +901,23 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
             st.success("ALL GEX TICKERS UPDATED")
         st.rerun()
 
-    overview_tab, analytics_tab, raw_tab, tv_tab, settings_tab, notes_tab = st.tabs(
-        ["OVERVIEW", "ANALYTICS", "RAW STRIKES", "TRADINGVIEW", "SETTINGS", "NOTES"]
+    etrade_overview_tab, cboe_overview_tab, analytics_tab, raw_tab, tv_tab, settings_tab, notes_tab = st.tabs(
+        [
+            "E*TRADE OVERVIEW",
+            "CBOE OVERVIEW",
+            "ANALYTICS",
+            "RAW STRIKES",
+            "TRADINGVIEW",
+            "SETTINGS",
+            "NOTES",
+        ]
     )
 
-    with overview_tab:
+    with etrade_overview_tab:
         state = _render_overview(client, vault_key, touch_session, state, result_map)
+
+    with cboe_overview_tab:
+        _render_cboe_overview(vault_key, state)
 
     with analytics_tab:
         _render_analytics(client, vault_key, touch_session, state, result_map)
