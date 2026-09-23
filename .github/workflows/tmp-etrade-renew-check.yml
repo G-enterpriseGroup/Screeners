@@ -1,0 +1,42 @@
+name: Temporary ETRADE Renew Layout Check
+
+on:
+  push:
+    branches:
+      - fix/etrade-renew-stable-layout
+
+permissions:
+  contents: read
+
+jobs:
+  validate-renew-layout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check ETRADE production UI
+        run: python -m py_compile src/etrade_connection_ui_v2.py streamlit_app.py
+
+      - name: Verify renewal feedback cannot resize the button column
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/etrade_connection_ui_v2.py").read_text(encoding="utf-8")
+          assert 'st.success("E*TRADE session renewed.")' not in source
+          assert 'st.session_state["_etrade_renew_notice"] = "E*TRADE session renewed."' in source
+          assert 'st.toast(str(renew_notice))' in source
+          assert 'st.rerun()' in source
+          print("renew layout contract: PASS")
+          PY
+
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
