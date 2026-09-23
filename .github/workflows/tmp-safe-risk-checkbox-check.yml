@@ -1,0 +1,38 @@
+name: Temporary Safe Risk Checkbox Check
+
+on:
+  push:
+    branches:
+      - fix/risk-checkbox-safe-row-keys
+
+permissions:
+  contents: read
+
+jobs:
+  validate-risk-checkbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - name: Syntax check Risk production path
+        run: python -m py_compile src/risk_sizing_ui_v2.py src/risk_sizing_ui_v9.py src/risk_sizing_ui_v10.py streamlit_app.py
+      - name: Run Risk duplicate-symbol regression
+        run: python scripts/test_risk_intent_override.py
+      - name: Verify local-only implementation contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/risk_sizing_ui_v2.py").read_text(encoding="utf-8")
+          assert "st.data_editor(" not in source
+          assert "st.rerun()" not in source[source.index("def _set_long_term_override"):source.index("# ==============================\n# DISPLAY HELPERS")]
+          assert "_risk_override_widget_key(account_key, symbol, row_uid)" in source
+          assert 'border:1px solid #fb8b1e !important;' in source
+          assert 'st.dataframe(' in source
+          assert 'view["_risk_row_uid"] = [str(pos) for pos in range(len(view))]' in source
+          print("safe Risk checkbox source contract: PASS")
+          PY
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
