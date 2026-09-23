@@ -1,0 +1,58 @@
+name: Temporary Risk Book Grid Alignment Check
+
+on:
+  push:
+    branches:
+      - fix/risk-book-grid-alignment
+
+permissions:
+  contents: read
+
+jobs:
+  validate-risk-book-grid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check Risk production path
+        run: python -m py_compile src/risk_sizing_ui_v2.py src/risk_sizing_ui_v9.py src/risk_sizing_ui_v10.py streamlit_app.py
+
+      - name: Verify Streamlit dataframe row-height support
+        run: |
+          python - <<'PY'
+          import inspect
+          import streamlit as st
+          signature = inspect.signature(st.dataframe)
+          assert "row_height" in signature.parameters
+          print("row_height supported")
+          PY
+
+      - name: Run Risk intent / duplicate-symbol regression
+        run: python scripts/test_risk_intent_override.py
+
+      - name: Verify Risk Book alignment contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/risk_sizing_ui_v2.py").read_text(encoding="utf-8")
+          assert 'with st.container(key="risk_book_grid"):' in source
+          assert 'width="stretch"' in source
+          assert 'row_height=35' in source
+          assert 'height=max(70, 35 * (len(view) + 1))' in source
+          assert 'min-height:35px !important;' in source
+          assert 'border-left:1px solid #fb8b1e !important;' in source
+          assert 'border-right:1px solid #fb8b1e !important;' in source
+          assert 'border-bottom:1px solid #fb8b1e !important;' in source
+          assert '_risk_override_widget_key(account_key, symbol, row_uid)' in source
+          assert 'st.data_editor(' not in source
+          print("Risk Book alignment contract: PASS")
+          PY
+
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
