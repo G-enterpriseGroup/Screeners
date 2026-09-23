@@ -27,7 +27,7 @@ def check_session(tabs):
         app.session_state["terminal_tab_state"] = {"order": TABS, "active": tab}
         app.run()
         assert not app.exception, [e.message for e in app.exception]
-        headers = [m for m in app.markdown if 'class="terminal-page-header-shell"' in m.value]
+        headers = [m for m in app.get("html") if 'class="terminal-page-header-shell"' in m.value]
         assert len(headers) == 1, (tab, len(headers))
         # Import-cached navigation CSS must still be sent on every rerun/session.
         assert any(".st-key-terminal_navigation" in h.value for h in app.get("html")), tab

@@ -9,6 +9,7 @@ EDIT THIS FILE FOR:
 - GEX Refresh All disconnected behavior that launches the existing E*TRADE authorization flow;
 - live GEX Refresh All progress polling / automatic result rerenders;
 - persisted GEX Settings controls such as auto-refresh-on-login;
+- per-ticker Overview DTE editing, E*TRADE expiration snapping, and saved overrides;
 - one-per-login automatic Refresh All startup;
 - TradingView/Pine transport presentation when explicitly requested.
 
@@ -27,6 +28,9 @@ from __future__ import annotations
 import copy
 import html
 import re
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any, Callable
 
@@ -51,6 +55,91 @@ _proven._base.core = _core
 # without increasing the request-start rate or changing any GEX calculation.
 _BACKGROUND_TICKER_WORKERS = 20
 _proven._BACKGROUND_MAX_WORKERS = _BACKGROUND_TICKER_WORKERS
+
+# ==============================
+# PER-TICKER DTE EDITOR
+# ==============================
+def _nearest_expiration_dte(payload: dict, requested: int, today: date) -> tuple[int, date]:
+    """Snap to an actual nonexpired E*TRADE date; ties choose the earlier date."""
+    dates = []
+    for year, month, day in _core.option_expiration_dates(payload):
+        try:
+            expiry = date(year, month, day)
+        except ValueError:
+            continue
+        dte = (expiry - today).days
+        if 0 <= dte <= 3650:
+            dates.append((dte, expiry))
+    if not dates:
+        raise ValueError("No available E*TRADE expirations. Existing DTE was kept.")
+    return min(dates, key=lambda item: (abs(item[0] - requested), item[0]))
+
+
+def _save_ticker_dte(client: Any, key: str, ticker: str, requested: int, touch: Any):
+    """Validate/refresh first, then commit only this ticker's setting and result."""
+    state = _core._clean_state(st.session_state.get("_gex_state") or {})
+    if ticker not in state["tickers"]:
+        raise ValueError("This ticker is no longer in GEX.")
+    if client is None:
+        raise ValueError("Connect E*TRADE to load available expirations. Existing DTE was kept.")
+    if not 0 <= requested <= 3650:
+        raise ValueError("Enter a DTE between 0 and 3650.")
+    if (_proven._background_job(key) or {}).get("status") in {"QUEUED", "RUNNING"}:
+        raise ValueError("Wait for the current GEX refresh to finish before changing DTE.")
+    # Drain any finished work before replacing this ticker, so it cannot later
+    # overwrite the newly calculated DTE with the previous refresh snapshot.
+    _proven._sync_background_results(key)
+    payload = _core._call_api(client, "get_option_expirations", ticker, force_refresh=True)
+    today = datetime.now(ZoneInfo(state["timezone"])).date()
+    snapped, expiry = _nearest_expiration_dte(payload, requested, today)
+    result = _core._build_gex(client, ticker, snapped, state["timezone"], state["wall_value_mode"], force_refresh=True)
+    state["dte_overrides"][ticker] = snapped
+    _core._save_state(key, state)
+    _core._results(key)[ticker] = result
+    if callable(touch):
+        try:
+            touch()
+        except Exception:
+            pass
+    return snapped, expiry
+
+
+def _inject_dte_editor_links(markup: str) -> str:
+    """Keep the existing table/range/IV widgets; make only each DTE clickable."""
+    params = {key: st.query_params.get_all(key) for key in st.query_params if key not in {"gex_dte", "gex_delete"}}
+    def replace(match):
+        ticker = html.unescape(match.group(2)).strip()
+        href = "?" + urlencode({**params, "gex_dte": ticker}, doseq=True)
+        return (match.group(1) + '<td><a class="gexv3-dte-edit" target="_self" '
+                f'href="{html.escape(href, quote=True)}" aria-label="Edit {html.escape(ticker, quote=True)} DTE" '
+                'title="Edit max DTE; snaps to nearest E*TRADE expiration">'
+                + match.group(3) + '</a></td>')
+    return re.sub(r'(<td class="sym">([^<]+)</td>)<td>([0-9]+)</td>', replace, markup)
+
+
+@st.dialog("EDIT TICKER DTE", width="small")
+def _ticker_dte_dialog(client: Any, key: str, ticker: str, touch: Any):
+    state = _core._clean_state(st.session_state.get("_gex_state") or {})
+    if ticker not in state["tickers"]:
+        st.warning("This ticker is no longer in GEX.")
+        return
+    st.markdown(f"**{ticker} // MAX DTE**")
+    requested = st.number_input("Days to expiration", min_value=0, max_value=3650,
+                               value=int(state["dte_overrides"].get(ticker, state["global_dte"])),
+                               step=1, key=f"gex_dte_input_{ticker}")
+    st.caption("Snaps to the nearest E*TRADE expiration (earlier on a tie). Includes all expirations up to that DTE. Saved for future sessions in this browser.")
+    if client is None:
+        st.info("Connect E*TRADE to validate and save this ticker's DTE.")
+    if st.button("SAVE & REFRESH TICKER", key="gex_dte_save", type="primary", disabled=client is None):
+        try:
+            with st.spinner(f"Updating {ticker}…"):
+                snapped, expiry = _save_ticker_dte(client, key, ticker, int(requested), touch)
+        except Exception as exc:
+            st.error(f"DTE update failed: {exc}")
+        else:
+            st.session_state["gex_dte_notice"] = f"{ticker}: {requested} → {snapped} DTE // {expiry.isoformat()}"
+            st.rerun(scope="app")
+
 
 # ==============================
 # TRADINGVIEW CLOUD BRIDGE EXPORT
@@ -745,6 +834,13 @@ def render_gex(
 ) -> None:
     """Render the proven GEX workspace with calculation parity + IV Rank."""
     vault_key = str(vault_key or "default")
+    st.html('<style>.gexv3-summary a.gexv3-dte-edit {color:#fb8b1e!important;text-decoration:underline dotted!important;cursor:pointer;font:inherit;}</style>')
+    if "gex_dte" in st.query_params:
+        st.session_state["gex_dte_edit_ticker"] = _core._normalize_ticker(st.query_params["gex_dte"])
+        del st.query_params["gex_dte"]
+    notice = st.session_state.pop("gex_dte_notice", None)
+    if notice:
+        st.toast(notice)
     original_decorate = _proven._decorate_overview
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
@@ -759,7 +855,7 @@ def render_gex(
         if saved_state is not state:
             state.clear()
             state.update(saved_state)
-        return original_overview(state, result_map)
+        return _inject_dte_editor_links(original_overview(state, result_map))
 
     def remove_with_iv_rank(
         key: str,
@@ -880,6 +976,10 @@ def render_gex(
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
+
+    edit_ticker = st.session_state.pop("gex_dte_edit_ticker", "")
+    if edit_ticker:
+        _ticker_dte_dialog(client, vault_key, edit_ticker, touch_session)
 
 
 background_refresh_status = _proven.background_refresh_status
