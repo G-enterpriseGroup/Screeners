@@ -784,7 +784,7 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **What was changed:** Reduced the shared TXT-link button column to 0.72/6, roughly half the prior width and about half the visible `ADD TICKER(S)` button width. Both E*TRADE and CBOE use the same helper, so they remain identical.
 - **Important behavior that must remain:** Both TXT links stay inside their respective Overview tabs, left-aligned, same styling/spacing, and continue pointing to their separate bridge files.
 - **Files/features intentionally NOT changed:** GEX calculations, CBOE engine, bridge publishing, DTE, IV Rank, OAuth/session plumbing, Risk Sizing, Holdings, navigation, and `src/terminal_core.py`.
-- **Tests performed:** Production path and prior GEX history re-read; exact branch production file inspected; architecture guard required before merge.
-- **Architecture guard result:** Pending final PR head before merge.
+- **Tests performed:** Production path and prior GEX history re-read; exact branch production file inspected. Temporary CI run `35884250179` installed production requirements, byte-compiled `src/gex_ui_v3.py` and `streamlit_app.py`, verified the compact shared TXT geometry, passed `scripts/test_gex_cboe.py`, and rendered all production top-level tabs via `scripts/test_tab_layout.py`.
+- **Architecture guard result:** PASS on implementation head in run `35884202256`; final PR head revalidated after temporary CI removal.
 - **Commit SHA:** UI implementation `b6e3bf5e9541c0a426b5f8534ac458c64c21bbdb`.
 - **Lesson:** Source links should remain accessible without competing visually with primary workflow controls.
