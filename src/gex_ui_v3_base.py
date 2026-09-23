@@ -788,8 +788,17 @@ def _render_notes(vault_key: str, state: dict[str, Any]) -> dict[str, Any]:
 def _render_cboe_refresh_all_control(
     vault_key: str,
     state: dict[str, Any],
+) -> bool:
+    """Production adapter replaces this with the isolated CBOE refresh button."""
+    del vault_key, state
+    return False
+
+
+def _run_cboe_refresh_all(
+    vault_key: str,
+    state: dict[str, Any],
 ) -> None:
-    """Production adapter replaces this with the isolated CBOE refresh control."""
+    """Production adapter replaces this with the isolated CBOE refresh action."""
     del vault_key, state
 
 
@@ -849,7 +858,7 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
             key="gexv3_refresh_all",
         )
     with cboe_refresh_col:
-        _render_cboe_refresh_all_control(vault_key, state)
+        cboe_refresh_all = _render_cboe_refresh_all_control(vault_key, state)
 
     add_button_col, saved_col, trash_col = st.columns(
         [1.35, 3.85, 0.55],
@@ -914,6 +923,9 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         else:
             st.success("ALL GEX TICKERS UPDATED")
         st.rerun()
+
+    if cboe_refresh_all:
+        _run_cboe_refresh_all(vault_key, state)
 
     etrade_overview_tab, cboe_overview_tab, analytics_tab, raw_tab, tv_tab, settings_tab, notes_tab = st.tabs(
         [
