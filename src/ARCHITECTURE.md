@@ -71,6 +71,8 @@ Production path:
 `streamlit_app.py` → `src/gex_workspace_v2.py` → `src/gex_ui_v3.py`
 
 - Change **subtabs, tables, multi-ticker layout, settings, notes, TradingView presentation** → `src/gex_ui_v3.py`.
+- Overview DTE values open the GEX-owned numeric editor. Save snaps to a nonexpired E*TRADE expiration (ties earlier), refreshes only that ticker, and persists the exact integer through `src/gex_ui.py` browser/vault state. Preserve nonpreset values and 0DTE; do not restrict them to the legacy menu. `src/gex_ui_v3_base.py` Settings must display the saved exact override.
+- Shared page headings use `st.html`, not raw HTML inside `st.markdown`: Markdown's trailing negative margin can under-measure a title/subtitle block and overlap the first feature row.
 - Change **GEX IV Rank / IV-HV formulas and E*TRADE option-IV aggregation** → `src/gex_ui.py`.
 - Change **GEX-only adjusted-close retrieval or 30-day historical-volatility math** → `src/gex_realized_vol.py`.
 - Change **how GEX obtains the live E*TRADE client / vault key / session touch callback / non-sensitive login marker, or loads the optional GEX historical-data token** → `src/gex_workspace_v2.py`.

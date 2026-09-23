@@ -525,7 +525,10 @@ def _render_terminal_page_header(active_tab: str) -> None:
         '<div class="terminal-page-header-subtitle">' + html.escape(subtitle) + "</div>"
         "</div>"
     )
-    st.markdown(markup, unsafe_allow_html=True)
+    # Markdown applies a -1rem trailing margin to raw HTML blocks in current
+    # Streamlit, under-measuring this title+subtitle and overlapping content.
+    # Native HTML reserves the complete height, including wrapped subtitles.
+    st.html(markup)
 
 
 @contextmanager

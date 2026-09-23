@@ -680,12 +680,15 @@ def _render_settings(
             ticker = st.selectbox("TICKER", state["tickers"], key="gexv3_dte_ticker")
         choices = ["GLOBAL"] + [str(value) for value in core.DTE_CHOICES]
         current = str(state["dte_overrides"].get(ticker, "GLOBAL"))
+        # The production Overview editor can save any real E*TRADE expiry DTE.
+        if current not in choices:
+            choices.append(current)
         with t2:
             selected = st.selectbox(
                 "DTE OVERRIDE",
                 choices,
                 index=choices.index(current) if current in choices else 0,
-                key="gexv3_dte_override",
+                key=f"gexv3_dte_override_{ticker}_{current}",
             )
         d1, d2 = st.columns(2, gap="small")
         if d1.button("SAVE TICKER DTE", type="primary", width="stretch"):

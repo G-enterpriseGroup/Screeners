@@ -55,7 +55,7 @@ from src.gex_ui_v3 import (
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.09.22.16"
+GEX_BUILD_VERSION = "v2026.09.23.1"
 GEX_ENGINE_LABEL = "E*TRADE // IVX30 + IV/HV // 20 CALC // 20 FETCH // 3.7 RPS"
 
 
@@ -654,7 +654,7 @@ class _GEXBackgroundCachedClient:
         )
 
     def _prefetch_eligible_chains(self, symbol: str, payload: dict[str, Any]) -> None:
-        max_dte = int(self._dte_by_symbol.get(symbol, 45) or 45)
+        max_dte = int(self._dte_by_symbol.get(symbol, 45))
         try:
             tz = ZoneInfo(self._timezone_name)
         except Exception:
@@ -876,7 +876,7 @@ def _background_client_factory(scope: dict[str, Any]) -> Callable[[], Any] | Non
         if not symbol:
             continue
         try:
-            dte_by_symbol[symbol] = int(overrides.get(symbol, global_dte) or global_dte)
+            dte_by_symbol[symbol] = int(overrides.get(symbol, global_dte))
         except Exception:
             dte_by_symbol[symbol] = global_dte
     timezone_name = str(state.get("timezone") or "America/New_York")

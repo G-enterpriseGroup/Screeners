@@ -68,6 +68,18 @@ def _normalize_ticker(value: Any) -> str:
 def _clean_state(raw: Any) -> dict[str, Any]:
     """Preserve legacy state plus production GEX-only settings and IV history."""
     state = _legacy._clean_state(raw)
+    # E*TRADE expirations are not limited to the legacy preset menu (e.g. 23D).
+    # Preserve exact per-ticker snapped integers across vault/browser reloads.
+    if isinstance(raw, dict) and isinstance(raw.get("dte_overrides"), dict):
+        state["dte_overrides"] = {}
+        for symbol, value in raw["dte_overrides"].items():
+            ticker = _normalize_ticker(symbol)
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if ticker in state["tickers"] and not isinstance(value, bool) and math.isfinite(number) and number.is_integer() and 0 <= number <= 3650:
+                state["dte_overrides"][ticker] = int(number)
     history_map: dict[str, list[dict[str, Any]]] = {}
     raw_method = (
         str(raw.get("iv_history_method") or "").strip()
