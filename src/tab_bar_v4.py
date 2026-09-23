@@ -70,100 +70,31 @@ install_layout_guardrails()
 # TOP NAVIGATION CSS
 # ==============================
 
-# IMPORTANT: Custom Streamlit components can reserve a much taller frame while
-# loading or rerendering. The terminal tab component itself is only 48px high.
-# The zero-height marker emitted immediately before the component lets this CSS
-# collapse the EXACT NEXT Streamlit element container instead of guessing the
-# browser-specific iframe title.
-#
-# SAFETY: do not walk upward through parent DOM nodes from inside the iframe.
-# Biometric/unlock reruns can remount the component under a different wrapper,
-# and forcing ancestor heights can collapse the entire app body.
-#
-# This is intentionally NAVIGATION-SCOPED. Do not generalize it to all iframes
-# because GEX charts, lock-screen components, etc. need their own heights.
-st.markdown(
-    """
-    <style>
-    /* ---------- TOP TERMINAL NAV ONLY ---------- */
-    .raj-terminal-tabs-v4-frame-anchor {
-        display:block !important;
-        width:0 !important;
-        height:0 !important;
-        min-height:0 !important;
-        max-height:0 !important;
-        overflow:hidden !important;
-        margin:0 !important;
-        padding:0 !important;
-    }
-
-    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor) {
-        height:0 !important;
-        min-height:0 !important;
-        max-height:0 !important;
-        margin:0 !important;
-        padding:0 !important;
-        overflow:hidden !important;
-    }
-
-    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor)
-    + [data-testid="stElementContainer"],
-    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor)
-    + [data-testid="stElementContainer"] [data-testid="stCustomComponentV1"],
-    [data-testid="stElementContainer"]:has(.raj-terminal-tabs-v4-frame-anchor)
-    + [data-testid="stElementContainer"] iframe {
-        height:48px !important;
-        min-height:48px !important;
-        max-height:48px !important;
-        margin-top:0 !important;
-        margin-bottom:0 !important;
-        padding-top:0 !important;
-        padding-bottom:0 !important;
-        overflow:hidden !important;
-        display:block !important;
-    }
-
-    iframe[title="raj_terminal_tabs_v4"],
-    iframe[title*="raj_terminal_tabs_v4"],
-    iframe[title*="raj_terminal_tabs"],
-    iframe[src*="raj_terminal_tabs_v4"],
-    iframe[src*="terminal_tabs_v3"] {
-        height:48px !important;
-        min-height:48px !important;
-        max-height:48px !important;
-        display:block !important;
-        margin:0 !important;
-        padding:0 !important;
-        overflow:hidden !important;
-    }
-
-    [data-testid="stElementContainer"]:has(iframe[title="raj_terminal_tabs_v4"]),
-    [data-testid="stElementContainer"]:has(iframe[title*="raj_terminal_tabs_v4"]),
-    [data-testid="stElementContainer"]:has(iframe[title*="raj_terminal_tabs"]),
-    [data-testid="stElementContainer"]:has(iframe[src*="raj_terminal_tabs_v4"]),
-    [data-testid="stElementContainer"]:has(iframe[src*="terminal_tabs_v3"]) {
-        height:48px !important;
-        min-height:48px !important;
-        max-height:48px !important;
-        margin-top:0 !important;
-        margin-bottom:0 !important;
-        padding-top:0 !important;
-        padding-bottom:0 !important;
-        overflow:hidden !important;
-    }
-
-    [data-testid="stCustomComponentV1"]:has(iframe[title="raj_terminal_tabs_v4"]),
-    [data-testid="stCustomComponentV1"]:has(iframe[title*="raj_terminal_tabs_v4"]),
-    [data-testid="stCustomComponentV1"]:has(iframe[title*="raj_terminal_tabs"]),
-    [data-testid="stCustomComponentV1"]:has(iframe[src*="raj_terminal_tabs_v4"]),
-    [data-testid="stCustomComponentV1"]:has(iframe[src*="terminal_tabs_v3"]) {
-        height:48px !important;
-        min-height:48px !important;
-        max-height:48px !important;
-        margin:0 !important;
-        padding:0 !important;
-        overflow:hidden !important;
-    }
+# Emit on EVERY render: Python imports are cached across tabs and sessions.
+# A keyed native container is the navigation boundary; never guess iframe titles
+# or resize ancestors from inside the component. Charts retain their own height.
+_NAVIGATION_CSS = """
+<style>
+.st-key-terminal_navigation {
+    gap:0 !important;
+    margin:0 !important;
+    padding:0 !important;
+    height:48px !important;
+    min-height:48px !important;
+    max-height:48px !important;
+    overflow:hidden !important;
+}
+.st-key-terminal_navigation [data-testid="stElementContainer"],
+.st-key-terminal_navigation [data-testid="stCustomComponentV1"],
+.st-key-terminal_navigation iframe {
+    display:block !important;
+    height:48px !important;
+    min-height:48px !important;
+    max-height:48px !important;
+    margin:0 !important;
+    padding:0 !important;
+    overflow:hidden !important;
+}
 
     /* Table-header styling historically lived with the tab shell. Keep it
        unchanged here until it is intentionally moved to a shared table theme. */
@@ -206,10 +137,8 @@ st.markdown(
         -webkit-text-fill-color:#000 !important;
         font-weight:900 !important;
     }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+</style>
+"""
 
 
 # ==============================
@@ -278,27 +207,22 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
     state = _load(vault_key)
     storage_key = "raj-terminal-tabs-" + str(vault_key)[:16]
 
-    # Zero-height marker for CSS sibling targeting. This guarantees the
-    # following component element is the only frame collapsed to 48px.
-    st.markdown(
-        '<span class="raj-terminal-tabs-v4-frame-anchor"></span>',
-        unsafe_allow_html=True,
-    )
-
-    result = _terminal_tabs(
-        tabs=state["order"],
-        active=state["active"],
-        display_labels=TAB_DISPLAY_LABELS,
-        storage_key=storage_key,
-        height=NAV_FRAME_HEIGHT,
-        key="raj_terminal_draggable_tabs_v4_h48_option_book_20260922",
-        default={
-            "order": state["order"],
-            "active": state["active"],
-            "action": "init",
-            "event_id": 0,
-        },
-    )
+    st.html(_NAVIGATION_CSS)
+    with st.container(key="terminal_navigation", gap=None):
+        result = _terminal_tabs(
+            tabs=state["order"],
+            active=state["active"],
+            display_labels=TAB_DISPLAY_LABELS,
+            storage_key=storage_key,
+            height=NAV_FRAME_HEIGHT,
+            key="raj_terminal_draggable_tabs_v4_layout_20260923",
+            default={
+                "order": state["order"],
+                "active": state["active"],
+                "action": "init",
+                "event_id": 0,
+            },
+        )
 
     if isinstance(result, dict):
         proposed_order = _clean_order(result.get("order", state["order"]))
