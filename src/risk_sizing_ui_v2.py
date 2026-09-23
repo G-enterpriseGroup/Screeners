@@ -741,7 +741,7 @@ def render_risk_sizing(
 
     # Preserve the source-row identity before sorting so duplicate symbols/lots
     # always receive distinct widget keys even if their visual order changes.
-    view["_risk_row_uid"] = [str(idx) for idx in view.index]
+    view["_risk_row_uid"] = [str(pos) for pos in range(len(view))]
     view["_sleeve_rank"] = view["Sleeve"].map({"TACTICAL": 0, "LONG-TERM": 1}).fillna(2)
     view = view.sort_values(
         ["_sleeve_rank", "Market Value"],
@@ -858,9 +858,9 @@ def render_risk_sizing(
                     <div class="risk-long-term-head">LONG-TERM</div>
                     """
                 )
-                for row in override_rows.itertuples(index=False):
-                    row_uid = str(getattr(row, "_risk_row_uid", ""))
-                    symbol = str(getattr(row, "Symbol", "") or "").strip().upper()
+                for row_uid, raw_symbol in override_rows.itertuples(index=False, name=None):
+                    row_uid = str(row_uid)
+                    symbol = str(raw_symbol or "").strip().upper()
                     widget_key = _risk_override_widget_key(account_key, symbol, row_uid)
                     selected = (
                         str(account_overrides.get(symbol) or "").upper()
