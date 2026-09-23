@@ -1,0 +1,46 @@
+name: Temporary Risk Book Color Check
+
+on:
+  push:
+    branches:
+      - fix/risk-book-color-regression
+
+permissions:
+  contents: read
+
+jobs:
+  validate-risk-book-colors:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check Risk production path
+        run: python -m py_compile src/risk_sizing_ui_v2.py src/risk_sizing_ui_v9.py src/risk_sizing_ui_v10.py streamlit_app.py
+
+      - name: Run Risk intent regression
+        run: python scripts/test_risk_intent_override.py
+
+      - name: Verify Risk Book color contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/risk_sizing_ui_v2.py").read_text(encoding="utf-8")
+          assert 'styles = ["color:" + BB_ORANGE + ";"] * len(row)' in source
+          assert '"Long-Term?": st.column_config.CheckboxColumn(' in source
+          assert '"Intent": st.column_config.SelectboxColumn(' not in source
+          assert '"% Tactical Sleeve"' in source
+          assert 'BB_RED' in source and 'BB_GREEN' in source and 'BB_BLUE' in source
+          print("Risk Book color contract: PASS")
+          PY
+
+      - name: Render all production top-level tabs
+        run: python scripts/test_tab_layout.py
