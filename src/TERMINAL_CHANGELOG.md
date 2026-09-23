@@ -685,3 +685,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS locally on the committed implementation.
 - **Commit SHA:** `f0f0e1274c48711e0dbaa5505dc9a5ca20deb79e` (implementation and tests); this append-only log follows in a documentation commit.
 - **Lesson:** Structural adjacency and per-render scoped CSS eliminate spacing drift. A zero-height component may still introduce a layout row; keep background components outside visible navigation/header boundaries.
+
+## 2026-09-23 — Retire five invalid historical workflows and verify live layout deployment
+
+- **Feature changed:** GitHub Actions maintenance / deployment verification.
+- **Exact files changed:** Five verbatim moves from `.github/workflows/` to `.github/archived-workflows/`: `add-state-income-tax-tab.yml`, `fix-match-table-size.yml`, `fix-wyoming-nist.yml`, `rename-nist-tab.yml`, `stack-matches-wsj-link.yml`; archive README; `.github/workflows/architecture-guard.yml`; new `scripts/validate_workflows.py`; this changelog.
+- **What was broken:** Five failed workflow entries appeared on unrelated pushes, with no jobs or execution logs.
+- **Root cause:** Multiline Python strings escaped YAML block indentation in obsolete one-time source-rewriting workflows. GitHub rejected their YAML before executing jobs. Their replacement targets also refer to the former monolithic app structure.
+- **What changed:** Preserved the five files verbatim outside the active workflow directory rather than reactivating unsafe obsolete source migrations. Extended the architecture workflow to parse all active workflow YAML, checking event/jobs structure. YAML dependency is pinned to PyYAML 6.0.3 in CI only.
+- **Important behavior to preserve:** Keep the architecture guard active, validate future workflow edits, and use current production feature owners for changes rather than automated legacy replacements. Historical failed runs remain audit history; new commits should no longer create these five failures.
+- **Intentionally unchanged:** All production app/feature code, broker/session behavior, and the unrelated valid `set-state-ig-default.yml` workflow.
+- **Tests performed:** Both active workflow files parse; validator rejects all five original malformed files; Python compile and diff checks pass; architecture guard passes. No feature code changed relative to the already browser-tested layout merge. Inspected exact committed workflow/validator files. The live app loads its authentication screen, and the public navigation HTML served by `https://terminal8.streamlit.app/~/+/component/src.tab_bar_v4.raj_terminal_tabs_v4/index.html` matches the layout commit's file byte-for-byte (SHA-256 `6a9c8b8380b15bc947c0972d6942428407b6ef009ffefb923f9ddaf74f3f5db8`). Signed-in production views were not verified because the browser session is locked.
+- **Architecture guard result:** PASS locally; GitHub PR/main verification follows publication.
+- **Commit SHA:** `3094443f9cdcd350ec1e1171a4904d1bc889296e` (workflow fix); deployed layout merge `500695f5ebb7ac2a6b3dde7130da5b2ab4e4f5bb`.
+- **Lesson:** A failed workflow entry with zero jobs can indicate invalid workflow YAML rather than a failing application. Archive completed one-time source-editing workflows; do not repair their syntax and accidentally rerun stale migrations.
