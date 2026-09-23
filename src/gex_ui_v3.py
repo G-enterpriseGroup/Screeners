@@ -479,7 +479,7 @@ def _decorate_cboe_overview_markup(
 def _render_overview_txt_link(source_label: str, url: str) -> None:
     """Render one compact source TXT row; both source tabs use identical geometry."""
     link_col, note_col = st.columns(
-        [1.45, 4.55],
+        [0.72, 5.28],
         gap="small",
         vertical_alignment="center",
     )
