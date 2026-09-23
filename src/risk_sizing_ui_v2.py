@@ -85,34 +85,72 @@ def _apply_intent_overrides(
     return result
 
 
-def _risk_override_widget_key(account_key: str, symbol: str, row_uid: str) -> str:
-    """Return a row-unique widget key; duplicate symbols/lots must never collide."""
-    return (
-        "risk_long_term_override::"
-        + str(account_key or "default")
-        + "::"
-        + str(row_uid)
-        + "::"
-        + str(symbol or "").strip().upper()
-    )
+def _risk_editor_version_key(account_key: str) -> str:
+    """Session key used to remount the editor after a committed checkbox edit."""
+    return "risk_book_editor_version::" + str(account_key or "default")
 
 
-def _set_long_term_override(
+def _risk_editor_key(account_key: str) -> str:
+    """Return an account-scoped editor key with a monotonically increasing version."""
+    version_key = _risk_editor_version_key(account_key)
+    try:
+        version = int(st.session_state.get(version_key, 0) or 0)
+    except (TypeError, ValueError):
+        version = 0
+    return f"risk_book_intent_editor::{str(account_key or 'default')}::{version}"
+
+
+def _apply_risk_editor_changes(
     account_key: str,
-    symbol: str,
-    widget_key: str,
+    editor_key: str,
+    row_symbols: tuple[str, ...],
 ) -> None:
-    """Apply one ticker-level override from a row-unique native checkbox."""
-    account_overrides = _account_intent_overrides(account_key)
-    normalized_symbol = str(symbol or "").strip().upper()
-    if not normalized_symbol:
+    """Commit LONG-TERM checkbox edits before Streamlit reruns the full Risk page.
+
+    The editor is remounted only after a real change so Streamlit cannot retain
+    row-position edit state after sleeve math changes. Duplicate lots remain
+    ticker-level: checking any SGOL row promotes every SGOL lot.
+    """
+    editor_state = st.session_state.get(editor_key)
+    if not isinstance(editor_state, dict):
+        return
+    edited_rows = editor_state.get("edited_rows")
+    if not isinstance(edited_rows, dict):
         return
 
-    wants_long_term = bool(st.session_state.get(widget_key, False))
-    if wants_long_term:
-        account_overrides[normalized_symbol] = RISK_INTENT_LONG_TERM
-    else:
-        account_overrides.pop(normalized_symbol, None)
+    account_overrides = _account_intent_overrides(account_key)
+    changed = False
+    for raw_index, edits in edited_rows.items():
+        if not isinstance(edits, dict) or "Long-Term?" not in edits:
+            continue
+        try:
+            row_index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if row_index < 0 or row_index >= len(row_symbols):
+            continue
+
+        symbol = str(row_symbols[row_index] or "").strip().upper()
+        if not symbol:
+            continue
+
+        wants_long_term = bool(edits.get("Long-Term?", False))
+        current = str(account_overrides.get(symbol) or "").strip().upper()
+        if wants_long_term:
+            if current != RISK_INTENT_LONG_TERM:
+                account_overrides[symbol] = RISK_INTENT_LONG_TERM
+                changed = True
+        elif symbol in account_overrides:
+            account_overrides.pop(symbol, None)
+            changed = True
+
+    if changed:
+        version_key = _risk_editor_version_key(account_key)
+        try:
+            version = int(st.session_state.get(version_key, 0) or 0)
+        except (TypeError, ValueError):
+            version = 0
+        st.session_state[version_key] = version + 1
 
 
 # ==============================
@@ -644,6 +682,12 @@ def render_risk_sizing(
 
     account_overrides = _account_intent_overrides(account_key)
     classified = classify_holdings(normalized, gain_threshold)
+    # Preserve the automatic-rule order before manual overrides are applied.
+    # The displayed row order therefore stays stable when a checkbox changes,
+    # which prevents row-position editor state from drifting to another holding.
+    classified["_risk_sort_rank"] = (
+        classified["Sleeve"].map({"TACTICAL": 0, "LONG-TERM": 1}).fillna(2)
+    )
     classified = _apply_intent_overrides(classified, account_overrides)
     summary = sleeve_summary(classified, investable_assets, tactical_sleeve_pct)
 
@@ -739,39 +783,49 @@ def render_risk_sizing(
         )
     view.loc[~tactical_mask, "% Tactical Sleeve"] = float("nan")
 
-    # Preserve the source-row identity before sorting so duplicate symbols/lots
-    # always receive distinct widget keys even if their visual order changes.
-    view["_risk_row_uid"] = [str(pos) for pos in range(len(view))]
-    view["_sleeve_rank"] = view["Sleeve"].map({"TACTICAL": 0, "LONG-TERM": 1}).fillna(2)
+    # Keep the checkbox inside the table itself. This restores one shared grid
+    # instead of trying to vertically synchronize native widgets beside a canvas.
+    view["Long-Term?"] = view["Intent"].astype(str).eq(RISK_INTENT_LONG_TERM)
+    view["Sleeve / % Tactical"] = [
+        (
+            f"TACTICAL // {float(tactical_pct):.2f}%"
+            if str(sleeve) == "TACTICAL" and pd.notna(tactical_pct)
+            else "LONG-TERM"
+        )
+        for sleeve, tactical_pct in zip(
+            view["Sleeve"],
+            view["% Tactical Sleeve"],
+        )
+    ]
     view = view.sort_values(
-        ["_sleeve_rank", "Market Value"],
+        ["_risk_sort_rank", "Market Value"],
         ascending=[True, False],
         kind="stable",
     )
-    override_rows = view[["_risk_row_uid", "Symbol"]].copy()
     view = view[
         [
-            "Sleeve",
+            "Long-Term?",
+            "Sleeve / % Tactical",
             "Symbol",
             "Gain/Loss %",
             "Gain/Loss",
             "Market Value",
             "% Account",
-            "% Tactical Sleeve",
         ]
     ].reset_index(drop=True)
+    row_symbols = tuple(view["Symbol"].astype(str).str.strip().str.upper())
 
     def style_risk_book(row):
-        # Keep the original Risk Book theme contract. The terminal's existing
-        # st.dataframe wrapper supplies normal orange body text; only financial
-        # meaning colors are overridden here.
-        styles = [""] * len(row)
+        # data_editor is intentionally used only for the integrated checkbox.
+        # Explicitly seed the static financial cells with terminal orange so the
+        # original Risk Book black/orange theme is preserved.
+        styles = ["color:" + BB_ORANGE + ";"] * len(row)
         for idx, column in enumerate(row.index):
             value = row.get(column)
-            if column == "Sleeve":
+            if column == "Sleeve / % Tactical":
                 styles[idx] = (
                     "color:" + BB_GREEN + ";font-weight:900;"
-                    if str(value) == "LONG-TERM"
+                    if str(value).startswith("LONG-TERM")
                     else "color:" + BB_ORANGE + ";font-weight:900;"
                 )
             elif column in {"Gain/Loss %", "Gain/Loss"}:
@@ -783,13 +837,11 @@ def render_risk_sizing(
                     styles[idx] = "color:" + BB_GREEN + ";font-weight:900;"
                 elif numeric < 0:
                     styles[idx] = "color:" + BB_RED + ";font-weight:900;"
-            elif column == "% Tactical Sleeve" and pd.notna(value):
-                styles[idx] = "color:" + BB_BLUE + ";font-weight:900;"
         return styles
 
-    # Use the horizontal room created by the content-sized Risk Book instead of
-    # forcing Part 2 below a tall table. Keep both panes native Streamlit so the
-    # existing v9/v10 fail-safe ticker and quote wrappers continue to work.
+    # Preserve the proven side-by-side Risk Book + Part 2 geometry. Only the
+    # Risk Book control itself changes: one integrated editor replaces the
+    # separate checkbox strip that caused the visible misalignment.
     book_col, trade_col, _layout_spacer = st.columns(
         [1.0, 1.0, 0.12],
         gap="small",
@@ -802,171 +854,69 @@ def render_risk_sizing(
         )
         st.markdown(
             '<div class="risk-v9-book-note">'
-            'LONG-TERM CHECK = ONE-OFF OVERRIDE // UNCHECKED = NORMAL RULE // '
-            'TACTICAL FIRST // P&amp;L RED/GREEN // % ACCOUNT = PORTFOLIO WEIGHT'
+            'LONG-TERM CHECK = ONE-OFF OVERRIDE // CHECK/UNCHECK UPDATES SLEEVE MATH // '
+            'P&amp;L RED/GREEN // % ACCOUNT = PORTFOLIO WEIGHT'
             '</div>',
             unsafe_allow_html=True,
         )
-        with st.container(key="risk_book_grid"):
-            st.html(
-                """
-                <style>
-                /* Risk Book only: make the override cells and dataframe read as one grid. */
-                .st-key-risk_book_grid [data-testid="stHorizontalBlock"] {
-                    gap:0 !important;
-                    align-items:flex-start !important;
-                }
-                .st-key-risk_book_grid [data-testid="stColumn"]:first-child {
-                    flex:0 0 92px !important;
-                    width:92px !important;
-                    min-width:92px !important;
-                }
-                .st-key-risk_book_grid [data-testid="stColumn"]:nth-child(2) {
-                    flex:1 1 auto !important;
-                    min-width:0 !important;
-                }
-                .st-key-risk_book_override_controls > [data-testid="stVerticalBlock"] {
-                    gap:0 !important;
-                }
-                .st-key-risk_book_override_controls [data-testid="stElementContainer"] {
-                    margin:0 !important;
-                    padding:0 !important;
-                    min-height:35px !important;
-                    height:35px !important;
-                }
-                .st-key-risk_book_override_controls .risk-long-term-head {
-                    box-sizing:border-box;
-                    width:92px;
-                    height:35px;
-                    min-height:35px;
-                    display:flex;
-                    align-items:center;
-                    justify-content:center;
-                    background:#fb8b1e;
-                    border:1px solid #fb8b1e;
-                    color:#000000 !important;
-                    -webkit-text-fill-color:#000000 !important;
-                    font-family:"Courier New",monospace;
-                    font-size:.66rem;
-                    font-weight:900;
-                    line-height:1;
-                    white-space:nowrap;
-                }
-                .st-key-risk_book_override_controls [data-testid="stCheckbox"] {
-                    box-sizing:border-box !important;
-                    width:92px !important;
-                    min-width:92px !important;
-                    min-height:35px !important;
-                    height:35px !important;
-                    margin:0 !important;
-                    padding:0 !important;
-                    display:flex !important;
-                    align-items:center !important;
-                    justify-content:center !important;
-                    background:#000000 !important;
-                    border-left:1px solid #fb8b1e !important;
-                    border-right:1px solid #fb8b1e !important;
-                    border-bottom:1px solid #fb8b1e !important;
-                }
-                .st-key-risk_book_override_controls [data-testid="stCheckbox"] label {
-                    margin:0 !important;
-                    padding:0 !important;
-                    gap:0 !important;
-                    display:flex !important;
-                    align-items:center !important;
-                    justify-content:center !important;
-                }
-                .st-key-risk_book_override_controls [data-testid="stCheckbox"] label > div:first-child {
-                    width:15px !important;
-                    height:15px !important;
-                    min-width:15px !important;
-                    border:1px solid #fb8b1e !important;
-                    border-radius:0 !important;
-                    background:#000000 !important;
-                    box-shadow:none !important;
-                }
-                .st-key-risk_book_override_controls [data-testid="stCheckbox"] label[data-selected] > div:first-child {
-                    border-color:#fb8b1e !important;
-                    background:#fb8b1e !important;
-                }
-                </style>
-                """
-            )
-            override_col, table_col = st.columns(
-                [0.13, 1.0],
-                gap="small",
-                vertical_alignment="top",
-            )
-            with override_col:
-                with st.container(key="risk_book_override_controls"):
-                    st.html('<div class="risk-long-term-head">LONG-TERM</div>')
-                    for row_uid, raw_symbol in override_rows.itertuples(index=False, name=None):
-                        row_uid = str(row_uid)
-                        symbol = str(raw_symbol or "").strip().upper()
-                        widget_key = _risk_override_widget_key(account_key, symbol, row_uid)
-                        selected = (
-                            str(account_overrides.get(symbol) or "").upper()
-                            == RISK_INTENT_LONG_TERM
-                        )
-                        # Synchronize duplicate lots of the same ticker before the
-                        # widget is instantiated. This is safe and does not fire
-                        # callbacks; user clicks still cause only Streamlit's normal
-                        # single rerun.
-                        if st.session_state.get(widget_key) != selected:
-                            st.session_state[widget_key] = selected
-                        st.checkbox(
-                            f"{symbol or 'POSITION'} LONG-TERM",
-                            key=widget_key,
-                            label_visibility="collapsed",
-                            on_change=_set_long_term_override,
-                            args=(account_key, symbol, widget_key),
-                            help=(
-                                f"Check to treat {symbol or 'this position'} as a one-off LONG-TERM holding. "
-                                "Unchecked uses the normal classification rule."
-                            ),
-                        )
-
-            with table_col:
-                st.dataframe(
-                    view.style.apply(style_risk_book, axis=1),
-                    hide_index=True,
-                    width="stretch",
-                    height=max(70, 35 * (len(view) + 1)),
-                    row_height=35,
-                    column_config={
-                        "Sleeve": st.column_config.TextColumn(
-                            "SLEEVE",
-                            width="small",
-                            help="Effective classification after the normal rule plus any manual LONG-TERM override.",
-                        ),
-                        "Symbol": st.column_config.TextColumn("SYMBOL", width="small"),
-                        "Gain/Loss %": st.column_config.NumberColumn(
-                            "Gain/Loss %",
-                            format="%.2f%%",
-                            width="small",
-                        ),
-                        "Gain/Loss": st.column_config.NumberColumn(
-                            "Gain/Loss",
-                            format="$%.2f",
-                            width="small",
-                        ),
-                        "Market Value": st.column_config.NumberColumn(
-                            "Market Value",
-                            format="$%.2f",
-                            width="small",
-                        ),
-                        "% Account": st.column_config.NumberColumn(
-                            "% Account",
-                            format="%.2f%%",
-                            width="small",
-                        ),
-                        "% Tactical Sleeve": st.column_config.NumberColumn(
-                            "% Tactical Sleeve",
-                            format="%.2f%%",
-                            width="small",
-                        ),
-                    },
-                )
+        editor_key = _risk_editor_key(account_key)
+        st.data_editor(
+            view.style.apply(style_risk_book, axis=1),
+            key=editor_key,
+            hide_index=True,
+            width="stretch",
+            height=max(70, 35 * (len(view) + 1)),
+            row_height=35,
+            disabled=[
+                "Sleeve / % Tactical",
+                "Symbol",
+                "Gain/Loss %",
+                "Gain/Loss",
+                "Market Value",
+                "% Account",
+            ],
+            on_change=_apply_risk_editor_changes,
+            args=(account_key, editor_key, row_symbols),
+            column_config={
+                "Long-Term?": st.column_config.CheckboxColumn(
+                    "LONG-TERM",
+                    width="small",
+                    help=(
+                        "Check a tactical holding when you want it treated as a one-off LONG-TERM position. "
+                        "Uncheck it to return to the normal bond/CUSIP + gain-threshold rule."
+                    ),
+                ),
+                "Sleeve / % Tactical": st.column_config.TextColumn(
+                    "SLEEVE / % TACTICAL",
+                    width="medium",
+                    help=(
+                        "Effective sleeve plus that holding's share of the target tactical sleeve. "
+                        "LONG-TERM rows are outside the tactical sleeve."
+                    ),
+                ),
+                "Symbol": st.column_config.TextColumn("SYMBOL", width="small"),
+                "Gain/Loss %": st.column_config.NumberColumn(
+                    "Gain/Loss %",
+                    format="%.2f%%",
+                    width="small",
+                ),
+                "Gain/Loss": st.column_config.NumberColumn(
+                    "Gain/Loss",
+                    format="$%.2f",
+                    width="small",
+                ),
+                "Market Value": st.column_config.NumberColumn(
+                    "Market Value",
+                    format="$%.2f",
+                    width="small",
+                ),
+                "% Account": st.column_config.NumberColumn(
+                    "% Account",
+                    format="%.2f%%",
+                    width="small",
+                ),
+            },
+        )
 
 
     with trade_col:
