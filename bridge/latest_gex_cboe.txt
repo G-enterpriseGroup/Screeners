@@ -415,82 +415,13 @@ GEXPOS8,46,12854.1
 
 
 Ticker: SPMO
-Mode: BARCHART_STYLE
-Spot: 153.14
-Max DTE Used: 120
-Contracts Used: 325
-Net Current GEX: 6,146,358.66
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,153.14,0
-GFLIP,127.9935,0
-CALLWALL,155,2839382.31
-PUTWALL,140,-445017.8
-MAXCALLOI,155,3093
-MAXPUTOI,140,1260
-GEXPOS1,155,2778639.65
-GEXPOS2,160,1622043.18
-GEXPOS3,150,847235.95
-GEXPOS4,165,400257.58
-GEXPOS5,175,289886.09
-GEXNEG6,140,-258505.16
-GEXPOS7,170,211439.62
-GEXPOS8,190,69630.92
-
+ERROR: Could not fetch CBOE delayed options for SPMO. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: KRE
-Mode: BARCHART_STYLE
-Spot: 71.6
-Max DTE Used: 120
-Contracts Used: 599
-Net Current GEX: -115,581,099.93
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,71.6,0
-GFLIP,76.4376,0
-CALLWALL,80,23488382.51
-PUTWALL,71,-35725731.4
-MAXCALLOI,80,167181
-MAXPUTOI,70,104751
-GEXNEG1,71,-34802766.56
-GEXNEG2,70,-33688576.42
-GEXPOS3,80,21383520.02
-GEXNEG4,72,-15784071.77
-GEXNEG5,65,-13951408.59
-GEXNEG6,73,-10323793.73
-GEXNEG7,75,-8341683.64
-GEXPOS8,85,8264545.83
-
+ERROR: Could not fetch CBOE delayed options for KRE. Last error: HTTP Error 403: Forbidden
 
 Ticker: APH
-Mode: BARCHART_STYLE
-Spot: 82.85
-Max DTE Used: 120
-Contracts Used: 257
-Net Current GEX: 6,509,289.47
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,82.85,0
-GFLIP,78.5192,0
-CALLWALL,85,2726024.47
-PUTWALL,67.5,-2334725.56
-MAXCALLOI,80,12447
-MAXPUTOI,67.5,43243
-GEXPOS1,85,2247129.06
-GEXNEG2,67.5,-2144818.63
-GEXPOS3,90,2137410.87
-GEXPOS4,80,1817117.87
-GEXPOS5,87.5,1767323.47
-GEXPOS6,82.5,1165573.99
-GEXPOS7,95,862367.17
-GEXNEG8,62.5,-812289.27
-
+ERROR: Could not fetch CBOE delayed options for APH. Last error: HTTP Error 403: Forbidden
 
 Ticker: SOXX
 Mode: BARCHART_STYLE
