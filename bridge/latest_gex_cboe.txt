@@ -77,7 +77,30 @@ GEXPOS8,76,2442070.32
 
 
 Ticker: XLC
-ERROR: Could not fetch CBOE delayed options for XLC. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 113.53
+Max DTE Used: 180
+Contracts Used: 350
+Net Current GEX: -612,937.83
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLC.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,113.53,0
+GFLIP,116.7693,0
+CALLWALL,118,1299580.81
+PUTWALL,115,-1422008.84
+MAXCALLOI,118,3893
+MAXPUTOI,110,5513
+GEXNEG1,110,-1897075.14
+GEXNEG2,115,-1422008.84
+GEXPOS3,117,1365891.16
+GEXPOS4,118,1299580.81
+GEXNEG5,106,-904761.81
+GEXNEG6,107,-675354.57
+GEXPOS7,120,661186.91
+GEXPOS8,113,614766.96
+
 
 Ticker: XLY
 Mode: BARCHART_STYLE
@@ -106,10 +129,56 @@ GEXNEG8,117,-3032938.15
 
 
 Ticker: XLK
-ERROR: Could not fetch CBOE delayed options for XLK. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 196.27
+Max DTE Used: 180
+Contracts Used: 1055
+Net Current GEX: 38,260,838.32
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLK.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,196.27,0
+GFLIP,189.0411,0
+CALLWALL,195,12766562.56
+PUTWALL,185,-1058886.49
+MAXCALLOI,200,12540
+MAXPUTOI,135,29992
+GEXPOS1,195,12766562.56
+GEXPOS2,200,10940804.94
+GEXPOS3,190,5242751.45
+GEXPOS4,192,3871879.84
+GEXNEG5,175,-3639947.11
+GEXPOS6,220,3397952.45
+GEXPOS7,187.5,3115143.83
+GEXNEG8,170,-2840890.92
+
 
 Ticker: XLRE
-ERROR: Could not fetch CBOE delayed options for XLRE. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 42.475
+Max DTE Used: 180
+Contracts Used: 103
+Net Current GEX: -486,320.52
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLRE.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,42.475,0
+GFLIP,43.4822,0
+CALLWALL,45,460921.44
+PUTWALL,42,-299092.82
+MAXCALLOI,45,2612
+MAXPUTOI,35,6262
+GEXPOS1,45,460921.44
+GEXNEG2,42,-299092.82
+GEXNEG3,35,-232019.22
+GEXNEG4,37,-191188.42
+GEXNEG5,40,-136938.37
+GEXNEG6,41,-127866.68
+GEXPOS7,50,95054.51
+GEXNEG8,44,-70161
+
 
 Ticker: XLF
 Mode: BARCHART_STYLE
@@ -138,94 +207,784 @@ GEXPOS8,58,10423765.06
 
 
 Ticker: XLB
-ERROR: Could not fetch CBOE delayed options for XLB. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 50.6
+Max DTE Used: 180
+Contracts Used: 420
+Net Current GEX: -9,575,349.08
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLB.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,50.6,0
+GFLIP,51.8151,0
+CALLWALL,60,3464418.51
+PUTWALL,48,-9256718.63
+MAXCALLOI,60,47712
+MAXPUTOI,41,45990
+GEXNEG1,48,-9256718.63
+GEXPOS2,60,3464418.51
+GEXNEG3,50,-2736987.46
+GEXNEG4,45,-1573809.77
+GEXPOS5,58,1090920.24
+GEXPOS6,55,1038940.58
+GEXNEG7,41,-929411.45
+GEXPOS8,53,420909.1
+
 
 Ticker: XLV
-ERROR: Could not fetch CBOE delayed options for XLV. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 170.33
+Max DTE Used: 180
+Contracts Used: 676
+Net Current GEX: 28,268,269.38
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLV.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,170.33,0
+GFLIP,166.9432,0
+CALLWALL,168,-2913877.36
+PUTWALL,168,-2913877.36
+MAXCALLOI,152,20321
+MAXPUTOI,110,45660
+GEXPOS1,175,13785596.04
+GEXPOS2,180,11281691.62
+GEXNEG3,162,-8688249.42
+GEXNEG4,160,-7393990.01
+GEXNEG5,150,-6601660.95
+GEXPOS6,172,6102878.44
+GEXPOS7,152,5925027.18
+GEXPOS8,170,4897814.47
+
 
 Ticker: XLU
-ERROR: Could not fetch CBOE delayed options for XLU. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 40.53
+Max DTE Used: 180
+Contracts Used: 428
+Net Current GEX: -31,591,080.81
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLU.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,40.53,0
+GFLIP,41.778,0
+CALLWALL,42,1367347.05
+PUTWALL,40,-16004244.78
+MAXCALLOI,44,68585
+MAXPUTOI,25,206991
+GEXNEG1,40,-16004244.78
+GEXPOS2,44,7767239.72
+GEXNEG3,41,-6250798.19
+GEXNEG4,38,-3663921.72
+GEXNEG5,37.5,-3028286.18
+GEXNEG6,40.5,-2840351.66
+GEXNEG7,39.5,-2760468.58
+GEXNEG8,39,-2609693.31
+
 
 Ticker: XLE
-ERROR: Could not fetch CBOE delayed options for XLE. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 61.78
+Max DTE Used: 180
+Contracts Used: 889
+Net Current GEX: -60,575,602.98
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLE.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,61.78,0
+GFLIP,64.5443,0
+CALLWALL,65,27149427.82
+PUTWALL,60,-6901707.72
+MAXCALLOI,65,149224
+MAXPUTOI,55,163691
+GEXPOS1,65,27149427.82
+GEXNEG2,63,-21690413.9
+GEXNEG3,62,-15727380.07
+GEXNEG4,55,-12467624.36
+GEXPOS5,70,9569382.65
+GEXNEG6,62.5,-7979616.55
+GEXNEG7,60,-6901707.72
+GEXNEG8,61,-6508781.34
+
 
 Ticker: XLP
-ERROR: Could not fetch CBOE delayed options for XLP. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 82.85
+Max DTE Used: 180
+Contracts Used: 502
+Net Current GEX: -52,629,544.32
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLP.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,82.85,0
+GFLIP,87.7257,0
+CALLWALL,85,43463.62
+PUTWALL,78,-31406425.95
+MAXCALLOI,85,12464
+MAXPUTOI,78,112106
+GEXNEG1,78,-31406425.95
+GEXNEG2,82,-14821039.39
+GEXNEG3,83,-7238515.77
+GEXNEG4,80,-5273636.68
+GEXPOS5,86,3206884.4
+GEXPOS6,83.5,3136810.63
+GEXNEG7,81,-2629944.61
+GEXPOS8,90,2583468.32
+
 
 Ticker: XLI
-ERROR: Could not fetch CBOE delayed options for XLI. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 170.27
+Max DTE Used: 180
+Contracts Used: 970
+Net Current GEX: -121,694,371.12
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLI.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,170.27,0
+GFLIP,188.0645,0
+CALLWALL,180,392341.22
+PUTWALL,170,-49599449.81
+MAXCALLOI,195,17603
+MAXPUTOI,170,61916
+GEXNEG1,170,-49599449.81
+GEXNEG2,160,-27321010.38
+GEXNEG3,168,-26015454.16
+GEXNEG4,165,-12967827.01
+GEXNEG5,175,-9621950.34
+GEXNEG6,169,-9536285.16
+GEXPOS7,185,5759026.81
+GEXNEG8,155,-4967351.54
+
 
 Ticker: MSFT
-ERROR: Could not fetch CBOE delayed options for MSFT. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 501.48
+Max DTE Used: 180
+Contracts Used: 1647
+Net Current GEX: 1,290,905,415.43
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MSFT.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,501.48,0
+GFLIP,428.2125,0
+CALLWALL,510,191671376.31
+PUTWALL,500,82506478.21
+MAXCALLOI,625,171550
+MAXPUTOI,350,46841
+GEXPOS1,510,191671376.31
+GEXPOS2,575,159128147.43
+GEXPOS3,550,117032518.43
+GEXPOS4,505,105717303.61
+GEXPOS5,525,99071710.69
+GEXPOS6,625,88656299.14
+GEXPOS7,500,82506478.21
+GEXPOS8,520,71020833.91
+
 
 Ticker: SGOL
-ERROR: Could not fetch CBOE delayed options for SGOL. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 41.35
+Max DTE Used: 180
+Contracts Used: 97
+Net Current GEX: 196,338.61
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SGOL.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,41.35,0
+GFLIP,38.407,0
+CALLWALL,45,131663.86
+PUTWALL,40,-170420.92
+MAXCALLOI,45,1179
+MAXPUTOI,40,1120
+GEXNEG1,40,-170420.92
+GEXPOS2,45,131663.86
+GEXPOS3,42,60208.32
+GEXPOS4,49,52901.22
+GEXPOS5,50,34895.94
+GEXPOS6,47,28507.7
+GEXNEG7,37,-26633.56
+GEXPOS8,43,17677.17
+
 
 Ticker: SPMO
-ERROR: Could not fetch CBOE delayed options for SPMO. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 153.14
+Max DTE Used: 180
+Contracts Used: 325
+Net Current GEX: 6,146,358.66
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,153.14,0
+GFLIP,127.9935,0
+CALLWALL,155,2778639.65
+PUTWALL,140,-258505.16
+MAXCALLOI,155,3093
+MAXPUTOI,140,1260
+GEXPOS1,155,2778639.65
+GEXPOS2,160,1622043.18
+GEXPOS3,150,847235.95
+GEXPOS4,165,400257.58
+GEXPOS5,175,289886.09
+GEXNEG6,140,-258505.16
+GEXPOS7,170,211439.62
+GEXPOS8,190,69630.92
+
 
 Ticker: KRE
-ERROR: Could not fetch CBOE delayed options for KRE. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 71.6
+Max DTE Used: 180
+Contracts Used: 649
+Net Current GEX: -117,893,253.34
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,71.6,0
+GFLIP,76.454,0
+CALLWALL,80,23978602.63
+PUTWALL,70,-36149916.82
+MAXCALLOI,80,183191
+MAXPUTOI,70,118744
+GEXNEG1,70,-36149916.82
+GEXNEG2,71,-34892406.51
+GEXPOS3,80,23978602.63
+GEXNEG4,72,-15887634.43
+GEXNEG5,65,-13980706.88
+GEXNEG6,73,-10407441.25
+GEXNEG7,75,-8487872.63
+GEXPOS8,85,8290778.44
+
 
 Ticker: APH
-ERROR: Could not fetch CBOE delayed options for APH. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 82.85
+Max DTE Used: 180
+Contracts Used: 317
+Net Current GEX: 6,816,384.82
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,82.85,0
+GFLIP,78.3792,0
+CALLWALL,85,2272737.73
+PUTWALL,67.5,-2070400.56
+MAXCALLOI,80,14135
+MAXPUTOI,67.5,43425
+GEXPOS1,85,2272737.73
+GEXPOS2,90,2206062.39
+GEXNEG3,67.5,-2070400.56
+GEXPOS4,80,1968784.78
+GEXPOS5,87.5,1820785.37
+GEXPOS6,82.5,1146603.61
+GEXPOS7,95,879254.28
+GEXNEG8,62.5,-815778.99
+
 
 Ticker: SOXX
-ERROR: Could not fetch CBOE delayed options for SOXX. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 573.6613
+Max DTE Used: 180
+Contracts Used: 1974
+Net Current GEX: 99,206,390.67
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SOXX.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,573.6613,0
+GFLIP,543.061,0
+CALLWALL,600,41284362.16
+PUTWALL,500,-17565889.58
+MAXCALLOI,600,20826
+MAXPUTOI,500,22139
+GEXPOS1,600,41284362.16
+GEXPOS2,580,29126462.7
+GEXNEG3,500,-17565889.58
+GEXPOS4,585,15109779.52
+GEXPOS5,570,10931522.78
+GEXNEG6,480,-8701660.23
+GEXNEG7,510,-8671713.29
+GEXPOS8,605,8055036.62
+
 
 Ticker: SMH
-ERROR: Could not fetch CBOE delayed options for SMH. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 606.4772
+Max DTE Used: 180
+Contracts Used: 2966
+Net Current GEX: 416,330,301.30
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SMH.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,606.4772,0
+GFLIP,577.5248,0
+CALLWALL,610,104080642.82
+PUTWALL,570,-33676662.86
+MAXCALLOI,600,30934
+MAXPUTOI,440,88167
+GEXPOS1,610,104080642.82
+GEXPOS2,600,75848665.84
+GEXPOS3,615,59732133.77
+GEXPOS4,625,48168521.09
+GEXPOS5,620,43608576.44
+GEXNEG6,570,-33676662.86
+GEXPOS7,650,32725457.54
+GEXPOS8,700,27406564.26
+
 
 Ticker: LMT
-ERROR: Could not fetch CBOE delayed options for LMT. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 523.56
+Max DTE Used: 180
+Contracts Used: 993
+Net Current GEX: -5,855,360.35
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LMT.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,523.56,0
+GFLIP,530.1907,0
+CALLWALL,550,-93226.54
+PUTWALL,520,-3403028.99
+MAXCALLOI,700,2653
+MAXPUTOI,550,1969
+GEXNEG1,520,-3403028.99
+GEXNEG2,510,-1864722.61
+GEXPOS3,600,1854881.88
+GEXPOS4,555,1189906.12
+GEXNEG5,490,-1005974.91
+GEXNEG6,530,-951014.84
+GEXNEG7,545,-883116.53
+GEXNEG8,515,-873138.74
+
 
 Ticker: MAGS
-ERROR: Could not fetch CBOE delayed options for MAGS. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 72.57
+Max DTE Used: 180
+Contracts Used: 500
+Net Current GEX: 19,966,102.89
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MAGS.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,72.57,0
+GFLIP,59.0146,0
+CALLWALL,75,3948474.96
+PUTWALL,70,2253132.85
+MAXCALLOI,70,10457
+MAXPUTOI,55,5257
+GEXPOS1,75,3948474.96
+GEXPOS2,72,3353157.92
+GEXPOS3,73,3214474.52
+GEXPOS4,70,2253132.85
+GEXPOS5,71,1356791.79
+GEXPOS6,74,1168238.17
+GEXPOS7,80,1142242.67
+GEXPOS8,72.5,876756.88
+
 
 Ticker: ET
-ERROR: Could not fetch CBOE delayed options for ET. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 20.4862
+Max DTE Used: 180
+Contracts Used: 291
+Net Current GEX: 25,654,088.97
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/ET.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,20.4862,0
+GFLIP,16.6128,0
+CALLWALL,20,8440153.75
+PUTWALL,21,6564645.36
+MAXCALLOI,22,127974
+MAXPUTOI,19,23787
+GEXPOS1,22,8496918.21
+GEXPOS2,20,8440153.75
+GEXPOS3,21,6564645.36
+GEXPOS4,23,2387249.51
+GEXPOS5,25,842560.89
+GEXNEG6,19,-823789.21
+GEXNEG7,20.5,-562604.85
+GEXPOS8,21.5,362558.63
+
 
 Ticker: HESM
-ERROR: Could not fetch CBOE delayed options for HESM. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 39.09
+Max DTE Used: 180
+Contracts Used: 93
+Net Current GEX: -1,550,113.61
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/HESM.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,39.09,0
+GFLIP,42.0999,0
+CALLWALL,42,286459.58
+PUTWALL,36,-2161023.06
+MAXCALLOI,42,2075
+MAXPUTOI,36,19644
+GEXNEG1,36,-2161023.06
+GEXPOS2,42,286459.58
+GEXPOS3,40,227002.63
+GEXPOS4,41,124743.32
+GEXPOS5,43,86813.69
+GEXNEG6,39,-70073.99
+GEXNEG7,35,-39343.97
+GEXNEG8,37,-16451.36
+
 
 Ticker: FLNG
-ERROR: Could not fetch CBOE delayed options for FLNG. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 31.38
+Max DTE Used: 180
+Contracts Used: 83
+Net Current GEX: 624,946.59
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FLNG.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,31.38,0
+GFLIP,25.104,0
+CALLWALL,33,300671.41
+PUTWALL,32,96402.56
+MAXCALLOI,33,2396
+MAXPUTOI,28,934
+GEXPOS1,33,300671.41
+GEXPOS2,35,119157.41
+GEXPOS3,34,106884.84
+GEXPOS4,32,96402.56
+GEXNEG5,28,-45450.71
+GEXPOS6,37,33437.21
+GEXPOS7,38,26218.35
+GEXNEG8,31,-12342.48
+
 
 Ticker: WES
-ERROR: Could not fetch CBOE delayed options for WES. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 46.26
+Max DTE Used: 180
+Contracts Used: 123
+Net Current GEX: 1,363,025.30
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WES.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,46.26,0
+GFLIP,38.4685,0
+CALLWALL,45,408297.65
+PUTWALL,47,-261746.38
+MAXCALLOI,50,3901
+MAXPUTOI,47,1341
+GEXPOS1,50,512539.87
+GEXPOS2,45,408297.65
+GEXPOS3,49,316635.78
+GEXNEG4,47,-261746.38
+GEXPOS5,46,240020.58
+GEXPOS6,48,217493.15
+GEXPOS7,55,153506.66
+GEXNEG8,44,-147037.05
+
 
 Ticker: PAA
-ERROR: Could not fetch CBOE delayed options for PAA. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 24.51
+Max DTE Used: 180
+Contracts Used: 222
+Net Current GEX: 9,355,126.43
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PAA.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,24.51,0
+GFLIP,19.608,0
+CALLWALL,25,2186866.44
+PUTWALL,25,2186866.44
+MAXCALLOI,35,31881
+MAXPUTOI,22,4568
+GEXPOS1,25,2186866.44
+GEXPOS2,24,1888011.51
+GEXPOS3,23,1683233.45
+GEXPOS4,22,1338159.51
+GEXPOS5,27,1307426.18
+GEXPOS6,26,624716.42
+GEXPOS7,35,256639.41
+GEXPOS8,25.5,125829.22
+
 
 Ticker: TSM
-ERROR: Could not fetch CBOE delayed options for TSM. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 451.4134
+Max DTE Used: 180
+Contracts Used: 1320
+Net Current GEX: 310,488,693.57
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TSM.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,451.4134,0
+GFLIP,420.8197,0
+CALLWALL,450,52279518.28
+PUTWALL,420,-21820737.42
+MAXCALLOI,560,63937
+MAXPUTOI,400,60164
+GEXPOS1,500,56168077.49
+GEXPOS2,450,52279518.28
+GEXPOS3,560,36102405.27
+GEXNEG4,400,-30517019.48
+GEXPOS5,460,29183359.03
+GEXPOS6,480,28614218.09
+GEXNEG7,420,-21820737.42
+GEXPOS8,470,21777557.7
+
 
 Ticker: CRAK
-ERROR: Could not fetch CBOE delayed options for CRAK. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 64.45
+Max DTE Used: 180
+Contracts Used: 109
+Net Current GEX: 488,547.40
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CRAK.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,64.45,0
+GFLIP,51.56,0
+CALLWALL,65,112187.14
+PUTWALL,60,-93468.03
+MAXCALLOI,50,1686
+MAXPUTOI,60,1135
+GEXPOS1,65,112187.14
+GEXPOS2,70,100171.02
+GEXPOS3,66,99861.98
+GEXNEG4,60,-93468.03
+GEXPOS5,50,89372.38
+GEXPOS6,55,66979.23
+GEXPOS7,75,33047.24
+GEXPOS8,58,28543.68
+
 
 Ticker: SHEL
-ERROR: Could not fetch CBOE delayed options for SHEL. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 94.05
+Max DTE Used: 180
+Contracts Used: 413
+Net Current GEX: 16,223,550.95
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SHEL.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,94.05,0
+GFLIP,75.24,0
+CALLWALL,95,4846937.37
+PUTWALL,95,4846937.37
+MAXCALLOI,85,13014
+MAXPUTOI,70,5192
+GEXPOS1,95,4846937.37
+GEXPOS2,97.5,4234384.4
+GEXPOS3,100,2624744.05
+GEXPOS4,85,1622268.93
+GEXPOS5,105,1169298.52
+GEXPOS6,80,697239.74
+GEXPOS7,97,447838.31
+GEXPOS8,110,420561.74
+
 
 Ticker: APA
-ERROR: Could not fetch CBOE delayed options for APA. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 42.5
+Max DTE Used: 180
+Contracts Used: 412
+Net Current GEX: 2,566,051.35
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APA.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,42.5,0
+GFLIP,34,0
+CALLWALL,45,899851.71
+PUTWALL,45,899851.71
+MAXCALLOI,20,20889
+MAXPUTOI,17.5,6237
+GEXPOS1,45,899851.71
+GEXPOS2,42.5,472688.76
+GEXPOS3,50,343145.23
+GEXPOS4,40,329394.43
+GEXNEG5,42,-261022.45
+GEXPOS6,37.5,238633.62
+GEXNEG7,43,-222093.43
+GEXPOS8,55,205648.07
+
 
 Ticker: BP
-ERROR: Could not fetch CBOE delayed options for BP. Last error: HTTP Error 429: Too Many Requests
+Mode: BARCHART_STYLE
+Spot: 43.15
+Max DTE Used: 180
+Contracts Used: 427
+Net Current GEX: 10,874,250.34
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/BP.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,43.15,0
+GFLIP,34.52,0
+CALLWALL,45,2303287.88
+PUTWALL,44,1361613.87
+MAXCALLOI,40,37978
+MAXPUTOI,44,14548
+GEXPOS1,40,2782791.57
+GEXPOS2,45,2303287.88
+GEXPOS3,44,1361613.87
+GEXPOS4,46,1312735.43
+GEXPOS5,48,899152.35
+GEXPOS6,50,812270.39
+GEXPOS7,47,704210
+GEXPOS8,55,377334.96
+
 
 Ticker: XOM
-ERROR: Could not fetch CBOE delayed options for XOM. Last error: HTTP Error 403: Forbidden
+Mode: BARCHART_STYLE
+Spot: 158.92
+Max DTE Used: 180
+Contracts Used: 557
+Net Current GEX: 58,889,629.38
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XOM.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,158.92,0
+GFLIP,150.4118,0
+CALLWALL,170,22757331.23
+PUTWALL,145,-14680952.15
+MAXCALLOI,180,58804
+MAXPUTOI,145,51674
+GEXPOS1,170,22757331.23
+GEXPOS2,180,17446297.76
+GEXNEG3,145,-14680952.15
+GEXPOS4,165,14128898.3
+GEXPOS5,175,11016614.44
+GEXPOS6,185,7585900.83
+GEXNEG7,150,-7336345.53
+GEXPOS8,190,4614628.9
+
 
 Ticker: FANG
-ERROR: Could not fetch CBOE delayed options for FANG. Last error: HTTP Error 403: Forbidden
+Mode: BARCHART_STYLE
+Spot: 184.9
+Max DTE Used: 180
+Contracts Used: 221
+Net Current GEX: 3,971,322.55
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FANG.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,184.9,0
+GFLIP,160.2959,0
+CALLWALL,220,1888299.52
+PUTWALL,180,-739825.12
+MAXCALLOI,220,7141
+MAXPUTOI,200,1753
+GEXPOS1,220,1888299.52
+GEXPOS2,210,1096867.6
+GEXPOS3,195,1090775.3
+GEXNEG4,180,-739825.12
+GEXPOS5,230,588115.75
+GEXPOS6,240,397579.21
+GEXPOS7,200,325497.21
+GEXNEG8,155,-267736.56
+
 
 Ticker: MPLX
-ERROR: Could not fetch CBOE delayed options for MPLX. Last error: HTTP Error 403: Forbidden
+Mode: BARCHART_STYLE
+Spot: 58.86
+Max DTE Used: 180
+Contracts Used: 80
+Net Current GEX: 3,807,614.09
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPLX.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,58.86,0
+GFLIP,53.747,0
+CALLWALL,60,2523094.24
+PUTWALL,60,2523094.24
+MAXCALLOI,60,14998
+MAXPUTOI,55,8658
+GEXPOS1,60,2523094.24
+GEXPOS2,65,2156983.59
+GEXNEG3,55,-1238277.29
+GEXPOS4,70,435768.57
+GEXNEG5,50,-29090.71
+GEXNEG6,47,-21884.55
+GEXNEG7,45,-18371.55
+GEXPOS8,75,5434.76
+
 
 Ticker: COP
-ERROR: Could not fetch CBOE delayed options for COP. Last error: HTTP Error 403: Forbidden
+Mode: BARCHART_STYLE
+Spot: 125.38
+Max DTE Used: 180
+Contracts Used: 645
+Net Current GEX: 14,269,417.74
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/COP.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,125.38,0
+GFLIP,106.1708,0
+CALLWALL,125,2666924.07
+PUTWALL,120,516647.26
+MAXCALLOI,150,20466
+MAXPUTOI,120,10012
+GEXPOS1,135,3753978.34
+GEXPOS2,150,3571198.65
+GEXPOS3,125,2666924.07
+GEXPOS4,140,1910763.12
+GEXPOS5,115,1888525.4
+GEXPOS6,145,1833836.59
+GEXPOS7,130,1572541.06
+GEXNEG8,128,-1293711.29
+
 
 Ticker: MPC
-ERROR: Could not fetch CBOE delayed options for MPC. Last error: HTTP Error 403: Forbidden
+Mode: BARCHART_STYLE
+Spot: 389.68
+Max DTE Used: 180
+Contracts Used: 461
+Net Current GEX: -4,979,849.95
+Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPC.json
+
+PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
+------------------------------------------------------------
+SPOT,389.68,0
+GFLIP,422.0989,0
+CALLWALL,410,390103.94
+PUTWALL,350,-2994674.13
+MAXCALLOI,450,1692
+MAXPUTOI,350,6484
+GEXNEG1,350,-2994674.13
+GEXNEG2,340,-1813170.92
+GEXNEG3,380,-1231127.95
+GEXNEG4,370,-1123845.57
+GEXPOS5,450,957918.52
+GEXPOS6,440,866838.59
+GEXNEG7,390,-715306.98
+GEXNEG8,360,-641340.6
+
 
 Ticker: PR
 Mode: BARCHART_STYLE
