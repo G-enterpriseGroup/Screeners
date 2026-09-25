@@ -67,6 +67,39 @@ render_risk_sizing(
 )
 """
 
+DISCONNECTED_FIXTURE = """import streamlit as st
+from src.risk_sizing_ui_v7 import render_risk_sizing
+import src.risk_sizing_ui_v10 as v10
+
+def fake_yahoo(symbol):
+    st.session_state.setdefault("disconnected_yahoo_quotes", []).append(symbol)
+    return dict(
+        symbol=symbol,
+        companyName=f"{symbol} Yahoo Fixture",
+        lastPrice=410.10,
+        bid=410.05,
+        ask=410.20,
+        changeClose=-0.75,
+        _risk_quote_source="YAHOO FINANCE",
+        _risk_quote_ask_proxy=False,
+    )
+
+v10._yfinance_quote_payload = fake_yahoo
+
+def unexpected(*args, **kwargs):
+    raise AssertionError("E*TRADE account callbacks must not run without a client")
+
+render_risk_sizing(
+    None,
+    account_picker=unexpected,
+    refresh_accounts=unexpected,
+    account_balance=unexpected,
+    balance_snapshot=unexpected,
+    touch_session=lambda:None,
+)
+"""
+
+
 
 def main():
     source = (ROOT / "src" / "risk_sizing_ui_v10.py").read_text(encoding="utf-8")
@@ -132,7 +165,19 @@ def main():
     assert fallback.session_state["fixture_etrade_attempts"] == ["SPY"]
     assert fallback.session_state["fixture_yahoo_quotes"] == ["SPY"]
 
-    print("Production Risk route: fragment ownership, E*TRADE-first quote path, Yahoo fallback, sizing PASS")
+    disconnected = AppTest.from_string(DISCONNECTED_FIXTURE, default_timeout=30).run()
+    assert not disconnected.exception, [e.message for e in disconnected.exception]
+    assert disconnected.session_state["risk_quote_source"] == "YAHOO FINANCE"
+    assert disconnected.session_state["disconnected_yahoo_quotes"] == ["SPY"]
+    assert disconnected.session_state["risk_quote_symbol"] == "SPY"
+    assert disconnected.session_state["risk_entry_price"] == 410.20
+    assert disconnected.session_state["risk_stop_price"] == 389.69
+    assert disconnected.selectbox(key="risk_ticker_smart_v10").value.startswith("SPY")
+    assert len(disconnected.number_input) == 0
+
+    assert "retry_live_due" in source
+    assert "_risk_live_quote_attempt_at" in source
+    print("Production Risk route: fragment ownership, E*TRADE-first quote path, disconnected Yahoo fallback, sizing PASS")
 
 
 if __name__ == "__main__":
