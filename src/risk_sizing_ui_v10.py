@@ -25,13 +25,15 @@ behaviors that could blank Part 2:
 1) no global st.columns interception;
 2) ticker autocomplete is fail-safe and falls back to the native ticker input.
 
-The ticker selector uses the optimized `SYMBOL — COMPANY NAME` options from
-`ticker_autocomplete.py`. Selecting a ticker automatically fetches E*TRADE,
-seeds Entry from ASK and Stop at 5% below ASK, and leaves no manual quote button.
+The ticker control is a direct symbol input. Company / ETF name is rendered in
+a separate read-only display box. Entering a ticker automatically fetches
+E*TRADE, seeds Entry from ASK and Stop at 5% below ASK, and leaves no manual
+quote button.
 """
 
 from __future__ import annotations
 
+import html
 import inspect
 import math
 import time
@@ -40,7 +42,6 @@ import streamlit as st
 
 import src.risk_sizing_ui_v9 as _v9
 from src.etrade_client import ETradeError
-from src.ticker_autocomplete import smart_ticker_selector
 
 
 _BASE_RENDER_CSS = _v9._render_css
@@ -91,10 +92,47 @@ def _render_css_v10() -> None:
             box-sizing:border-box!important;
         }
 
-        /* Keep the ticker search compact and obviously searchable. */
+        /* Ticker is editable; Company / ETF is a separate display-only box. */
         [data-testid="stHorizontalBlock"]:has(
             > [data-testid="stColumn"]:first-child .risk-v10-ticker-marker
-        ) [data-testid="stSelectbox"]{width:100%!important;}
+        ) [data-testid="stTextInput"]{width:100%!important;}
+        .risk-v10-company-field{
+            width:100%;
+            min-width:0;
+            font-family:"Courier New",monospace;
+        }
+        .risk-v10-company-label{
+            display:flex;
+            align-items:center;
+            min-height:20px;
+            margin:0 0 3px 0;
+            color:#fb8b1e!important;
+            -webkit-text-fill-color:#fb8b1e!important;
+            font-family:"Courier New",monospace;
+            font-size:.875rem;
+            font-weight:400;
+            line-height:1.25;
+        }
+        .risk-v10-company-box{
+            display:flex;
+            align-items:center;
+            width:100%;
+            height:38px;
+            min-height:38px;
+            box-sizing:border-box;
+            padding:0 10px;
+            border:1px solid #fb8b1e;
+            background:#050505;
+            color:#fb8b1e!important;
+            -webkit-text-fill-color:#fb8b1e!important;
+            font-family:"Courier New",monospace;
+            font-size:.80rem;
+            font-weight:900;
+            line-height:1.15;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -213,6 +251,39 @@ def _quote_payload_with_source(payload, source: str, *, ask_proxy: bool = False)
     return data
 
 
+def _normalize_risk_ticker_session_value() -> None:
+    """Normalize only the Risk ticker input after a native text edit."""
+    value = str(st.session_state.get("risk_ticker") or "").strip().upper()
+    st.session_state["risk_ticker"] = value or "SPY"
+
+
+def _risk_company_display_name(symbol: str) -> str:
+    """Return quote-derived company/ETF name with directory fallback."""
+    symbol = str(symbol or "").strip().upper()
+    quote_symbol = str(st.session_state.get("risk_quote_symbol") or "").strip().upper()
+    quote_data = st.session_state.get("risk_quote_data")
+    if symbol and quote_symbol == symbol and isinstance(quote_data, dict):
+        description = str(
+            quote_data.get("description")
+            or quote_data.get("companyName")
+            or ""
+        ).strip()
+        if description:
+            return description
+    return str(_v9.company_name(symbol) or "").strip() or "—"
+
+
+def _render_company_display(container, symbol: str) -> None:
+    company = html.escape(_risk_company_display_name(symbol))
+    with container:
+        st.html(
+            '<div class="risk-v10-company-field">'
+            '<div class="risk-v10-company-label">Company / ETF</div>'
+            f'<div class="risk-v10-company-box" title="{company}">{company}</div>'
+            '</div>'
+        )
+
+
 def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, client, touch_session):
     """Render dynamic ticker search with E*TRADE-first / Yahoo fallback quotes."""
 
@@ -313,36 +384,44 @@ def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, cl
             return original_text_input(label, *args, **kwargs)
 
         st.html('<span class="risk-v10-ticker-marker"></span>')
-        current = str(st.session_state.get("risk_ticker") or kwargs.get("value") or "SPY").strip().upper() or "SPY"
-
-        # Primary path: searchable SYMBOL — COMPANY NAME selector.
-        try:
-            selected = smart_ticker_selector(
-                original_selectbox,
-                label="Ticker Search",
-                current=current,
-                key="risk_ticker_smart_v10",
-                help_text=(
-                    "Type a ticker or company name. Choose a result and the E*TRADE quote, Entry, "
-                    "and 5%-below-ASK Stop update automatically. Yahoo Finance is used only if "
-                    "live E*TRADE quote data is unavailable."
-                ),
+        current = (
+            str(
+                st.session_state.get("risk_ticker")
+                or kwargs.get("value")
+                or "SPY"
             )
-            selected = str(selected or current).strip().upper() or current
-            st.session_state["risk_ticker"] = selected
-            _load_quote(selected)
-            return selected
-        except Exception as exc:
-            # Part 2 must still render. The native field is the permanent
-            # emergency fallback if Streamlit's selectbox changes behavior.
-            st.session_state["_risk_v10_selector_error"] = str(exc)
-            local_kwargs = dict(kwargs)
-            local_kwargs["placeholder"] = "Type ticker and press Enter"
-            raw = original_text_input(label, *args, **local_kwargs)
-            selected = str(raw or current).strip().upper() or current
-            _load_quote(selected)
-            return selected
+            .strip()
+            .upper()
+            or "SPY"
+        )
 
+        # Ticker is the only editable control. Company / ETF is display-only.
+        if "risk_ticker" not in st.session_state:
+            st.session_state["risk_ticker"] = current
+
+        ticker_col, company_col = st.columns(
+            [1.0, 2.35],
+            gap="small",
+            vertical_alignment="bottom",
+        )
+        local_kwargs = dict(kwargs)
+        local_kwargs.pop("value", None)
+        local_kwargs["key"] = "risk_ticker"
+        local_kwargs["placeholder"] = "SPY"
+        local_kwargs["help"] = (
+            "Enter a ticker symbol. The E*TRADE quote, Entry, and 5%-below-ASK "
+            "Stop update automatically. Yahoo Finance is used only if live "
+            "E*TRADE quote data is unavailable."
+        )
+        local_kwargs["on_change"] = _normalize_risk_ticker_session_value
+
+        with ticker_col:
+            raw = original_text_input("Ticker", *args, **local_kwargs)
+
+        selected = str(raw or current).strip().upper() or current
+        _load_quote(selected)
+        _render_company_display(company_col, selected)
+        return selected
     return wrapped
 
 def _render_disconnected_ticker_fallback() -> None:
@@ -355,19 +434,26 @@ def _render_disconnected_ticker_fallback() -> None:
     st.html('<div class="risk-v9-section">2. SIZE THE NEXT TRADE</div>')
 
     current = str(st.session_state.get("risk_ticker") or "SPY").strip().upper() or "SPY"
-    selected = smart_ticker_selector(
-        st.selectbox,
-        label="Ticker Search",
-        current=current,
-        key="risk_ticker_smart_v10",
-        help_text=(
-            "Type a ticker or company name. Live E*TRADE remains the primary source whenever "
-            "a broker connection is available; Yahoo Finance is being used because no E*TRADE "
-            "portfolio client is currently available."
-        ),
+    if "risk_ticker" not in st.session_state:
+        st.session_state["risk_ticker"] = current
+
+    ticker_col, company_col = st.columns(
+        [1.0, 2.35],
+        gap="small",
+        vertical_alignment="bottom",
     )
-    selected = str(selected or current).strip().upper() or current
-    st.session_state["risk_ticker"] = selected
+    with ticker_col:
+        raw = st.text_input(
+            "Ticker",
+            key="risk_ticker",
+            placeholder="SPY",
+            help=(
+                "Enter a ticker symbol. Yahoo Finance is being used because no "
+                "E*TRADE portfolio client is currently available."
+            ),
+            on_change=_normalize_risk_ticker_session_value,
+        )
+    selected = str(raw or current).strip().upper() or current
 
     quote_data = st.session_state.get("risk_quote_data")
     quote_symbol = str(st.session_state.get("risk_quote_symbol") or "").strip().upper()
@@ -392,6 +478,8 @@ def _render_disconnected_ticker_fallback() -> None:
             st.session_state["risk_quote_symbol"] = ""
             st.warning(f"Yahoo Finance quote load failed for {selected}: {exc}")
             quote_data = None
+
+    _render_company_display(company_col, selected)
 
     if quote_data and st.session_state.get("risk_quote_symbol") == selected:
         q1, q2, q3, q4 = st.columns(4, gap="small")
