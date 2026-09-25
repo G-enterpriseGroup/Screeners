@@ -242,6 +242,24 @@ def main():
     assert "st.rerun" not in v2_source
     assert "The quote loads automatically from live E*TRADE first" in v2_source
 
+    # CSS-only style payloads must use st.html so Streamlit routes them outside
+    # the visible flex stack instead of reserving empty rows above Risk content.
+    assert 'def _render_css_v10()' in source and '    st.html(\n        """\n        <style>' in source
+    assert 'def _render_css()' in v9_source and '    st.html(\n        """\n        <style>' in v9_source
+    assert 'def _render_tooltip_css()' in v2_source and '    st.html(\n        """\n        <style>' in v2_source
+
+    # Browser-persistence components stay functional but must be removed from
+    # normal document flow so their 0px iframes cannot create vertical gaps.
+    for shell in (
+        "risk_book_state_reader_shell",
+        "risk_book_state_writer_shell",
+        "risk_intent_state_reader_shell",
+        "risk_intent_state_writer_shell",
+    ):
+        assert shell in v2_source
+    assert '[data-testid="stElementContainer"]:has(.st-key-risk_intent_state_reader_shell)' in v2_source
+    assert "position:absolute !important;" in v2_source
+
     app = AppTest.from_string(FIXTURE, default_timeout=30).run()
     def clean():
         assert not app.exception, [e.message for e in app.exception]
@@ -345,7 +363,7 @@ def main():
     assert 'class="risk-v10-company-box"' in source
     assert 'original_text_input("Ticker"' in source
     assert "risk_ticker_smart_v10" not in source
-    print("Production Risk route: editable ticker input, separate company display, processing-state Risk Book memory, E*TRADE-first quotes, sizing PASS")
+    print("Production Risk route: compact zero-dead-space layout, ticker/company split, Risk Book memory, E*TRADE-first quotes, sizing PASS")
 
 
 if __name__ == "__main__":
