@@ -23,7 +23,7 @@ Supporting responsibilities:
 This module keeps the v9 calculations/presentation but removes the two fragile
 behaviors that could blank Part 2:
 1) no global st.columns interception;
-2) ticker autocomplete is fail-safe and falls back to the native ticker input.
+2) ticker entry stays a native symbol input with a separate company display.
 
 The ticker control is a direct symbol input. Company / ETF name is rendered in
 a separate read-only display box. Entering a ticker automatically fetches
@@ -285,7 +285,7 @@ def _render_company_display(container, symbol: str) -> None:
 
 
 def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, client, touch_session):
-    """Render dynamic ticker search with E*TRADE-first / Yahoo fallback quotes."""
+    """Render direct ticker entry with E*TRADE-first / Yahoo fallback quotes."""
 
     def _load_quote(selected: str) -> None:
         selected = str(selected or "").strip().upper()
