@@ -234,7 +234,13 @@ render_risk_sizing(
 
 def main():
     source = (ROOT / "src" / "risk_sizing_ui_v10.py").read_text(encoding="utf-8")
+    v9_source = (ROOT / "src" / "risk_sizing_ui_v9.py").read_text(encoding="utf-8")
+    v2_source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
     assert "@st.fragment\ndef render_risk_sizing" in source
+    assert "st.rerun" not in source
+    assert "st.rerun" not in v9_source
+    assert "st.rerun" not in v2_source
+    assert "The quote loads automatically from live E*TRADE first" in v2_source
 
     app = AppTest.from_string(FIXTURE, default_timeout=30).run()
     def clean():
