@@ -18,6 +18,7 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,8 @@ _CACHE_DIR = Path.home() / ".raj_terminal"
 _DIRECTORY_CACHE = _CACHE_DIR / "ticker_directory.json"
 _HISTORY_CACHE = _CACHE_DIR / "ticker_history.json"
 _LOCK = threading.Lock()
+_DIRECTORY_REFRESH_LOCK = threading.Lock()
+_DIRECTORY_REFRESH_STARTED_AT = 0.0
 
 _NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 _OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
@@ -114,36 +117,82 @@ def _parse_directory(text: str, symbol_field: str) -> dict[str, str]:
     return mapping
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def ticker_directory() -> dict[str, str]:
-    """Return a cached US ticker->security-name mapping with stale fallback."""
-    mapping = dict(_FALLBACK_NAMES)
-    downloaded: dict[str, str] = {}
+def _download_directory_snapshot() -> dict[str, str]:
+    """Fetch Nasdaq symbol files concurrently so one slow endpoint cannot stack."""
     headers = {
         "User-Agent": "RajsTerminal/1.0 symbol-directory cache",
         "Accept": "text/plain,*/*",
     }
-
-    for url, field in (
+    sources = (
         (_NASDAQ_LISTED_URL, "Symbol"),
         (_OTHER_LISTED_URL, "ACT Symbol"),
-    ):
+    )
+
+    def fetch(source: tuple[str, str]) -> dict[str, str]:
+        url, field = source
         try:
             response = requests.get(url, timeout=6, headers=headers)
             response.raise_for_status()
-            downloaded.update(_parse_directory(response.text, field))
+            return _parse_directory(response.text, field)
         except requests.RequestException:
-            continue
+            return {}
 
+    downloaded: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="ticker-directory") as pool:
+        for partial in pool.map(fetch, sources):
+            downloaded.update(partial)
+    return downloaded
+
+
+def _refresh_directory_cache_background() -> None:
+    downloaded = _download_directory_snapshot()
+    if len(downloaded) < 500:
+        return
+    mapping = dict(_FALLBACK_NAMES)
+    mapping.update(downloaded)
+    with _LOCK:
+        _write_json(_DIRECTORY_CACHE, mapping)
+
+
+def _schedule_directory_refresh() -> None:
+    """Refresh disk cache in the background while immediately serving stale-good data."""
+    global _DIRECTORY_REFRESH_STARTED_AT
+
+    now = time.time()
+    with _DIRECTORY_REFRESH_LOCK:
+        if now - _DIRECTORY_REFRESH_STARTED_AT < 3600:
+            return
+        _DIRECTORY_REFRESH_STARTED_AT = now
+
+    threading.Thread(
+        target=_refresh_directory_cache_background,
+        name="ticker-directory-refresh",
+        daemon=True,
+    ).start()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def ticker_directory() -> dict[str, str]:
+    """Return the ticker directory without blocking normal UI reruns on HTTP."""
+    mapping = dict(_FALLBACK_NAMES)
+
+    # Stale-while-revalidate: once a full directory exists on disk, render it
+    # immediately and update the next cache generation in a background thread.
+    with _LOCK:
+        stale = _read_json(_DIRECTORY_CACHE, {})
+    if isinstance(stale, dict) and len(stale) >= 500:
+        mapping.update({str(k).upper(): str(v) for k, v in stale.items() if k and v})
+        _schedule_directory_refresh()
+        return mapping
+
+    # First-ever startup has no disk snapshot yet. Fetch the two source files in
+    # parallel, cutting the old serial worst-case wait roughly in half.
+    downloaded = _download_directory_snapshot()
     if len(downloaded) >= 500:
         mapping.update(downloaded)
         with _LOCK:
             _write_json(_DIRECTORY_CACHE, mapping)
-        return mapping
-
-    with _LOCK:
-        stale = _read_json(_DIRECTORY_CACHE, {})
-    if isinstance(stale, dict):
+    elif isinstance(stale, dict):
         mapping.update({str(k).upper(): str(v) for k, v in stale.items() if k and v})
     return mapping
 
@@ -252,10 +301,45 @@ def _display_label(symbol: str) -> str:
     return f"{symbol} — {name}{suffix}" if name else f"{symbol}{suffix}"
 
 
-def _build_fast_labels(current: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
-    """Build display labels once; return labels + label->symbol + directory."""
+def _history_snapshot_token(history: dict[str, dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
+    rows: list[tuple[Any, ...]] = []
+    for symbol, data in history.items():
+        if not symbol or not isinstance(data, dict):
+            continue
+        try:
+            count = int(data.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        try:
+            last_used = float(data.get("last_used") or 0.0)
+        except (TypeError, ValueError):
+            last_used = 0.0
+        rows.append(
+            (
+                str(symbol).strip().upper(),
+                count,
+                last_used,
+                str(data.get("name") or ""),
+            )
+        )
+    return tuple(sorted(rows))
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _build_fast_labels_cached(
+    current: str,
+    history_token: tuple[tuple[Any, ...], ...],
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Cache the 10k+ option serialization until ticker/history actually changes."""
     directory = ticker_directory()
-    history = lookup_history()
+    history = {
+        str(symbol): {
+            "count": count,
+            "last_used": last_used,
+            "name": name,
+        }
+        for symbol, count, last_used, name in history_token
+    }
     symbols = _ranked_symbols_from_snapshots(directory, history, current)
 
     labels: list[str] = []
@@ -268,6 +352,15 @@ def _build_fast_labels(current: str) -> tuple[list[str], dict[str, str], dict[st
         labels.append(label)
         label_to_symbol[label] = symbol
     return labels, label_to_symbol, directory
+
+
+def _build_fast_labels(current: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Reuse the serialized selector across stop/size edits for the same ticker."""
+    history = lookup_history()
+    return _build_fast_labels_cached(
+        str(current or "").strip().upper(),
+        _history_snapshot_token(history),
+    )
 
 
 def smart_ticker_selector(
