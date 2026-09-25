@@ -2,6 +2,7 @@ streamlit>=1.61,<2
 pandas>=2.2
 numpy>=2.0
 requests>=2.32
+yfinance>=1.7,<2
 beautifulsoup4>=4.12
 requests-oauthlib>=2.0
 plotly>=5.24

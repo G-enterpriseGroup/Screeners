@@ -32,7 +32,17 @@ from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_se
 
 
 def _quote_summary_with_defaults(payload):
+    source = "E*TRADE"
+    ask_proxy = False
+    if isinstance(payload, dict):
+        source = str(payload.get("_risk_quote_source") or source).strip().upper()
+        ask_proxy = bool(payload.get("_risk_quote_ask_proxy", False))
+
     summary = _base_quote_summary(payload)
+    summary["_source"] = source
+    summary["_ask_proxy"] = ask_proxy
+    st.session_state["risk_quote_source"] = source
+
     symbol = str(summary.get("symbol") or st.session_state.get("risk_ticker") or "").strip().upper()
 
     try:
@@ -43,7 +53,8 @@ def _quote_summary_with_defaults(payload):
     if ask > 0:
         st.session_state["risk_entry_price"] = round(ask, 2)
         st.session_state["risk_stop_price"] = round(ask * 0.95, 2)
-        st.session_state["_risk_entry_source"] = "E*TRADE ASK"
+        seed_kind = "LAST" if ask_proxy else "ASK"
+        st.session_state["_risk_entry_source"] = f"{source} {seed_kind}"
         st.session_state["_risk_entry_seed_symbol"] = symbol
         st.session_state.pop("_risk_ask_unavailable", None)
     else:
@@ -138,6 +149,13 @@ def _unused_risk_value(label: str, value: str, help_text: str) -> tuple[str, str
 
 def _compact_metric_box(container, label, value, tone="neutral", detail="", help_text=""):
     value, help_text = _unused_risk_value(str(label), str(value), str(help_text))
+    quote_source = str(st.session_state.get("risk_quote_source") or "E*TRADE")
+    if str(label).strip().upper() in {"LAST", "BID", "ASK", "CHANGE"} and quote_source != "E*TRADE":
+        help_text = str(help_text).replace("E*TRADE", quote_source)
+        if str(label).strip().upper() == "ASK" and bool(
+            (st.session_state.get("risk_quote_data") or {}).get("_ask_proxy", False)
+        ):
+            help_text += " Yahoo did not return a usable ask, so the latest available price is being used as the sizing seed."
     color = {
         "positive": "#4af6c3",
         "negative": "#ff433d",
@@ -566,7 +584,10 @@ def render_risk_sizing(
     if quote_error:
         st.warning(str(quote_error))
     if st.session_state.pop("_risk_ask_unavailable", False):
-        st.warning("E*TRADE ASK UNAVAILABLE // Entry and Stop were not auto-reset because no usable ask was returned.")
+        quote_source = str(st.session_state.get("risk_quote_source") or "E*TRADE")
+        st.warning(
+            f"{quote_source} ASK UNAVAILABLE // Entry and Stop were not auto-reset because no usable ask was returned."
+        )
 
     render_stockanalysis_portfolio(
         "risk_sizing_account",
