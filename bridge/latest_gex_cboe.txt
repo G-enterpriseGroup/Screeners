@@ -5,6 +5,9 @@ Max DTE Used: 180
 Contracts Used: 5701
 Net Current GEX: -2,786,133,367.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:09-04:00
+CBOE GEX Input Fingerprint: CBOE1:9641dee9a39f0f080b29f0b16d271a846e465490de1ff84a17ddc67d23fc60c5
+CBOE Snapshot Option Rows: 13028
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -31,6 +34,9 @@ Max DTE Used: 180
 Contracts Used: 5547
 Net Current GEX: 587,851,008.69
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:09-04:00
+CBOE GEX Input Fingerprint: CBOE1:bf40412f2af917b004affb3a79c8f6ad50e4ae4d3ae654b5e2bf2961e4119d16
+CBOE Snapshot Option Rows: 11566
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -57,6 +63,9 @@ Max DTE Used: 180
 Contracts Used: 1286
 Net Current GEX: 40,737,288.18
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TQQQ.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:09-04:00
+CBOE GEX Input Fingerprint: CBOE1:9f11a3c978ed6239207d04048f0f140ab0a77c6b490af08f2cbb54a5c23d216a
+CBOE Snapshot Option Rows: 1746
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -83,6 +92,9 @@ Max DTE Used: 180
 Contracts Used: 396
 Net Current GEX: 1,603,744.71
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLC.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:aca44f34aa209179f26723859bf8615e708086560a9e934209ea42d29f42534b
+CBOE Snapshot Option Rows: 1138
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -109,6 +121,9 @@ Max DTE Used: 180
 Contracts Used: 563
 Net Current GEX: -47,121,350.35
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLY.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:09-04:00
+CBOE GEX Input Fingerprint: CBOE1:6a998541c65c8c8365dcdc7717e8cf6ec7fd0a5e1cd0131100284c726e0ad8e2
+CBOE Snapshot Option Rows: 1454
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -130,28 +145,31 @@ GEXPOS8,119,2103561.81
 
 Ticker: XLK
 Mode: BARCHART_STYLE
-Spot: 194.62
+Spot: 194.71
 Max DTE Used: 180
 Contracts Used: 1109
-Net Current GEX: 43,559,822.32
+Net Current GEX: 42,515,780.35
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLK.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:8d88888e620e7203398a6cb44c048ed1f3492878c609aa59ec3a0aec888f3f3c
+CBOE Snapshot Option Rows: 2498
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
-SPOT,194.62,0
-GFLIP,189.2425,0
-CALLWALL,200,11982394.09
-PUTWALL,175,-4078259.84
+SPOT,194.71,0
+GFLIP,189.4002,0
+CALLWALL,200,11819364.34
+PUTWALL,175,-4123876.07
 MAXCALLOI,200,14786
 MAXPUTOI,135,49644
-GEXPOS1,195,17352659.23
-GEXPOS2,200,11982394.09
-GEXPOS3,196,8992062.35
-GEXPOS4,205,5351300.16
-GEXNEG5,175,-4078259.84
-GEXPOS6,190,3509022.4
-GEXPOS7,220,3459840.43
-GEXNEG8,170,-3365839.97
+GEXPOS1,195,17283508.66
+GEXPOS2,200,11819364.34
+GEXPOS3,196,8749100.22
+GEXPOS4,205,5286974.04
+GEXNEG5,175,-4123876.07
+GEXPOS6,190,3569716.6
+GEXPOS7,220,3433014.11
+GEXNEG8,170,-3388902.97
 
 
 Ticker: XLRE
@@ -161,6 +179,9 @@ Max DTE Used: 180
 Contracts Used: 103
 Net Current GEX: -986,116.62
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLRE.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:09-04:00
+CBOE GEX Input Fingerprint: CBOE1:ed039aae6d46b51f1fcfb837abc0422ecbb667a33010446e80ebb61d74b23ce7
+CBOE Snapshot Option Rows: 220
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -187,6 +208,9 @@ Max DTE Used: 180
 Contracts Used: 817
 Net Current GEX: -241,266,276.68
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLF.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:09-04:00
+CBOE GEX Input Fingerprint: CBOE1:fe2a64db0bdde971f1d01230a215407494fdf047c5ba20d73a441641dc781907
+CBOE Snapshot Option Rows: 2302
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -213,6 +237,9 @@ Max DTE Used: 180
 Contracts Used: 443
 Net Current GEX: -15,826,753.59
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLB.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:65ade00aa45d693b3cd91a47f42f71c6d931843980554c1288b99cfd3baa4eb3
+CBOE Snapshot Option Rows: 1036
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -239,6 +266,9 @@ Max DTE Used: 180
 Contracts Used: 729
 Net Current GEX: 28,579,959.72
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLV.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:a74758e7de268421bd418b458ac82b58bcc89093ebd2559d12cd39f3f05e1868
+CBOE Snapshot Option Rows: 1648
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -265,6 +295,9 @@ Max DTE Used: 180
 Contracts Used: 444
 Net Current GEX: -34,710,040.39
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLU.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:c358011f87813b44563f501345e60d8b6991a74ce2c9d70247111806904dc175
+CBOE Snapshot Option Rows: 1102
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -291,6 +324,9 @@ Max DTE Used: 180
 Contracts Used: 926
 Net Current GEX: -35,961,610.28
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLE.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:f486b1938d093f96c86953b8fe3592647306e03365fe0b5c2c73d7d48649c5f8
+CBOE Snapshot Option Rows: 2008
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -317,6 +353,9 @@ Max DTE Used: 180
 Contracts Used: 514
 Net Current GEX: -68,044,017.64
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLP.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:d9a7ac198598748c9ef5375df29943fbc982c7c0c2d69d73c465ab577cd22e31
+CBOE Snapshot Option Rows: 1166
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -343,6 +382,9 @@ Max DTE Used: 180
 Contracts Used: 1000
 Net Current GEX: -153,304,252.95
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLI.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:945b1f1c9043a0babe8c868e543680bc8a59946ebb587d19e4cf474a6c56c23d
+CBOE Snapshot Option Rows: 2064
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -369,6 +411,9 @@ Max DTE Used: 180
 Contracts Used: 1724
 Net Current GEX: 1,311,222,822.67
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MSFT.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:0861183c0c38ae9f891201a6e0281e588a1ae3afc598b6dedf19fa9151c6af21
+CBOE Snapshot Option Rows: 3580
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -395,6 +440,9 @@ Max DTE Used: 180
 Contracts Used: 102
 Net Current GEX: 108,381.72
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SGOL.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:10-04:00
+CBOE GEX Input Fingerprint: CBOE1:417910c3ab35bb8b5005275ad5df702b9683038ef3292fe0d3fff4d67f5773b8
+CBOE Snapshot Option Rows: 180
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -420,6 +468,9 @@ Max DTE Used: 180
 Contracts Used: 335
 Net Current GEX: 5,298,326.15
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:b45cb67ad3642d2188fba5b4e29faac4424f16ca4d2f728da698766895057bd2
+CBOE Snapshot Option Rows: 724
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -446,6 +497,9 @@ Max DTE Used: 180
 Contracts Used: 676
 Net Current GEX: -138,937,896.12
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:3401433a4bcc297979d06e1a58c2d60ce9196c893c4e6d673bad7897da53a372
+CBOE Snapshot Option Rows: 1622
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -472,6 +526,9 @@ Max DTE Used: 180
 Contracts Used: 315
 Net Current GEX: 5,530,627.79
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:a6633e41dfb336dd1e26194ac8b77b4a9aa33c3566188fcb4cbe1022bf0e347a
+CBOE Snapshot Option Rows: 616
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -498,6 +555,9 @@ Max DTE Used: 180
 Contracts Used: 2040
 Net Current GEX: 49,513,646.22
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SOXX.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:5981ae6f9cb242f15d26caaaf90a6c16a3450395b8d6cf0f467529d1c2e30ab4
+CBOE Snapshot Option Rows: 5452
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -524,6 +584,9 @@ Max DTE Used: 180
 Contracts Used: 3085
 Net Current GEX: 253,922,614.11
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SMH.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:0ddd2fd675c366dddfea87f97e2358fd08d5da4fc4483f491087de9de2e8dc9b
+CBOE Snapshot Option Rows: 7504
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -550,6 +613,9 @@ Max DTE Used: 180
 Contracts Used: 1046
 Net Current GEX: -8,774,711.12
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LMT.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:7ae3494e5a795b0f11eb272cf0fe44f8d1ee4cc6cb59f80e185b8e88c092409e
+CBOE Snapshot Option Rows: 2610
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -576,6 +642,9 @@ Max DTE Used: 180
 Contracts Used: 526
 Net Current GEX: 18,339,283.09
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MAGS.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:e8feefba0fe60bd55b37142e733bc9f135f9ea1f3bb8155531c349d6ba2ee618
+CBOE Snapshot Option Rows: 982
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -602,6 +671,9 @@ Max DTE Used: 180
 Contracts Used: 303
 Net Current GEX: 25,551,562.23
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/ET.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:1ccd993ccbffa7cab7730248f632cfb38dda36663861a259642f11bbf4bff067
+CBOE Snapshot Option Rows: 716
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -628,6 +700,9 @@ Max DTE Used: 180
 Contracts Used: 99
 Net Current GEX: -2,010,316.05
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/HESM.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:a8cc81b57802ab1b00c48e259b253432077ca8f7e562dbca7f0e1f6dc2407657
+CBOE Snapshot Option Rows: 218
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -654,6 +729,9 @@ Max DTE Used: 180
 Contracts Used: 83
 Net Current GEX: 624,946.59
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FLNG.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:11-04:00
+CBOE GEX Input Fingerprint: CBOE1:8025c3bf2cf7a5c829c2a91a9ec5157a5133c72e43191ac2df8a1b4cbb752f17
+CBOE Snapshot Option Rows: 154
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -680,6 +758,9 @@ Max DTE Used: 180
 Contracts Used: 123
 Net Current GEX: 1,173,996.20
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WES.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:ce3b0d164e699170fcaadd8f263533dc36c82d0f81f9ec4ad2eba4ac92a99fbe
+CBOE Snapshot Option Rows: 252
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -706,6 +787,9 @@ Max DTE Used: 180
 Contracts Used: 229
 Net Current GEX: 8,722,963.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PAA.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:e1f0feee4f29061c878627eee85ac92586551fe4ecfe7f81185e45560c9cc4fd
+CBOE Snapshot Option Rows: 644
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -732,6 +816,9 @@ Max DTE Used: 180
 Contracts Used: 1341
 Net Current GEX: 305,104,037.01
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TSM.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:186bee40d9eeeabec3a5be227e8098fbf608fc2f993603bbbf3013d5b30b7832
+CBOE Snapshot Option Rows: 2510
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -758,6 +845,9 @@ Max DTE Used: 180
 Contracts Used: 112
 Net Current GEX: -336,902.64
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CRAK.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:fe1a1cf3f97f82c8a2eebeab3c5cb2adb4c68794f4b4bc4261e6dbc3bc6f039a
+CBOE Snapshot Option Rows: 264
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -784,6 +874,9 @@ Max DTE Used: 180
 Contracts Used: 436
 Net Current GEX: 21,039,973.55
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SHEL.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:f3b4ec88d6f3a4543e48579b8f25a66ed64c4d92a7fe20112c67b17730099343
+CBOE Snapshot Option Rows: 1052
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -810,6 +903,9 @@ Max DTE Used: 180
 Contracts Used: 431
 Net Current GEX: 2,525,987.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APA.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:76338edc58072c030ea9a0101bcca2aa5b500f99b22a0081e752b7cd91ce6eff
+CBOE Snapshot Option Rows: 764
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -836,6 +932,9 @@ Max DTE Used: 180
 Contracts Used: 449
 Net Current GEX: 13,955,472.08
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/BP.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:8f5291d708acec10c47188a27c9ac64545385df463711aa610aaf4b7c6329708
+CBOE Snapshot Option Rows: 890
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -862,6 +961,9 @@ Max DTE Used: 180
 Contracts Used: 574
 Net Current GEX: 91,890,539.08
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XOM.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:239e8f9f0f76014c107271533817bac2e732a7705a6e91d6d3ec27b89d9164a1
+CBOE Snapshot Option Rows: 1272
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -888,6 +990,9 @@ Max DTE Used: 180
 Contracts Used: 225
 Net Current GEX: 5,268,049.96
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FANG.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:16ebcfe308269ac6fa8f057fb350e2fbc06f695afaf5d59dbf908b265e1b6747
+CBOE Snapshot Option Rows: 732
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -914,6 +1019,9 @@ Max DTE Used: 180
 Contracts Used: 81
 Net Current GEX: 3,135,961.88
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPLX.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:34d84340ae200ebe0dc83b29cab30a9d5abbe5245478717976599b4e04596b89
+CBOE Snapshot Option Rows: 178
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -940,6 +1048,9 @@ Max DTE Used: 180
 Contracts Used: 675
 Net Current GEX: 20,975,769.92
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/COP.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:23af4951696e8813ce71166bfac876e5c955ef8320c6cffcdef170eaf43bcb2f
+CBOE Snapshot Option Rows: 1474
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -966,6 +1077,9 @@ Max DTE Used: 180
 Contracts Used: 471
 Net Current GEX: -3,783,251.36
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPC.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:c2f0edc882b347e48486315c3f328dddea080383f79acdc4a4a7dc8a9dc004e8
+CBOE Snapshot Option Rows: 1138
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -992,6 +1106,9 @@ Max DTE Used: 180
 Contracts Used: 110
 Net Current GEX: 2,922,173.76
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PR.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:f098820375adfe5570215c9b8e1e7c86b1860bfc3f1436da2ca881215051f938
+CBOE Snapshot Option Rows: 330
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1018,6 +1135,9 @@ Max DTE Used: 180
 Contracts Used: 501
 Net Current GEX: 26,797,224.21
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LNG.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:75377c0106824a22a5886399b1d89f1d39396a5d955c25796a46ece6e676faa0
+CBOE Snapshot Option Rows: 1280
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1044,6 +1164,9 @@ Max DTE Used: 180
 Contracts Used: 1954
 Net Current GEX: 1,756,391,100.18
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/NVDA.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:12-04:00
+CBOE GEX Input Fingerprint: CBOE1:9bcef087f7b5d7d3efc4a517cf53eab3d423a6d8d5c6b3d0be0228bcad19ae88
+CBOE Snapshot Option Rows: 3830
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1070,6 +1193,9 @@ Max DTE Used: 180
 Contracts Used: 3382
 Net Current GEX: 452,051,076.09
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/AMD.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:d896b5d22719813ba24986fca8d363e02c651b76625245e3aba9692c8bd958c4
+CBOE Snapshot Option Rows: 6194
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1096,6 +1222,9 @@ Max DTE Used: 180
 Contracts Used: 5060
 Net Current GEX: 818,760,964.98
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MU.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:9cfbc3d51d3d7a538eccd2a8b8f8c71b5090f90bd43388e4710d42e15a948a5a
+CBOE Snapshot Option Rows: 10556
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1122,6 +1251,9 @@ Max DTE Used: 180
 Contracts Used: 5600
 Net Current GEX: 38,889,407.81
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SNDK.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:358d255bef1344aff1d0d813f04d714800b4f250fafa6484729d17028c81dbd5
+CBOE Snapshot Option Rows: 10976
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1148,6 +1280,9 @@ Max DTE Used: 180
 Contracts Used: 2003
 Net Current GEX: -2,492,172.34
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WDC.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:7dc8be9cd4d434168844658ae400b7f1e04e5593084bb957a2c55b37389d0313
+CBOE Snapshot Option Rows: 3590
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1174,6 +1309,9 @@ Max DTE Used: 180
 Contracts Used: 127
 Net Current GEX: 6,813,689.34
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WEAT.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:13-04:00
+CBOE GEX Input Fingerprint: CBOE1:a6236c9df16a97b11cf916ae48ec781ed0abb6c750f8edcfa796da22cdefd10b
+CBOE Snapshot Option Rows: 388
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1199,6 +1337,9 @@ Max DTE Used: 180
 Contracts Used: 2423
 Net Current GEX: -135,855,512.18
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GS.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:14-04:00
+CBOE GEX Input Fingerprint: CBOE1:5cfdc397c0a9d681f98e13c492cf1b00dd020d266f55a53ab98014f43672cd7c
+CBOE Snapshot Option Rows: 6792
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
@@ -1225,6 +1366,9 @@ Max DTE Used: 180
 Contracts Used: 1356
 Net Current GEX: 54,133,380.29
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/DRAM.json
+CBOE Snapshot Fetched: 2026-09-25T00:47:14-04:00
+CBOE GEX Input Fingerprint: CBOE1:fa61d470d4a317246ad0d7d83f96e98a0f5c2786cd763b51bc8e47c44ca9b1b6
+CBOE Snapshot Option Rows: 2574
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
