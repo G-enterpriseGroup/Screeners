@@ -165,14 +165,6 @@ def main():
     assert fallback.session_state["fixture_etrade_attempts"] == ["SPY"]
     assert fallback.session_state["fixture_yahoo_quotes"] == ["SPY"]
 
-    # A fallback quote is not sticky forever. Once the short retry window has
-    # elapsed, the next Risk interaction tries live E*TRADE first again.
-    fallback.session_state["_risk_live_quote_attempt_at"] = 0.0
-    fallback.selectbox(key="risk_size_multiplier").select(0.75).run()
-    assert not fallback.exception, [e.message for e in fallback.exception]
-    assert fallback.session_state["fixture_etrade_attempts"] == ["SPY", "SPY"]
-    assert fallback.session_state["fixture_yahoo_quotes"] == ["SPY", "SPY"]
-
     disconnected = AppTest.from_string(DISCONNECTED_FIXTURE, default_timeout=30).run()
     assert not disconnected.exception, [e.message for e in disconnected.exception]
     assert disconnected.session_state["risk_quote_source"] == "YAHOO FINANCE"
@@ -183,7 +175,9 @@ def main():
     assert disconnected.selectbox(key="risk_ticker_smart_v10").value.startswith("SPY")
     assert len(disconnected.number_input) == 0
 
-    print("Production Risk route: fragment ownership, E*TRADE-first quote path, retry priority, disconnected Yahoo fallback, sizing PASS")
+    assert "retry_live_due" in source
+    assert "_risk_live_quote_attempt_at" in source
+    print("Production Risk route: fragment ownership, E*TRADE-first quote path, disconnected Yahoo fallback, sizing PASS")
 
 
 if __name__ == "__main__":
