@@ -9,8 +9,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,767.18,0
-GFLIP,770.698,0
-CALLWALL,785,1633572291.81
+GFLIP,767.8912,0
+CALLWALL,800,883421243.38
 PUTWALL,760,-1181138315.77
 MAXCALLOI,800,271608
 MAXPUTOI,500,369368
@@ -35,8 +35,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,739.4087,0
-GFLIP,737.897,0
-CALLWALL,745,718082360.79
+GFLIP,738.6708,0
+CALLWALL,760,846852225.15
 PUTWALL,730,-1045845500.37
 MAXCALLOI,760,186010
 MAXPUTOI,660,308595
@@ -61,9 +61,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TQQQ.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,78.05,0
-GFLIP,73.6675,0
-CALLWALL,80,12429164.95
-PUTWALL,78,1783209.48
+GFLIP,73.1594,0
+CALLWALL,75,10332492.63
+PUTWALL,72,-3537697.34
 MAXCALLOI,75,55589
 MAXPUTOI,60,89953
 GEXPOS1,80,12429164.95
@@ -87,9 +87,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLC.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,113.99,0
-GFLIP,112.8827,0
-CALLWALL,114,1337780.15
-PUTWALL,115,-1239331.93
+GFLIP,111.9661,0
+CALLWALL,118,2004166.98
+PUTWALL,110,-1850365.51
 MAXCALLOI,118,4769
 MAXPUTOI,110,5540
 GEXPOS1,117,2388315.92
@@ -113,7 +113,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLY.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,110.32,0
-GFLIP,129.6029,0
+GFLIP,128.0572,0
 CALLWALL,120,4763191.43
 PUTWALL,107.5,-18057937.91
 MAXCALLOI,120,19686
@@ -139,9 +139,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLK.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,194.62,0
-GFLIP,186.8391,0
-CALLWALL,195,17352659.23
-PUTWALL,192,-1391674.69
+GFLIP,189.2425,0
+CALLWALL,200,11982394.09
+PUTWALL,175,-4078259.84
 MAXCALLOI,200,14786
 MAXPUTOI,135,49644
 GEXPOS1,195,17352659.23
@@ -165,7 +165,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLRE.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,41.65,0
-GFLIP,42.9178,0
+GFLIP,42.6176,0
 CALLWALL,45,324452.66
 PUTWALL,42,-421632.63
 MAXCALLOI,45,2612
@@ -191,8 +191,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLF.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,54.53,0
-GFLIP,57.6128,0
-CALLWALL,55,-22514568.06
+GFLIP,57.2572,0
+CALLWALL,75,7101302.55
 PUTWALL,56,-113183913.99
 MAXCALLOI,75,354829
 MAXPUTOI,56,339011
@@ -217,8 +217,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLB.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,49.68,0
-GFLIP,52.9242,0
-CALLWALL,50,-3050340.59
+GFLIP,52.0008,0
+CALLWALL,60,2696130.63
 PUTWALL,48,-13314348.45
 MAXCALLOI,60,47846
 MAXPUTOI,41,45988
@@ -243,9 +243,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLV.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,169.87,0
-GFLIP,164.8532,0
-CALLWALL,168,-3377685.91
-PUTWALL,168,-3377685.91
+GFLIP,164.3919,0
+CALLWALL,152,6113381.83
+PUTWALL,162,-9454873.88
 MAXCALLOI,152,20338
 MAXPUTOI,110,48160
 GEXPOS1,175,14145499.46
@@ -269,7 +269,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLU.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,39.36,0
-GFLIP,41.6232,0
+GFLIP,40.9508,0
 CALLWALL,44,5170683.26
 PUTWALL,40,-12292819.07
 MAXCALLOI,44,68678
@@ -295,9 +295,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLE.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,62.6,0
-GFLIP,63.0185,0
+GFLIP,63.4947,0
 CALLWALL,65,30455472.16
-PUTWALL,60,-2615858.12
+PUTWALL,63,-20495833.5
 MAXCALLOI,65,149333
 MAXPUTOI,55,164289
 GEXPOS1,65,30455472.16
@@ -321,7 +321,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLP.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,81.71,0
-GFLIP,91.0915,0
+GFLIP,88.9155,0
 CALLWALL,85,-401251.09
 PUTWALL,78,-34489402.59
 MAXCALLOI,85,12483
@@ -347,8 +347,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLI.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,168.83,0
-GFLIP,186.4093,0
-CALLWALL,180,902109.45
+GFLIP,183.8827,0
+CALLWALL,195,4371118.14
 PUTWALL,170,-50316067.52
 MAXCALLOI,195,18387
 MAXPUTOI,170,60030
@@ -373,9 +373,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MSFT.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,495.7753,0
-GFLIP,431.3615,0
-CALLWALL,500,81437734.32
-PUTWALL,500,81437734.32
+GFLIP,431.2736,0
+CALLWALL,625,83476563.91
+PUTWALL,490,-69329177.31
 MAXCALLOI,625,171028
 MAXPUTOI,350,46827
 GEXPOS1,510,222106308.2
@@ -399,7 +399,6 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SGOL.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,40.67,0
-GFLIP,38.7582,0
 CALLWALL,45,122850.18
 PUTWALL,40,-237416.22
 MAXCALLOI,45,1206
@@ -425,9 +424,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,152.18,0
-GFLIP,126.6146,0
+GFLIP,137.5094,0
 CALLWALL,155,2881527.77
-PUTWALL,150,564059.21
+PUTWALL,140,-303639.03
 MAXCALLOI,155,3094
 MAXPUTOI,140,1276
 GEXPOS1,155,2881527.77
@@ -451,7 +450,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,70.94,0
-GFLIP,76.6726,0
+GFLIP,76.3682,0
 CALLWALL,80,21538770.13
 PUTWALL,70,-40763840.33
 MAXCALLOI,80,182998
@@ -477,8 +476,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,82.94,0
-GFLIP,79.9135,0
-CALLWALL,85,2753742.38
+GFLIP,79.5909,0
+CALLWALL,80,1743600.23
 PUTWALL,65,-2906334.01
 MAXCALLOI,80,13431
 MAXPUTOI,65,53538
@@ -503,7 +502,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SOXX.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,564.1,0
-GFLIP,552.5157,0
+GFLIP,554.0316,0
 CALLWALL,600,29815497.26
 PUTWALL,500,-17573661.7
 MAXCALLOI,600,18646
@@ -529,8 +528,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SMH.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,600,0
-GFLIP,589.834,0
-CALLWALL,600,64641348
+GFLIP,583.773,0
+CALLWALL,700,24662052
 PUTWALL,570,-44186544
 MAXCALLOI,700,31882
 MAXPUTOI,440,123169
@@ -555,8 +554,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LMT.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,525.71,0
-GFLIP,535.5345,0
-CALLWALL,550,1824.05
+GFLIP,530.0239,0
+CALLWALL,700,819104.91
 PUTWALL,520,-4707289.13
 MAXCALLOI,700,2697
 MAXPUTOI,550,1963
@@ -581,9 +580,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MAGS.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,72.51,0
-GFLIP,63.8703,0
+GFLIP,63.3914,0
 CALLWALL,75,4751881.48
-PUTWALL,70,456182.77
+PUTWALL,73.5,-1259309.61
 MAXCALLOI,75,12042
 MAXPUTOI,70,9391
 GEXPOS1,75,4751881.48
@@ -607,9 +606,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/ET.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,20.3989,0
-GFLIP,16.7008,0
-CALLWALL,20,7677323.99
-PUTWALL,20,7677323.99
+GFLIP,16.436,0
+CALLWALL,22,8893663.48
+PUTWALL,19,-916110.48
 MAXCALLOI,22,148161
 MAXPUTOI,19,24082
 GEXPOS1,22,8893663.48
@@ -633,8 +632,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/HESM.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,38.47,0
-GFLIP,42.2491,0
-CALLWALL,40,194118.82
+GFLIP,41.8692,0
+CALLWALL,42,188225.4
 PUTWALL,36,-2436472.29
 MAXCALLOI,42,2081
 MAXPUTOI,36,19643
@@ -659,9 +658,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FLNG.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,31.38,0
-GFLIP,25.104,0
+GFLIP,24.5647,0
 CALLWALL,33,300671.41
-PUTWALL,32,96402.56
+PUTWALL,28,-45450.71
 MAXCALLOI,33,2396
 MAXPUTOI,28,934
 GEXPOS1,33,300671.41
@@ -685,8 +684,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WES.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,45.65,0
-GFLIP,38.7368,0
-CALLWALL,45,404200.73
+GFLIP,38.2592,0
+CALLWALL,50,442583.88
 PUTWALL,47,-243083.52
 MAXCALLOI,50,3829
 MAXPUTOI,47,1352
@@ -711,9 +710,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PAA.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,24.52,0
-GFLIP,19.616,0
-CALLWALL,25,1389914.82
-PUTWALL,25,1389914.82
+GFLIP,17.3799,0
+CALLWALL,35,276016.7
+PUTWALL,20,-54338.9
 MAXCALLOI,35,31881
 MAXPUTOI,25,7712
 GEXPOS1,24,1722352
@@ -737,9 +736,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TSM.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,450.1,0
-GFLIP,420.5575,0
-CALLWALL,450,58870732.3
-PUTWALL,420,-24427574.08
+GFLIP,420.7422,0
+CALLWALL,560,35293306.94
+PUTWALL,400,-29412828.01
 MAXCALLOI,560,63926
 MAXPUTOI,400,58805
 GEXPOS1,450,58870732.3
@@ -763,8 +762,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CRAK.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,64.16,0
-GFLIP,51.4229,0
-CALLWALL,65,91739.62
+GFLIP,67.9419,0
+CALLWALL,50,80063.56
 PUTWALL,60,-496745.73
 MAXCALLOI,50,1686
 MAXPUTOI,60,3197
@@ -789,9 +788,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SHEL.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,95.6,0
-GFLIP,76.48,0
-CALLWALL,95,5293252.27
-PUTWALL,95,5293252.27
+GFLIP,56.2951,0
+CALLWALL,85,1270908.42
+PUTWALL,92.5,-476884.49
 MAXCALLOI,85,13048
 MAXPUTOI,70,5192
 GEXPOS1,95,5293252.27
@@ -815,9 +814,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APA.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,43.78,0
-GFLIP,35.024,0
-CALLWALL,45,1047042.6
-PUTWALL,45,1047042.6
+GFLIP,13.818,0
+CALLWALL,20,50702.16
+PUTWALL,42,-330995.22
 MAXCALLOI,20,20889
 MAXPUTOI,40,6245
 GEXPOS1,45,1047042.6
@@ -841,9 +840,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/BP.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,44.41,0
-GFLIP,35.528,0
-CALLWALL,45,2854400.95
-PUTWALL,45,2854400.95
+GFLIP,32.5615,0
+CALLWALL,40,2621633.47
+PUTWALL,35,-123828.39
 MAXCALLOI,40,37966
 MAXPUTOI,44,14575
 GEXPOS1,45,2854400.95
@@ -867,8 +866,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XOM.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,162.14,0
-GFLIP,149.5632,0
-CALLWALL,170,28681084.83
+GFLIP,149.9309,0
+CALLWALL,180,20092071.1
 PUTWALL,145,-12552542.56
 MAXCALLOI,180,59117
 MAXPUTOI,145,52430
@@ -893,9 +892,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FANG.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,189.01,0
-GFLIP,162.0225,0
+GFLIP,159.2038,0
 CALLWALL,220,2103425.04
-PUTWALL,200,437507.09
+PUTWALL,180,-724498.54
 MAXCALLOI,220,7264
 MAXPUTOI,200,1828
 GEXPOS1,220,2103425.04
@@ -919,9 +918,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPLX.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,58.06,0
-GFLIP,54.0947,0
-CALLWALL,60,2389342.03
-PUTWALL,60,2389342.03
+GFLIP,53.2366,0
+CALLWALL,65,2082379.39
+PUTWALL,55,-1611304.08
 MAXCALLOI,65,17721
 MAXPUTOI,55,8880
 GEXPOS1,60,2389342.03
@@ -945,9 +944,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/COP.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,129.34,0
-GFLIP,107.6254,0
-CALLWALL,135,4774787.75
-PUTWALL,130,1892631.87
+GFLIP,106.5161,0
+CALLWALL,150,4656389.42
+PUTWALL,128,-568248.43
 MAXCALLOI,150,20565
 MAXPUTOI,120,10070
 GEXPOS1,135,4774787.75
@@ -962,28 +961,28 @@ GEXPOS8,155,1035734.7
 
 Ticker: MPC
 Mode: BARCHART_STYLE
-Spot: 390.95
+Spot: 389.61
 Max DTE Used: 180
 Contracts Used: 471
-Net Current GEX: -3,806,513.81
+Net Current GEX: -3,783,251.36
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPC.json
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
-SPOT,390.95,0
-GFLIP,416.4786,0
-CALLWALL,410,378681.1
-PUTWALL,350,-3007622.96
+SPOT,389.61,0
+GFLIP,414.8968,0
+CALLWALL,400,125368.28
+PUTWALL,350,-2987040.75
 MAXCALLOI,400,1757
 MAXPUTOI,350,6406
-GEXNEG1,350,-3007622.96
-GEXNEG2,340,-1420787.76
-GEXPOS3,450,976644.47
-GEXPOS4,440,895026.9
-GEXNEG5,390,-863602.6
-GEXNEG6,380,-810490.04
-GEXNEG7,360,-684380.19
-GEXNEG8,370,-634278.61
+GEXNEG1,350,-2987040.75
+GEXNEG2,340,-1411064.81
+GEXPOS3,450,969960.95
+GEXPOS4,440,888901.92
+GEXNEG5,390,-857692.67
+GEXNEG6,380,-804943.57
+GEXNEG7,360,-679696.73
+GEXNEG8,370,-629938.02
 
 
 Ticker: PR
@@ -997,9 +996,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PR.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,21.7052,0
-GFLIP,17.3642,0
+GFLIP,12.8038,0
 CALLWALL,25,1715849.76
-PUTWALL,23,539084.37
+PUTWALL,18,-25408.49
 MAXCALLOI,25,43098
 MAXPUTOI,10,4939
 GEXPOS1,25,1715849.76
@@ -1023,9 +1022,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LNG.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,277.5366,0
-GFLIP,222.0293,0
+GFLIP,203.898,0
 CALLWALL,280,6992602.46
-PUTWALL,270,488533.28
+PUTWALL,272.5,-713743.55
 MAXCALLOI,280,6020
 MAXPUTOI,260,2466
 GEXPOS1,280,6992602.46
@@ -1049,9 +1048,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/NVDA.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,223.844,0
-GFLIP,204.9665,0
-CALLWALL,230,384134740.85
-PUTWALL,220,49683501.1
+GFLIP,208.7633,0
+CALLWALL,200,20370930.32
+PUTWALL,205,-33739788.64
 MAXCALLOI,200,412883
 MAXPUTOI,200,361293
 GEXPOS1,230,384134740.85
@@ -1075,9 +1074,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/AMD.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,629.47,0
-GFLIP,515.5634,0
-CALLWALL,650,54025942.16
-PUTWALL,600,8635688.8
+GFLIP,530.6169,0
+CALLWALL,600,8635688.8
+PUTWALL,612.5,-23192913.54
 MAXCALLOI,600,35946
 MAXPUTOI,120,50380
 GEXPOS1,650,54025942.16
@@ -1101,9 +1100,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MU.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,1075.63,0
-GFLIP,872.2557,0
-CALLWALL,1100,158315459.89
-PUTWALL,1070,-4526568.15
+GFLIP,926.8422,0
+CALLWALL,1000,43103401.76
+PUTWALL,1040,-17839935.82
 MAXCALLOI,1000,43804
 MAXPUTOI,600,49148
 GEXPOS1,1100,158315459.89
@@ -1127,8 +1126,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SNDK.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,1753.42,0
-GFLIP,1617.4123,0
-CALLWALL,1800,21799612.47
+GFLIP,1745.8537,0
+CALLWALL,2000,22234036.73
 PUTWALL,1700,-18030912.8
 MAXCALLOI,2000,11813
 MAXPUTOI,250,13522
@@ -1153,9 +1152,9 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WDC.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,451.11,0
-GFLIP,445.7037,0
-CALLWALL,450,2726.9
-PUTWALL,460,-1873341.74
+GFLIP,451.5834,0
+CALLWALL,500,2618457.84
+PUTWALL,400,-2363349.95
 MAXCALLOI,500,5433
 MAXPUTOI,90,20063
 GEXPOS1,500,2618457.84
@@ -1179,9 +1178,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WEAT.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,25.57,0
-GFLIP,20.456,0
 CALLWALL,30,1641814.28
-PUTWALL,25,1395107.64
+PUTWALL,11,-19.61
 MAXCALLOI,30,41488
 MAXPUTOI,25,2937
 GEXPOS1,30,1641814.28
@@ -1205,7 +1203,7 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GS.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,923.0788,0
-GFLIP,973.3138,0
+GFLIP,955.1302,0
 CALLWALL,1000,5544704.21
 PUTWALL,920,-24153584.61
 MAXCALLOI,1000,5747
@@ -1231,8 +1229,8 @@ Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/DRAM.json
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
 ------------------------------------------------------------
 SPOT,60.72,0
-GFLIP,53.9691,0
-CALLWALL,60,8663923.47
+GFLIP,54.5485,0
+CALLWALL,122,1090477.27
 PUTWALL,55,-6030338.85
 MAXCALLOI,122,145582
 MAXPUTOI,50,98521
