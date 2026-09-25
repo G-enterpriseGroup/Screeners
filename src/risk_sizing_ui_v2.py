@@ -898,7 +898,7 @@ def _render_next_trade(
                     step=0.01,
                     format="%.2f",
                     key="risk_stop_price",
-                    help="The price where the trade thesis is invalidated. Risk/share = absolute Entry minus Stop. A wider stop means fewer shares for the same dollar-risk budget.",
+                    help="Click the value and scroll up/down to adjust by $0.01. The price where the trade thesis is invalidated. Risk/share = absolute Entry minus Stop. A wider stop means fewer shares for the same dollar-risk budget.",
                 )
             )
 
@@ -934,9 +934,9 @@ def _render_next_trade(
                     format="%.2f",
                     key="risk_liquid_balance",
                     help=(
-                        "Automatically syncs from E*TRADE's current cash balance. "
-                        f"Current cash source: {cash_source}. Cash/margin buying power is never used as actual cash. "
-                        "When live E*TRADE balance data is available, it overrides any older manually entered or cached value."
+                        "Automatically fills from E*TRADE cash available for investment. "
+                        f"Current cash source: {cash_source}. Margin buying power is never used as cash. "
+                        "You can edit this amount. Your edit stays until you refresh the Risk portfolio or change accounts."
                     ),
                 )
             )
