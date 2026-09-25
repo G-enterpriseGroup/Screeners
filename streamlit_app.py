@@ -10,7 +10,9 @@ be added without duplicating the existing analytics code.
 """
 
 from contextlib import contextmanager
+import importlib
 from pathlib import Path
+import time
 
 import streamlit as st
 
@@ -49,18 +51,37 @@ if _CORE_MARKER not in _CORE_SOURCE:
 _CORE_DEFINITIONS = _CORE_SOURCE.split(_CORE_MARKER, 1)[0]
 exec(compile(_CORE_DEFINITIONS, str(_CORE_PATH), "exec"), globals())
 
+
+def _import_etrade_data_cache():
+    """Retry the one import Streamlit Cloud can race during Git hot reload."""
+    module_name = "src.etrade_data_cache"
+    for attempt in range(3):
+        try:
+            return importlib.import_module(module_name)
+        except KeyError as exc:
+            # Streamlit's file watcher can remove a module from sys.modules
+            # while Python is finishing the same import during a code pull.
+            # Retry only that exact transient condition; all real import
+            # errors still surface normally.
+            if exc.args != (module_name,) or attempt == 2:
+                raise
+            importlib.invalidate_caches()
+            time.sleep(0.05 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
 from src.etrade_connection_ui_v2 import render_compact_etrade_connection
-from src.etrade_data_cache import (
-    CACHE_TTLS,
-    CachedETradeClient,
-    OfflineETradeClient,
-    _offline_get,
-    _offline_store,
-    cache_stats,
-    clear_session_cache,
-    offline_snapshot_available,
-    offline_snapshot_status,
-)
+
+_etrade_data_cache = _import_etrade_data_cache()
+CACHE_TTLS = _etrade_data_cache.CACHE_TTLS
+CachedETradeClient = _etrade_data_cache.CachedETradeClient
+OfflineETradeClient = _etrade_data_cache.OfflineETradeClient
+_offline_get = _etrade_data_cache._offline_get
+_offline_store = _etrade_data_cache._offline_store
+cache_stats = _etrade_data_cache.cache_stats
+clear_session_cache = _etrade_data_cache.clear_session_cache
+offline_snapshot_available = _etrade_data_cache.offline_snapshot_available
+offline_snapshot_status = _etrade_data_cache.offline_snapshot_status
 from src.gex_workspace_v2 import render_gex as render_gex_workspace
 from src.gex_workspace_v2 import (
     maybe_auto_refresh_on_login as maybe_auto_refresh_gex_on_login,
