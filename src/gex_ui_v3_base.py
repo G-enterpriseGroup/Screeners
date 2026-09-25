@@ -367,11 +367,25 @@ def _google_sheets_summary_text(result: dict[str, Any]) -> str:
         f"Contracts Used: {int(result.get('contractsUsed') or 0)}",
         f"Net Current GEX: {float(result.get('netCurrent') or 0.0):,.2f}",
         f"Source URL: {str(result.get('sourceUrl') or 'E*TRADE API /v1/market/optionchains')}",
-        "",
-        "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels",
-        "------------------------------------------------------------",
-        packed,
     ]
+    snapshot_fetched_at = str(result.get("snapshotFetchedAt") or "").strip()
+    snapshot_fingerprint = str(result.get("snapshotFingerprint") or "").strip()
+    if snapshot_fetched_at:
+        lines.append(f"CBOE Snapshot Fetched: {snapshot_fetched_at}")
+    if snapshot_fingerprint:
+        version = str(result.get("snapshotFingerprintVersion") or "CBOE1").strip()
+        lines.append(f"CBOE GEX Input Fingerprint: {version}:{snapshot_fingerprint}")
+        lines.append(
+            f"CBOE Snapshot Option Rows: {int(result.get('snapshotOptionCount') or 0)}"
+        )
+    lines.extend(
+        [
+            "",
+            "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels",
+            "------------------------------------------------------------",
+            packed,
+        ]
+    )
     # Apps Script summaryText deliberately ends with a newline.
     return "\n".join(lines) + "\n"
 

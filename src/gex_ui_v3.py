@@ -3,7 +3,7 @@
 OWNERSHIP / EDITING NOTES
 -------------------------
 EDIT THIS FILE FOR:
-- production GEX overview overlays, including IV Rank / valuation reference;
+- production GEX overview presentation, including source-specific snapshot metadata;
 - routing the stable GEX v3 renderer to the production GEX calculation adapter;
 - GEX Refresh All scheduler concurrency when the E*TRADE request-rate gate remains authoritative;
 - GEX Refresh All disconnected behavior that launches the existing E*TRADE authorization flow;
@@ -379,11 +379,25 @@ def _refresh_cboe_batch(
     return results, failures
 
 
+_CBOE_SNAPSHOT_CSS = """
+<style>
+.gexv3-snapshot-fp{
+    font-size:.61rem;
+    line-height:1.05;
+    margin-top:.10rem;
+    white-space:nowrap;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+}
+</style>
+"""
+
+
 def _decorate_cboe_overview_markup(
     markup: str,
     result_map: dict[str, Any],
 ) -> str:
-    """Match the E*TRADE Overview geometry without mixing E*TRADE IV into CBOE."""
+    """Match E*TRADE Overview geometry and expose the exact CBOE snapshot id."""
     if 'class="gexv3-summary"' not in markup:
         return markup
 
@@ -392,7 +406,7 @@ def _decorate_cboe_overview_markup(
             "<colgroup>"
             '<col style="width:12%"><col style="width:6%"><col style="width:10%">'
             '<col style="width:10%"><col style="width:10%"><col style="width:10%">'
-            '<col style="width:28%"><col style="width:14%">'
+            '<col style="width:27%"><col style="width:15%">'
             "</colgroup>"
         )
         markup = markup.replace(
@@ -405,11 +419,15 @@ def _decorate_cboe_overview_markup(
         inner = match.group(1)
         ticker_match = re.search(r'<td class="sym">([^<]+)</td>', inner)
         if ticker_match is None:
+            ticker_match = re.search(r'gexv3-symbol-text">([^<]+)</span>', inner)
+        if ticker_match is None:
             return match.group(0)
+
         ticker = html.unescape(ticker_match.group(1)).strip().upper()
         result = result_map.get(ticker)
         if not isinstance(result, dict):
             return match.group(0)
+
         status, tone = _proven._base._range_status(result)
         legacy = f'<td class="{tone}">{status}</td>'
         inner = inner.replace(
@@ -417,64 +435,34 @@ def _decorate_cboe_overview_markup(
             f'<td class="gexv3-range-col">{_proven._range_visual(result)}</td>',
             1,
         )
+
+        fetched = str(result.get("snapshotFetchedAt") or result.get("updated") or "").strip()
+        fingerprint = str(result.get("snapshotFingerprint") or "").strip().upper()
+        short_fingerprint = fingerprint[:12] if fingerprint else "N/A"
+        option_count = int(result.get("snapshotOptionCount") or 0)
+        visible_time = html.escape(_proven._base._short_updated(fetched))
+        title = html.escape(
+            " // ".join(
+                value
+                for value in (
+                    f"CBOE SNAPSHOT FETCHED {fetched}" if fetched else "",
+                    f"GEX INPUT FP CBOE1:{fingerprint}" if fingerprint else "",
+                    f"RAW OPTION ROWS {option_count:,}" if option_count else "",
+                )
+                if value
+            ),
+            quote=True,
+        )
+        snapshot_cell = (
+            f'<td title="{title}">{visible_time}'
+            f'<div class="gexv3-snapshot-fp">FP {short_fingerprint}</div></td>'
+        )
+        inner = re.sub(r"<td>[^<]*</td>\s*$", snapshot_cell, inner, count=1)
         return "<tr>" + inner + "</tr>"
 
     markup = re.sub(r"<tr>(.*?)</tr>", decorate_row, markup, flags=re.DOTALL)
     markup = _proven._inject_row_trash(markup)
-
-    cboe_help = (
-        '<span class="gexv3-iv-help" tabindex="0" '
-        'aria-label="CBOE source note">?'
-        '<span class="gexv3-iv-help-tip"><b>CBOE SOURCE VIEW</b><br>'
-        'GEX levels in this tab come only from CBOE delayed options. '
-        'E*TRADE IV Rank / IV-HV is intentionally not mixed into this source view.'
-        '</span></span>'
-    )
-    header = '<th class="gexv3-iv-head">IV RANK / REF ' + cboe_help + "</th>"
-    markup = markup.replace(
-        "<th>CALL WALL</th><th>RANGE</th>",
-        "<th>CALL WALL</th>" + header + "<th>RANGE</th>",
-        1,
-    )
-    new_colgroup = (
-        "<colgroup>"
-        '<col style="width:11%"><col style="width:5%"><col style="width:9%">'
-        '<col style="width:9%"><col style="width:9%"><col style="width:9%">'
-        '<col style="width:16%"><col style="width:23%"><col style="width:9%">'
-        "</colgroup>"
-    )
-    markup = re.sub(
-        r"<colgroup>.*?</colgroup>",
-        new_colgroup,
-        markup,
-        count=1,
-        flags=re.DOTALL,
-    )
-
-    def add_source_cell(match: re.Match[str]) -> str:
-        inner = match.group(1)
-        ticker_match = re.search(r'gexv3-symbol-text">([^<]+)</span>', inner)
-        if ticker_match is None:
-            return match.group(0)
-        ticker = html.unescape(ticker_match.group(1)).strip().upper()
-        result = result_map.get(ticker)
-        source_cell = (
-            '<td class="orange" title="CBOE GEX source only; E*TRADE IV Rank is not mixed here.">'
-            '<div class="gexv3-iv-cell-main">CBOE GEX</div>'
-            '<div class="gexv3-iv-cell-sub">IV REF N/A</div>'
-            "</td>"
-        )
-        if isinstance(result, dict):
-            marker = '<td class="gexv3-range-col">'
-        else:
-            marker = '<td class="orange">REFRESH</td>'
-        if marker in inner:
-            inner = inner.replace(marker, source_cell + marker, 1)
-        return "<tr>" + inner + "</tr>"
-
-    markup = re.sub(r"<tr>(.*?)</tr>", add_source_cell, markup, flags=re.DOTALL)
-    return _IV_REFERENCE_CSS + markup
-
+    return _CBOE_SNAPSHOT_CSS + markup
 
 def _render_txt_control(source_label: str, url: str) -> None:
     """Render one compact raw TXT button in the shared Add Tickers control row."""
@@ -592,181 +580,6 @@ def _render_cboe_overview(
             for ticker in tickers:
                 if ticker in failures:
                     st.caption(f"{ticker} // {failures[ticker]}")
-
-
-# ==============================
-# IV RANK / IV-HV OVERVIEW OVERLAY
-# ==============================
-_IV_REFERENCE_HELP_HTML = """
-<span class="gexv3-iv-help" tabindex="0" aria-label="How IV Rank and IV/HV are calculated">?
-  <span class="gexv3-iv-help-tip">
-    <b>IV RANK</b><br>
-    Where today's 30-day implied volatility sits inside its own 52-week range.<br>
-    <b>Formula:</b> (Current IV − 52W Low IV) ÷ (52W High IV − 52W Low IV) × 100.<br>
-    <b>Current IV:</b> standardized 30-day IV from E*TRADE OptionGreeks.iv.
-    For each expiry around 30 DTE, the 4 strikes nearest spot are weighted by
-    E*TRADE Vega on calls and puts; those expiry IVs are interpolated by √DTE
-    to 30 days, then call/put are averaged.<br>
-    <b>52W Low / High IV:</b> lowest / highest standardized 30-day IV saved during
-    the trailing 365 days.<br>
-    <b>P:</b> provisional IV Rank while the terminal is still building roughly one year
-    of standardized E*TRADE IV history.<br><br>
-    <b>IV/HV REFERENCE</b><br>
-    Compares forward-looking option IV with the stock's latest 30-day historical movement.<br>
-    <b>Formula:</b> IV/HV % = Current 30D IV ÷ 30D HV × 100.<br>
-    <b>HV30:</b> 30 daily log returns ln(Pt/Pt−1), sample standard deviation using n−1,
-    annualized by × √252 from licensed Tiingo adjusted daily closes.<br>
-    <b>Pt:</b> adjusted close on day t. <b>n:</b> 30 daily returns.
-    <b>252:</b> trading days used for annualization.<br>
-    <b>RICH:</b> IV/HV &gt; 100%. <b>CHEAP:</b> IV/HV &lt; 100%.
-    <b>FAIR:</b> IV/HV = 100%. This is a relative volatility comparison, not proof
-    that an option is mispriced.<br>
-    <b>HV N/A:</b> an authorized historical-price token is not configured, history is
-    insufficient, or the historical-price request failed. No value is fabricated.
-  </span>
-</span>
-"""
-
-_IV_REFERENCE_CSS = """
-<style>
-.gexv3-summary th.gexv3-iv-head{position:relative;overflow:visible!important}
-.gexv3-iv-help{
-    display:inline-flex;align-items:center;justify-content:center;
-    width:1.05rem;height:1.05rem;margin-left:.22rem;
-    border:1px solid #fb8b1e;border-radius:50%;
-    color:#fb8b1e!important;background:#020202;
-    font:900 .64rem/1 "Courier New",monospace;
-    cursor:help;position:relative;vertical-align:middle;outline:none;
-}
-.gexv3-iv-help-tip{
-    position:absolute;right:-.35rem;top:calc(100% + .48rem);
-    width:min(42rem,78vw);padding:.62rem .72rem;
-    border:1px solid #fb8b1e;background:#030303;
-    color:#eeeeee!important;-webkit-text-fill-color:#eeeeee!important;
-    box-shadow:0 8px 28px rgba(0,0,0,.78);
-    font:700 .68rem/1.38 "Courier New",monospace;
-    letter-spacing:0;text-align:left;white-space:normal;
-    opacity:0;visibility:hidden;pointer-events:none;
-    transform:translateY(-3px);transition:opacity .10s ease,transform .10s ease;
-    z-index:9999;
-}
-.gexv3-iv-help-tip b{color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important}
-.gexv3-iv-help:hover .gexv3-iv-help-tip,
-.gexv3-iv-help:focus-visible .gexv3-iv-help-tip{
-    opacity:1;visibility:visible;transform:translateY(0);
-}
-.gexv3-iv-help:focus-visible{box-shadow:0 0 0 2px rgba(74,246,195,.34)}
-.gexv3-iv-cell-main{font-weight:900;line-height:1.05}
-.gexv3-iv-cell-sub{font-size:.61rem;line-height:1.05;margin-top:.12rem;white-space:nowrap}
-</style>
-"""
-
-
-def _inject_iv_rank_column(markup: str, vault_key: str) -> str:
-    """Add compact IV Rank + IV/HV reference without touching Pine/A6 output."""
-    if 'class="gexv3-summary"' not in markup or "gexv3-iv-help" in markup:
-        return markup
-
-    header = (
-        '<th class="gexv3-iv-head">IV RANK / REF '
-        + _IV_REFERENCE_HELP_HTML
-        + "</th>"
-    )
-    markup = markup.replace(
-        "<th>CALL WALL</th><th>RANGE</th>",
-        "<th>CALL WALL</th>" + header + "<th>RANGE</th>",
-        1,
-    )
-    new_colgroup = (
-        "<colgroup>"
-        '<col style="width:11%"><col style="width:5%"><col style="width:9%">'
-        '<col style="width:9%"><col style="width:9%"><col style="width:9%">'
-        '<col style="width:16%"><col style="width:23%"><col style="width:9%">'
-        "</colgroup>"
-    )
-    markup = re.sub(
-        r"<colgroup>.*?</colgroup>",
-        new_colgroup,
-        markup,
-        count=1,
-        flags=re.DOTALL,
-    )
-
-    result_map = _core._results(str(vault_key or "default"))
-
-    def add_cell(match: re.Match[str]) -> str:
-        inner = match.group(1)
-        ticker_match = re.search(r'gexv3-symbol-text">([^<]+)</span>', inner)
-        if ticker_match is None:
-            return match.group(0)
-        ticker = html.unescape(ticker_match.group(1)).strip().upper()
-        result = result_map.get(ticker)
-        if not isinstance(result, dict):
-            iv_cell = '<td class="orange">N/A | Refresh</td>'
-            marker = '<td class="orange">REFRESH</td>'
-            if marker in inner:
-                inner = inner.replace(marker, iv_cell + marker, 1)
-            return "<tr>" + inner + "</tr>"
-
-        display = html.escape(str(result.get("ivRankDisplay") or "N/A | Building"))
-        rank_tone = str(result.get("ivRankTone") or "orange")
-        if rank_tone not in {"green", "red", "orange"}:
-            rank_tone = "orange"
-
-        try:
-            iv_hv_percent = float(result.get("ivHvPercent"))
-        except (TypeError, ValueError):
-            iv_hv_percent = 0.0
-        iv_hv_label = str(result.get("ivHvLabel") or "HV N/A").strip().upper()
-        tone = str(result.get("ivHvTone") or rank_tone)
-        if tone not in {"green", "red", "orange"}:
-            tone = "orange"
-
-        if iv_hv_percent > 0:
-            ref_display = f"IV/HV {iv_hv_percent:.1f}% | {iv_hv_label}"
-        else:
-            ref_display = "IV/HV N/A"
-
-        tooltip_parts = ["IV SOURCE E*TRADE OptionGreeks.iv + Vega"]
-        try:
-            current_iv = float(result.get("ivRankCurrentIv"))
-        except (TypeError, ValueError):
-            current_iv = 0.0
-        try:
-            historical_vol = float(result.get("historicalVolatility30"))
-        except (TypeError, ValueError):
-            historical_vol = 0.0
-        if current_iv > 0:
-            tooltip_parts.append(f"30D IV {current_iv * 100.0:.2f}%")
-        if historical_vol > 0:
-            tooltip_parts.append(f"30D HV {historical_vol * 100.0:.2f}%")
-        history_count = int(result.get("ivRankHistoryCount") or 0)
-        if history_count:
-            tooltip_parts.append(f"IVR HISTORY {history_count} DAYS")
-        hv_as_of = str(result.get("historicalVolatilityAsOf") or "").strip()
-        if hv_as_of:
-            tooltip_parts.append(f"HV CLOSES THROUGH {hv_as_of}")
-        hv_status = str(result.get("historicalVolatilityStatus") or "").strip()
-        if hv_status and historical_vol <= 0:
-            tooltip_parts.append(f"HV STATUS {hv_status}")
-        iv_expiry = str(result.get("ivExpiry") or "").strip()
-        if iv_expiry:
-            tooltip_parts.append(f"IV EXPIRY BRACKET {iv_expiry}")
-        tooltip_parts.append(str(result.get("ivMethod") or "E*TRADE IV").strip())
-        tooltip = html.escape(" // ".join(tooltip_parts), quote=True)
-        iv_cell = (
-            f'<td class="{tone}" title="{tooltip}">'
-            f'<div class="gexv3-iv-cell-main">{display}</div>'
-            f'<div class="gexv3-iv-cell-sub">{html.escape(ref_display)}</div>'
-            "</td>"
-        )
-        marker = '<td class="gexv3-range-col">'
-        if marker in inner:
-            inner = inner.replace(marker, iv_cell + marker, 1)
-        return "<tr>" + inner + "</tr>"
-
-    markup = re.sub(r"<tr>(.*?)</tr>", add_cell, markup, flags=re.DOTALL)
-    return _IV_REFERENCE_CSS + markup
 
 
 # ==============================
@@ -1266,7 +1079,7 @@ def render_gex(
     login_marker: str = "",
     connect_etrade: Callable[[], bool] | None = None,
 ) -> None:
-    """Render the proven GEX workspace with calculation parity + IV Rank."""
+    """Render the proven GEX workspace with source-isolated calculation parity."""
     vault_key = str(vault_key or "default")
     st.html('<style>.gexv3-summary a.gexv3-dte-edit {color:#fb8b1e!important;text-decoration:underline dotted!important;cursor:pointer;font:inherit;}</style>')
     if "gex_dte" in st.query_params:
@@ -1307,9 +1120,9 @@ def render_gex(
             state.setdefault("iv_history", {}).pop(normalized, None)
         return original_remove(key, state, result_map, ticker)
 
-    def decorate_with_iv_rank(markup: str, key: str) -> str:
-        decorated = original_decorate(markup, key)
-        return _inject_iv_rank_column(decorated, key)
+    def decorate_without_iv_rank(markup: str, key: str) -> str:
+        """Keep the proven range/ticker decoration without the removed IV column."""
+        return original_decorate(markup, key)
 
     def render_overview_with_login_refresh(
         overview_client: Any,
@@ -1418,7 +1231,7 @@ def render_gex(
     _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
     _proven._base._render_settings = render_settings_with_auto_refresh
-    _proven._decorate_overview = decorate_with_iv_rank
+    _proven._decorate_overview = decorate_without_iv_rank
     _proven._render_tradingview_pine = render_tradingview_with_sources
     _proven._render_background_status = _render_background_status_live
     st.button = refresh_all_connect_button
