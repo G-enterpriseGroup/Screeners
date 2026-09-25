@@ -405,8 +405,9 @@ def main():
             and dom.select_one(".rs9-label").text == label
         )
     )
-    assert liquid_metric("MAX SHARES") == "5"
-    assert liquid_metric("POSITION NOTIONAL") == "$1,000.00"
+    assert liquid_metric("MAX SHARES") == "10"
+    assert liquid_metric("POSITION NOTIONAL") == "$2,000.00"
+    assert liquid_app.number_input(key="risk_liquid_balance").value == 2000.0
     assert len(liquid_app.segmented_control) == 1
     assert liquid_app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
 
