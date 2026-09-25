@@ -100,7 +100,7 @@ def _number(section: dict[str, Any], key: str) -> float | None:
 
 
 def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, float | None]]:
-    """Select actual E*TRADE cash balance, never margin or margin-derived buying power."""
+    """Select investment cash, never substitute margin buying power."""
     computed = _section(payload, "Computed", "ComputedBalance", "computedBalance")
     cash_section = _section(payload, "Cash", "cash")
     fields = {
@@ -109,8 +109,8 @@ def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, fl
         "moneyMktBalance": _number(cash_section, "moneyMktBalance"),
         "settledCashForInvestment": _number(computed, "settledCashForInvestment"),
         "unSettledCashForInvestment": _number(computed, "unSettledCashForInvestment"),
-        # Diagnostics only. These are intentionally never eligible as actual cash.
         "cashAvailableForInvestment": _number(computed, "cashAvailableForInvestment"),
+        # Buying-power fields are diagnostics only, never cash fallbacks.
         "cashBuyingPower": _number(computed, "cashBuyingPower"),
         "marginBuyingPower": _number(computed, "marginBuyingPower"),
         "dtCashBuyingPower": _number(computed, "dtCashBuyingPower"),
@@ -121,17 +121,9 @@ def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, fl
         if fields[key] is None:
             fields[key] = find_number(payload, key)
 
-    # E*TRADE defines cashBalance as the current cash balance. If it is present,
-    # respect the exact value, including zero or a negative margin-debit cash balance.
-    cash_balance = fields.get("cashBalance")
-    if cash_balance is not None:
-        return float(cash_balance), "cashBalance", fields
-
-    priority = ("netCash", "moneyMktBalance", "settledCashForInvestment")
-    for key in priority:
-        value = fields.get(key)
-        if value is not None and abs(float(value)) >= 0.005:
-            return float(value), key, fields
+    # A returned zero/negative cash field is authoritative; do not skip it.
+    priority = ("cashAvailableForInvestment", "cashBalance", "netCash",
+                "moneyMktBalance", "settledCashForInvestment")
     for key in priority:
         value = fields.get(key)
         if value is not None:
@@ -483,6 +475,36 @@ def _full_width_ticker_columns(original_columns, original_container, original_em
     return wrapped
 
 
+# ==============================
+# FOCUSED STOP LOSS MOUSE WHEEL
+# ==============================
+_STOP_WHEEL_SCRIPT = """
+<script>
+(() => {
+    // One listener across fragment reruns; only the focused Risk stop can act.
+    if (window.__riskStopWheel) {
+        document.removeEventListener("wheel", window.__riskStopWheel, true);
+    }
+    window.__riskStopWheel = (event) => {
+        const input = event.target.closest?.(".st-key-risk_stop_price input");
+        if (!input || document.activeElement !== input || input.disabled
+                || event.ctrlKey || event.metaKey || !event.deltaY) return;
+        const widget = input.closest('[data-testid="stNumberInput"]');
+        const direction = event.deltaY < 0 ? "Increment" : "Decrement";
+        const button = widget?.querySelector(`button[aria-label="${direction}"]`);
+        if (!button) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        // Use the widget's own step/limits and normal Streamlit commit path.
+        if (!button.disabled) button.click();
+    };
+    document.addEventListener("wheel", window.__riskStopWheel,
+        {capture: true, passive: false});
+})();
+</script>
+"""
+
+
 def _single_stop_number_input(original_number_input):
     rendered = False
 
@@ -512,7 +534,8 @@ def _single_stop_number_input(original_number_input):
         st.html(
             '<div class="risk-v9-stop-row">'
             f'<span class="risk-v9-stop-pct" style="color:{color}!important;">{arrow} {html.escape(text)}</span>'
-            '</div>',
+            '</div>' + _STOP_WHEEL_SCRIPT,
+            unsafe_allow_javascript=True,
         )
         return value
     return wrapped
@@ -549,20 +572,31 @@ def render_risk_sizing(
         kwargs["column_config"] = comma_column_config(data, kwargs.get("column_config"))
         return base_dataframe(data, *args, **kwargs)
 
+    balance_account_key = ""
+
     def cash_only_snapshot(payload: dict[str, Any]) -> tuple[float, float, float]:
         total, _, market_value = balance_snapshot(payload)
         cash, source, fields = _select_true_cash(payload)
         live_cash = max(0.0, float(cash or 0.0))
 
-        # The broker is authoritative whenever a balance payload is available.
-        # This deliberately overwrites any older browser/manual value so a stale
-        # entered amount cannot survive after E*TRADE cash has been loaded.
-        st.session_state["risk_liquid_balance"] = live_cash
+        # Follow broker updates until the user edits the amount. Keep that edit
+        # through reruns; explicit portfolio refresh/account change reseeds it.
+        context = (balance_account_key, source)
+        previous = st.session_state.get("_risk_liquid_broker_seed")
+        current = st.session_state.get("risk_liquid_balance")
+        if source != "NO CASH FIELD RETURNED":
+            if (previous is None or previous[0] != context
+                    or current == previous[1]
+                    or st.session_state.get("risk_refresh_portfolio", False)):
+                st.session_state["risk_liquid_balance"] = live_cash
+            st.session_state["_risk_liquid_broker_seed"] = (context, live_cash)
         st.session_state["_risk_true_cash_source"] = source
         st.session_state["_risk_true_cash_fields"] = fields
         return float(total or 0.0), live_cash, float(market_value or 0.0)
 
     def risk_account_balance(client_arg, account_arg, refresh=False):
+        nonlocal balance_account_key
+        balance_account_key = str(account_arg.get("accountIdKey", ""))
         # Bypass terminal_core's session-level balance dictionary on every Risk
         # render. CachedETradeClient still applies its 30-second balance TTL, so
         # this stays fresh without hitting E*TRADE on every widget interaction.

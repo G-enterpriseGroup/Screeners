@@ -24,15 +24,15 @@ class FixtureClient:
             ('SGOL','ETF',10000,-500,-5),('SGOL','ETF',5000,-250,-5),('SPY','ETF',20000,800,8),('337158EJ4','BOND',58000,-7.38,-.01),('NVDA','EQ',1125,25,2.3),('QQQ','ETF',-437,-62,-16.7)]]
     def get_quote(self,symbol):
         st.session_state.setdefault("fixture_quotes", []).append(symbol)
-        return dict(symbol=symbol,companyName=company_name(symbol),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
+        return dict(symbol=symbol,companyName=("State Street SPDR S&P 500 ETF Trust" if symbol == "SPY" else company_name(symbol)),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
     def lookup(self,*a,**k): return {}
 st.session_state['etrade_accounts']=[{'accountIdKey':'fixture','accountName':'Synthetic test portfolio'}]
 def fixture_balance(client, account, refresh=False):
     st.session_state.setdefault("fixture_balance_refreshes", []).append(bool(refresh))
     return {
         'Computed':{
-            'cashAvailableForInvestment':100000,
-            'cashBalance':2000,
+            'cashAvailableForInvestment':2000,
+            'cashBalance':9000,
             'netCash':2000,
             'cashBuyingPower':100000,
             'marginBuyingPower':25000,
@@ -283,7 +283,7 @@ def main():
     assert "st.rerun" not in v9_source
     assert "st.rerun" not in v2_source
     assert "The quote loads automatically from live E*TRADE first" in v2_source
-    assert "Cash/margin buying power is never used as actual cash." in v2_source
+    assert "Margin buying power is never used as cash." in v2_source
     assert 'st.segmented_control(' in v2_source
     assert 'st.toggle(' not in v2_source
     assert '"USE LIQUID BALANCE ENTERED"' in v2_source
@@ -331,17 +331,17 @@ def main():
         }
     }
     selected_cash, selected_source, cash_fields = _select_true_cash(margin_payload)
-    assert selected_cash == 9876.54
-    assert selected_source == "cashBalance"
+    assert selected_cash == 100000.00
+    assert selected_source == "cashAvailableForInvestment"
     assert cash_fields["cashAvailableForInvestment"] == 100000.00
     assert cash_fields["marginBuyingPower"] == 50000.00
     zero_cash, zero_source, _ = _select_true_cash(
-        {"Computed": {"cashAvailableForInvestment": 100000.0, "cashBalance": 0.0, "marginBuyingPower": 40000.0}}
+        {"Computed": {"cashAvailableForInvestment": 0.0, "cashBalance": 9000.0, "marginBuyingPower": 40000.0}}
     )
     assert zero_cash == 0.0
-    assert zero_source == "cashBalance"
+    assert zero_source == "cashAvailableForInvestment"
     fallback_cash, fallback_source, _ = _select_true_cash(
-        {"Computed": {"netCash": 4321.0, "cashAvailableForInvestment": 90000.0, "marginBuyingPower": 50000.0}}
+        {"Computed": {"netCash": 4321.0, "marginBuyingPower": 50000.0}}
     )
     assert fallback_cash == 4321.0
     assert fallback_source == "netCash"
@@ -358,8 +358,8 @@ def main():
     assert metric("CURRENT TACTICAL") == "$16,562.00"
     assert metric("MAX SHARES") == "10"
     assert app.number_input(key="risk_liquid_balance").value == 2000.0
-    assert app.session_state["_risk_true_cash_source"] == "cashBalance"
-    assert app.session_state["_risk_true_cash_fields"]["cashAvailableForInvestment"] == 100000.0
+    assert app.session_state["_risk_true_cash_source"] == "cashAvailableForInvestment"
+    assert app.session_state["_risk_true_cash_fields"]["cashAvailableForInvestment"] == 2000.0
     assert app.session_state["_risk_true_cash_fields"]["marginBuyingPower"] == 25000.0
     assert app.session_state["fixture_balance_refreshes"]
     assert all(app.session_state["fixture_balance_refreshes"])
@@ -444,8 +444,35 @@ def main():
     stale_liquid = AppTest.from_string(STALE_LIQUID_FIXTURE, default_timeout=30).run()
     assert not stale_liquid.exception, [e.message for e in stale_liquid.exception]
     assert stale_liquid.number_input(key="risk_liquid_balance").value == 2000.0
-    assert stale_liquid.session_state["_risk_true_cash_source"] == "cashBalance"
+    assert stale_liquid.session_state["_risk_true_cash_source"] == "cashAvailableForInvestment"
     assert all(stale_liquid.session_state["fixture_balance_refreshes"])
+
+    manual = AppTest.from_string(FIXTURE, default_timeout=30).run()
+    manual.number_input(key="risk_liquid_balance").set_value(1234.0).run()
+    manual.number_input(key="risk_stop_price").set_value(185.0).run()
+    assert not manual.exception
+    assert manual.number_input(key="risk_liquid_balance").value == 1234.0
+    manual.button(key="risk_refresh_portfolio").click().run()
+    assert not manual.exception
+    assert manual.number_input(key="risk_liquid_balance").value == 2000.0
+    dynamic_fixture = FIXTURE.replace(
+        "'cashAvailableForInvestment':2000",
+        "'cashAvailableForInvestment':st.session_state.get('fixture_cash', 2000)",
+    ).replace("'accountIdKey':'fixture'", "'accountIdKey':st.session_state.get('fixture_account', 'fixture')")
+    dynamic = AppTest.from_string(dynamic_fixture, default_timeout=30).run()
+    dynamic.session_state['fixture_cash'] = 3000.0
+    dynamic.run()
+    assert dynamic.number_input(key="risk_liquid_balance").value == 3000.0
+    dynamic.number_input(key="risk_liquid_balance").set_value(1234.0).run()
+    dynamic.session_state['fixture_cash'] = 4000.0
+    dynamic.run()
+    assert dynamic.number_input(key="risk_liquid_balance").value == 1234.0
+    dynamic.session_state['fixture_account'] = 'second-account'
+    dynamic.run()
+    assert not dynamic.exception
+    assert dynamic.number_input(key="risk_liquid_balance").value == 4000.0
+    assert _select_true_cash({"Computed": {"marginBuyingPower": 50000}})[0] == 0
+    assert _select_true_cash({"Computed": {"cashAvailableForInvestment": -20, "cashBalance": 9000}})[0] == -20
 
     fallback = AppTest.from_string(FALLBACK_FIXTURE, default_timeout=30).run()
     assert not fallback.exception, [e.message for e in fallback.exception]
