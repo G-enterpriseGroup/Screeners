@@ -4,6 +4,8 @@ Only broker responses and the unrelated sector enrichment are stubbed.
 """
 from pathlib import Path
 import sys
+
+from bs4 import BeautifulSoup
 from streamlit.testing.v1 import AppTest
 
 from src.risk_sizing import stock_position_size
