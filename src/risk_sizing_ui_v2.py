@@ -934,9 +934,9 @@ def _render_next_trade(
                     format="%.2f",
                     key="risk_liquid_balance",
                     help=(
-                        "Automatically syncs from E*TRADE cash available for investment when live balance data changes. "
-                        f"Current cash source: {cash_source}. Margin buying power is never used. "
-                        "You can temporarily override the value; a newer E*TRADE cash value will replace it automatically."
+                        "Automatically syncs from E*TRADE's current cash balance. "
+                        f"Current cash source: {cash_source}. Cash/margin buying power is never used as actual cash. "
+                        "When live E*TRADE balance data is available, it overrides any older manually entered or cached value."
                     ),
                 )
             )
