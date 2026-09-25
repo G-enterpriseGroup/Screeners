@@ -1587,6 +1587,15 @@ def render_risk_sizing(
                 touch_session=touch_session,
             )
 
+    _persist_risk_book_snapshot(
+        account_key=account_key,
+        account_name=account_name,
+        normalized=normalized,
+        account_total=account_total,
+        cash_available=cash_available,
+        portfolio_saved_at=portfolio_saved_at or time.time(),
+    )
+
     st.caption(
         "Hover ? for formulas. Stock risk = shares × stop distance; spread risk = maximum loss."
     )
