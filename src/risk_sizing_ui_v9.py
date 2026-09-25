@@ -182,7 +182,7 @@ def _compact_metric_box(container, label, value, tone="neutral", detail="", help
 
 
 def _render_css() -> None:
-    st.markdown(
+    st.html(
         """
         <style>
         /* Stack only this two-pane workspace when readable columns cannot fit. */
@@ -355,8 +355,7 @@ def _render_css() -> None:
             -webkit-text-fill-color:#000!important;
         }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
