@@ -1,11 +1,13 @@
 """Seamless production Risk Sizing UI for Raj's Terminal.
 
 The v2 renderer remains the sizing/classification math source of truth. This
-module owns the production interaction layer for Part 2:
-- searchable SYMBOL — COMPANY NAME selector
-- selecting a ticker automatically loads its E*TRADE quote
+module owns the shared Risk presentation/card layer and legacy Part 2 wrappers.
+Current production v10 overrides the ticker wrapper so Risk uses:
+- a native editable ticker symbol input
+- a separate read-only Company / ETF display box
+- automatic E*TRADE-first quote loading with Yahoo fallback
 - no manual PULL E*TRADE QUOTE button
-- ASK seeds Entry and a 5%-below-ASK Stop once per selected symbol
+- ASK-seeded Entry and a 5%-below-ASK Stop
 - exactly one live stop-distance badge
 - compact dropdown controls, clear +/- steppers, and content-height number cards
 
@@ -398,6 +400,7 @@ def _compact_warning(original_warning):
 
 
 def _auto_quote_ticker_input(original_text_input, original_selectbox, *, client, touch_session):
+    """Legacy v9 selector fallback; production v10 replaces this ticker wrapper."""
     def wrapped(label, *args, **kwargs):
         if kwargs.get("key") != "risk_ticker":
             return original_text_input(label, *args, **kwargs)
