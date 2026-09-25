@@ -146,8 +146,13 @@ def crown_risk_budget(
     }
 
 
-def stock_position_size(entry_price: float, stop_price: float, risk_budget: float) -> dict[str, float | int]:
-    """Work backward from a stock/ETF stop without exceeding the risk budget."""
+def stock_position_size(
+    entry_price: float,
+    stop_price: float,
+    risk_budget: float,
+    capital_limit: float | None = None,
+) -> dict[str, float | int | bool | None]:
+    """Work backward from a stock/ETF stop without exceeding risk or capital."""
     entry = float(entry_price)
     stop = float(stop_price)
     budget = max(0.0, float(risk_budget))
@@ -159,7 +164,18 @@ def stock_position_size(entry_price: float, stop_price: float, risk_budget: floa
         raise ValueError("Entry and stop must be different prices.")
 
     raw_shares = budget / risk_per_share if risk_per_share else 0.0
-    shares = max(0, int(math.floor(raw_shares)))
+    risk_limited_shares = max(0, int(math.floor(raw_shares)))
+    capital_budget = (
+        None
+        if capital_limit is None
+        else max(0.0, _number(capital_limit, 0.0))
+    )
+    capital_limited_shares = (
+        risk_limited_shares
+        if capital_budget is None
+        else max(0, int(math.floor(capital_budget / entry)))
+    )
+    shares = min(risk_limited_shares, capital_limited_shares)
     actual_risk = shares * risk_per_share
     notional = shares * entry
 
@@ -168,6 +184,13 @@ def stock_position_size(entry_price: float, stop_price: float, risk_budget: floa
         "stop": stop,
         "risk_per_share": risk_per_share,
         "raw_shares": raw_shares,
+        "risk_limited_shares": risk_limited_shares,
+        "capital_limited_shares": capital_limited_shares,
+        "capital_limit": capital_budget,
+        "capital_limited": (
+            capital_budget is not None
+            and capital_limited_shares < risk_limited_shares
+        ),
         "shares": shares,
         "actual_risk": actual_risk,
         "notional": notional,

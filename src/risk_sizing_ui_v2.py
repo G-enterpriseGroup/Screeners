@@ -75,11 +75,16 @@ _RISK_BOOK_NUMERIC_SETTINGS = (
     "risk_entry_price",
     "risk_stop_price",
     "risk_max_loss_spread",
+    "risk_liquid_balance",
 )
 _RISK_BOOK_TEXT_SETTINGS = (
     "risk_ticker",
     "risk_trade_structure",
     "_risk_entry_seed_symbol",
+)
+_RISK_BOOK_BOOL_SETTINGS = (
+    "risk_use_liquid_balance",
+    "risk_use_tactical_room",
 )
 
 
@@ -126,6 +131,9 @@ def _clean_risk_book_snapshot(raw: Any) -> dict[str, Any]:
     for key in _RISK_BOOK_TEXT_SETTINGS:
         if key in source_settings:
             settings[key] = str(source_settings.get(key) or "").strip()
+    for key in _RISK_BOOK_BOOL_SETTINGS:
+        if key in source_settings:
+            settings[key] = bool(source_settings.get(key))
 
     return {
         "revision": revision,
@@ -175,7 +183,11 @@ def _restore_risk_book_settings(snapshot: dict[str, Any] | None) -> None:
     if not snapshot:
         return
     settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
-    for key in (*_RISK_BOOK_NUMERIC_SETTINGS, *_RISK_BOOK_TEXT_SETTINGS):
+    for key in (
+        *_RISK_BOOK_NUMERIC_SETTINGS,
+        *_RISK_BOOK_TEXT_SETTINGS,
+        *_RISK_BOOK_BOOL_SETTINGS,
+    ):
         if key not in st.session_state and key in settings:
             st.session_state[key] = settings[key]
 
@@ -197,6 +209,9 @@ def _risk_book_snapshot_settings() -> dict[str, Any]:
     for key in _RISK_BOOK_TEXT_SETTINGS:
         if key in st.session_state:
             values[key] = str(st.session_state.get(key) or "").strip()
+    for key in _RISK_BOOK_BOOL_SETTINGS:
+        if key in st.session_state:
+            values[key] = bool(st.session_state.get(key))
     return values
 
 
@@ -742,7 +757,7 @@ def _how_to_use() -> None:
             <strong>4 // CHECK ROOM.</strong> Tactical Room is remaining tactical capital: Target Tactical Sleeve minus Current Tactical. A positive number means room remains; a negative number means the sleeve is over target.<br><br>
             <strong>5 // SIZE A TRADE.</strong> Enter a ticker. The quote loads automatically from live E*TRADE first, with Yahoo Finance only as the fallback. Then choose STOCK/ETF or DEFINED-RISK OPTION SPREAD and select 1.00 / 0.75 / 0.50 / 0.25.<br><br>
             <strong>6 // DEFINE THE LOSS.</strong> For stock/ETF, enter Entry and Stop. The terminal calculates risk per share and the maximum whole shares that fit the selected dollar-risk budget. For a defined-risk spread, enter max loss per spread and it calculates the maximum whole spreads.<br><br>
-            <strong>7 // VERIFY BOTH LIMITS.</strong> MAX DOLLAR RISK controls how much you may lose. TACTICAL ROOM controls how much tactical capital remains available. They are different limits.
+            <strong>7 // VERIFY BOTH LIMITS.</strong> MAX DOLLAR RISK controls how much you may lose. For STOCK / ETF trades, you can also hard-cap position notional with your editable LIQUID BALANCE, automatic TACTICAL ROOM, or both; when both switches are on, the lower capital limit wins.
             </div>
             """,
             unsafe_allow_html=True,
@@ -760,6 +775,7 @@ def _render_next_trade(
     tactical_sleeve_pct: float,
     full_position_risk_pct: float,
     summary: dict[str, Any],
+    cash_available: float,
     touch_session: Callable[[], None],
 ) -> None:
     """Render the existing Part 2 sizing workflow inside its assigned pane."""
@@ -889,12 +905,96 @@ def _render_next_trade(
                 )
             )
 
+        if "risk_liquid_balance" not in st.session_state:
+            st.session_state["risk_liquid_balance"] = max(
+                0.0, float(cash_available or 0.0)
+            )
+        if "risk_use_liquid_balance" not in st.session_state:
+            st.session_state["risk_use_liquid_balance"] = False
+        if "risk_use_tactical_room" not in st.session_state:
+            st.session_state["risk_use_tactical_room"] = False
+
+        capital_col, liquid_toggle_col, room_toggle_col = st.columns(
+            [1.45, 1.0, 1.0],
+            gap="small",
+            vertical_alignment="bottom",
+        )
+        with capital_col:
+            liquid_balance = float(
+                st.number_input(
+                    "Liquid Balance",
+                    min_value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                    key="risk_liquid_balance",
+                    help=(
+                        "Editable cash you are willing to deploy into this stock/ETF trade. "
+                        "It seeds from the account's current E*TRADE cash value when available."
+                    ),
+                )
+            )
+        with liquid_toggle_col:
+            use_liquid_balance = bool(
+                st.toggle(
+                    "USE LIQUID BALANCE",
+                    key="risk_use_liquid_balance",
+                    help=(
+                        "When on, MAX SHARES cannot require more capital than the Liquid Balance above. "
+                        "The switch uses the terminal's existing orange primary color."
+                    ),
+                )
+            )
+        with room_toggle_col:
+            use_tactical_room = bool(
+                st.toggle(
+                    "USE TACTICAL ROOM",
+                    key="risk_use_tactical_room",
+                    help=(
+                        "When on, MAX SHARES cannot deploy more than the live Tactical Room shown above. "
+                        "Tactical Room updates automatically when the Risk Book or sleeve settings change."
+                    ),
+                )
+            )
+
+        tactical_room_limit = max(0.0, float(summary["target_room"]))
+        active_capital_limits: list[float] = []
+        capital_sources: list[str] = []
+        if use_liquid_balance:
+            active_capital_limits.append(max(0.0, liquid_balance))
+            capital_sources.append(f"Liquid Balance {_money(liquid_balance)}")
+        if use_tactical_room:
+            active_capital_limits.append(tactical_room_limit)
+            capital_sources.append(f"Tactical Room {_money(tactical_room_limit)}")
+        capital_limit = (
+            min(active_capital_limits)
+            if active_capital_limits
+            else None
+        )
+
         try:
             sized = stock_position_size(
                 entry_price,
                 stop_price,
                 risk_budget["selected_risk_budget"],
+                capital_limit=capital_limit,
             )
+            if capital_limit is None:
+                max_shares_help = (
+                    f"CALC: floor(Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} / "
+                    f"Risk per Share {_money(sized['risk_per_share'])}) = {sized['shares']} shares. "
+                    "The floor keeps stop-loss risk from exceeding the selected budget."
+                )
+            else:
+                source_text = " + ".join(capital_sources)
+                max_shares_help = (
+                    f"RISK LIMIT: floor(Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} / "
+                    f"Risk per Share {_money(sized['risk_per_share'])}) = {sized['risk_limited_shares']} shares. "
+                    f"CAPITAL LIMIT: floor({_money(capital_limit)} / Entry {_money(entry_price)}) = "
+                    f"{sized['capital_limited_shares']} shares. FINAL = min(risk limit, capital limit) = "
+                    f"{sized['shares']} shares. ACTIVE CAPITAL SOURCE: {source_text}. "
+                    "When both switches are on, the lower dollar limit is used."
+                )
+
             p1, p2, p3 = st.columns(3, gap="small")
             _metric_box(
                 p1,
@@ -908,17 +1008,22 @@ def _render_next_trade(
                 "MAX SHARES",
                 f"{sized['shares']:,}",
                 "positive",
-                help_text=(
-                    f"CALC: floor(Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} / Risk per Share {_money(sized['risk_per_share'])}) = {sized['shares']} shares. "
-                    "The floor keeps stop-loss risk from exceeding the selected budget."
-                ),
+                help_text=max_shares_help,
             )
             _metric_box(
                 p3,
                 "POSITION NOTIONAL",
                 _money(sized["notional"]),
                 "blue",
-                help_text=f"CALC: {sized['shares']} shares x Entry {_money(entry_price)} = {_money(sized['notional'])}. This is capital/notional deployed, not the amount you are expected to lose.",
+                help_text=(
+                    f"CALC: {sized['shares']} shares x Entry {_money(entry_price)} = {_money(sized['notional'])}. "
+                    + (
+                        f"Active capital cap = {_money(capital_limit)}. "
+                        if capital_limit is not None
+                        else ""
+                    )
+                    + "This is capital/notional deployed, not the amount you are expected to lose."
+                ),
             )
             p4, p5 = st.columns(2, gap="small")
             _metric_box(
@@ -936,10 +1041,13 @@ def _render_next_trade(
                 help_text=f"CALC: Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} - Actual Stop Risk {_money(sized['actual_risk'])} = {_money(sized['unused_risk_budget'])}. This remainder exists because shares must be whole numbers.",
             )
 
-            if sized["notional"] > max(summary["target_room"], 0.0):
+            if (
+                not use_tactical_room
+                and sized["notional"] > tactical_room_limit
+            ):
                 st.warning(
-                    "TACTICAL CAPACITY CHECK // this stop-based position notional is larger than current Tactical Room. "
-                    "Risk budget and sleeve room are different limits; review capital deployment before entering the full calculated size."
+                    "TACTICAL CAPACITY CHECK // this position notional is larger than current Tactical Room. "
+                    "Turn on USE TACTICAL ROOM if you want Tactical Room to hard-cap MAX SHARES automatically."
                 )
         except ValueError as exc:
             st.warning(str(exc))
@@ -1624,6 +1732,7 @@ def render_risk_sizing(
                 tactical_sleeve_pct=tactical_sleeve_pct,
                 full_position_risk_pct=full_position_risk_pct,
                 summary=summary,
+                cash_available=cash_available,
                 touch_session=touch_session,
             )
 
