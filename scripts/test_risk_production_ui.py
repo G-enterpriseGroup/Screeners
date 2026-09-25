@@ -181,6 +181,8 @@ def main():
     assert len(app.checkbox) == 6
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
+    html_values = [item.value for item in app.get("html")]
+    assert any("risk-v10-company-box" in value and "State Street SPDR S&amp;P 500 ETF Trust" in value for value in html_values)
     saved = app.session_state["_risk_book_snapshot_v1"]
     assert saved["account_key"] == "fixture"
     assert len(saved["rows"]) == 6
@@ -202,9 +204,11 @@ def main():
     clean()
     assert metric("MAX SHARES") == "11"
     assert app.session_state["fixture_quotes"] == ["SPY"]
-    ticker = app.selectbox(key="risk_ticker_smart_v10")
-    ticker.select(next(label for label in ticker.options if label.startswith("QQQ —"))).run()
+    ticker = app.text_input(key="risk_ticker")
+    assert ticker.value == "SPY"
+    ticker.set_value("qqq").run()
     clean()
+    assert app.text_input(key="risk_ticker").value == "QQQ"
     assert app.session_state["fixture_quotes"] == ["SPY", "QQQ"]
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
@@ -237,7 +241,7 @@ def main():
     assert disconnected.session_state["risk_quote_symbol"] == "SPY"
     assert disconnected.session_state["risk_entry_price"] == 410.20
     assert disconnected.session_state["risk_stop_price"] == 389.69
-    assert disconnected.selectbox(key="risk_ticker_smart_v10").value.startswith("SPY")
+    assert disconnected.text_input(key="risk_ticker").value == "SPY"
     assert len(disconnected.number_input) == 0
 
     remembered = AppTest.from_string(PERSISTED_BOOK_FIXTURE, default_timeout=30).run()
@@ -253,7 +257,10 @@ def main():
 
     assert "retry_live_due" in source
     assert "_risk_live_quote_attempt_at" in source
-    print("Production Risk route: live persistence, last-session Risk Book memory, E*TRADE-first quote path, disconnected Yahoo fallback, sizing PASS")
+    assert 'class="risk-v10-company-box"' in source
+    assert 'original_text_input("Ticker"' in source
+    assert "risk_ticker_smart_v10" not in source
+    print("Production Risk route: editable ticker input, separate company display, E*TRADE-first quotes, persistence, sizing PASS")
 
 
 if __name__ == "__main__":
