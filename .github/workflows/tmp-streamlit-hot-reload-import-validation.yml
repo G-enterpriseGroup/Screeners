@@ -19,7 +19,8 @@ jobs:
       - name: Install production requirements
         run: python -m pip install -r requirements.txt
       - name: Python 3.14 ETrade cache import smoke
-        run: python -c "import src.etrade_data_cache; print('Python 3.14 ETrade cache import: PASS')"
+        run: |
+          python -c "import src.etrade_data_cache; print('Python 3.14 ETrade cache import PASS')"
       - name: Syntax check entrypoint
         run: |
           python -m py_compile streamlit_app.py
