@@ -32,15 +32,13 @@ render_risk_sizing(FixtureClient(), account_picker=lambda _:st.session_state['et
 LIQUID_LIMIT_FIXTURE = FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
     "st.session_state['risk_liquid_balance']=1000.0\n"
-    "st.session_state['risk_use_liquid_balance']=True\n"
-    "st.session_state['risk_use_tactical_room']=False\n"
+    "st.session_state['risk_capital_source']='USE LIQUID BALANCE ENTERED'\n"
     "st.session_state['etrade_accounts']=",
 )
 
 TACTICAL_LIMIT_FIXTURE = FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
-    "st.session_state['risk_use_liquid_balance']=False\n"
-    "st.session_state['risk_use_tactical_room']=True\n"
+    "st.session_state['risk_capital_source']='USE TACTICAL ROOM'\n"
     "st.session_state['etrade_accounts']=",
 )
 
@@ -260,6 +258,10 @@ def main():
     assert "st.rerun" not in v9_source
     assert "st.rerun" not in v2_source
     assert "The quote loads automatically from live E*TRADE first" in v2_source
+    assert 'st.segmented_control(' in v2_source
+    assert 'st.toggle(' not in v2_source
+    assert '"USE LIQUID BALANCE ENTERED"' in v2_source
+    assert '"USE TACTICAL ROOM"' in v2_source
 
     # CSS-only style payloads must use st.html so Streamlit routes them outside
     # the visible flex stack instead of reserving empty rows above Risk content.
@@ -301,13 +303,12 @@ def main():
     assert len(saved["rows"]) == 6
     assert saved["account_total"] == 100000.0
     assert metric("CURRENT TACTICAL") == "$16,562.00"
-    assert metric("MAX SHARES") == "22"
+    assert metric("MAX SHARES") == "10"
     assert app.number_input(key="risk_liquid_balance").value == 2000.0
-    assert app.session_state["risk_use_liquid_balance"] is False
-    assert app.session_state["risk_use_tactical_room"] is False
+    assert app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
+    assert len(app.segmented_control) == 1
     assert saved["settings"]["risk_liquid_balance"] == 2000.0
-    assert saved["settings"]["risk_use_liquid_balance"] is False
-    assert saved["settings"]["risk_use_tactical_room"] is False
+    assert saved["settings"]["risk_capital_source"] == "USE LIQUID BALANCE ENTERED"
     app.checkbox[0].check().run()
     clean()
     assert app.checkbox[0].value and app.checkbox[1].value
@@ -315,13 +316,14 @@ def main():
     assert metric("LONG-TERM / STRUCTURAL") == "$93,000.00"
     assert metric("TACTICAL ROOM") == "$13,438.00"
     assert metric("MAX DOLLAR RISK") == "$225.00"
+    assert metric("MAX SHARES") == "10"
     app.checkbox[1].uncheck().run()
     clean()
     assert not app.checkbox[0].value and not app.checkbox[1].value
     assert metric("CURRENT TACTICAL") == "$16,562.00"
     app.number_input(key="risk_stop_price").set_value(180.0).run()
     clean()
-    assert metric("MAX SHARES") == "11"
+    assert metric("MAX SHARES") == "10"
     assert app.session_state["fixture_quotes"] == ["SPY"]
     ticker = app.text_input(key="risk_ticker")
     assert ticker.value == "SPY"
@@ -362,6 +364,8 @@ def main():
     )
     assert liquid_metric("MAX SHARES") == "5"
     assert liquid_metric("POSITION NOTIONAL") == "$1,000.00"
+    assert len(liquid_app.segmented_control) == 1
+    assert liquid_app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
 
     tactical_app = AppTest.from_string(TACTICAL_LIMIT_FIXTURE, default_timeout=30).run()
     assert not tactical_app.exception, [e.message for e in tactical_app.exception]
@@ -375,6 +379,8 @@ def main():
     )
     assert tactical_metric("MAX SHARES") == "0"
     assert tactical_metric("POSITION NOTIONAL") == "$0.00"
+    assert len(tactical_app.segmented_control) == 1
+    assert tactical_app.segmented_control(key="risk_capital_source").value == "USE TACTICAL ROOM"
 
     fallback = AppTest.from_string(FALLBACK_FIXTURE, default_timeout=30).run()
     assert not fallback.exception, [e.message for e in fallback.exception]
