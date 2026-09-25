@@ -49,7 +49,7 @@ _BASE_RENDER_CSS = _v9._render_css
 
 def _render_css_v10() -> None:
     _BASE_RENDER_CSS()
-    st.markdown(
+    st.html(
         """
         <style>
         /*
@@ -134,8 +134,7 @@ def _render_css_v10() -> None:
             text-overflow:ellipsis;
         }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
