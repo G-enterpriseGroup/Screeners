@@ -8,10 +8,10 @@ import sys
 from bs4 import BeautifulSoup
 from streamlit.testing.v1 import AppTest
 
-from src.risk_sizing import stock_position_size
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from src.risk_sizing import stock_position_size
 FIXTURE = """import streamlit as st
 from src.risk_sizing_ui_v7 import render_risk_sizing
 import src.risk_sizing_ui_v9 as v9
