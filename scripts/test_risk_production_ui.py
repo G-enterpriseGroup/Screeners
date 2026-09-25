@@ -161,10 +161,86 @@ render_risk_sizing(
 """
 
 
+PROCESSING_BOOK_FIXTURE = """import streamlit as st
+from src.etrade_client import ETradeError
+from src.risk_sizing_ui_v7 import render_risk_sizing
+import src.risk_sizing_ui_v2 as v2
+import src.risk_sizing_ui_v9 as v9
+import src.risk_sizing_ui_v10 as v10
+
+v9.render_stockanalysis_portfolio = lambda *a, **k: None
+v2._risk_book_state_component = lambda *a, **k: None
+
+def fake_yahoo(symbol):
+    return dict(
+        symbol=symbol,
+        companyName=f"{symbol} Yahoo Fixture",
+        lastPrice=501.00,
+        bid=500.90,
+        ask=501.10,
+        changeClose=1.00,
+        _risk_quote_source="YAHOO FINANCE",
+        _risk_quote_ask_proxy=False,
+    )
+
+v10._yfinance_quote_payload = fake_yahoo
+st.session_state["_risk_book_snapshot_v1"] = {
+    "revision": 8,
+    "saved_at": 2000.0,
+    "portfolio_saved_at": 2000.0,
+    "account_key": "processing-risk-account",
+    "account_name": "Processing fallback account",
+    "account_total": 125000.0,
+    "cash_available": 15000.0,
+    "rows": [
+        {"Symbol":"SPY","Type":"ETF","CUSIP":"","Market Value":30000.0,"Gain/Loss":1200.0,"Gain/Loss %":4.2},
+        {"Symbol":"QQQ","Type":"ETF","CUSIP":"","Market Value":20000.0,"Gain/Loss":-300.0,"Gain/Loss %":-1.5},
+    ],
+    "settings": {
+        "risk_gain_threshold": 5.0,
+        "risk_tactical_sleeve_pct": 15.0,
+        "risk_full_position_pct": 1.5,
+        "risk_ticker": "SPY",
+        "risk_trade_structure": "STOCK / ETF",
+        "risk_size_multiplier": 1.0,
+        "risk_entry_price": 500.0,
+        "risk_stop_price": 475.0,
+        "_risk_entry_seed_symbol": "SPY",
+    },
+}
+
+class ProcessingClient:
+    def get_quote(self, symbol):
+        raise ETradeError("quote still processing")
+
+def refresh_accounts(_client):
+    st.session_state["processing_refresh_attempted"] = True
+    raise ETradeError("E*TRADE account data is still processing")
+
+def unexpected(*args, **kwargs):
+    raise AssertionError("Account-dependent callbacks must not run after account refresh fails")
+
+render_risk_sizing(
+    ProcessingClient(),
+    account_picker=unexpected,
+    refresh_accounts=refresh_accounts,
+    account_balance=unexpected,
+    balance_snapshot=unexpected,
+    touch_session=lambda:None,
+)
+"""
+
+
 
 def main():
     source = (ROOT / "src" / "risk_sizing_ui_v10.py").read_text(encoding="utf-8")
+    v9_source = (ROOT / "src" / "risk_sizing_ui_v9.py").read_text(encoding="utf-8")
+    v2_source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
     assert "@st.fragment\ndef render_risk_sizing" in source
+    assert "st.rerun" not in source
+    assert "st.rerun" not in v9_source
+    assert "st.rerun" not in v2_source
+    assert "The quote loads automatically from live E*TRADE first" in v2_source
 
     app = AppTest.from_string(FIXTURE, default_timeout=30).run()
     def clean():
@@ -255,12 +331,21 @@ def main():
     memory_caption = [str(item.value) for item in remembered.caption]
     assert any("RISK BOOK MEMORY" in value for value in memory_caption)
 
+    processing = AppTest.from_string(PROCESSING_BOOK_FIXTURE, default_timeout=30).run()
+    assert not processing.exception, [e.message for e in processing.exception]
+    assert processing.session_state["processing_refresh_attempted"] is True
+    assert processing.session_state["_risk_book_snapshot_v1"]["account_key"] == "processing-risk-account"
+    assert len(processing.checkbox) == 2
+    assert processing.number_input(key="risk_tactical_sleeve_pct").value == 15.0
+    processing_captions = [str(item.value) for item in processing.caption]
+    assert any("RISK BOOK MEMORY" in value for value in processing_captions)
+
     assert "retry_live_due" in source
     assert "_risk_live_quote_attempt_at" in source
     assert 'class="risk-v10-company-box"' in source
     assert 'original_text_input("Ticker"' in source
     assert "risk_ticker_smart_v10" not in source
-    print("Production Risk route: editable ticker input, separate company display, E*TRADE-first quotes, persistence, sizing PASS")
+    print("Production Risk route: editable ticker input, separate company display, processing-state Risk Book memory, E*TRADE-first quotes, sizing PASS")
 
 
 if __name__ == "__main__":
