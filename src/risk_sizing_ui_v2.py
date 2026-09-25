@@ -148,12 +148,13 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
     if session_value["rows"]:
         return session_value
 
-    browser = _risk_book_state_component(
-        storage_key=_RISK_BOOK_STORAGE_KEY,
-        server_state=session_value,
-        key="raj_risk_book_state_reader_v1",
-        default=None,
-    )
+    with st.container(key="risk_book_state_reader_shell", gap=None):
+        browser = _risk_book_state_component(
+            storage_key=_RISK_BOOK_STORAGE_KEY,
+            server_state=session_value,
+            key="raj_risk_book_state_reader_v1",
+            default=None,
+        )
     if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
         browser_state = _clean_risk_book_snapshot(browser["state"])
         if browser_state["rows"] and (
@@ -270,12 +271,13 @@ def _persist_risk_book_snapshot(
         }
         st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = state
 
-    _risk_book_state_component(
-        storage_key=_RISK_BOOK_STORAGE_KEY,
-        server_state=state,
-        key="raj_risk_book_state_writer_v1",
-        default=None,
-    )
+    with st.container(key="risk_book_state_writer_shell", gap=None):
+        _risk_book_state_component(
+            storage_key=_RISK_BOOK_STORAGE_KEY,
+            server_state=state,
+            key="raj_risk_book_state_writer_v1",
+            default=None,
+        )
     return state
 
 
@@ -424,12 +426,13 @@ def _load_persisted_intent_overrides(
 ) -> tuple[dict[str, str], dict[str, Any]]:
     """Load browser-backed LONG-TERM choices and prune sold positions."""
     state = _current_risk_intent_state(account_key)
-    browser = _risk_intent_state_component(
-        storage_key=_risk_intent_storage_key(account_key),
-        server_state=state,
-        key="raj_risk_intent_state_reader_" + _risk_intent_account_token(account_key),
-        default=None,
-    )
+    with st.container(key="risk_intent_state_reader_shell", gap=None):
+        browser = _risk_intent_state_component(
+            storage_key=_risk_intent_storage_key(account_key),
+            server_state=state,
+            key="raj_risk_intent_state_reader_" + _risk_intent_account_token(account_key),
+            default=None,
+        )
     if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
         browser_state = _clean_risk_intent_state(browser["state"])
         if browser_state["revision"] > state["revision"] or (
@@ -449,12 +452,13 @@ def _sync_risk_intent_browser(
     state: dict[str, Any],
 ) -> None:
     """Write checked tickers to this browser without exposing brokerage data."""
-    _risk_intent_state_component(
-        storage_key=_risk_intent_storage_key(account_key),
-        server_state=_clean_risk_intent_state(state),
-        key="raj_risk_intent_state_writer_" + _risk_intent_account_token(account_key),
-        default=None,
-    )
+    with st.container(key="risk_intent_state_writer_shell", gap=None):
+        _risk_intent_state_component(
+            storage_key=_risk_intent_storage_key(account_key),
+            server_state=_clean_risk_intent_state(state),
+            key="raj_risk_intent_state_writer_" + _risk_intent_account_token(account_key),
+            default=None,
+        )
 
 
 def _save_risk_intent_overrides(
@@ -546,7 +550,7 @@ def _percent(value: float) -> str:
 
 
 def _render_tooltip_css() -> None:
-    st.markdown(
+    st.html(
         """
         <style>
         .rs-card {
@@ -631,9 +635,53 @@ def _render_tooltip_css() -> None:
             font-family:"Courier New",monospace;
         }
         .rs-howto strong { color:#4af6c3 !important; }
+
+        /*
+           Browser-state components are functional only. Keep their zero-height
+           iframes completely out of the Risk vertical layout so persistence
+           cannot create empty black rows around visible controls.
+        */
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_book_state_reader_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_book_state_writer_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_intent_state_reader_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_intent_state_writer_shell),
+        .st-key-risk_book_state_reader_shell,
+        .st-key-risk_book_state_writer_shell,
+        .st-key-risk_intent_state_reader_shell,
+        .st-key-risk_intent_state_writer_shell {
+            position:absolute !important;
+            width:0 !important;
+            height:0 !important;
+            min-width:0 !important;
+            min-height:0 !important;
+            max-width:0 !important;
+            max-height:0 !important;
+            margin:0 !important;
+            padding:0 !important;
+            overflow:hidden !important;
+            pointer-events:none !important;
+        }
+        .st-key-risk_book_state_reader_shell [data-testid="stCustomComponentV1"],
+        .st-key-risk_book_state_writer_shell [data-testid="stCustomComponentV1"],
+        .st-key-risk_intent_state_reader_shell [data-testid="stCustomComponentV1"],
+        .st-key-risk_intent_state_writer_shell [data-testid="stCustomComponentV1"],
+        .st-key-risk_book_state_reader_shell iframe,
+        .st-key-risk_book_state_writer_shell iframe,
+        .st-key-risk_intent_state_reader_shell iframe,
+        .st-key-risk_intent_state_writer_shell iframe {
+            width:0 !important;
+            height:0 !important;
+            min-width:0 !important;
+            min-height:0 !important;
+            max-width:0 !important;
+            max-height:0 !important;
+            margin:0 !important;
+            padding:0 !important;
+            border:0 !important;
+            overflow:hidden !important;
+        }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
