@@ -299,7 +299,8 @@ def live_source_smoke() -> None:
         raise AssertionError("CBOE SPY response contained no options")
     if spot is None or spot <= 0:
         raise AssertionError("CBOE SPY response contained no usable spot price")
-    fingerprint = gex_cboe._snapshot_fingerprint(payload)\n    print(f"LIVE CBOE PASS // SPY // {len(options)} OPTIONS // SPOT {spot} // FP {fingerprint[:12].upper()} // {url}")
+    fingerprint = gex_cboe._snapshot_fingerprint(payload)
+    print(f"LIVE CBOE PASS // SPY // {len(options)} OPTIONS // SPOT {spot} // FP {fingerprint[:12].upper()} // {url}")
 
 
 if __name__ == "__main__":
