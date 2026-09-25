@@ -941,18 +941,29 @@ def _render_next_trade(
                 )
             )
         with source_col:
-            capital_source = st.segmented_control(
-                "Capital Source",
-                [_CAPITAL_SOURCE_LIQUID, _CAPITAL_SOURCE_TACTICAL],
-                key="risk_capital_source",
-                selection_mode="single",
-                label_visibility="collapsed",
-                width="stretch",
-                help=(
-                    "One capital source is active at a time. Left uses the Liquid Balance entered; "
-                    "right uses the live Tactical Room shown above."
-                ),
+            # Keep the persisted source names stable while showing a real switch.
+            st.session_state["risk_capital_tactical_switch"] = (
+                st.session_state["risk_capital_source"] == _CAPITAL_SOURCE_TACTICAL
             )
+
+            def save_capital_switch():
+                st.session_state["risk_capital_source"] = (
+                    _CAPITAL_SOURCE_TACTICAL
+                    if st.session_state["risk_capital_tactical_switch"]
+                    else _CAPITAL_SOURCE_LIQUID
+                )
+
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                st.html('<span>Liquid Bal.</span>', width="content")
+                st.toggle(
+                    "Capital Source: left Liquid Bal.; right Tact Room",
+                    key="risk_capital_tactical_switch",
+                    label_visibility="collapsed",
+                    on_change=save_capital_switch,
+                    width="content",
+                )
+                st.html('<span>Tact Room</span>', width="content")
+            capital_source = st.session_state["risk_capital_source"]
 
         tactical_room_limit = max(0.0, float(summary["target_room"]))
         if capital_source == _CAPITAL_SOURCE_TACTICAL:
