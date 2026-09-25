@@ -69,7 +69,8 @@ The visible top-tab label is **E*TRADE RISK SIZING**, while the stable internal 
 
 Use this decision tree:
 
-- Change **ticker autocomplete / auto quote / Part 2 fail-safe behavior** → `src/risk_sizing_ui_v10.py` or `src/ticker_autocomplete.py`.
+- Change **Risk Part 2 ticker entry, separate Company / ETF display, auto quote, or quote fail-safe behavior** → `src/risk_sizing_ui_v10.py`.
+- Change **shared ticker/company directory data or Option Book autocomplete behavior** → `src/ticker_autocomplete.py`; E*TRADE Risk Sizing no longer uses the combined `SYMBOL — COMPANY NAME` selector.
 - Change **compact card styling / Part 2 presentation inherited from v9** → `src/risk_sizing_ui_v9.py`.
 - Change **existing Part 1 / Part 2 base widget sequence** → `src/risk_sizing_ui_v2.py`, only if a wrapper cannot safely solve it.
 - Change **risk formulas** → `src/risk_sizing.py`.
