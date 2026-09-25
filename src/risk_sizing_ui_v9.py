@@ -100,20 +100,37 @@ def _number(section: dict[str, Any], key: str) -> float | None:
 
 
 def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, float | None]]:
+    """Select deployable E*TRADE cash without ever using margin buying power."""
     computed = _section(payload, "Computed", "ComputedBalance", "computedBalance")
     cash_section = _section(payload, "Cash", "cash")
     fields = {
+        "cashAvailableForInvestment": _number(computed, "cashAvailableForInvestment"),
         "cashBalance": _number(computed, "cashBalance"),
         "netCash": _number(computed, "netCash"),
+        "cashBuyingPower": _number(computed, "cashBuyingPower"),
         "moneyMktBalance": _number(cash_section, "moneyMktBalance"),
         "settledCashForInvestment": _number(computed, "settledCashForInvestment"),
         "unSettledCashForInvestment": _number(computed, "unSettledCashForInvestment"),
+        # Diagnostic only. This field is intentionally never eligible as cash.
+        "marginBuyingPower": _number(computed, "marginBuyingPower"),
     }
     for key in list(fields):
         if fields[key] is None:
             fields[key] = find_number(payload, key)
 
-    priority = ("cashBalance", "netCash", "moneyMktBalance", "settledCashForInvestment")
+    # E*TRADE explicitly defines this as cash available for investments. Respect
+    # an exact zero/negative value rather than falling through to another field.
+    available = fields.get("cashAvailableForInvestment")
+    if available is not None:
+        return float(available), "cashAvailableForInvestment", fields
+
+    priority = (
+        "cashBalance",
+        "netCash",
+        "cashBuyingPower",
+        "moneyMktBalance",
+        "settledCashForInvestment",
+    )
     for key in priority:
         value = fields.get(key)
         if value is not None and abs(float(value)) >= 0.005:
@@ -538,9 +555,21 @@ def render_risk_sizing(
     def cash_only_snapshot(payload: dict[str, Any]) -> tuple[float, float, float]:
         total, _, market_value = balance_snapshot(payload)
         cash, source, fields = _select_true_cash(payload)
+        live_cash = max(0.0, float(cash or 0.0))
+        account_marker = st.session_state.get("risk_sizing_account")
+        prior_marker = st.session_state.get("_risk_last_etrade_cash_marker")
+        marker = (account_marker, round(live_cash, 2), source)
+
+        # Live broker cash seeds the control automatically. A temporary manual
+        # override may survive ordinary Risk reruns, but any account/source/cash
+        # change from E*TRADE replaces it with the current broker value.
+        if prior_marker != marker:
+            st.session_state["risk_liquid_balance"] = live_cash
+            st.session_state["_risk_last_etrade_cash_marker"] = marker
+
         st.session_state["_risk_true_cash_source"] = source
         st.session_state["_risk_true_cash_fields"] = fields
-        return float(total or 0.0), float(cash), float(market_value or 0.0)
+        return float(total or 0.0), live_cash, float(market_value or 0.0)
 
     _v2.quote_summary = _quote_summary_with_defaults
     _v2._metric_box = _compact_metric_box

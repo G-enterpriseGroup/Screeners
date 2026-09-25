@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.risk_sizing import stock_position_size
+from src.risk_sizing_ui_v9 import _select_true_cash
 FIXTURE = """import streamlit as st
 from src.risk_sizing_ui_v7 import render_risk_sizing
 import src.risk_sizing_ui_v9 as v9
@@ -26,7 +27,20 @@ class FixtureClient:
         return dict(symbol=symbol,companyName=company_name(symbol),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
     def lookup(self,*a,**k): return {}
 st.session_state['etrade_accounts']=[{'accountIdKey':'fixture','accountName':'Synthetic test portfolio'}]
-render_risk_sizing(FixtureClient(), account_picker=lambda _:st.session_state['etrade_accounts'][0], refresh_accounts=lambda _:None, account_balance=lambda *a,**k:{'Computed':{'cashBalance':2000}}, balance_snapshot=lambda p:(100000,2000,98000), touch_session=lambda:None)
+render_risk_sizing(
+    FixtureClient(),
+    account_picker=lambda _:st.session_state['etrade_accounts'][0],
+    refresh_accounts=lambda _:None,
+    account_balance=lambda *a,**k:{
+        'Computed':{
+            'cashAvailableForInvestment':2000,
+            'cashBalance':3200,
+            'marginBuyingPower':25000,
+        }
+    },
+    balance_snapshot=lambda p:(100000,2000,98000),
+    touch_session=lambda:None,
+)
 """
 
 LIQUID_LIMIT_FIXTURE = FIXTURE.replace(
@@ -39,6 +53,12 @@ LIQUID_LIMIT_FIXTURE = FIXTURE.replace(
 TACTICAL_LIMIT_FIXTURE = FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
     "st.session_state['risk_capital_source']='USE TACTICAL ROOM'\n"
+    "st.session_state['etrade_accounts']=",
+)
+
+STALE_LIQUID_FIXTURE = FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['risk_liquid_balance']=9999.0\n"
     "st.session_state['etrade_accounts']=",
 )
 
@@ -258,6 +278,7 @@ def main():
     assert "st.rerun" not in v9_source
     assert "st.rerun" not in v2_source
     assert "The quote loads automatically from live E*TRADE first" in v2_source
+    assert "Margin buying power is never used." in v2_source
     assert 'st.segmented_control(' in v2_source
     assert 'st.toggle(' not in v2_source
     assert '"USE LIQUID BALANCE ENTERED"' in v2_source
@@ -293,6 +314,26 @@ def main():
                 return dom.select_one(".rs9-value").text
         raise AssertionError(label)
     clean()
+
+    margin_payload = {
+        "Computed": {
+            "cashAvailableForInvestment": 1234.56,
+            "cashBalance": 9876.54,
+            "netCash": 9876.54,
+            "cashBuyingPower": 4321.00,
+            "marginBuyingPower": 50000.00,
+        }
+    }
+    selected_cash, selected_source, cash_fields = _select_true_cash(margin_payload)
+    assert selected_cash == 1234.56
+    assert selected_source == "cashAvailableForInvestment"
+    assert cash_fields["marginBuyingPower"] == 50000.00
+    zero_cash, zero_source, _ = _select_true_cash(
+        {"Computed": {"cashAvailableForInvestment": 0.0, "cashBalance": 9000.0, "marginBuyingPower": 40000.0}}
+    )
+    assert zero_cash == 0.0
+    assert zero_source == "cashAvailableForInvestment"
+
     assert len(app.checkbox) == 6
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
@@ -305,6 +346,8 @@ def main():
     assert metric("CURRENT TACTICAL") == "$16,562.00"
     assert metric("MAX SHARES") == "10"
     assert app.number_input(key="risk_liquid_balance").value == 2000.0
+    assert app.session_state["_risk_true_cash_source"] == "cashAvailableForInvestment"
+    assert app.session_state["_risk_true_cash_fields"]["marginBuyingPower"] == 25000.0
     assert app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
     assert len(app.segmented_control) == 1
     assert saved["settings"]["risk_liquid_balance"] == 2000.0
@@ -362,8 +405,9 @@ def main():
             and dom.select_one(".rs9-label").text == label
         )
     )
-    assert liquid_metric("MAX SHARES") == "5"
-    assert liquid_metric("POSITION NOTIONAL") == "$1,000.00"
+    assert liquid_metric("MAX SHARES") == "10"
+    assert liquid_metric("POSITION NOTIONAL") == "$2,000.00"
+    assert liquid_app.number_input(key="risk_liquid_balance").value == 2000.0
     assert len(liquid_app.segmented_control) == 1
     assert liquid_app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
 
@@ -381,6 +425,11 @@ def main():
     assert tactical_metric("POSITION NOTIONAL") == "$0.00"
     assert len(tactical_app.segmented_control) == 1
     assert tactical_app.segmented_control(key="risk_capital_source").value == "USE TACTICAL ROOM"
+
+    stale_liquid = AppTest.from_string(STALE_LIQUID_FIXTURE, default_timeout=30).run()
+    assert not stale_liquid.exception, [e.message for e in stale_liquid.exception]
+    assert stale_liquid.number_input(key="risk_liquid_balance").value == 2000.0
+    assert stale_liquid.session_state["_risk_true_cash_source"] == "cashAvailableForInvestment"
 
     fallback = AppTest.from_string(FALLBACK_FIXTURE, default_timeout=30).run()
     assert not fallback.exception, [e.message for e in fallback.exception]
