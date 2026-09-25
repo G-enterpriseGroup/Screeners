@@ -954,41 +954,137 @@ def render_risk_sizing(
     )
     _how_to_use()
 
-    if not client:
-        st.info("Connect E*TRADE at the top of the terminal to load the portfolio and size risk.")
+    persisted_snapshot = _load_persisted_risk_book_snapshot()
+    _restore_risk_book_settings(persisted_snapshot)
+
+    account: dict[str, Any] | None = None
+    account_key = ""
+    account_name = ""
+    normalized = pd.DataFrame()
+    account_total = 0.0
+    cash_available = 0.0
+    portfolio_saved_at = 0.0
+    using_persisted_snapshot = False
+    using_persisted_balance = False
+    live_error = ""
+    live_portfolio_resolved = False
+
+    if client is not None:
+        if not st.session_state.get("etrade_accounts"):
+            try:
+                refresh_accounts(client)
+            except ETradeError as exc:
+                live_error = str(exc)
+
+        if not live_error:
+            account = account_picker("risk_sizing_account")
+            if account:
+                account_key = str(account.get("accountIdKey", ""))
+                account_name = str(
+                    account.get("accountName")
+                    or account.get("accountDesc")
+                    or account.get("accountId")
+                    or ""
+                ).strip()
+
+                refresh_portfolio = st.button(
+                    "REFRESH RISK PORTFOLIO",
+                    type="primary",
+                    key="risk_refresh_portfolio",
+                )
+
+                holdings_cache = st.session_state.setdefault("etrade_holdings", {})
+                if refresh_portfolio or holdings_cache.get(account_key) is None:
+                    try:
+                        holdings_cache[account_key] = client.get_portfolio(account_key)
+                        account_balance(client, account, refresh=True)
+                        touch_session()
+                    except ETradeError as exc:
+                        live_error = str(exc)
+
+                if not live_error and holdings_cache.get(account_key) is not None:
+                    raw_holdings = holdings_cache.get(account_key) or []
+                    normalized = _normalized_holdings(raw_holdings)
+                    live_portfolio_resolved = True
+                    portfolio_saved_at = _risk_book_portfolio_saved_at(
+                        client,
+                        account_key,
+                    )
+
+                    try:
+                        balance_payload = account_balance(client, account, refresh=False)
+                        account_total, cash_available, _ = balance_snapshot(balance_payload)
+                    except ETradeError:
+                        same_snapshot = bool(
+                            persisted_snapshot
+                            and persisted_snapshot.get("account_key") == account_key
+                        )
+                        if same_snapshot:
+                            account_total = float(persisted_snapshot.get("account_total") or 0.0)
+                            cash_available = float(persisted_snapshot.get("cash_available") or 0.0)
+                            using_persisted_balance = True
+            else:
+                live_error = "E*TRADE account data is still loading."
+    else:
+        live_error = "E*TRADE is not connected."
+
+    if live_portfolio_resolved and normalized.empty:
+        _persist_risk_book_snapshot(
+            account_key=account_key,
+            account_name=account_name,
+            normalized=normalized,
+            account_total=account_total,
+            cash_available=cash_available,
+            portfolio_saved_at=portfolio_saved_at or time.time(),
+        )
+        st.info("No positions were returned for the selected account.")
         return
 
-    if not st.session_state.get("etrade_accounts"):
-        try:
-            refresh_accounts(client)
-        except ETradeError as exc:
-            st.error(str(exc))
-            return
+    if normalized.empty and persisted_snapshot:
+        same_account = (
+            not account_key
+            or not persisted_snapshot.get("account_key")
+            or persisted_snapshot.get("account_key") == account_key
+        )
+        if same_account:
+            normalized = _risk_book_snapshot_frame(persisted_snapshot)
+            account_key = str(persisted_snapshot.get("account_key") or account_key or "risk-memory")
+            account_name = str(persisted_snapshot.get("account_name") or account_name)
+            account_total = float(persisted_snapshot.get("account_total") or 0.0)
+            cash_available = float(persisted_snapshot.get("cash_available") or 0.0)
+            portfolio_saved_at = float(
+                persisted_snapshot.get("portfolio_saved_at")
+                or persisted_snapshot.get("saved_at")
+                or 0.0
+            )
+            using_persisted_snapshot = not normalized.empty
 
-    account = account_picker("risk_sizing_account")
-    if not account:
-        st.info("No E*TRADE account was returned.")
+    if normalized.empty:
+        if live_error:
+            st.info(
+                "Connect E*TRADE at the top of the terminal to load the portfolio and size risk. "
+                + live_error
+            )
+        else:
+            st.info("No E*TRADE Risk Book snapshot is available yet.")
         return
 
-    account_key = str(account.get("accountIdKey", ""))
-    refresh_portfolio = st.button(
-        "REFRESH RISK PORTFOLIO",
-        type="primary",
-        key="risk_refresh_portfolio",
-    )
+    if using_persisted_snapshot:
+        st.caption(
+            "RISK BOOK MEMORY // LAST E*TRADE SNAPSHOT // "
+            + _risk_book_memory_age_text(portfolio_saved_at)
+            + " // LIVE E*TRADE DATA WILL REPLACE THIS SNAPSHOT WHEN AVAILABLE"
+        )
+    elif using_persisted_balance:
+        st.caption(
+            "RISK BOOK MEMORY // LIVE HOLDINGS + LAST E*TRADE BALANCE SNAPSHOT // "
+            + _risk_book_memory_age_text(
+                float(persisted_snapshot.get("portfolio_saved_at") or 0.0)
+                if persisted_snapshot
+                else 0.0
+            )
+        )
 
-    holdings_cache = st.session_state.setdefault("etrade_holdings", {})
-    if refresh_portfolio or holdings_cache.get(account_key) is None:
-        try:
-            holdings_cache[account_key] = client.get_portfolio(account_key)
-            account_balance(client, account, refresh=True)
-            touch_session()
-        except ETradeError as exc:
-            st.error(str(exc))
-            return
-
-    raw_holdings = holdings_cache.get(account_key) or []
-    normalized = _normalized_holdings(raw_holdings)
     active_symbols = (
         normalized["Symbol"].astype(str).str.strip().str.upper().tolist()
         if "Symbol" in normalized.columns
@@ -999,16 +1095,6 @@ def render_risk_sizing(
         active_symbols,
     )
     _sync_risk_intent_browser(account_key, risk_intent_state)
-    if normalized.empty:
-        st.info("No positions were returned for the selected account.")
-        return
-
-    try:
-        balance_payload = account_balance(client, account, refresh=False)
-        account_total, cash_available, _ = balance_snapshot(balance_payload)
-    except ETradeError:
-        account_total = 0.0
-        cash_available = 0.0
 
     market_total = pd.to_numeric(
         normalized["Market Value"], errors="coerce"
