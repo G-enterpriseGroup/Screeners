@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import gex_cboe
 from src import gex_ui as core
+from src import gex_ui_v3_base as base
 
 
 def occ(symbol: str, expiry, cp: str, strike: float) -> str:
@@ -85,6 +86,20 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("SPOT,100,0", result["packed"])
         self.assertIn("GFLIP,101.25,0", result["packed"])
         self.assertIn("Source URL: " + self.source_url, result["summaryText"])
+        self.assertTrue(result["snapshotFingerprint"])
+        self.assertEqual(result["snapshotFingerprintVersion"], "CBOE1")
+        self.assertEqual(result["snapshotOptionCount"], len(self.payload["data"]["options"]))
+        self.assertIn("CBOE Snapshot Fetched:", result["summaryText"])
+        self.assertIn(
+            "CBOE GEX Input Fingerprint: CBOE1:" + result["snapshotFingerprint"],
+            result["summaryText"],
+        )
+        bridge_summary = base._google_sheets_summary_text(result)
+        self.assertIn("CBOE Snapshot Fetched:", bridge_summary)
+        self.assertIn(
+            "CBOE GEX Input Fingerprint: CBOE1:" + result["snapshotFingerprint"],
+            bridge_summary,
+        )
         rows = {row["strike"]: row for row in result["rawRows"]}
         self.assertAlmostEqual(rows[95.0]["call_gex"], 10_000.0)
         self.assertAlmostEqual(rows[95.0]["put_gex"], -36_000.0)
@@ -92,6 +107,27 @@ class CboeGexTests(unittest.TestCase):
         self.assertAlmostEqual(rows[105.0]["call_gex"], 60_000.0)
         self.assertAlmostEqual(rows[105.0]["put_gex"], -4_500.0)
 
+
+    def test_snapshot_fingerprint_is_stable_and_gex_input_sensitive(self):
+        first = gex_cboe._snapshot_fingerprint(self.payload)
+        reordered = copy.deepcopy(self.payload)
+        reordered["data"]["options"] = list(reversed(reordered["data"]["options"]))
+        self.assertEqual(first, gex_cboe._snapshot_fingerprint(reordered))
+
+        changed = copy.deepcopy(self.payload)
+        changed["data"]["options"][0]["gamma"] = 0.011
+        self.assertNotEqual(first, gex_cboe._snapshot_fingerprint(changed))
+
+        irrelevant = copy.deepcopy(self.payload)
+        irrelevant["data"]["options"][0]["bid"] = 99.99
+        self.assertEqual(first, gex_cboe._snapshot_fingerprint(irrelevant))
+
+    def test_overview_no_longer_injects_iv_rank_column(self):
+        root = Path(__file__).resolve().parents[1]
+        ui = (root / "src/gex_ui_v3.py").read_text(encoding="utf-8")
+        self.assertNotIn("IV RANK / REF", ui)
+        self.assertIn("gexv3-snapshot-fp", ui)
+        self.assertIn("snapshotFingerprint", ui)
 
     def test_code_gs_wall_selection_semantics(self):
         payload = copy.deepcopy(self.payload)
@@ -263,7 +299,7 @@ def live_source_smoke() -> None:
         raise AssertionError("CBOE SPY response contained no options")
     if spot is None or spot <= 0:
         raise AssertionError("CBOE SPY response contained no usable spot price")
-    print(f"LIVE CBOE PASS // SPY // {len(options)} OPTIONS // SPOT {spot} // {url}")
+    fingerprint = gex_cboe._snapshot_fingerprint(payload)\n    print(f"LIVE CBOE PASS // SPY // {len(options)} OPTIONS // SPOT {spot} // FP {fingerprint[:12].upper()} // {url}")
 
 
 if __name__ == "__main__":
