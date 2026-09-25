@@ -1258,3 +1258,14 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS. Complete diff and exact committed production files inspected; whitespace checks PASS.
 - **Implementation commit:** `89e97ff`.
 - **Lesson:** Auto-fill and editable override require separate broker-seed state. Verify wheel changes through the native widget/server calculation path, not just displayed text. Cash available for investment and margin buying power are separate E*TRADE fields: https://apisb.etrade.com/docs/api/account/api-balance-v1.html
+
+## 2026-09-25 — Capital Source physical left/right switch
+
+- **Feature / files:** Risk capital-source UI in `src/risk_sizing_ui_v2.py`, switch-only label styling in production dependency `src/risk_sizing_ui_v9.py`; coverage in `scripts/test_risk_production_ui.py`.
+- **Issue / cause:** The segmented buttons did not match Raj's requested physical left/right switch with short labels.
+- **Change:** One native toggle between `Liquid Bal.` (left/false) and `Tact Room` (right/true). Retain persisted source strings, mapping the toggle through a callback. The existing Risk label CSS forces collapsed labels visible, so an exact switch-key selector hides only its duplicate visual label while preserving its accessible name. No new component, shared CSS change or formulas.
+- **Must preserve:** One active capital source at all times; old saved selections, cash auto-fill/manual edits, live Tactical Room, stop wheel, quote behavior and sizing math.
+- **Not changed:** GEX, OAuth, Holdings, navigation, shared theme, other tabs, risk/trade formulas and terminal_core.
+- **Tests:** Production path re-traced; affected Python syntax checked; production Risk regression PASS including saved selection, both directions and rerun persistence; all eight top-level tabs/repeated routes/second session PASS. Browser synthetic preview confirms a compact one-row switch, mouse and keyboard operation, 10 shares/$2,000 on the left and 0 shares/$0 on the right for the fixture's negative Tactical Room. Final diff checked and committed production source inspected. Architecture guard PASS.
+- **Commit:** `609477f`.
+- **Lesson:** Preserve the persisted source model when replacing its visible control. Check inherited label styles in a browser, including collapsed native labels.

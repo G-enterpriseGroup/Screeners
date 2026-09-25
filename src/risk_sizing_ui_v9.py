@@ -282,6 +282,10 @@ def _render_css() -> None:
             display:flex!important;
             align-items:center!important;
         }
+        /* The native switch keeps an accessible name, with short flanking labels. */
+        .st-key-risk_part2_panel .st-key-risk_capital_tactical_switch [data-testid="stWidgetLabel"]{
+            display:none!important;
+        }
         .st-key-risk_part2_panel [data-testid="stWidgetLabel"] p{
             margin:0!important;
             padding:0!important;
