@@ -1,0 +1,61 @@
+name: Temporary GEX snapshot and IV-column validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/gex_cboe.py"
+      - "src/gex_ui_v3.py"
+      - "src/gex_ui_v3_base.py"
+      - "scripts/test_gex_cboe.py"
+      - ".github/workflows/tmp-gex-snapshot-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install requirements
+        run: python -m pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m py_compile src/gex_cboe.py src/gex_ui_v3.py src/gex_ui_v3_base.py scripts/test_gex_cboe.py
+      - name: Focused CBOE regression
+        run: python scripts/test_gex_cboe.py
+      - name: Live SPY snapshot fingerprint smoke
+        run: |
+          python scripts/test_gex_cboe.py --live
+          python - <<'PY'
+          from src.gex_cboe import build_cboe_gex
+          from src.gex_ui_v3_base import _google_sheets_summary_text
+          result = build_cboe_gex("SPY", 180, "America/New_York", "NET_GEX")
+          summary = _google_sheets_summary_text(result)
+          print(
+              "LIVE SPY SNAPSHOT // "
+              f"fetched={result['snapshotFetchedAt']} // "
+              f"fp=CBOE1:{result['snapshotFingerprint'][:12].upper()} // "
+              f"raw_rows={result['snapshotOptionCount']} // "
+              f"contracts={result['contractsUsed']}"
+          )
+          assert "CBOE Snapshot Fetched:" in summary
+          assert "CBOE GEX Input Fingerprint: CBOE1:" in summary
+          assert result["snapshotOptionCount"] > 0
+          assert len(result["snapshotFingerprint"]) == 64
+          PY
+      - name: Verify IV Rank column removed from production GEX UI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("src/gex_ui_v3.py").read_text(encoding="utf-8")
+          assert "IV RANK / REF" not in text
+          assert "gexv3-snapshot-fp" in text
+          PY
+      - name: Architecture guard
+        run: python scripts/validate_architecture.py
+      - name: Top-level tab smoke
+        run: python scripts/test_tab_layout.py
