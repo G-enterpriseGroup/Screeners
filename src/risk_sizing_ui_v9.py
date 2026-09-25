@@ -100,37 +100,34 @@ def _number(section: dict[str, Any], key: str) -> float | None:
 
 
 def _select_true_cash(payload: dict[str, Any]) -> tuple[float, str, dict[str, float | None]]:
-    """Select deployable E*TRADE cash without ever using margin buying power."""
+    """Select actual E*TRADE cash balance, never margin or margin-derived buying power."""
     computed = _section(payload, "Computed", "ComputedBalance", "computedBalance")
     cash_section = _section(payload, "Cash", "cash")
     fields = {
-        "cashAvailableForInvestment": _number(computed, "cashAvailableForInvestment"),
         "cashBalance": _number(computed, "cashBalance"),
         "netCash": _number(computed, "netCash"),
-        "cashBuyingPower": _number(computed, "cashBuyingPower"),
         "moneyMktBalance": _number(cash_section, "moneyMktBalance"),
         "settledCashForInvestment": _number(computed, "settledCashForInvestment"),
         "unSettledCashForInvestment": _number(computed, "unSettledCashForInvestment"),
-        # Diagnostic only. This field is intentionally never eligible as cash.
+        # Diagnostics only. These are intentionally never eligible as actual cash.
+        "cashAvailableForInvestment": _number(computed, "cashAvailableForInvestment"),
+        "cashBuyingPower": _number(computed, "cashBuyingPower"),
         "marginBuyingPower": _number(computed, "marginBuyingPower"),
+        "dtCashBuyingPower": _number(computed, "dtCashBuyingPower"),
+        "dtMarginBuyingPower": _number(computed, "dtMarginBuyingPower"),
+        "marginBalance": _number(computed, "marginBalance"),
     }
     for key in list(fields):
         if fields[key] is None:
             fields[key] = find_number(payload, key)
 
-    # E*TRADE explicitly defines this as cash available for investments. Respect
-    # an exact zero/negative value rather than falling through to another field.
-    available = fields.get("cashAvailableForInvestment")
-    if available is not None:
-        return float(available), "cashAvailableForInvestment", fields
+    # E*TRADE defines cashBalance as the current cash balance. If it is present,
+    # respect the exact value, including zero or a negative margin-debit cash balance.
+    cash_balance = fields.get("cashBalance")
+    if cash_balance is not None:
+        return float(cash_balance), "cashBalance", fields
 
-    priority = (
-        "cashBalance",
-        "netCash",
-        "cashBuyingPower",
-        "moneyMktBalance",
-        "settledCashForInvestment",
-    )
+    priority = ("netCash", "moneyMktBalance", "settledCashForInvestment")
     for key in priority:
         value = fields.get(key)
         if value is not None and abs(float(value)) >= 0.005:
@@ -556,20 +553,20 @@ def render_risk_sizing(
         total, _, market_value = balance_snapshot(payload)
         cash, source, fields = _select_true_cash(payload)
         live_cash = max(0.0, float(cash or 0.0))
-        account_marker = st.session_state.get("risk_sizing_account")
-        prior_marker = st.session_state.get("_risk_last_etrade_cash_marker")
-        marker = (account_marker, round(live_cash, 2), source)
 
-        # Live broker cash seeds the control automatically. A temporary manual
-        # override may survive ordinary Risk reruns, but any account/source/cash
-        # change from E*TRADE replaces it with the current broker value.
-        if prior_marker != marker:
-            st.session_state["risk_liquid_balance"] = live_cash
-            st.session_state["_risk_last_etrade_cash_marker"] = marker
-
+        # The broker is authoritative whenever a balance payload is available.
+        # This deliberately overwrites any older browser/manual value so a stale
+        # entered amount cannot survive after E*TRADE cash has been loaded.
+        st.session_state["risk_liquid_balance"] = live_cash
         st.session_state["_risk_true_cash_source"] = source
         st.session_state["_risk_true_cash_fields"] = fields
         return float(total or 0.0), live_cash, float(market_value or 0.0)
+
+    def risk_account_balance(client_arg, account_arg, refresh=False):
+        # Bypass terminal_core's session-level balance dictionary on every Risk
+        # render. CachedETradeClient still applies its 30-second balance TTL, so
+        # this stays fresh without hitting E*TRADE on every widget interaction.
+        return account_balance(client_arg, account_arg, refresh=True)
 
     _v2.quote_summary = _quote_summary_with_defaults
     _v2._metric_box = _compact_metric_box
@@ -594,7 +591,7 @@ def render_risk_sizing(
             client,
             account_picker=account_picker,
             refresh_accounts=refresh_accounts,
-            account_balance=account_balance,
+            account_balance=risk_account_balance,
             balance_snapshot=cash_only_snapshot,
             touch_session=touch_session,
         )
