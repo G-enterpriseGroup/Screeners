@@ -641,10 +641,10 @@ def _render_tooltip_css() -> None:
            iframes completely out of the Risk vertical layout so persistence
            cannot create empty black rows around visible controls.
         */
-        [data-testid="stElementContainer"]:has(.st-key-risk_book_state_reader_shell),
-        [data-testid="stElementContainer"]:has(.st-key-risk_book_state_writer_shell),
-        [data-testid="stElementContainer"]:has(.st-key-risk_intent_state_reader_shell),
-        [data-testid="stElementContainer"]:has(.st-key-risk_intent_state_writer_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_book_state_reader_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_book_state_writer_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_intent_state_reader_shell),
+        [data-testid="stLayoutWrapper"]:has(> .st-key-risk_intent_state_writer_shell),
         .st-key-risk_book_state_reader_shell,
         .st-key-risk_book_state_writer_shell,
         .st-key-risk_intent_state_reader_shell,
