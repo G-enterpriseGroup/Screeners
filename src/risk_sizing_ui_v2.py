@@ -921,6 +921,10 @@ def _render_next_trade(
             gap="small",
             vertical_alignment="bottom",
         )
+        cash_source = str(
+            st.session_state.get("_risk_true_cash_source")
+            or "last E*TRADE cash snapshot"
+        )
         with capital_col:
             liquid_balance = float(
                 st.number_input(
@@ -930,8 +934,9 @@ def _render_next_trade(
                     format="%.2f",
                     key="risk_liquid_balance",
                     help=(
-                        "Editable cash you are willing to deploy into this stock/ETF trade. "
-                        "It seeds from the account's current E*TRADE cash value when available."
+                        "Automatically syncs from E*TRADE cash available for investment when live balance data changes. "
+                        f"Current cash source: {cash_source}. Margin buying power is never used. "
+                        "You can temporarily override the value; a newer E*TRADE cash value will replace it automatically."
                     ),
                 )
             )
