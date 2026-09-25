@@ -19,6 +19,7 @@ sheet all use the same wall / flip methodology.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import re
@@ -124,6 +125,54 @@ def _parse_occ_symbol(option_symbol: Any):
     expiry_text, cp, strike_raw = match.groups()
     expiry = datetime.strptime(expiry_text, "%y%m%d").date()
     return expiry, cp, int(strike_raw) / 1000.0
+
+
+def _snapshot_fingerprint(payload: dict[str, Any]) -> str:
+    """Hash the exact CBOE fields that can change this GEX calculation.
+
+    The fingerprint is intentionally based on spot plus each option's OCC id,
+    open interest, IV, and feed gamma. Bid/ask/volume changes do not alter the
+    GEX calculation, so they are excluded. Sorting by OCC id makes the digest
+    stable even if CBOE returns the same contracts in a different row order.
+    """
+    data = payload.get("data") or {}
+    options = data.get("options") or []
+    normalized: list[list[Any]] = []
+    for raw in options:
+        if not isinstance(raw, dict):
+            continue
+        option_id = str(
+            raw.get("option") or raw.get("option_symbol") or raw.get("symbol") or ""
+        ).strip().upper()
+        if not option_id:
+            continue
+        oi = (
+            _safe_float(raw.get("open_interest"))
+            or _safe_float(raw.get("openInterest"))
+            or _safe_float(raw.get("openinterest"))
+            or _safe_float(raw.get("oi"))
+            or 0.0
+        )
+        iv = _safe_float(
+            raw.get("iv")
+            or raw.get("implied_volatility")
+            or raw.get("impliedVolatility")
+        )
+        gamma = _safe_float(raw.get("gamma"))
+        normalized.append([option_id, float(oi), iv, gamma])
+
+    normalized.sort(key=lambda row: row[0])
+    canonical = json.dumps(
+        {
+            "spot": _extract_spot(payload),
+            "options": normalized,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _normalize_iv(raw_iv: Any) -> float:
@@ -284,7 +333,10 @@ def build_cboe_gex(
         raise RuntimeError(f"CBOE did not return a usable underlying price for {symbol}.")
 
     tz = ZoneInfo(str(timezone_name or "America/New_York"))
-    today = datetime.now(tz).date()
+    snapshot_fetched_at = datetime.now(tz)
+    snapshot_fingerprint = _snapshot_fingerprint(payload)
+    snapshot_option_count = len(options)
+    today = snapshot_fetched_at.date()
     max_dte = int(max_dte)
     contracts: list[dict[str, Any]] = []
     expiries_used: set[str] = set()
@@ -434,7 +486,10 @@ def build_cboe_gex(
         f"Max DTE Used: {max_dte}\n"
         f"Contracts Used: {len(contracts)}\n"
         f"Net Current GEX: {net_current:,.2f}\n"
-        f"Source URL: {source_url}\n\n"
+        f"Source URL: {source_url}\n"
+        f"CBOE Snapshot Fetched: {snapshot_fetched_at.isoformat(timespec='seconds')}\n"
+        f"CBOE GEX Input Fingerprint: CBOE1:{snapshot_fingerprint}\n"
+        f"CBOE Snapshot Option Rows: {snapshot_option_count}\n\n"
         "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels\n"
         "------------------------------------------------------------\n"
         f"{packed}\n"
@@ -448,6 +503,10 @@ def build_cboe_gex(
         "contractsUsed": len(contracts),
         "netCurrent": net_current,
         "sourceUrl": source_url,
+        "snapshotFetchedAt": snapshot_fetched_at.isoformat(timespec="seconds"),
+        "snapshotFingerprint": snapshot_fingerprint,
+        "snapshotFingerprintVersion": "CBOE1",
+        "snapshotOptionCount": snapshot_option_count,
         "gammaFlip": gamma_flip,
         "callWall": call_wall,
         "putWall": put_wall,
