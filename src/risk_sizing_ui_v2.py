@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -52,6 +53,241 @@ _risk_intent_state_component = components.declare_component(
     "raj_risk_intent_state_v1",
     path=str(_RISK_INTENT_COMPONENT_PATH),
 )
+
+
+# ==============================
+# RISK BOOK PERSISTENT MEMORY
+# ==============================
+_RISK_BOOK_COMPONENT_PATH = (
+    Path(__file__).parent / "components" / "risk_book_state_v1"
+)
+_risk_book_state_component = components.declare_component(
+    "raj_risk_book_state_v1",
+    path=str(_RISK_BOOK_COMPONENT_PATH),
+)
+_RISK_BOOK_SNAPSHOT_SESSION_KEY = "_risk_book_snapshot_v1"
+_RISK_BOOK_STORAGE_KEY = "raj-terminal-risk-book-v1"
+_RISK_BOOK_NUMERIC_SETTINGS = (
+    "risk_gain_threshold",
+    "risk_tactical_sleeve_pct",
+    "risk_full_position_pct",
+    "risk_size_multiplier",
+    "risk_entry_price",
+    "risk_stop_price",
+    "risk_max_loss_spread",
+)
+_RISK_BOOK_TEXT_SETTINGS = (
+    "risk_ticker",
+    "risk_trade_structure",
+    "_risk_entry_seed_symbol",
+)
+
+
+def _risk_snapshot_number(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if pd.isna(number):
+        return float(default)
+    return number
+
+
+def _clean_risk_book_snapshot(raw: Any) -> dict[str, Any]:
+    """Validate the browser-backed last-known E*TRADE Risk Book snapshot."""
+    if not isinstance(raw, dict):
+        raw = {}
+
+    try:
+        revision = max(0, int(raw.get("revision", 0) or 0))
+    except (TypeError, ValueError):
+        revision = 0
+
+    rows: list[dict[str, Any]] = []
+    for source in raw.get("rows", []) or []:
+        if not isinstance(source, dict):
+            continue
+        row = {
+            "Symbol": str(source.get("Symbol") or "").strip().upper(),
+            "Type": str(source.get("Type") or "").strip(),
+            "CUSIP": str(source.get("CUSIP") or "").strip(),
+            "Market Value": _risk_snapshot_number(source.get("Market Value"), 0.0),
+            "Gain/Loss": _risk_snapshot_number(source.get("Gain/Loss"), 0.0),
+            "Gain/Loss %": _risk_snapshot_number(source.get("Gain/Loss %"), 0.0),
+        }
+        if row["Symbol"] or row["CUSIP"]:
+            rows.append(row)
+
+    settings: dict[str, Any] = {}
+    source_settings = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
+    for key in _RISK_BOOK_NUMERIC_SETTINGS:
+        if key in source_settings:
+            settings[key] = _risk_snapshot_number(source_settings.get(key), 0.0)
+    for key in _RISK_BOOK_TEXT_SETTINGS:
+        if key in source_settings:
+            settings[key] = str(source_settings.get(key) or "").strip()
+
+    return {
+        "revision": revision,
+        "saved_at": _risk_snapshot_number(raw.get("saved_at"), 0.0),
+        "portfolio_saved_at": _risk_snapshot_number(raw.get("portfolio_saved_at"), 0.0),
+        "account_key": str(raw.get("account_key") or "").strip(),
+        "account_name": str(raw.get("account_name") or "").strip(),
+        "account_total": _risk_snapshot_number(raw.get("account_total"), 0.0),
+        "cash_available": _risk_snapshot_number(raw.get("cash_available"), 0.0),
+        "rows": rows,
+        "settings": settings,
+    }
+
+
+def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
+    """Load the last Risk Book from this browser across sessions/redeploys."""
+    session_value = _clean_risk_book_snapshot(
+        st.session_state.get(_RISK_BOOK_SNAPSHOT_SESSION_KEY)
+    )
+    if session_value["rows"]:
+        return session_value
+
+    browser = _risk_book_state_component(
+        storage_key=_RISK_BOOK_STORAGE_KEY,
+        server_state=session_value,
+        key="raj_risk_book_state_reader_v1",
+        default=None,
+    )
+    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
+        browser_state = _clean_risk_book_snapshot(browser["state"])
+        if browser_state["rows"] and (
+            browser_state["revision"] > session_value["revision"]
+            or not session_value["rows"]
+        ):
+            session_value = browser_state
+
+    if not session_value["rows"]:
+        return None
+
+    st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = session_value
+    return session_value
+
+
+def _restore_risk_book_settings(snapshot: dict[str, Any] | None) -> None:
+    """Restore prior Risk controls only when this Streamlit session has no value."""
+    if not snapshot:
+        return
+    settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
+    for key in (*_RISK_BOOK_NUMERIC_SETTINGS, *_RISK_BOOK_TEXT_SETTINGS):
+        if key not in st.session_state and key in settings:
+            st.session_state[key] = settings[key]
+
+
+def _risk_book_snapshot_frame(snapshot: dict[str, Any] | None) -> pd.DataFrame:
+    if not snapshot:
+        return pd.DataFrame()
+    rows = snapshot.get("rows") or []
+    if not isinstance(rows, list):
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def _risk_book_snapshot_settings() -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for key in _RISK_BOOK_NUMERIC_SETTINGS:
+        if key in st.session_state:
+            values[key] = _risk_snapshot_number(st.session_state.get(key), 0.0)
+    for key in _RISK_BOOK_TEXT_SETTINGS:
+        if key in st.session_state:
+            values[key] = str(st.session_state.get(key) or "").strip()
+    return values
+
+
+def _risk_book_portfolio_saved_at(client: Any, account_key: str) -> float:
+    """Preserve the source snapshot time when the shared E*TRADE cache exposes it."""
+    cache_age = getattr(client, "cache_age", None)
+    if callable(cache_age):
+        try:
+            age = cache_age("portfolio", str(account_key))
+            if age is not None:
+                return max(0.0, time.time() - float(age))
+        except Exception:
+            pass
+    return time.time()
+
+
+def _persist_risk_book_snapshot(
+    *,
+    account_key: str,
+    account_name: str,
+    normalized: pd.DataFrame,
+    account_total: float,
+    cash_available: float,
+    portfolio_saved_at: float,
+) -> dict[str, Any]:
+    """Persist only the Risk fields needed to rebuild the last session locally."""
+    rows: list[dict[str, Any]] = []
+    if isinstance(normalized, pd.DataFrame) and not normalized.empty:
+        for _, source in normalized.iterrows():
+            row = {
+                "Symbol": str(source.get("Symbol") or "").strip().upper(),
+                "Type": str(source.get("Type") or "").strip(),
+                "CUSIP": str(source.get("CUSIP") or "").strip(),
+                "Market Value": _risk_snapshot_number(source.get("Market Value"), 0.0),
+                "Gain/Loss": _risk_snapshot_number(source.get("Gain/Loss"), 0.0),
+                "Gain/Loss %": _risk_snapshot_number(source.get("Gain/Loss %"), 0.0),
+            }
+            if row["Symbol"] or row["CUSIP"]:
+                rows.append(row)
+
+    existing = _clean_risk_book_snapshot(
+        st.session_state.get(_RISK_BOOK_SNAPSHOT_SESSION_KEY)
+    )
+    candidate = {
+        "account_key": str(account_key or "").strip(),
+        "account_name": str(account_name or "").strip(),
+        "account_total": _risk_snapshot_number(account_total, 0.0),
+        "cash_available": _risk_snapshot_number(cash_available, 0.0),
+        "portfolio_saved_at": _risk_snapshot_number(portfolio_saved_at, time.time()),
+        "rows": rows,
+        "settings": _risk_book_snapshot_settings(),
+    }
+    same_payload = all(
+        existing.get(key) == candidate.get(key)
+        for key in (
+            "account_key",
+            "account_name",
+            "account_total",
+            "cash_available",
+            "portfolio_saved_at",
+            "rows",
+            "settings",
+        )
+    )
+    if same_payload:
+        state = existing
+    else:
+        state = {
+            **candidate,
+            "revision": existing["revision"] + 1,
+            "saved_at": time.time(),
+        }
+        st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = state
+
+    _risk_book_state_component(
+        storage_key=_RISK_BOOK_STORAGE_KEY,
+        server_state=state,
+        key="raj_risk_book_state_writer_v1",
+        default=None,
+    )
+    return state
+
+
+def _risk_book_memory_age_text(saved_at: float) -> str:
+    seconds = max(0, int(time.time() - float(saved_at or 0.0)))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m ago"
+    return f"{seconds // 86400}d {(seconds % 86400) // 3600}h ago"
 
 
 @st.cache_resource
@@ -710,41 +946,137 @@ def render_risk_sizing(
     )
     _how_to_use()
 
-    if not client:
-        st.info("Connect E*TRADE at the top of the terminal to load the portfolio and size risk.")
+    persisted_snapshot = _load_persisted_risk_book_snapshot()
+    _restore_risk_book_settings(persisted_snapshot)
+
+    account: dict[str, Any] | None = None
+    account_key = ""
+    account_name = ""
+    normalized = pd.DataFrame()
+    account_total = 0.0
+    cash_available = 0.0
+    portfolio_saved_at = 0.0
+    using_persisted_snapshot = False
+    using_persisted_balance = False
+    live_error = ""
+    live_portfolio_resolved = False
+
+    if client is not None:
+        if not st.session_state.get("etrade_accounts"):
+            try:
+                refresh_accounts(client)
+            except ETradeError as exc:
+                live_error = str(exc)
+
+        if not live_error:
+            account = account_picker("risk_sizing_account")
+            if account:
+                account_key = str(account.get("accountIdKey", ""))
+                account_name = str(
+                    account.get("accountName")
+                    or account.get("accountDesc")
+                    or account.get("accountId")
+                    or ""
+                ).strip()
+
+                refresh_portfolio = st.button(
+                    "REFRESH RISK PORTFOLIO",
+                    type="primary",
+                    key="risk_refresh_portfolio",
+                )
+
+                holdings_cache = st.session_state.setdefault("etrade_holdings", {})
+                if refresh_portfolio or holdings_cache.get(account_key) is None:
+                    try:
+                        holdings_cache[account_key] = client.get_portfolio(account_key)
+                        account_balance(client, account, refresh=True)
+                        touch_session()
+                    except ETradeError as exc:
+                        live_error = str(exc)
+
+                if not live_error and holdings_cache.get(account_key) is not None:
+                    raw_holdings = holdings_cache.get(account_key) or []
+                    normalized = _normalized_holdings(raw_holdings)
+                    live_portfolio_resolved = True
+                    portfolio_saved_at = _risk_book_portfolio_saved_at(
+                        client,
+                        account_key,
+                    )
+
+                    try:
+                        balance_payload = account_balance(client, account, refresh=False)
+                        account_total, cash_available, _ = balance_snapshot(balance_payload)
+                    except ETradeError:
+                        same_snapshot = bool(
+                            persisted_snapshot
+                            and persisted_snapshot.get("account_key") == account_key
+                        )
+                        if same_snapshot:
+                            account_total = float(persisted_snapshot.get("account_total") or 0.0)
+                            cash_available = float(persisted_snapshot.get("cash_available") or 0.0)
+                            using_persisted_balance = True
+            else:
+                live_error = "E*TRADE account data is still loading."
+    else:
+        live_error = "E*TRADE is not connected."
+
+    if live_portfolio_resolved and normalized.empty:
+        _persist_risk_book_snapshot(
+            account_key=account_key,
+            account_name=account_name,
+            normalized=normalized,
+            account_total=account_total,
+            cash_available=cash_available,
+            portfolio_saved_at=portfolio_saved_at or time.time(),
+        )
+        st.info("No positions were returned for the selected account.")
         return
 
-    if not st.session_state.get("etrade_accounts"):
-        try:
-            refresh_accounts(client)
-        except ETradeError as exc:
-            st.error(str(exc))
-            return
+    if normalized.empty and persisted_snapshot:
+        same_account = (
+            not account_key
+            or not persisted_snapshot.get("account_key")
+            or persisted_snapshot.get("account_key") == account_key
+        )
+        if same_account:
+            normalized = _risk_book_snapshot_frame(persisted_snapshot)
+            account_key = str(persisted_snapshot.get("account_key") or account_key or "risk-memory")
+            account_name = str(persisted_snapshot.get("account_name") or account_name)
+            account_total = float(persisted_snapshot.get("account_total") or 0.0)
+            cash_available = float(persisted_snapshot.get("cash_available") or 0.0)
+            portfolio_saved_at = float(
+                persisted_snapshot.get("portfolio_saved_at")
+                or persisted_snapshot.get("saved_at")
+                or 0.0
+            )
+            using_persisted_snapshot = not normalized.empty
 
-    account = account_picker("risk_sizing_account")
-    if not account:
-        st.info("No E*TRADE account was returned.")
+    if normalized.empty:
+        if live_error:
+            st.info(
+                "Connect E*TRADE at the top of the terminal to load the portfolio and size risk. "
+                + live_error
+            )
+        else:
+            st.info("No E*TRADE Risk Book snapshot is available yet.")
         return
 
-    account_key = str(account.get("accountIdKey", ""))
-    refresh_portfolio = st.button(
-        "REFRESH RISK PORTFOLIO",
-        type="primary",
-        key="risk_refresh_portfolio",
-    )
+    if using_persisted_snapshot:
+        st.caption(
+            "RISK BOOK MEMORY // LAST E*TRADE SNAPSHOT // "
+            + _risk_book_memory_age_text(portfolio_saved_at)
+            + " // LIVE E*TRADE DATA WILL REPLACE THIS SNAPSHOT WHEN AVAILABLE"
+        )
+    elif using_persisted_balance:
+        st.caption(
+            "RISK BOOK MEMORY // LIVE HOLDINGS + LAST E*TRADE BALANCE SNAPSHOT // "
+            + _risk_book_memory_age_text(
+                float(persisted_snapshot.get("portfolio_saved_at") or 0.0)
+                if persisted_snapshot
+                else 0.0
+            )
+        )
 
-    holdings_cache = st.session_state.setdefault("etrade_holdings", {})
-    if refresh_portfolio or holdings_cache.get(account_key) is None:
-        try:
-            holdings_cache[account_key] = client.get_portfolio(account_key)
-            account_balance(client, account, refresh=True)
-            touch_session()
-        except ETradeError as exc:
-            st.error(str(exc))
-            return
-
-    raw_holdings = holdings_cache.get(account_key) or []
-    normalized = _normalized_holdings(raw_holdings)
     active_symbols = (
         normalized["Symbol"].astype(str).str.strip().str.upper().tolist()
         if "Symbol" in normalized.columns
@@ -755,16 +1087,6 @@ def render_risk_sizing(
         active_symbols,
     )
     _sync_risk_intent_browser(account_key, risk_intent_state)
-    if normalized.empty:
-        st.info("No positions were returned for the selected account.")
-        return
-
-    try:
-        balance_payload = account_balance(client, account, refresh=False)
-        account_total, cash_available, _ = balance_snapshot(balance_payload)
-    except ETradeError:
-        account_total = 0.0
-        cash_available = 0.0
 
     market_total = pd.to_numeric(
         normalized["Market Value"], errors="coerce"
@@ -1256,6 +1578,15 @@ def render_risk_sizing(
                 summary=summary,
                 touch_session=touch_session,
             )
+
+    _persist_risk_book_snapshot(
+        account_key=account_key,
+        account_name=account_name,
+        normalized=normalized,
+        account_total=account_total,
+        cash_available=cash_available,
+        portfolio_saved_at=portfolio_saved_at or time.time(),
+    )
 
     st.caption(
         "Hover ? for formulas. Stock risk = shares × stop distance; spread risk = maximum loss."

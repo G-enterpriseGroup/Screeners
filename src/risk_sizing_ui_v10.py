@@ -459,7 +459,7 @@ def render_risk_sizing(*args, **kwargs):
 
     try:
         client = args[0] if args else kwargs.get("client")
-        if client is None:
+        if client is None and _v9._v2._load_persisted_risk_book_snapshot() is None:
             return _render_disconnected_ticker_fallback()
         return _v9.render_risk_sizing(*args, **kwargs)
     finally:

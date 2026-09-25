@@ -100,6 +100,67 @@ render_risk_sizing(
 """
 
 
+PERSISTED_BOOK_FIXTURE = """import streamlit as st
+from src.risk_sizing_ui_v7 import render_risk_sizing
+import src.risk_sizing_ui_v2 as v2
+import src.risk_sizing_ui_v9 as v9
+import src.risk_sizing_ui_v10 as v10
+
+v9.render_stockanalysis_portfolio = lambda *a, **k: None
+v2._risk_book_state_component = lambda *a, **k: None
+
+def fake_yahoo(symbol):
+    return dict(
+        symbol=symbol,
+        companyName=f"{symbol} Yahoo Fixture",
+        lastPrice=500.00,
+        bid=499.90,
+        ask=500.10,
+        changeClose=2.00,
+        _risk_quote_source="YAHOO FINANCE",
+        _risk_quote_ask_proxy=False,
+    )
+
+v10._yfinance_quote_payload = fake_yahoo
+st.session_state["_risk_book_snapshot_v1"] = {
+    "revision": 7,
+    "saved_at": 1000.0,
+    "portfolio_saved_at": 1000.0,
+    "account_key": "cached-risk-account",
+    "account_name": "Last E*TRADE Session",
+    "account_total": 100000.0,
+    "cash_available": 5000.0,
+    "rows": [
+        {"Symbol":"SPY","Type":"ETF","CUSIP":"","Market Value":20000.0,"Gain/Loss":800.0,"Gain/Loss %":8.0},
+        {"Symbol":"QQQ","Type":"ETF","CUSIP":"","Market Value":10000.0,"Gain/Loss":-500.0,"Gain/Loss %":-5.0},
+    ],
+    "settings": {
+        "risk_gain_threshold": 6.0,
+        "risk_tactical_sleeve_pct": 20.0,
+        "risk_full_position_pct": 2.0,
+        "risk_ticker": "SPY",
+        "risk_trade_structure": "STOCK / ETF",
+        "risk_size_multiplier": 1.0,
+        "risk_entry_price": 490.0,
+        "risk_stop_price": 465.5,
+        "_risk_entry_seed_symbol": "SPY",
+    },
+}
+
+def unexpected(*args, **kwargs):
+    raise AssertionError("E*TRADE account callbacks must not run when Risk Book memory is available")
+
+render_risk_sizing(
+    None,
+    account_picker=unexpected,
+    refresh_accounts=unexpected,
+    account_balance=unexpected,
+    balance_snapshot=unexpected,
+    touch_session=lambda:None,
+)
+"""
+
+
 
 def main():
     source = (ROOT / "src" / "risk_sizing_ui_v10.py").read_text(encoding="utf-8")
@@ -120,6 +181,10 @@ def main():
     assert len(app.checkbox) == 6
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
+    saved = app.session_state["_risk_book_snapshot_v1"]
+    assert saved["account_key"] == "fixture"
+    assert len(saved["rows"]) == 6
+    assert saved["account_total"] == 100000.0
     assert metric("CURRENT TACTICAL") == "$16,562.00"
     assert metric("MAX SHARES") == "22"
     app.checkbox[0].check().run()
@@ -175,9 +240,20 @@ def main():
     assert disconnected.selectbox(key="risk_ticker_smart_v10").value.startswith("SPY")
     assert len(disconnected.number_input) == 0
 
+    remembered = AppTest.from_string(PERSISTED_BOOK_FIXTURE, default_timeout=30).run()
+    assert not remembered.exception, [e.message for e in remembered.exception]
+    assert len(remembered.checkbox) == 2
+    assert remembered.number_input(key="risk_gain_threshold").value == 6.0
+    assert remembered.number_input(key="risk_tactical_sleeve_pct").value == 20.0
+    assert remembered.number_input(key="risk_full_position_pct").value == 2.0
+    assert remembered.session_state["_risk_book_snapshot_v1"]["account_key"] == "cached-risk-account"
+    assert remembered.session_state["risk_quote_source"] == "YAHOO FINANCE"
+    memory_caption = [str(item.value) for item in remembered.caption]
+    assert any("RISK BOOK MEMORY" in value for value in memory_caption)
+
     assert "retry_live_due" in source
     assert "_risk_live_quote_attempt_at" in source
-    print("Production Risk route: fragment ownership, E*TRADE-first quote path, disconnected Yahoo fallback, sizing PASS")
+    print("Production Risk route: live persistence, last-session Risk Book memory, E*TRADE-first quote path, disconnected Yahoo fallback, sizing PASS")
 
 
 if __name__ == "__main__":
