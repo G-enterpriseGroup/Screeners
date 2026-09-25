@@ -1,0 +1,33 @@
+name: Temporary Streamlit Hot Reload Import Validation
+
+on:
+  push:
+    branches: [streamlit-hot-reload-import-guard]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-import-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+      - name: Python 3.14 ETrade cache import smoke
+        run: python -c "import src.etrade_data_cache; print('Python 3.14 ETrade cache import: PASS')"
+      - name: Syntax check entrypoint
+        run: |
+          python -m py_compile streamlit_app.py
+          python -m py_compile src/etrade_data_cache.py
+          python -m py_compile scripts/test_streamlit_hot_reload_import_guard.py
+      - name: Hot reload import retry regression
+        run: python scripts/test_streamlit_hot_reload_import_guard.py
+      - name: Top-level tab smoke test
+        run: python scripts/test_tab_layout.py
+      - name: Architecture guard
+        run: python scripts/validate_architecture.py
