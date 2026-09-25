@@ -67,14 +67,6 @@ _risk_book_state_component = components.declare_component(
 )
 _RISK_BOOK_SNAPSHOT_SESSION_KEY = "_risk_book_snapshot_v1"
 _RISK_BOOK_STORAGE_KEY = "raj-terminal-risk-book-v1"
-_RISK_BOOK_FIELDS = (
-    "Symbol",
-    "Type",
-    "CUSIP",
-    "Market Value",
-    "Gain/Loss",
-    "Gain/Loss %",
-)
 _RISK_BOOK_NUMERIC_SETTINGS = (
     "risk_gain_threshold",
     "risk_tactical_sleeve_pct",
