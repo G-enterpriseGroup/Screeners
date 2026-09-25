@@ -257,7 +257,7 @@ def main():
         "risk_intent_state_writer_shell",
     ):
         assert shell in v2_source
-    assert '[data-testid="stElementContainer"]:has(.st-key-risk_intent_state_reader_shell)' in v2_source
+    assert '[data-testid="stLayoutWrapper"]:has(> .st-key-risk_intent_state_reader_shell)' in v2_source
     assert "position:absolute !important;" in v2_source
 
     app = AppTest.from_string(FIXTURE, default_timeout=30).run()
