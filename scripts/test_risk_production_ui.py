@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 from streamlit.testing.v1 import AppTest
 
+from src.risk_sizing import stock_position_size
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 FIXTURE = """import streamlit as st
@@ -24,6 +26,21 @@ class FixtureClient:
 st.session_state['etrade_accounts']=[{'accountIdKey':'fixture','accountName':'Synthetic test portfolio'}]
 render_risk_sizing(FixtureClient(), account_picker=lambda _:st.session_state['etrade_accounts'][0], refresh_accounts=lambda _:None, account_balance=lambda *a,**k:{'Computed':{'cashBalance':2000}}, balance_snapshot=lambda p:(100000,2000,98000), touch_session=lambda:None)
 """
+
+LIQUID_LIMIT_FIXTURE = FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['risk_liquid_balance']=1000.0\n"
+    "st.session_state['risk_use_liquid_balance']=True\n"
+    "st.session_state['risk_use_tactical_room']=False\n"
+    "st.session_state['etrade_accounts']=",
+)
+
+TACTICAL_LIMIT_FIXTURE = FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['risk_use_liquid_balance']=False\n"
+    "st.session_state['risk_use_tactical_room']=True\n"
+    "st.session_state['etrade_accounts']=",
+)
 
 
 FALLBACK_FIXTURE = """import streamlit as st
@@ -283,6 +300,12 @@ def main():
     assert saved["account_total"] == 100000.0
     assert metric("CURRENT TACTICAL") == "$16,562.00"
     assert metric("MAX SHARES") == "22"
+    assert app.number_input(key="risk_liquid_balance").value == 2000.0
+    assert app.session_state["risk_use_liquid_balance"] is False
+    assert app.session_state["risk_use_tactical_room"] is False
+    assert saved["settings"]["risk_liquid_balance"] == 2000.0
+    assert saved["settings"]["risk_use_liquid_balance"] is False
+    assert saved["settings"]["risk_use_tactical_room"] is False
     app.checkbox[0].check().run()
     clean()
     assert app.checkbox[0].value and app.checkbox[1].value
@@ -315,6 +338,41 @@ def main():
     clean()
     assert metric("MAX SPREADS") == "2"
     assert metric("ACTUAL MAX RISK") == "$200.00"
+
+    risk_only = stock_position_size(771.32, 770.00, 66.73)
+    liquid_limited = stock_position_size(771.32, 770.00, 66.73, capital_limit=5000.00)
+    room_limited = stock_position_size(771.32, 770.00, 66.73, capital_limit=1026.30)
+    assert risk_only["shares"] == 50
+    assert liquid_limited["shares"] == 6
+    assert liquid_limited["notional"] == 4627.92
+    assert room_limited["shares"] == 1
+    assert room_limited["notional"] == 771.32
+
+    liquid_app = AppTest.from_string(LIQUID_LIMIT_FIXTURE, default_timeout=30).run()
+    assert not liquid_app.exception, [e.message for e in liquid_app.exception]
+    liquid_metric = lambda label: next(
+        BeautifulSoup(item.value, "html.parser").select_one(".rs9-value").text
+        for item in liquid_app.get("html")
+        if (
+            (dom := BeautifulSoup(item.value, "html.parser")).select_one(".rs9-label")
+            and dom.select_one(".rs9-label").text == label
+        )
+    )
+    assert liquid_metric("MAX SHARES") == "5"
+    assert liquid_metric("POSITION NOTIONAL") == "$1,000.00"
+
+    tactical_app = AppTest.from_string(TACTICAL_LIMIT_FIXTURE, default_timeout=30).run()
+    assert not tactical_app.exception, [e.message for e in tactical_app.exception]
+    tactical_metric = lambda label: next(
+        BeautifulSoup(item.value, "html.parser").select_one(".rs9-value").text
+        for item in tactical_app.get("html")
+        if (
+            (dom := BeautifulSoup(item.value, "html.parser")).select_one(".rs9-label")
+            and dom.select_one(".rs9-label").text == label
+        )
+    )
+    assert tactical_metric("MAX SHARES") == "0"
+    assert tactical_metric("POSITION NOTIONAL") == "$0.00"
 
     fallback = AppTest.from_string(FALLBACK_FIXTURE, default_timeout=30).run()
     assert not fallback.exception, [e.message for e in fallback.exception]
