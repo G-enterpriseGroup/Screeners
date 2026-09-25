@@ -1,0 +1,36 @@
+name: Temporary Risk Book Memory Validation
+
+on:
+  push:
+    branches: [risk-book-browser-memory]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-risk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+      - name: Syntax check Risk production path
+        run: |
+          python -m py_compile src/risk_sizing_ui_v7.py
+          python -m py_compile src/risk_sizing_ui_v10.py
+          python -m py_compile src/risk_sizing_ui_v9.py
+          python -m py_compile src/risk_sizing_ui_v2.py
+          python -m py_compile scripts/test_risk_production_ui.py
+          python -m py_compile streamlit_app.py
+      - name: Risk production interaction regression
+        run: python scripts/test_risk_production_ui.py
+      - name: Risk intent regression
+        run: python scripts/test_risk_intent_override.py
+      - name: Top-level tab smoke test
+        run: python scripts/test_tab_layout.py
+      - name: Architecture guard
+        run: python scripts/validate_architecture.py
