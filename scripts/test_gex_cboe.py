@@ -7,6 +7,7 @@ Requires production requirements. No live CBOE or broker request is made.
 from datetime import datetime, timedelta
 from pathlib import Path
 import copy
+import math
 import sys
 import unittest
 from unittest.mock import patch
@@ -64,7 +65,7 @@ class CboeGexTests(unittest.TestCase):
             gex_cboe,
             "_fetch_cboe_chain",
             return_value=(self.payload, self.source_url),
-        ), patch.object(core, "_estimate_gamma_flip", return_value=101.25):
+        ), patch.object(gex_cboe, "_estimate_apps_script_gamma_flip", return_value=101.25):
             result = gex_cboe.build_cboe_gex(
                 "SPY",
                 45,
@@ -84,13 +85,142 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("SPOT,100,0", result["packed"])
         self.assertIn("GFLIP,101.25,0", result["packed"])
         self.assertIn("Source URL: " + self.source_url, result["summaryText"])
+        rows = {row["strike"]: row for row in result["rawRows"]}
+        self.assertAlmostEqual(rows[95.0]["call_gex"], 10_000.0)
+        self.assertAlmostEqual(rows[95.0]["put_gex"], -36_000.0)
+        self.assertAlmostEqual(rows[95.0]["net_gex"], -26_000.0)
+        self.assertAlmostEqual(rows[105.0]["call_gex"], 60_000.0)
+        self.assertAlmostEqual(rows[105.0]["put_gex"], -4_500.0)
+
+
+    def test_code_gs_wall_selection_semantics(self):
+        payload = copy.deepcopy(self.payload)
+        payload["data"]["options"].extend(
+            [
+                {
+                    "option": occ("SPY", self.expiry, "C", 90.0),
+                    "open_interest": 50,
+                    "iv": 0.20,
+                    "gamma": 0.100,
+                },
+                {
+                    "option": occ("SPY", self.expiry, "P", 90.0),
+                    "open_interest": 500,
+                    "iv": 0.20,
+                    "gamma": 0.012,
+                },
+                {
+                    "option": occ("SPY", self.expiry, "C", 110.0),
+                    "open_interest": 1000,
+                    "iv": 0.20,
+                    "gamma": 0.001,
+                },
+                {
+                    "option": occ("SPY", self.expiry, "P", 110.0),
+                    "open_interest": 10,
+                    "iv": 0.20,
+                    "gamma": 0.001,
+                },
+            ]
+        )
+
+        with patch.object(
+            gex_cboe,
+            "_fetch_cboe_chain",
+            return_value=(payload, self.source_url),
+        ), patch.object(
+            gex_cboe,
+            "_estimate_apps_script_gamma_flip",
+            return_value=100.0,
+        ):
+            component = gex_cboe.build_cboe_gex(
+                "SPY", 45, "America/New_York", "COMPONENT_GEX"
+            )
+            net = gex_cboe.build_cboe_gex(
+                "SPY", 45, "America/New_York", "NET_GEX"
+            )
+
+        # Supplied Code.gs selects CALLWALL by max call OI, not max call GEX.
+        self.assertEqual(component["maxCallOi"]["strike"], 110.0)
+        self.assertEqual(component["callWall"]["strike"], 110.0)
+
+        # Supplied Code.gs selects PUTWALL by minimum net GEX, not minimum
+        # put-component GEX.  90 has the larger put component, while 95 has
+        # the more negative combined GEX.
+        rows = {row["strike"]: row for row in component["rawRows"]}
+        self.assertLess(rows[90.0]["put_gex"], rows[95.0]["put_gex"])
+        self.assertLess(rows[95.0]["net_gex"], rows[90.0]["net_gex"])
+        self.assertEqual(component["putWall"]["strike"], 95.0)
+        self.assertEqual(net["putWall"]["strike"], 95.0)
+
+    def test_gamma_flip_matches_supplied_code_gs_scan(self):
+        contracts = [
+            {"cp": "P", "strike": 95.0, "dte": 30, "oi": 500.0, "iv": 0.22},
+            {"cp": "C", "strike": 105.0, "dte": 30, "oi": 500.0, "iv": 0.22},
+        ]
+        spot = 100.0
+
+        def total_gex(test_spot):
+            total = 0.0
+            for contract in contracts:
+                sigma = max(float(contract["iv"]), 0.0001)
+                t = max(float(contract["dte"]) / 365.0, 0.5 / 365.0)
+                sqrt_t = math.sqrt(t)
+                d1 = (
+                    math.log(test_spot / float(contract["strike"]))
+                    + (core.RISK_FREE_RATE + 0.5 * sigma * sigma) * t
+                ) / (sigma * sqrt_t)
+                gamma = (
+                    math.exp(-0.5 * d1 * d1)
+                    / math.sqrt(2.0 * math.pi)
+                    / (test_spot * sigma * sqrt_t)
+                )
+                exposure = (
+                    gamma
+                    * float(contract["oi"])
+                    * core.CONTRACT_SIZE
+                    * test_spot
+                    * test_spot
+                    * 0.01
+                )
+                total += exposure if contract["cp"] == "C" else -exposure
+            return total
+
+        strikes = sorted(contract["strike"] for contract in contracts)
+        low = max(0.01, min(strikes[0], spot * 0.50))
+        high = max(strikes[-1], spot * 1.50)
+        expected = None
+        best_distance = None
+        prev_px = low
+        prev_gex = total_gex(prev_px)
+        for index in range(1, gex_cboe.GAMMA_FLIP_STEPS + 1):
+            px = low + (high - low) * index / gex_cboe.GAMMA_FLIP_STEPS
+            now_gex = total_gex(px)
+            crossed = (
+                (prev_gex < 0 and now_gex > 0)
+                or (prev_gex > 0 and now_gex < 0)
+                or now_gex == 0
+            )
+            if crossed and abs(now_gex - prev_gex) > 0:
+                candidate = prev_px - prev_gex * (px - prev_px) / (now_gex - prev_gex)
+                distance = abs(candidate - spot)
+                if best_distance is None or distance < best_distance:
+                    expected = candidate
+                    best_distance = distance
+            prev_px = px
+            prev_gex = now_gex
+
+        actual = gex_cboe._estimate_apps_script_gamma_flip(contracts, spot)
+        self.assertIsNotNone(expected)
+        self.assertIsNotNone(actual)
+        self.assertAlmostEqual(actual, expected, places=8)
 
     def test_net_wall_mode_matches_production_semantics(self):
         with patch.object(
             gex_cboe,
             "_fetch_cboe_chain",
             return_value=(self.payload, self.source_url),
-        ), patch.object(core, "_estimate_gamma_flip", return_value=100.0):
+        ), patch.object(gex_cboe, "_estimate_apps_script_gamma_flip", return_value=100.0):
             component = gex_cboe.build_cboe_gex(
                 "SPY", 45, "America/New_York", "COMPONENT_GEX"
             )
