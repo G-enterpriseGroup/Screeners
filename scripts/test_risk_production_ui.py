@@ -22,7 +22,51 @@ class FixtureClient:
         return dict(symbol=symbol,companyName=company_name(symbol),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
     def lookup(self,*a,**k): return {}
 st.session_state['etrade_accounts']=[{'accountIdKey':'fixture','accountName':'Synthetic test portfolio'}]
+st.session_state['fixture_full_runs'] = st.session_state.get('fixture_full_runs', 0) + 1
 render_risk_sizing(FixtureClient(), account_picker=lambda _:st.session_state['etrade_accounts'][0], refresh_accounts=lambda _:None, account_balance=lambda *a,**k:{'Computed':{'cashBalance':2000}}, balance_snapshot=lambda p:(100000,2000,98000), touch_session=lambda:None)
+"""
+
+
+FALLBACK_FIXTURE = """import streamlit as st
+from src.etrade_client import ETradeError
+from src.risk_sizing_ui_v7 import render_risk_sizing
+import src.risk_sizing_ui_v9 as v9
+import src.risk_sizing_ui_v10 as v10
+v9.render_stockanalysis_portfolio = lambda *a, **k: None
+
+def fake_yahoo(symbol):
+    st.session_state.setdefault("fixture_yahoo_quotes", []).append(symbol)
+    return dict(
+        symbol=symbol,
+        companyName=f"{symbol} Yahoo Fixture",
+        lastPrice=321.10,
+        bid=321.05,
+        ask=321.25,
+        changeClose=1.25,
+        _risk_quote_source="YAHOO FINANCE",
+        _risk_quote_ask_proxy=False,
+    )
+
+v10._yfinance_quote_payload = fake_yahoo
+
+class FailingQuoteClient:
+    def get_portfolio(self, account):
+        return [dict(Product=dict(symbol='SPY',securityType='ETF'),marketValue=10000,totalGain=500,totalGainPct=5,quantity=10,pricePaid=100)]
+    def get_quote(self, symbol):
+        st.session_state.setdefault("fixture_etrade_attempts", []).append(symbol)
+        raise ETradeError("synthetic live quote failure")
+    def lookup(self,*a,**k): return {}
+
+st.session_state['etrade_accounts']=[{'accountIdKey':'fallback','accountName':'Fallback test'}]
+st.session_state['fallback_full_runs'] = st.session_state.get('fallback_full_runs', 0) + 1
+render_risk_sizing(
+    FailingQuoteClient(),
+    account_picker=lambda _:st.session_state['etrade_accounts'][0],
+    refresh_accounts=lambda _:None,
+    account_balance=lambda *a,**k:{'Computed':{'cashBalance':2000}},
+    balance_snapshot=lambda p:(100000,2000,98000),
+    touch_session=lambda:None,
+)
 """
 
 
@@ -42,6 +86,7 @@ def main():
     assert len(app.checkbox) == 6
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
+    assert app.session_state["fixture_full_runs"] == 1
     assert metric("CURRENT TACTICAL") == "$16,562.00"
     assert metric("MAX SHARES") == "22"
     app.checkbox[0].check().run()
@@ -58,6 +103,7 @@ def main():
     app.number_input(key="risk_stop_price").set_value(180.0).run()
     clean()
     assert metric("MAX SHARES") == "11"
+    assert app.session_state["fixture_full_runs"] == 1
     assert app.session_state["fixture_quotes"] == ["SPY"]
     ticker = app.selectbox(key="risk_ticker_smart_v10")
     ticker.select(next(label for label in ticker.options if label.startswith("QQQ —"))).run()
@@ -74,7 +120,23 @@ def main():
     clean()
     assert metric("MAX SPREADS") == "2"
     assert metric("ACTUAL MAX RISK") == "$200.00"
-    print("Production Risk route: duplicate lots, sleeve math, ASK/stop seed, stop updates, spreads PASS")
+    assert app.session_state["fixture_full_runs"] == 1
+
+    fallback = AppTest.from_string(FALLBACK_FIXTURE, default_timeout=30).run()
+    assert not fallback.exception, [e.message for e in fallback.exception]
+    assert fallback.session_state["fixture_etrade_attempts"] == ["SPY"]
+    assert fallback.session_state["fixture_yahoo_quotes"] == ["SPY"]
+    assert fallback.session_state["risk_quote_source"] == "YAHOO FINANCE"
+    assert fallback.number_input(key="risk_entry_price").value == 321.25
+    assert fallback.number_input(key="risk_stop_price").value == 305.19
+    assert fallback.session_state["fallback_full_runs"] == 1
+    fallback.number_input(key="risk_stop_price").set_value(300.0).run()
+    assert not fallback.exception, [e.message for e in fallback.exception]
+    assert fallback.session_state["fallback_full_runs"] == 1
+    assert fallback.session_state["fixture_etrade_attempts"] == ["SPY"]
+    assert fallback.session_state["fixture_yahoo_quotes"] == ["SPY"]
+
+    print("Production Risk route: reactive reruns, E*TRADE-first quote path, Yahoo fallback, sizing PASS")
 
 
 if __name__ == "__main__":
