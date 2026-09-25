@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import time
 
 import streamlit as st
 
@@ -222,12 +223,26 @@ def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, cl
 
         quote_data = st.session_state.get("risk_quote_data")
         quote_symbol = str(st.session_state.get("risk_quote_symbol") or "").strip().upper()
+        quote_source = str(st.session_state.get("risk_quote_source") or "").strip().upper()
         seed_symbol = str(st.session_state.get("_risk_entry_seed_symbol") or "").strip().upper()
+
+        live_available = client is not None and not bool(getattr(client, "is_offline", False))
+        try:
+            last_live_attempt = float(st.session_state.get("_risk_live_quote_attempt_at") or 0.0)
+        except (TypeError, ValueError):
+            last_live_attempt = 0.0
+        retry_live_due = (
+            live_available
+            and quote_source != "E*TRADE"
+            and time.time() - last_live_attempt >= 15.0
+        )
+
         needs_quote = (
             quote_symbol != selected
             or seed_symbol != selected
             or not isinstance(quote_data, dict)
             or not quote_data
+            or retry_live_due
         )
         if not needs_quote:
             return
@@ -237,7 +252,8 @@ def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, cl
         live_error = None
 
         # 1) Always try a forced live E*TRADE quote first when a live client exists.
-        if client is not None and not bool(getattr(client, "is_offline", False)):
+        if live_available:
+            st.session_state["_risk_live_quote_attempt_at"] = time.time()
             try:
                 payload = _request_live_etrade_quote(client, selected)
                 if bool(st.session_state.get("_etrade_offline_mode", False)):
@@ -329,6 +345,86 @@ def _safe_auto_quote_ticker_input(original_text_input, original_selectbox, *, cl
 
     return wrapped
 
+def _render_disconnected_ticker_fallback() -> None:
+    """Keep ticker research usable when no E*TRADE account client exists yet."""
+    _render_css_v10()
+    st.info(
+        "E*TRADE PORTFOLIO CONTEXT UNAVAILABLE // Yahoo Finance quote fallback is active. "
+        "Reconnect E*TRADE to restore account-based risk budgets and position sizing."
+    )
+    st.html('<div class="risk-v9-section">2. SIZE THE NEXT TRADE</div>')
+
+    current = str(st.session_state.get("risk_ticker") or "SPY").strip().upper() or "SPY"
+    selected = smart_ticker_selector(
+        st.selectbox,
+        label="Ticker Search",
+        current=current,
+        key="risk_ticker_smart_v10",
+        help_text=(
+            "Type a ticker or company name. Live E*TRADE remains the primary source whenever "
+            "a broker connection is available; Yahoo Finance is being used because no E*TRADE "
+            "portfolio client is currently available."
+        ),
+    )
+    selected = str(selected or current).strip().upper() or current
+    st.session_state["risk_ticker"] = selected
+
+    quote_data = st.session_state.get("risk_quote_data")
+    quote_symbol = str(st.session_state.get("risk_quote_symbol") or "").strip().upper()
+    quote_source = str(st.session_state.get("risk_quote_source") or "").strip().upper()
+    needs_quote = (
+        quote_symbol != selected
+        or quote_source != "YAHOO FINANCE"
+        or not isinstance(quote_data, dict)
+        or not quote_data
+    )
+
+    if needs_quote:
+        try:
+            quote_data = _v9._quote_summary_with_defaults(
+                _yfinance_quote_payload(selected)
+            )
+            st.session_state["risk_quote_data"] = quote_data
+            st.session_state["risk_quote_symbol"] = selected
+            st.session_state["risk_quote_source"] = "YAHOO FINANCE"
+            st.session_state.pop("_risk_v9_quote_error", None)
+        except Exception as exc:
+            st.session_state["risk_quote_symbol"] = ""
+            st.warning(f"Yahoo Finance quote load failed for {selected}: {exc}")
+            quote_data = None
+
+    if quote_data and st.session_state.get("risk_quote_symbol") == selected:
+        q1, q2, q3, q4 = st.columns(4, gap="small")
+        _v9._compact_metric_box(
+            q1,
+            "LAST",
+            f"${float(quote_data.get('last') or 0.0):,.2f}",
+            "positive",
+            help_text="Latest price returned by Yahoo Finance. Reconnect E*TRADE for broker-native quotes.",
+        )
+        _v9._compact_metric_box(
+            q2,
+            "BID",
+            f"${float(quote_data.get('bid') or 0.0):,.2f}",
+            "blue",
+            help_text="Bid returned by Yahoo Finance when available.",
+        )
+        _v9._compact_metric_box(
+            q3,
+            "ASK",
+            f"${float(quote_data.get('ask') or 0.0):,.2f}",
+            "blue",
+            help_text="Ask returned by Yahoo Finance; latest price is used only when Yahoo has no usable ask.",
+        )
+        change = float(quote_data.get("change") or 0.0)
+        _v9._compact_metric_box(
+            q4,
+            "CHANGE",
+            f"{change:+.2f}",
+            "positive" if change >= 0 else "negative",
+            help_text="Price change returned or derived from Yahoo Finance.",
+        )
+
 def _safe_full_width_ticker_columns(original_columns, original_container, original_empty):
     """Do NOT intercept columns; CSS handles the one ticker row."""
     def wrapped(spec, *args, **kwargs):
@@ -362,6 +458,9 @@ def render_risk_sizing(*args, **kwargs):
     st.caption = filtered_caption
 
     try:
+        client = args[0] if args else kwargs.get("client")
+        if client is None:
+            return _render_disconnected_ticker_fallback()
         return _v9.render_risk_sizing(*args, **kwargs)
     finally:
         # REQUIRED: always restore the underlying module hooks so a Risk Sizing
