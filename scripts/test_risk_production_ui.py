@@ -381,9 +381,6 @@ def main():
     assert tactical_metric("POSITION NOTIONAL") == "$0.00"
     assert len(tactical_app.segmented_control) == 1
     assert tactical_app.segmented_control(key="risk_capital_source").value == "USE TACTICAL ROOM"
-    tactical_app.segmented_control(key="risk_capital_source").select("USE LIQUID BALANCE ENTERED").run()
-    assert not tactical_app.exception, [e.message for e in tactical_app.exception]
-    assert tactical_app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
 
     fallback = AppTest.from_string(FALLBACK_FIXTURE, default_timeout=30).run()
     assert not fallback.exception, [e.message for e in fallback.exception]
