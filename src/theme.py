@@ -177,11 +177,39 @@ textarea:not(:disabled),
 
 [data-baseweb="popover"] [role="option"]:hover,
 [data-baseweb="popover"] [role="option"]:focus,
+[data-baseweb="popover"] [role="option"][data-hovered],
+[data-baseweb="popover"] [role="option"][data-focused],
+[data-baseweb="popover"] [role="option"][data-highlighted],
 [data-baseweb="menu"] [role="option"]:hover,
 [data-baseweb="menu"] [role="option"]:focus,
+[data-baseweb="menu"] [role="option"][data-hovered],
+[data-baseweb="menu"] [role="option"][data-focused],
+[data-baseweb="menu"] [role="option"][data-highlighted],
 [role="listbox"] [role="option"]:hover,
-[role="listbox"] [role="option"]:focus {
+[role="listbox"] [role="option"]:focus,
+[role="listbox"] [role="option"][data-hovered],
+[role="listbox"] [role="option"][data-focused],
+[role="listbox"] [role="option"][data-highlighted] {
     background:#171007 !important;
+    color:#ffad52 !important;
+    -webkit-text-fill-color:#ffad52 !important;
+}
+
+[data-baseweb="popover"] [role="option"]:hover *,
+[data-baseweb="popover"] [role="option"]:focus *,
+[data-baseweb="popover"] [role="option"][data-hovered] *,
+[data-baseweb="popover"] [role="option"][data-focused] *,
+[data-baseweb="popover"] [role="option"][data-highlighted] *,
+[data-baseweb="menu"] [role="option"]:hover *,
+[data-baseweb="menu"] [role="option"]:focus *,
+[data-baseweb="menu"] [role="option"][data-hovered] *,
+[data-baseweb="menu"] [role="option"][data-focused] *,
+[data-baseweb="menu"] [role="option"][data-highlighted] *,
+[role="listbox"] [role="option"]:hover *,
+[role="listbox"] [role="option"]:focus *,
+[role="listbox"] [role="option"][data-hovered] *,
+[role="listbox"] [role="option"][data-focused] *,
+[role="listbox"] [role="option"][data-highlighted] * {
     color:#ffad52 !important;
     -webkit-text-fill-color:#ffad52 !important;
 }
