@@ -8,7 +8,7 @@ Current production v10 overrides the ticker wrapper so Risk uses:
 - automatic E*TRADE-first quote loading with Yahoo fallback
 - no manual PULL E*TRADE QUOTE button
 - ASK-seeded Entry and a 5%-below-ASK Stop
-- exactly one live stop-distance badge
+- exactly one live editable stop-distance control
 - compact dropdown controls, clear +/- steppers, and content-height number cards
 
 Part 1 portfolio/risk calculations are intentionally unchanged.
@@ -21,6 +21,7 @@ Part 1 portfolio/risk calculations are intentionally unchanged.
 from __future__ import annotations
 
 import html
+import math
 import re
 from typing import Any, Callable
 
@@ -269,9 +270,15 @@ def _render_css() -> None:
         [data-testid="stRadio"] label:has(input:checked){background:#fb8b1e!important;border-color:#fb8b1e!important;}
         [data-testid="stRadio"] label:has(input:checked) p{color:#000!important;}
 
-        .risk-v9-stop-row{display:flex;justify-content:flex-end;align-items:center;margin:0;font-family:"Courier New",monospace;}
-        .risk-v9-stop-pct{border:1px solid #5d3605;background:#050505;padding:.08rem .30rem;font-size:.80rem;font-weight:900;line-height:1.25;}
-        [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct) ~ [data-testid="stMarkdownContainer"]:has(.risk-v9-stop-pct){display:none!important;}
+        .st-key-risk_stop_distance_pct [data-testid="stWidgetLabel"] p,
+        .st-key-risk_stop_distance_pct input{
+            color:#ff5757!important;
+            -webkit-text-fill-color:#ff5757!important;
+            font-weight:900!important;
+        }
+        .st-key-risk_stop_distance_pct [data-testid="stNumberInputContainer"]{
+            border-color:#5d3605!important;
+        }
 
         /* PART 2 ONLY: one grid, one baseline, no inherited offsets. */
         .st-key-risk_part2_panel{margin:0!important;padding:0!important;gap:8px!important;}
@@ -488,7 +495,9 @@ _STOP_WHEEL_SCRIPT = """
         document.removeEventListener("wheel", window.__riskStopWheel, true);
     }
     window.__riskStopWheel = (event) => {
-        const input = event.target.closest?.(".st-key-risk_stop_price input");
+        const input = event.target.closest?.(
+            ".st-key-risk_stop_price input, .st-key-risk_stop_distance_pct input"
+        );
         if (!input || document.activeElement !== input || input.disabled
                 || event.ctrlKey || event.metaKey || !event.deltaY) return;
         const widget = input.closest('[data-testid="stNumberInput"]');
@@ -507,38 +516,80 @@ _STOP_WHEEL_SCRIPT = """
 """
 
 
+def _stop_distance_pct(entry_price: float, stop_price: float) -> float:
+    """Return the long-stop distance as a display/edit percentage."""
+    entry = float(entry_price or 0.0)
+    stop = float(stop_price or 0.0)
+    if entry <= 0:
+        return 5.0
+    pct = (entry - stop) / entry * 100.0
+    return min(100.0, max(0.01, round(pct, 2)))
+
+
+def _stop_from_distance_pct(entry_price: float, distance_pct: float) -> float:
+    """Convert an editable percent-below-entry value into a cent-valid stop."""
+    entry = float(entry_price or 0.0)
+    pct = min(100.0, max(0.01, float(distance_pct or 0.0)))
+    if entry <= 0:
+        return 0.0
+
+    raw_stop = entry * (1.0 - pct / 100.0)
+    max_long_stop = max(
+        0.0,
+        math.floor((entry - 0.01 + 1e-9) * 100.0) / 100.0,
+    )
+    return min(max_long_stop, max(0.0, round(raw_stop, 2)))
+
+
+def _sync_stop_from_distance_pct() -> None:
+    """Apply the editable percentage to Stop Loss before the fragment rerenders."""
+    try:
+        entry = float(st.session_state.get("risk_entry_price") or 0.0)
+        pct = float(st.session_state.get("risk_stop_distance_pct") or 5.0)
+    except (TypeError, ValueError):
+        return
+    if entry <= 0:
+        return
+    st.session_state["risk_stop_price"] = _stop_from_distance_pct(entry, pct)
+
+
 def _single_stop_number_input(original_number_input):
     rendered = False
 
     def wrapped(label, *args, **kwargs):
         nonlocal rendered
-        value = original_number_input(label, *args, **kwargs)
         if kwargs.get("key") != "risk_stop_price" or rendered:
-            return value
+            return original_number_input(label, *args, **kwargs)
+
         rendered = True
+        value = original_number_input(label, *args, **kwargs)
         try:
             entry = float(st.session_state.get("risk_entry_price", 0.0) or 0.0)
             stop = float(value or 0.0)
         except (TypeError, ValueError):
             entry, stop = 0.0, 0.0
 
-        if entry > 0:
-            signed = (entry - stop) / entry * 100.0
-            if abs(signed) < 0.005:
-                text, color, arrow = "0.00%", "#fb8b1e", "•"
-            elif signed > 0:
-                text, color, arrow = f"{abs(signed):.2f}% BELOW ENTRY", "#ff5757", "▼"
-            else:
-                text, color, arrow = f"{abs(signed):.2f}% ABOVE ENTRY", "#4af6c3", "▲"
-        else:
-            text, color, arrow = "—", "#fb8b1e", "%"
-
-        st.html(
-            '<div class="risk-v9-stop-row">'
-            f'<span class="risk-v9-stop-pct" style="color:{color}!important;">{arrow} {html.escape(text)}</span>'
-            '</div>' + _STOP_WHEEL_SCRIPT,
-            unsafe_allow_javascript=True,
+        distance_pct = _stop_distance_pct(entry, stop)
+        # Stop Loss remains the persisted source of truth. Re-derive the
+        # percentage before its widget is instantiated so manual Stop edits,
+        # Entry edits, and quote reseeds stay synchronized without st.rerun().
+        st.session_state["risk_stop_distance_pct"] = distance_pct
+        original_number_input(
+            "▼ % BELOW ENTRY",
+            min_value=0.01,
+            max_value=100.0,
+            step=0.25,
+            format="%.2f",
+            key="risk_stop_distance_pct",
+            on_change=_sync_stop_from_distance_pct,
+            help=(
+                "Editable stop distance. Defaults to 5.00% from the normal quote seed. "
+                "Type a percent, use + / −, or focus this field and scroll up/down in "
+                "0.25-point steps. Changing it updates Stop Loss and all Risk sizing "
+                "live inside this fragment; editing Stop Loss updates this percentage."
+            ),
         )
+        st.html(_STOP_WHEEL_SCRIPT, unsafe_allow_javascript=True)
         return value
     return wrapped
 
