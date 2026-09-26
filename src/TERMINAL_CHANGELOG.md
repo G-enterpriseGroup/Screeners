@@ -1474,3 +1474,14 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Commit SHA:** production implementation `08a38953aca5a8eefbb6963341e11cb240897901`; this changelog append is a documentation-only follow-up commit.
 - **Lesson:** Keep editable stop-distance behavior in the Risk presentation wrapper, synchronize it bidirectionally with the persisted Stop Loss through native widget callbacks, and rely on the existing Risk fragment for live updates instead of forcing a page rerun.
 
+
+## 2026-09-26 — Compact Part 2 without shrinking typography
+
+- **Feature / exact files:** Risk Part 2 presentation in `src/risk_sizing_ui_v9.py` and the Entry/Stop column ratio in `src/risk_sizing_ui_v2.py`.
+- **Problem / cause:** Fixed 56px metric-card minimums, 6px vertical card padding, repeated 8px vertical gaps and an additional full row for editable stop distance left excess black space. Entry's half of the stop-distance row was empty.
+- **Change:** Part 2 vertical gaps are 4px; metric cards use content height with 3px vertical padding and 2px label/value separation. Entry, Stop and editable distance now share one native three-field row. Horizontal gaps, input heights, all font sizes/weights/line heights and colors are unchanged.
+- **Preserve:** All controls, editable stop percentage and callbacks, stop safety, wheel interaction, cash auto-fill/manual override, capital switch/current amount, stable target stop, copy iframe, math-check/help tooltips and formulas. Small screens may use native column stacking; never shrink fonts to force a fit.
+- **Intentionally untouched:** Risk Book/Part 1, math modules, v10 ticker/quote behavior, OAuth/session/client, GEX, Holdings, navigation, shared theme and all other feature owners. Old PR #68's alternate switch implementation is superseded by the currently deployed switch and is not included.
+- **Validation:** Production route re-traced; affected files syntax-checked; complete existing Risk interaction/sizing regression PASS; all eight top-level tabs plus repeated routes/second session PASS; architecture guard PASS; diff/whitespace audit PASS; committed production source inspected. Browser preview at 1280px and 885px shows all three price controls on one row and content-sized cards (46.39px vs live baseline 56px). Matched live/preview computed typography: metric labels 12.8px/900, values 16.32px/900, ticker 14px/400, source labels 13.12px/700, identical line heights. Editing distance to 6% changed a $200 Entry's stop to $188 and recalculated results. No deployed verification is claimed by this pre-release entry.
+- **Commit:** `d6e2e1b800f057d9c5e187619de972df8afdf7eb`.
+- **Lesson:** Recover layout space from padding, minimum heights and vacant rows while preserving readable type and native control behavior.

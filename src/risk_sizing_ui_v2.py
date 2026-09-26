@@ -1159,7 +1159,7 @@ def _render_next_trade(
             st.session_state["_risk_stop_safety_adjusted"] = True
 
         default_entry = float(quote_data.get("last") or 100.0) if quote_data else 100.0
-        e1, e2 = st.columns(2, gap="small")
+        e1, e2 = st.columns([1, 2], gap="small")
         with e1:
             entry_price = float(
                 st.number_input(
