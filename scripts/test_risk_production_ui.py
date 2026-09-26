@@ -288,6 +288,8 @@ def main():
     assert 'st.toggle(' in v2_source
     assert '"USE LIQUID BALANCE ENTERED"' in v2_source
     assert '"USE TACTICAL ROOM"' in v2_source
+    assert 'key="risk_book_sort"' in v2_source
+    assert 'key="risk_book_export_csv"' in v2_source
 
     # CSS-only style payloads must use st.html so Streamlit routes them outside
     # the visible flex stack instead of reserving empty rows above Risk content.
