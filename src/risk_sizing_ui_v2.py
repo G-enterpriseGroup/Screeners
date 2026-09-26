@@ -561,6 +561,103 @@ def _percent(value: float) -> str:
     return f"{float(value):,.2f}%"
 
 
+_RISK_BOOK_SORT_OPTIONS = (
+    "DEFAULT",
+    "LONG-TERM",
+    "SLEEVE / %",
+    "SYMBOL",
+    "P&L %",
+    "P&L",
+    "VALUE",
+    "% ACCT",
+)
+
+
+def _sort_risk_book_view(
+    view: pd.DataFrame,
+    sort_by: str,
+    direction: str,
+) -> pd.DataFrame:
+    """Sort the visible Risk Book without changing ticker/row widget identity."""
+    result = view.copy()
+    if result.empty:
+        return result.reset_index(drop=True)
+
+    sort_by = str(sort_by or "DEFAULT").upper()
+    ascending = str(direction or "DESC").upper() == "ASC"
+
+    if sort_by == "DEFAULT":
+        return result.sort_values(
+            ["_risk_sort_rank", "Market Value"],
+            ascending=[True, False],
+            kind="stable",
+        ).reset_index(drop=True)
+
+    if sort_by == "LONG-TERM":
+        result["_risk_manual_long_term_sort"] = (
+            result["Intent"].astype(str).str.upper().eq(RISK_INTENT_LONG_TERM)
+        )
+        result = result.sort_values(
+            ["_risk_manual_long_term_sort", "Symbol"],
+            ascending=[ascending, True],
+            kind="stable",
+        ).drop(columns=["_risk_manual_long_term_sort"])
+    elif sort_by == "SLEEVE / %":
+        result = result.sort_values(
+            ["Sleeve", "% Tactical Sleeve", "Symbol"],
+            ascending=[ascending, ascending, True],
+            kind="stable",
+            na_position="last",
+        )
+    else:
+        field = {
+            "SYMBOL": "Symbol",
+            "P&L %": "Gain/Loss %",
+            "P&L": "Gain/Loss",
+            "VALUE": "Market Value",
+            "% ACCT": "% Account",
+        }.get(sort_by, "Symbol")
+        result = result.sort_values(
+            [field, "Symbol"] if field != "Symbol" else [field],
+            ascending=([ascending, True] if field != "Symbol" else [ascending]),
+            kind="stable",
+            na_position="last",
+        )
+    return result.reset_index(drop=True)
+
+
+def _risk_book_export_frame(view: pd.DataFrame) -> pd.DataFrame:
+    """Export exactly the visible Risk Book fields with LONG-TERM intent included."""
+    if view.empty:
+        return pd.DataFrame(
+            columns=("LONG-TERM", "SLEEVE / %", "SYMBOL", "P&L %", "P&L", "VALUE", "% ACCT")
+        )
+
+    sleeve_display = []
+    for _, row in view.iterrows():
+        sleeve = str(row.get("Sleeve") or "")
+        tactical_pct = row.get("% Tactical Sleeve")
+        if sleeve == "TACTICAL" and pd.notna(tactical_pct):
+            sleeve_display.append(f"TACTICAL // {float(tactical_pct):.2f}%")
+        else:
+            sleeve_display.append("LONG-TERM")
+
+    return pd.DataFrame(
+        {
+            "LONG-TERM": [
+                "YES" if str(value or "").upper() == RISK_INTENT_LONG_TERM else ""
+                for value in view["Intent"].tolist()
+            ],
+            "SLEEVE / %": sleeve_display,
+            "SYMBOL": view["Symbol"].astype(str).tolist(),
+            "P&L %": pd.to_numeric(view["Gain/Loss %"], errors="coerce").tolist(),
+            "P&L": pd.to_numeric(view["Gain/Loss"], errors="coerce").tolist(),
+            "VALUE": pd.to_numeric(view["Market Value"], errors="coerce").tolist(),
+            "% ACCT": pd.to_numeric(view["% Account"], errors="coerce").tolist(),
+        }
+    )
+
+
 def _render_tooltip_css() -> None:
     st.html(
         """
@@ -1436,14 +1533,8 @@ def render_risk_sizing(
         )
     view.loc[~tactical_mask, "% Tactical Sleeve"] = float("nan")
 
-    # Sort by the automatic classification captured before the manual override.
-    # This keeps rows stable while the checkbox changes portfolio math.
-    view = view.sort_values(
-        ["_risk_sort_rank", "Market Value"],
-        ascending=[True, False],
-        kind="stable",
-    ).reset_index(drop=True)
-
+    # Default order remains automatic classification then market value. User
+    # sorting is applied below, after the compact Risk Book sort controls render.
     with st.container(key="risk_workspace", gap="small"):
         # Give the readable table its required width; Part 2 stays beside it on desktop.
         book_col, trade_col = st.columns(
@@ -1460,6 +1551,46 @@ def render_risk_sizing(
             'Check LONG-TERM to override classification.'
             '</div>',
         )
+
+        sort_col, direction_col, export_col = st.columns(
+            [1.25, 0.72, 0.88],
+            gap="small",
+            vertical_alignment="center",
+        )
+        with sort_col:
+            risk_book_sort = st.selectbox(
+                "Risk Book Sort",
+                _RISK_BOOK_SORT_OPTIONS,
+                key="risk_book_sort",
+                label_visibility="collapsed",
+                format_func=lambda value: f"SORT: {value}",
+                help="Sort the visible Risk Book without changing saved LONG-TERM checks.",
+            )
+        with direction_col:
+            risk_book_sort_direction = st.selectbox(
+                "Risk Book Sort Direction",
+                ("DESC", "ASC"),
+                key="risk_book_sort_direction",
+                label_visibility="collapsed",
+                format_func=lambda value: "↓ DESC" if value == "DESC" else "↑ ASC",
+            )
+
+        view = _sort_risk_book_view(
+            view,
+            risk_book_sort,
+            risk_book_sort_direction,
+        )
+        export_frame = _risk_book_export_frame(view)
+        with export_col:
+            st.download_button(
+                "EXPORT CSV",
+                data=export_frame.to_csv(index=False).encode("utf-8"),
+                file_name="risk_book.csv",
+                mime="text/csv",
+                width="stretch",
+                key="risk_book_export_csv",
+                help="Download the currently sorted Risk Book, including saved LONG-TERM overrides.",
+            )
 
         # DataEditor boolean cells are canvas-rendered and inherit the app's
         # black dataframe text theme, which makes their outlines/check marks
