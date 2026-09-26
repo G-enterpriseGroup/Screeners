@@ -1143,6 +1143,21 @@ def _render_next_trade(
     )
 
     if trade_structure == "STOCK / ETF":
+        def _enforce_long_stop_safety() -> None:
+            try:
+                current_entry = float(st.session_state.get("risk_entry_price") or 0.0)
+                current_stop = float(st.session_state.get("risk_stop_price") or 0.0)
+            except (TypeError, ValueError):
+                return
+            if current_entry <= 0 or current_stop < current_entry:
+                return
+            safe_stop = max(
+                0.0,
+                math.floor((current_entry - 0.01 + 1e-9) * 100.0) / 100.0,
+            )
+            st.session_state["risk_stop_price"] = safe_stop
+            st.session_state["_risk_stop_safety_adjusted"] = True
+
         default_entry = float(quote_data.get("last") or 100.0) if quote_data else 100.0
         e1, e2 = st.columns(2, gap="small")
         with e1:
@@ -1154,23 +1169,15 @@ def _render_next_trade(
                     step=0.01,
                     format="%.2f",
                     key="risk_entry_price",
+                    on_change=_enforce_long_stop_safety,
                     help="Your planned fill price. Position sizing uses this number, not the live quote card above.",
                 )
             )
+        _enforce_long_stop_safety()
         max_long_stop = max(
             0.0,
             math.floor((entry_price - 0.01 + 1e-9) * 100.0) / 100.0,
         )
-        stop_safety_adjusted = False
-        saved_stop = st.session_state.get("risk_stop_price")
-        if saved_stop is not None:
-            try:
-                saved_stop_value = float(saved_stop)
-            except (TypeError, ValueError):
-                saved_stop_value = None
-            if saved_stop_value is not None and saved_stop_value >= entry_price:
-                st.session_state["risk_stop_price"] = max_long_stop
-                stop_safety_adjusted = True
 
         with e2:
             stop_price = float(
@@ -1182,10 +1189,11 @@ def _render_next_trade(
                     step=0.01,
                     format="%.2f",
                     key="risk_stop_price",
+                    on_change=_enforce_long_stop_safety,
                     help="Click the value and scroll up/down to adjust by $0.01. For long STOCK / ETF sizing, Stop Loss is hard-capped at least $0.01 below Entry Price. Risk/share = Entry minus Stop. A wider stop means fewer shares for the same dollar-risk budget.",
                 )
             )
-        if stop_safety_adjusted:
+        if st.session_state.pop("_risk_stop_safety_adjusted", False):
             st.warning(
                 "STOP SAFETY // Stop Loss must remain below Entry Price for long STOCK / ETF sizing. "
                 f"It was reset to {_money(max_long_stop)}."
