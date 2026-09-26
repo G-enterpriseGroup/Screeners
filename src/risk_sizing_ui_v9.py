@@ -572,7 +572,7 @@ def _single_stop_number_input(original_number_input):
         distance_pct = _stop_distance_pct(entry, stop)
         # Stop Loss remains the persisted source of truth. Re-derive the
         # percentage before its widget is instantiated so manual Stop edits,
-        # Entry edits, and quote reseeds stay synchronized without st.rerun().
+        # Entry edits, and quote reseeds stay synchronized through the existing fragment rerender.
         st.session_state["risk_stop_distance_pct"] = distance_pct
         original_number_input(
             "▼ % BELOW ENTRY",
