@@ -284,8 +284,8 @@ def main():
     assert "st.rerun" not in v2_source
     assert "The quote loads automatically from live E*TRADE first" in v2_source
     assert "Margin buying power is never used as cash." in v2_source
-    assert 'st.segmented_control(' in v2_source
-    assert 'st.toggle(' not in v2_source
+    assert 'st.segmented_control(' not in v2_source
+    assert 'st.toggle(' in v2_source
     assert '"USE LIQUID BALANCE ENTERED"' in v2_source
     assert '"USE TACTICAL ROOM"' in v2_source
 
