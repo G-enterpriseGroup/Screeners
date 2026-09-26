@@ -1157,17 +1157,38 @@ def _render_next_trade(
                     help="Your planned fill price. Position sizing uses this number, not the live quote card above.",
                 )
             )
+        max_long_stop = max(
+            0.0,
+            math.floor((entry_price - 0.01 + 1e-9) * 100.0) / 100.0,
+        )
+        stop_safety_adjusted = False
+        saved_stop = st.session_state.get("risk_stop_price")
+        if saved_stop is not None:
+            try:
+                saved_stop_value = float(saved_stop)
+            except (TypeError, ValueError):
+                saved_stop_value = None
+            if saved_stop_value is not None and saved_stop_value >= entry_price:
+                st.session_state["risk_stop_price"] = max_long_stop
+                stop_safety_adjusted = True
+
         with e2:
             stop_price = float(
                 st.number_input(
                     "Stop Loss",
                     min_value=0.0,
-                    value=max(0.01, default_entry * 0.95),
+                    max_value=max_long_stop,
+                    value=min(max_long_stop, max(0.0, default_entry * 0.95)),
                     step=0.01,
                     format="%.2f",
                     key="risk_stop_price",
-                    help="Click the value and scroll up/down to adjust by $0.01. The price where the trade thesis is invalidated. Risk/share = absolute Entry minus Stop. A wider stop means fewer shares for the same dollar-risk budget.",
+                    help="Click the value and scroll up/down to adjust by $0.01. For long STOCK / ETF sizing, Stop Loss is hard-capped at least $0.01 below Entry Price. Risk/share = Entry minus Stop. A wider stop means fewer shares for the same dollar-risk budget.",
                 )
+            )
+        if stop_safety_adjusted:
+            st.warning(
+                "STOP SAFETY // Stop Loss must remain below Entry Price for long STOCK / ETF sizing. "
+                f"It was reset to {_money(max_long_stop)}."
             )
 
         if "risk_liquid_balance" not in st.session_state:
