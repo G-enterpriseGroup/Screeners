@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/risk-editable-stop-distance-20260926
+  pull_request:
+    branches:
+      - main
 
 jobs:
   validate-risk-stop-distance:
