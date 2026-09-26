@@ -130,8 +130,9 @@ Production path:
 
 `streamlit_app.py` → `src/reboot_guard.py`
 
-- Every pulled production Git commit must become a fresh Python process rather than only a Streamlit hot reload.
-- Preserve the commit-change reboot guard and verify app health after production commits.
+- For non-managed/local hosts, preserve the commit-change guard so a Git revision change cannot silently reuse stale interpreter state.
+- On Streamlit Community Cloud (`/mount/src/...`), do **not** call `os._exit` or otherwise hard-kill the managed server from app code. Community Cloud owns deploy/reboot lifecycle; self-termination can surface the browser-level `Oh no. Error running app.` page.
+- After production pushes, verify both the health endpoint and a real rendered browser page; a healthy `/_stcore/health` endpoint alone does not prove the frontend avoided the `Oh no` state.
 - Do not put feature behavior or broker/session logic in the reboot guard.
 
 ## OAuth edit map

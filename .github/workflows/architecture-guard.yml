@@ -53,3 +53,39 @@ jobs:
           done
           echo "Raj's Terminal deployment endpoint did not return HTTP 200/303 after the production commit."
           exit 1
+
+      - name: Verify deployed frontend is not on Oh no page
+        if: github.event_name == 'push'
+        run: |
+          python -m pip install selenium==4.36.0
+          python - <<'PY'
+          import time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.common.by import By
+
+          options = Options()
+          options.add_argument("--headless=new")
+          options.add_argument("--no-sandbox")
+          options.add_argument("--disable-dev-shm-usage")
+          options.add_argument("--window-size=1440,1000")
+
+          driver = webdriver.Chrome(options=options)
+          try:
+              deadline = time.time() + 90
+              last_text = ""
+              while time.time() < deadline:
+                  driver.get("https://terminal8.streamlit.app/")
+                  time.sleep(4)
+                  last_text = driver.find_element(By.TAG_NAME, "body").text
+                  if "Oh no." in last_text and "Error running app" in last_text:
+                      raise AssertionError("Deployed frontend rendered Streamlit's Oh no error page.")
+                  if last_text.strip():
+                      print("Raj's Terminal browser render PASS")
+                      break
+                  time.sleep(3)
+              else:
+                  raise AssertionError("Deployed frontend never produced visible page content.")
+          finally:
+              driver.quit()
+          PY

@@ -265,7 +265,7 @@ After every production commit to Raj's Terminal:
 3. do not rely only on Streamlit hot reload for production completion;
 4. if the environment cannot perform the reboot directly, state that limitation explicitly rather than claiming it happened.
 
-The production app also contains a commit-change reboot guard so a pulled Git commit cannot remain only as a stale-process hot reload. Preserve that guard unless Raj explicitly removes this requirement.
+The production app also contains a commit-change reboot guard for non-managed environments. On Streamlit Community Cloud, never hard-kill the app process from Python to force a reboot; Community Cloud owns that lifecycle and an in-app process kill can surface the browser-level "Oh no" failure page. Use the platform deploy/reboot lifecycle and verify both the health endpoint and the actual rendered frontend after production pushes.
 
 ## 15. FINAL REPORT REQUIREMENTS
 
