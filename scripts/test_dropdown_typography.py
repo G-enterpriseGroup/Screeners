@@ -8,6 +8,7 @@ THEME = (ROOT / "src" / "theme.py").read_text(encoding="utf-8")
 OPTION_BOOK = (ROOT / "src" / "option_book_ui.py").read_text(encoding="utf-8")
 CORE = (ROOT / "src" / "terminal_core.py").read_text(encoding="utf-8")
 RISK = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
+RISK_V9 = (ROOT / "src" / "risk_sizing_ui_v9.py").read_text(encoding="utf-8")
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -29,6 +30,38 @@ theme_dropdown_end = THEME.index("DATAFRAME COLUMN-MENU READABILITY")
 theme_dropdown_css = THEME[theme_dropdown_start:theme_dropdown_end]
 if theme_dropdown_css.count("font-weight:800 !important;") < 2:
     raise AssertionError("Shared dropdown trigger and options must both use weight 800")
+
+# Hover/focus must never produce black text on a dark detached menu row.
+# Cover both CSS pseudo states and React Aria's data-* interaction states.
+for needle in (
+    '[role="listbox"] [role="option"]:hover *',
+    '[role="listbox"] [role="option"]:focus *',
+    '[role="listbox"] [role="option"][data-hovered] *',
+    '[role="listbox"] [role="option"][data-focused] *',
+    '[role="listbox"] [role="option"][data-highlighted] *',
+):
+    require(theme_dropdown_css, needle, f"readable dropdown interaction selector {needle}")
+require(
+    theme_dropdown_css,
+    "color:#ffad52 !important;",
+    "shared dropdown hover foreground",
+)
+
+# Risk v9 renders after the shared theme and its detached-menu selectors are
+# necessarily global. It must agree with the shared readable hover contract;
+# only the actually selected orange row may use black text.
+risk_option_start = RISK_V9.index('[role="option"]{')
+risk_option_end = RISK_V9.index('[data-testid="stRadio"]', risk_option_start)
+risk_option_css = RISK_V9[risk_option_start:risk_option_end]
+require(risk_option_css, '[role="option"]:hover *', "Risk dropdown hover descendants")
+require(risk_option_css, "color:#ffad52!important;", "Risk dropdown hover foreground")
+if '[role="option"]:hover *{color:#000' in risk_option_css:
+    raise AssertionError("Risk dropdown hover must never force black text")
+require(
+    risk_option_css,
+    '[role="option"][aria-selected="true"] *{color:#000!important;',
+    "selected orange dropdown row black text",
+)
 
 # Option Book had a stronger local select override. Keep only its selectbox text
 # aligned to the shared dropdown weight without changing labels/number inputs.
