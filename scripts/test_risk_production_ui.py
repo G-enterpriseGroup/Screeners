@@ -293,6 +293,10 @@ def main():
     assert 'f"{risk_state_label} // TARGET STOP {target_stop_text}"' in v2_source
     assert 'target_share_count = sized["capital_limited_shares"]' in v2_source
     assert 'math.ceil((candidate - 1e-9) * 100.0) / 100.0' in v2_source
+    assert 'max_value=max_long_stop' in v2_source
+    assert 'STOP SAFETY // Stop Loss must remain below Entry Price' in v2_source
+    assert 'STOP SAFETY // INVALID STOP' in v2_source
+    assert 'Sizing is blocked until the stop is valid.' in v2_source
     assert 'MATH CHECK: {status}' in v2_source
     assert 'def _render_target_stop_copy(target_stop: float)' in v2_source
     assert 'components.html(' in v2_source
@@ -514,6 +518,16 @@ def main():
     assert stable_check
     assert "MATH CHECK: PASS" in stable_check_text
     assert "Target stop: 2 x ($771.35 - $704.58) = $133.54 modeled risk <= $133.55 budget" in stable_check_text
+
+    # Long stock safety: even when AppTest attempts an out-of-range Stop Loss,
+    # the rendered control must remain strictly below Entry Price.
+    stop_guard = AppTest.from_string(FIXTURE, default_timeout=30).run()
+    assert not stop_guard.exception, [e.message for e in stop_guard.exception]
+    stop_guard.number_input(key="risk_stop_price").set_value(250.0).run()
+    assert not stop_guard.exception, [e.message for e in stop_guard.exception]
+    guarded_stop = float(stop_guard.number_input(key="risk_stop_price").value)
+    assert guarded_stop < 200.0
+    assert guarded_stop <= 199.99
 
     liquid_app = AppTest.from_string(LIQUID_LIMIT_FIXTURE, default_timeout=30).run()
     assert not liquid_app.exception, [e.message for e in liquid_app.exception]
