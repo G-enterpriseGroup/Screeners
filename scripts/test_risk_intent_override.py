@@ -23,6 +23,8 @@ from src.risk_sizing_ui_v2 import (
     _risk_intent_storage_key,
     _risk_override_widget_key,
     _set_long_term_override,
+    _sort_risk_book_view,
+    _risk_book_export_frame,
 )
 
 
@@ -65,6 +67,24 @@ def main() -> None:
     assert summary["tactical_value"] == 0.0
     assert summary["long_term_value"] == 30_000.0
     assert summary["target_room"] == 15_000.0
+
+    # User sorting must preserve the source row UID/widget identity and the
+    # ticker-level LONG-TERM intent that is persisted separately from row order.
+    sort_view = adjusted.copy()
+    sort_view["_risk_sort_rank"] = [0, 1]
+    sort_view["_risk_row_uid"] = ["0", "1"]
+    sort_view["% Account"] = [10.0, 20.0]
+    sort_view["% Tactical Sleeve"] = [float("nan"), float("nan")]
+    by_value = _sort_risk_book_view(sort_view, "VALUE", "DESC")
+    assert by_value["Symbol"].tolist() == ["SPY", "GLD"]
+    assert by_value.set_index("Symbol").loc["GLD", "_risk_row_uid"] == "0"
+    by_long_term = _sort_risk_book_view(sort_view, "LONG-TERM", "DESC")
+    assert by_long_term.iloc[0]["Symbol"] == "GLD"
+    export_frame = _risk_book_export_frame(by_value)
+    assert export_frame.columns.tolist() == [
+        "LONG-TERM", "SLEEVE / %", "SYMBOL", "P&L %", "P&L", "VALUE", "% ACCT"
+    ]
+    assert export_frame.loc[export_frame["SYMBOL"] == "GLD", "LONG-TERM"].iloc[0] == "YES"
 
     # Duplicate holdings/lots must never share one rendered Streamlit key.
     sgol_key_1 = _risk_override_widget_key("acct", "SGOL", "0")
@@ -171,6 +191,10 @@ with st.container(key="risk_book_native_grid"):
     assert 'classified["_risk_row_uid"]' in source
     assert '_load_persisted_intent_overrides(' in source
     assert '_sync_risk_intent_browser(' in source
+    assert 'key="risk_book_sort"' in source
+    assert 'key="risk_book_sort_direction"' in source
+    assert 'key="risk_book_export_csv"' in source
+    assert 'st.download_button(' in source
 
     persistence_component = (
         ROOT / "src" / "components" / "risk_intent_state_v1" / "index.html"
