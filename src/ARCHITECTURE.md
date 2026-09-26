@@ -53,6 +53,8 @@ These are durable terminal preferences and should be checked on every UI change:
 | GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` for E*TRADE GEX formulas/IV calculations; `src/gex_cboe.py` for isolated CBOE delayed-source GEX calculations; `src/gex_realized_vol.py` for GEX-only historical-volatility data/math | `streamlit_app.py` for ordinary GEX layout changes |
 | Option Book options ticket | `src/option_book_ui.py` | `src/option_book.py`, `src/etrade_client.py` preview transport, `src/ticker_autocomplete.py` | Risk/GEX/Holdings/OAuth UI/legacy Orders simulator |
 | E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
+| Terminal access / Touch ID lock | `src/lock_screen_v2.py` | `src/passkey_auth.py`, `src/components/lock_keypad_v2/` | Broker/Risk/GEX logic |
+| Commit-triggered fresh-process reboot | `src/reboot_guard.py` | `streamlit_app.py` invokes the guard before app routing | Feature renderers |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
 | Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py` | Risk/GEX files |
@@ -109,6 +111,28 @@ Production path:
 - The public E*TRADE Order API documents Preview and Place endpoints but not a Power E*TRADE Saved Orders endpoint. Option Book therefore stores drafts locally and may broker-preview them, but must not map a Save button to live Place Order submission.
 - Preserve single-leg LIMIT/STOP/STOP_LIMIT/MARKET and multi-leg NET_DEBIT/NET_CREDIT/MARKET behavior. E*TRADE rejects multi-leg stop/stop-limit orders.
 - Do not modify the legacy `ORDERS` OCO simulator when changing Option Book.
+
+## Terminal access / Touch ID edit map
+
+Production lock path:
+
+`streamlit_app.py` → `src/lock_screen_v2.py` → `src/passkey_auth.py` + `src/components/lock_keypad_v2/index.html`
+
+- Change **lock keypad / Touch ID interaction** → `src/lock_screen_v2.py` and the v2 keypad component only.
+- Change **WebAuthn verification or reboot-safe credential-record persistence** → `src/passkey_auth.py`.
+- The app must never store or receive a raw fingerprint/biometric template or passkey private key. Only the public WebAuthn verification record may be persisted.
+- The reboot-safe browser record must remain integrity-protected by the server-derived HMAC before it is trusted after a process/container restart.
+- Do not use the old lock module's OAuth/title wrappers when changing Touch ID; production OAuth remains owned by `src/etrade_connection_ui_v2.py`.
+
+## Production reboot edit map
+
+Production path:
+
+`streamlit_app.py` → `src/reboot_guard.py`
+
+- Every pulled production Git commit must become a fresh Python process rather than only a Streamlit hot reload.
+- Preserve the commit-change reboot guard and verify app health after production commits.
+- Do not put feature behavior or broker/session logic in the reboot guard.
 
 ## OAuth edit map
 
