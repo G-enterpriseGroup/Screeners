@@ -3,12 +3,6 @@ name: Terminal Architecture Guard
 on:
   push:
     branches: [main]
-    paths:
-      - "streamlit_app.py"
-      - "src/**"
-      - "scripts/validate_architecture.py"
-      - ".github/workflows/**"
-      - "scripts/validate_workflows.py"
   pull_request:
     paths:
       - "streamlit_app.py"
@@ -40,3 +34,21 @@ jobs:
 
       - name: Validate active workflow YAML
         run: python scripts/validate_workflows.py
+
+      - name: Verify production Streamlit health after push
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://terminal8.streamlit.app/_stcore/health"
+          for attempt in $(seq 1 60); do
+            body="$(curl --connect-timeout 5 --max-time 10 -fsS "$url" 2>/dev/null || true)"
+            if [ "$body" = "ok" ]; then
+              echo "Raj's Terminal health check PASS after commit $GITHUB_SHA"
+              exit 0
+            fi
+            echo "Waiting for Streamlit reboot/health... attempt $attempt/60"
+            sleep 5
+          done
+          echo "Raj's Terminal did not return healthy after the production commit."
+          exit 1
