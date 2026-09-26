@@ -1198,6 +1198,12 @@ def _render_next_trade(
                 "STOP SAFETY // Stop Loss must remain below Entry Price for long STOCK / ETF sizing. "
                 f"It was reset to {_money(max_long_stop)}."
             )
+        if stop_price >= entry_price:
+            st.error(
+                "STOP SAFETY // INVALID STOP // Stop Loss must be below Entry Price for long STOCK / ETF sizing. "
+                f"Use {_money(max_long_stop)} or lower. Sizing is blocked until the stop is valid."
+            )
+            return
 
         if "risk_liquid_balance" not in st.session_state:
             st.session_state["risk_liquid_balance"] = max(
