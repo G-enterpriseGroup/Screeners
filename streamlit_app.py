@@ -16,6 +16,13 @@ import time
 
 import streamlit as st
 
+from src.reboot_guard import ensure_fresh_process
+
+
+# A pulled production commit must become a fresh Python process, not only a
+# Streamlit hot reload. No-op when repository revision metadata is unavailable.
+ensure_fresh_process()
+
 
 # Read-only TradingView bridge view. Check this before loading any terminal
 # definitions so the bridge can never fall through to the keypad/home page.
