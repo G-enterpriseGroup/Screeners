@@ -53,7 +53,7 @@ def main() -> None:
             assert passkey.load_touch_id_record(app_url)["sign_count"] == 3
 
             # Browser storage is not a trust anchor by itself. Tampering, a
-            # different access-code secret, or a different hostname is rejected.
+            # different server-only seal secret, or a different hostname is rejected.
             tampered = copy.deepcopy(envelope)
             tampered["record"]["public_key"] = "attacker-key"
             passkey._CREDENTIAL_FILE.unlink()
@@ -74,8 +74,8 @@ def main() -> None:
     ).read_text(encoding="utf-8")
     assert 'action == "restore_touch_id_memory"' in lock_source
     assert 'action == "touch_id_memory_saved"' in lock_source
-    assert '_secret_value("security", "touch_id_memory_secret"' in lock_source
-    assert '_secret_value("etrade", "consumer_secret"' in lock_source
+    assert 'secret_fn("security", "touch_id_memory_secret", "")' in lock_source
+    assert 'secret_fn("etrade", "consumer_secret", "")' in lock_source
     assert "_touchid_persist_then_unlock" in lock_source
     assert "localStorage.getItem" in component_source
     assert "localStorage.setItem" in component_source
