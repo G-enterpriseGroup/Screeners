@@ -1,0 +1,168 @@
+name: Temporary Touch ID Browser Reboot Validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/touchid-browser-reboot-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  touchid-browser-reboot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements and browser driver
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install selenium==4.35.0
+
+      - name: Syntax check production Touch ID path
+        run: python -m py_compile streamlit_app.py src/lock_screen_v2.py src/passkey_auth.py
+
+      - name: Focused Touch ID persistence regression
+        run: python scripts/test_touch_id_persistence.py
+
+      - name: Browser persistence across Streamlit server restart
+        shell: bash
+        run: |
+          cat > /tmp/touch_bridge_app.py <<'PY'
+          import json
+          import streamlit as st
+          from src.lock_screen_v2 import _touch_id_memory_bridge
+
+          command = str(st.query_params.get("command", "") or "")
+          command_id = str(st.query_params.get("id", "") or "")
+          payload = {
+              "memory_version": 1,
+              "record": {"credential_id": "browser-reboot-test", "public_key": "public-test-key"},
+              "mac": "browser-reboot-test-mac",
+          }
+          result = _touch_id_memory_bridge(
+              data={
+                  "command": command,
+                  "command_id": command_id,
+                  "storage_key": "raj-terminal-touch-id-memory-v1",
+                  "memory": payload if command == "save" else None,
+              },
+              on_event_change=lambda: None,
+              key="browser_reboot_bridge",
+              width=1,
+              height=0,
+          )
+          event = getattr(result, "event", None)
+          if isinstance(event, dict):
+              st.code("BRIDGE_EVENT=" + json.dumps(event, sort_keys=True))
+          else:
+              st.code("BRIDGE_EVENT=NONE")
+          PY
+
+          cat > /tmp/test_browser_reboot.py <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+          import urllib.request
+
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.support.ui import WebDriverWait
+
+          ROOT = os.environ["GITHUB_WORKSPACE"]
+          APP = "/tmp/touch_bridge_app.py"
+          PORT = 8517
+          URL = f"http://127.0.0.1:{PORT}"
+
+          def start_server():
+              proc = subprocess.Popen(
+                  [
+                      sys.executable, "-m", "streamlit", "run", APP,
+                      "--server.headless=true",
+                      f"--server.port={PORT}",
+                      "--browser.gatherUsageStats=false",
+                  ],
+                  cwd=ROOT,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+              )
+              deadline = time.time() + 45
+              while time.time() < deadline:
+                  try:
+                      with urllib.request.urlopen(URL + "/_stcore/health", timeout=2) as r:
+                          if r.status == 200:
+                              return proc
+                  except Exception:
+                      pass
+                  if proc.poll() is not None:
+                      output = proc.stdout.read() if proc.stdout else ""
+                      raise RuntimeError("Streamlit exited early:\n" + output)
+                  time.sleep(0.5)
+              proc.terminate()
+              raise RuntimeError("Streamlit did not become healthy")
+
+          def stop_server(proc):
+              proc.terminate()
+              try:
+                  proc.wait(timeout=10)
+              except subprocess.TimeoutExpired:
+                  proc.kill()
+                  proc.wait(timeout=5)
+
+          options = Options()
+          options.add_argument("--headless=new")
+          options.add_argument("--no-sandbox")
+          options.add_argument("--disable-dev-shm-usage")
+          options.add_argument("--window-size=1280,900")
+          driver = webdriver.Chrome(options=options)
+          proc = None
+          try:
+              proc = start_server()
+              driver.get(URL + "/?command=save&id=save-browser-reboot-1")
+              WebDriverWait(driver, 30).until(
+                  lambda d: '"action": "saved"' in d.find_element("tag name", "body").text
+              )
+              stored = driver.execute_script(
+                  "return window.localStorage.getItem('raj-terminal-touch-id-memory-v1');"
+              )
+              assert stored, "V2 component did not write first-party localStorage"
+              parsed = json.loads(stored)
+              assert parsed["record"]["credential_id"] == "browser-reboot-test"
+              stop_server(proc)
+              proc = None
+
+              proc = start_server()
+              driver.get(URL + "/?command=restore&id=restore-browser-reboot-2")
+              WebDriverWait(driver, 30).until(
+                  lambda d: '"action": "restore"' in d.find_element("tag name", "body").text
+              )
+              body = driver.find_element("tag name", "body").text
+              assert "browser-reboot-test" in body, body
+              print("First-party Touch ID memory survives Streamlit server restart: PASS")
+          finally:
+              if proc is not None:
+                  stop_server(proc)
+              driver.quit()
+          PY
+
+          PYTHONPATH="$GITHUB_WORKSPACE" python /tmp/test_browser_reboot.py
+
+      - name: Reboot guard regression
+        run: python scripts/test_reboot_guard.py
+
+      - name: Top-level tab regression
+        run: python scripts/test_tab_layout.py
+
+      - name: Architecture guard
+        run: python scripts/validate_architecture.py
