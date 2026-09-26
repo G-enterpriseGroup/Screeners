@@ -294,9 +294,12 @@ def main():
     assert 'target_share_count = sized["capital_limited_shares"]' in v2_source
     assert 'math.ceil((candidate - 1e-9) * 100.0) / 100.0' in v2_source
     assert 'MATH CHECK: {status}' in v2_source
-    assert 'navigator.clipboard.writeText(value)' in v9_source
-    assert 'class="rs9-copy-target"' in v9_source
-    assert 'unsafe_allow_javascript=True' in v9_source
+    assert 'def _render_target_stop_copy(target_stop: float)' in v2_source
+    assert 'components.html(' in v2_source
+    assert 'navigator.clipboard.writeText(value)' in v2_source
+    assert 'height=24' in v2_source and 'width=24' in v2_source
+    assert '_TARGET_STOP_COPY_SCRIPT' not in v9_source
+    assert 'rs9-copy-target' not in v9_source
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
 
@@ -411,9 +414,6 @@ def main():
     )
     assert risk_status_dom.select_one(".rs9-label").text == "UNUSED RISK // TARGET STOP $177.50"
     assert risk_status_dom.select_one(".rs9-value").text == "$125.00 (55.56%)"
-    copy_button = risk_status_dom.select_one(".rs9-copy-target")
-    assert copy_button is not None
-    assert copy_button.get("data-copy") == "177.50"
     risk_tip = risk_status_dom.select_one(".rs9-tip")
     assert risk_tip is not None
     assert "MATH CHECK: PASS" in risk_tip.text

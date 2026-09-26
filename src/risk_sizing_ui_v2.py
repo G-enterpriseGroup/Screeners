@@ -965,6 +965,74 @@ def _stock_math_check(
     )
 
 
+def _render_target_stop_copy(target_stop: float) -> None:
+    """Render a tiny isolated clipboard button; no Streamlit rerun is required."""
+    copy_value = f"{float(target_stop):.2f}"
+    safe_value = html.escape(copy_value, quote=True)
+    components.html(
+        f"""
+        <!doctype html>
+        <html>
+        <head>
+        <style>
+        html,body{{margin:0;padding:0;background:#000;overflow:hidden;}}
+        button{{
+            width:24px;height:24px;padding:0;margin:0;
+            border:1px solid #fb8b1e;background:#000;color:#fb8b1e;
+            font-family:"Courier New",monospace;font-size:14px;font-weight:900;
+            line-height:22px;cursor:pointer;
+        }}
+        button:hover,button:focus,button[data-copied="1"]{{
+            background:#fb8b1e;color:#000;outline:none;
+        }}
+        </style>
+        </head>
+        <body>
+        <button id="copy" type="button" data-copy="{safe_value}"
+                title="Copy target stop" aria-label="Copy target stop">⧉</button>
+        <script>
+        (() => {{
+            const button = document.getElementById("copy");
+            button.addEventListener("click", async () => {{
+                const value = button.dataset.copy || "";
+                let copied = false;
+                try {{
+                    if (navigator.clipboard && window.isSecureContext) {{
+                        await navigator.clipboard.writeText(value);
+                        copied = true;
+                    }}
+                }} catch (_) {{}}
+                if (!copied) {{
+                    const textarea = document.createElement("textarea");
+                    textarea.value = value;
+                    textarea.setAttribute("readonly", "");
+                    textarea.style.position = "fixed";
+                    textarea.style.opacity = "0";
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {{ copied = document.execCommand("copy"); }} catch (_) {{}}
+                    textarea.remove();
+                }}
+                if (copied) {{
+                    button.dataset.copied = "1";
+                    button.textContent = "✓";
+                    setTimeout(() => {{
+                        button.textContent = "⧉";
+                        delete button.dataset.copied;
+                    }}, 900);
+                }}
+            }});
+        }})();
+        </script>
+        </body>
+        </html>
+        """,
+        height=24,
+        width=24,
+        scrolling=False,
+    )
+
+
 def _render_next_trade(
     client,
     *,
@@ -1304,15 +1372,34 @@ def _render_next_trade(
                 target_stop,
             )
             risk_state_help = math_check_help + "\n\n" + risk_state_help
-            _metric_box(
-                p5,
-                f"{risk_state_label} // TARGET STOP {target_stop_text}",
-                f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
-                "negative" if (
-                    risk_state_label == "OVERUSED RISK" or not math_check_pass
-                ) else "neutral",
-                help_text=risk_state_help,
-            )
+            if target_stop is not None:
+                with p5:
+                    target_card_col, target_copy_col = st.columns(
+                        [1.0, 0.055],
+                        gap="small",
+                        vertical_alignment="center",
+                    )
+                _metric_box(
+                    target_card_col,
+                    f"{risk_state_label} // TARGET STOP {target_stop_text}",
+                    f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
+                    "negative" if (
+                        risk_state_label == "OVERUSED RISK" or not math_check_pass
+                    ) else "neutral",
+                    help_text=risk_state_help,
+                )
+                with target_copy_col:
+                    _render_target_stop_copy(target_stop)
+            else:
+                _metric_box(
+                    p5,
+                    f"{risk_state_label} // TARGET STOP {target_stop_text}",
+                    f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
+                    "negative" if (
+                        risk_state_label == "OVERUSED RISK" or not math_check_pass
+                    ) else "neutral",
+                    help_text=risk_state_help,
+                )
 
             if (
                 capital_source != _CAPITAL_SOURCE_TACTICAL

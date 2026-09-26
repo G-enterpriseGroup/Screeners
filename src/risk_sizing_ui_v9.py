@@ -155,62 +155,6 @@ def _unused_risk_value(label: str, value: str, help_text: str) -> tuple[str, str
     return value, help_text
 
 
-_TARGET_STOP_COPY_SCRIPT = r"""
-<script>
-(() => {
-    if (window.__riskTargetStopCopy) {
-        document.removeEventListener("click", window.__riskTargetStopCopy, true);
-    }
-    window.__riskTargetStopCopy = async (event) => {
-        const button = event.target.closest?.(".rs9-copy-target");
-        if (!button) return;
-
-        event.preventDefault();
-        event.stopPropagation();
-        const value = button.dataset.copy || "";
-        if (!value) return;
-
-        let copied = false;
-        try {
-            if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(value);
-                copied = true;
-            }
-        } catch (_) {}
-
-        if (!copied) {
-            const textarea = document.createElement("textarea");
-            textarea.value = value;
-            textarea.setAttribute("readonly", "");
-            textarea.style.position = "fixed";
-            textarea.style.opacity = "0";
-            document.body.appendChild(textarea);
-            textarea.select();
-            try {
-                copied = document.execCommand("copy");
-            } catch (_) {
-                copied = false;
-            }
-            textarea.remove();
-        }
-
-        if (copied) {
-            const original = button.dataset.icon || button.textContent || "⧉";
-            button.dataset.icon = original;
-            button.dataset.copied = "1";
-            button.textContent = "✓";
-            window.setTimeout(() => {
-                button.textContent = button.dataset.icon || "⧉";
-                delete button.dataset.copied;
-            }, 900);
-        }
-    };
-    document.addEventListener("click", window.__riskTargetStopCopy, true);
-})();
-</script>
-"""
-
-
 def _compact_metric_box(container, label, value, tone="neutral", detail="", help_text=""):
     value, help_text = _unused_risk_value(str(label), str(value), str(help_text))
     quote_source = str(st.session_state.get("risk_quote_source") or "E*TRADE")
@@ -231,37 +175,16 @@ def _compact_metric_box(container, label, value, tone="neutral", detail="", help
     if help_text:
         safe = html.escape(str(help_text)).replace("\n", "<br>")
         tip = '<span class="rs9-help" tabindex="0">?<span class="rs9-tip">' + safe + "</span></span>"
-
-    copy_html = ""
-    target_match = re.search(
-        r"TARGET STOP\s+\$([0-9,]+(?:\.\d+)?)",
-        str(label),
-        flags=re.IGNORECASE,
-    )
-    if target_match:
-        copy_value = target_match.group(1).replace(",", "")
-        copy_html = (
-            '<button type="button" class="rs9-copy-target" '
-            f'data-copy="{html.escape(copy_value)}" '
-            'aria-label="Copy target stop" title="Copy target stop">⧉</button>'
-        )
-
     detail_html = (
         f'<div class="rs9-detail" style="color:{color}!important;">{html.escape(str(detail))}</div>'
         if detail else ""
     )
-    payload = (
+    container.html(
         '<div class="rs9-card"><div class="rs9-head">'
-        '<span class="rs9-label-wrap">'
-        f'<span class="rs9-label">{html.escape(str(label))}</span>{copy_html}</span>'
-        f'{tip}</div>'
+        f'<span class="rs9-label">{html.escape(str(label))}</span>{tip}</div>'
         f'<div class="rs9-value" style="color:{color}!important;">{html.escape(str(value))}</div>'
-        f'{detail_html}</div>'
+        f'{detail_html}</div>',
     )
-    if copy_html:
-        container.html(payload + _TARGET_STOP_COPY_SCRIPT, unsafe_allow_javascript=True)
-    else:
-        container.html(payload)
 
 
 def _render_css() -> None:
@@ -318,10 +241,7 @@ def _render_css() -> None:
 
         .rs9-card{position:relative;background:#000;border:1px solid #fb8b1e;padding:.24rem .38rem .27rem;min-height:0!important;height:auto!important;font-family:"Courier New",monospace;overflow:visible!important;}
         .rs9-head{display:flex;align-items:center;justify-content:space-between;gap:.28rem;}
-        .rs9-label-wrap{display:inline-flex;align-items:center;gap:.22rem;min-width:0;flex:1 1 auto;}
         .rs9-label{color:#fb8b1e!important;font-size:.61rem;font-weight:900;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .rs9-copy-target{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;min-width:17px;padding:0;border:1px solid #fb8b1e;background:#000;color:#fb8b1e!important;font-family:"Courier New",monospace;font-size:11px;font-weight:900;line-height:1;cursor:pointer;}
-        .rs9-copy-target:hover,.rs9-copy-target:focus,.rs9-copy-target[data-copied="1"]{background:#fb8b1e;color:#000!important;outline:none;}
         .rs9-value{font-size:1.02rem;font-weight:900;margin-top:.10rem;line-height:1.02;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .rs9-detail{font-size:.60rem;margin-top:.07rem;font-weight:700;line-height:1.04;}
         .rs9-help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex:0 0 14px;border:1px solid #fb8b1e;border-radius:50%!important;color:#fb8b1e!important;font-size:9px;font-weight:900;cursor:help;line-height:1;}
