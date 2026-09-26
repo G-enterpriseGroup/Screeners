@@ -1,0 +1,82 @@
+"""Regression checks for reboot-safe Touch ID/passkey persistence."""
+
+from __future__ import annotations
+
+import copy
+import tempfile
+from pathlib import Path
+
+import src.passkey_auth as passkey
+
+
+def main() -> None:
+    app_url = "https://terminal8.streamlit.app"
+    identity_seed = "stable-access-code-hash"
+    record = {
+        "credential_version": 2,
+        "rp_id": "terminal8.streamlit.app",
+        "origin": app_url,
+        "credential_id": "credential-id-public",
+        "public_key": "credential-public-key",
+        "sign_count": 3,
+        "device_type": "single_device",
+        "backed_up": False,
+        "authenticator_attachment": "platform",
+        "discoverable": True,
+        "transports": ["internal"],
+    }
+
+    original_dir = passkey._STORE_DIR
+    original_file = passkey._CREDENTIAL_FILE
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            passkey._STORE_DIR = root
+            passkey._CREDENTIAL_FILE = root / "touch_id_credential.json"
+
+            envelope = passkey.seal_touch_id_record(app_url, record, identity_seed)
+            assert envelope["memory_version"] == 1
+            assert envelope["record"]["credential_id"] == record["credential_id"]
+            assert identity_seed not in str(envelope)
+
+            # Simulate a full Streamlit/container reboot: the server-side home
+            # cache is gone, but the browser-memory envelope survives.
+            assert not passkey._CREDENTIAL_FILE.exists()
+            restored = passkey.restore_touch_id_record(app_url, envelope, identity_seed)
+            assert restored is not None
+            assert restored["credential_id"] == record["credential_id"]
+            assert passkey.load_touch_id_record(app_url)["sign_count"] == 3
+
+            # Browser storage is not a trust anchor by itself. Tampering, a
+            # different access-code secret, or a different hostname is rejected.
+            tampered = copy.deepcopy(envelope)
+            tampered["record"]["public_key"] = "attacker-key"
+            passkey._CREDENTIAL_FILE.unlink()
+            assert passkey.restore_touch_id_record(app_url, tampered, identity_seed) is None
+            assert not passkey._CREDENTIAL_FILE.exists()
+            assert passkey.restore_touch_id_record(app_url, envelope, "wrong-seed") is None
+            assert passkey.restore_touch_id_record(
+                "https://other.streamlit.app", envelope, identity_seed
+            ) is None
+    finally:
+        passkey._STORE_DIR = original_dir
+        passkey._CREDENTIAL_FILE = original_file
+
+    root = Path(__file__).resolve().parents[1]
+    lock_source = (root / "src" / "lock_screen_v2.py").read_text(encoding="utf-8")
+    component_source = (
+        root / "src" / "components" / "lock_keypad_v2" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert 'action == "restore_touch_id_memory"' in lock_source
+    assert 'action == "touch_id_memory_saved"' in lock_source
+    assert "_touchid_persist_then_unlock" in lock_source
+    assert "localStorage.getItem" in component_source
+    assert "localStorage.setItem" in component_source
+    assert "restore_touch_id_memory" in component_source
+    assert "touch_id_memory_saved" in component_source
+
+    print("Touch ID reboot-safe sealed browser memory: PASS")
+
+
+if __name__ == "__main__":
+    main()
