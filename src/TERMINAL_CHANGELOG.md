@@ -1347,3 +1347,14 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS in the focused validation run.
 - **Implementation commits:** server-only seal hardening `9113de67af70628925162a612466f66ce765c7fa`; lock secret selection `a54ab1bbff7d3ed2081be87beb64decd2f552c33`; focused regression `c4849ea4a8fd87997872c7aa8856653b06f9db10` / `a0743a59d59f8db97f5786320ea2e699aa7bd0f7`.
 - **Lesson:** A browser-persisted public WebAuthn record may survive ephemeral hosting, but its integrity key must remain server-only. Never treat browser storage, a public code hash, a biometric template, or an authenticator private key as interchangeable trust anchors.
+
+## 2026-09-25 — Verify the deployed Streamlit endpoint after every main-branch commit
+
+- **Feature changed:** production deployment/reboot verification only.
+- **Exact file changed:** `.github/workflows/architecture-guard.yml`.
+- **What changed:** The architecture guard now runs on every push to `main` and verifies `https://terminal8.streamlit.app/_stcore/health` after the commit. This Streamlit deployment returns HTTP 303 at its front door, so 200 and the observed 303 redirect are accepted as a reachable deployment endpoint; other statuses continue retrying/failing.
+- **Important behavior that must remain:** `src/reboot_guard.py` remains responsible for forcing a stale hot-reloaded Python interpreter to exit when Git HEAD changes. The workflow verifies that the Streamlit deployment endpoint comes back/replies after the commit; it does not change any trading, authentication, or feature logic.
+- **Tests performed:** Terminal Architecture Guard run `36211856287` PASS, including production architecture validation, active workflow YAML validation, and the post-push Streamlit deployment endpoint check.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `7e2c9ec756d7764ee08bacb875613a181f95caf7`.
+- **Lesson:** Streamlit Community Cloud may expose a healthy/private front door as an HTTP 303 redirect, so deployment verification must recognize that expected response instead of requiring a literal 200 body.
