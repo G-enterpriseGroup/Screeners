@@ -1273,3 +1273,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** production switch `4200771d62db77192496b922572e598eed969bd2`; regression updates `287aea69d00c4ca6821d8d83618db66389c795c8`, `ea48250e033481b72c40ffa62a653e3615819876`.
 - **Lesson:** When a binary choice is conceptually one lever, use one toggle and preserve the existing persisted semantic value underneath it rather than replacing the storage contract.
+
+## 2026-09-25 — Show active Capital Source balance beside the Risk switch
+
+- **Feature changed:** E*TRADE Risk Sizing Capital Source display only.
+- **Exact production file(s) changed:** `src/risk_sizing_ui_v2.py`; focused regression coverage updated in `scripts/test_risk_production_ui.py`.
+- **What was missing:** The new one-lever Capital Source switch showed which side was active, but it did not explicitly show the dollar amount currently being used as the stock capital cap.
+- **Root cause:** The UI rendered only the switch labels while the active `capital_limit` amount was calculated later for sizing.
+- **What changed:** The Capital Source heading now shows `Capital Source // USING $X,XXX.XX`. With the switch left, it displays the active Liquid Balance amount. With the switch right, it displays the current live Tactical Room amount. The value is display-only and follows the same existing source used by the sizing calculation.
+- **Important behavior that must remain:** Left still means `Liquid Bal.`; right still means `Tact Room.`. The one-switch interaction, broker-seeded/editable Liquid Balance, Tactical Room calculation, all stock sizing formulas, ticker/quote behavior, ASK/Stop seeding, LONG-TERM persistence, and Risk Book behavior remain unchanged.
+- **Files/features intentionally NOT changed:** `src/risk_sizing.py`, `src/trade_math.py`, `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v10.py`, ticker autocomplete, E*TRADE OAuth/session/client/cache plumbing, Holdings, GEX, Schwab Risk, Option Book, navigation, shared theme/config, Bull Debit, Muni, Orders, `streamlit_app.py`, and `src/terminal_core.py`.
+- **Tests performed:** Temporary GitHub Actions run `36205126942` installed production requirements; syntax-checked `streamlit_app.py` and the complete v7 → v10 → v9 → v2 Risk path; passed `scripts/test_risk_production_ui.py`, `scripts/test_risk_intent_override.py`, `scripts/test_tab_layout.py`, and `python scripts/validate_architecture.py`. Standard Terminal Architecture Guard run `36205126941` also passed.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** production display `88bbc5ffc06ef9038e979152e0c3ce85757f4dad`; regression update `a430e405bf678f0416a7772de81cdf2f74dd8ecc`.
+- **Lesson:** When a control selects between financial capacity sources, show the exact active dollar amount next to the selector so the user can verify what the sizing engine is actually constraining against.
