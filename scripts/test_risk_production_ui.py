@@ -304,6 +304,12 @@ def main():
     assert 'height=24' in v2_source and 'width=24' in v2_source
     assert '_TARGET_STOP_COPY_SCRIPT' not in v9_source
     assert 'rs9-copy-target' not in v9_source
+    assert 'key="risk_stop_distance_pct"' in v9_source
+    assert '"▼ % BELOW ENTRY"' in v9_source
+    assert 'step=0.25' in v9_source
+    assert 'on_change=_sync_stop_from_distance_pct' in v9_source
+    assert '.st-key-risk_stop_distance_pct input' in v9_source
+    assert 'risk-v9-stop-pct' not in v9_source
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
 
@@ -367,6 +373,7 @@ def main():
     assert len(app.checkbox) == 6
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
+    assert app.number_input(key="risk_stop_distance_pct").value == 5.0
     html_values = [item.value for item in app.get("html")]
     assert any("risk-v10-company-box" in value and "State Street SPDR S&amp;P 500 ETF Trust" in value for value in html_values)
     saved = app.session_state["_risk_book_snapshot_v1"]
@@ -430,6 +437,12 @@ def main():
     app.number_input(key="risk_stop_price").set_value(180.0).run()
     clean()
     assert metric("MAX SHARES") == "10"
+    assert app.number_input(key="risk_stop_distance_pct").value == 10.0
+    app.number_input(key="risk_stop_distance_pct").set_value(7.5).run()
+    clean()
+    assert app.number_input(key="risk_stop_price").value == 185.0
+    assert app.number_input(key="risk_stop_distance_pct").value == 7.5
+    assert metric("MAX SHARES") == "10"
     assert app.session_state["fixture_quotes"] == ["SPY"]
     ticker = app.text_input(key="risk_ticker")
     assert ticker.value == "SPY"
@@ -439,7 +452,8 @@ def main():
     assert app.session_state["fixture_quotes"] == ["SPY", "QQQ"]
     assert app.number_input(key="risk_entry_price").value == 200.0
     assert app.number_input(key="risk_stop_price").value == 190.0
-    assert sum('class="risk-v9-stop-pct"' in x.value for x in app.get("html")) == 1
+    assert app.number_input(key="risk_stop_distance_pct").value == 5.0
+    assert not any('risk-v9-stop-pct' in x.value for x in app.get("html"))
     assert not any(b.key == "risk_pull_quote" for b in app.button)
     app.selectbox(key="risk_trade_structure").select("DEFINED-RISK OPTION SPREAD").run()
     clean()
