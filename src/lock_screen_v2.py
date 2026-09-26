@@ -95,6 +95,23 @@ def _credential_identity_seed(namespace: dict[str, Any]) -> str:
         return "raj-terminal-single-user"
 
 
+def _credential_memory_secret(namespace: dict[str, Any]) -> str:
+    """Return a stable server-only secret for sealing browser credential memory."""
+    secret_fn = namespace.get("_secret_value")
+    if not callable(secret_fn):
+        return ""
+    try:
+        dedicated = str(secret_fn("security", "touch_id_memory_secret", "") or "").strip()
+    except Exception:
+        dedicated = ""
+    if dedicated:
+        return dedicated
+    try:
+        return str(secret_fn("etrade", "consumer_secret", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def _clear_touch_id_session() -> None:
     for key in (
         "_touchid_registration_options",
@@ -148,6 +165,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     feedback = st.session_state.get("_app_keypad_feedback_v2") or {}
     app_url = _current_app_url()
     identity_seed = _credential_identity_seed(namespace)
+    memory_secret = _credential_memory_secret(namespace)
     touch_record = load_touch_id_record(app_url) if app_url and webauthn_ready() else None
     persist_then_unlock = bool(st.session_state.get("_touchid_persist_then_unlock", False))
     registration_options = st.session_state.get("_touchid_registration_options")
@@ -159,7 +177,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     touch_memory = None
     if touch_record and app_url:
         try:
-            touch_memory = seal_touch_id_record(app_url, touch_record, identity_seed)
+            touch_memory = seal_touch_id_record(app_url, touch_record, memory_secret)
         except Exception:
             touch_memory = None
     clear_browser_touch_memory = bool(
@@ -205,7 +223,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     credential = result.get("credential")
 
     if action == "restore_touch_id_memory":
-        restored = restore_touch_id_record(app_url, result.get("touch_id_memory"), identity_seed)
+        restored = restore_touch_id_record(app_url, result.get("touch_id_memory"), memory_secret)
         if not restored:
             st.session_state["_touchid_clear_browser_memory"] = True
             _set_feedback(
