@@ -372,6 +372,16 @@ def main():
     assert "$2,000.00" in capital_switch_html
     assert "Liquid Bal." in capital_switch_html
     assert "Tact Room." in capital_switch_html
+    assert app.selectbox(key="risk_book_sort").value == "DEFAULT"
+    assert app.selectbox(key="risk_book_sort_direction").value == "DESC"
+    app.selectbox(key="risk_book_sort").select("VALUE").run()
+    clean()
+    assert app.selectbox(key="risk_book_sort").value == "VALUE"
+    app.selectbox(key="risk_book_sort_direction").select("ASC").run()
+    clean()
+    assert app.selectbox(key="risk_book_sort_direction").value == "ASC"
+    app.selectbox(key="risk_book_sort").select("DEFAULT").run()
+    clean()
     assert saved["settings"]["risk_liquid_balance"] == 2000.0
     assert saved["settings"]["risk_capital_source"] == "USE LIQUID BALANCE ENTERED"
     app.checkbox[0].check().run()
