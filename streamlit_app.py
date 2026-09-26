@@ -94,6 +94,7 @@ from src.gex_workspace_v2 import (
     maybe_auto_refresh_on_login as maybe_auto_refresh_gex_on_login,
 )
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
+from src.lock_screen_v2 import render_seamless_lock_screen
 from src.option_book_ui import render_option_book
 from src.risk_sizing_ui_v7 import render_risk_sizing
 from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
@@ -629,7 +630,7 @@ render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
 _restore_active_etrade_session_after_unlock()
 
 if not _trade_access_unlocked():
-    render_app_lock_screen()
+    render_seamless_lock_screen(globals())
     st.stop()
 
 _seed_offline_from_session_state()
