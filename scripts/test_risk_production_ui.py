@@ -363,8 +363,12 @@ def main():
     assert app.session_state["_risk_true_cash_fields"]["marginBuyingPower"] == 25000.0
     assert app.session_state["fixture_balance_refreshes"]
     assert all(app.session_state["fixture_balance_refreshes"])
-    assert app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
-    assert len(app.segmented_control) == 1
+    assert len(app.toggle) == 1
+    assert app.toggle(key="risk_capital_source_tactical").value is False
+    capital_switch_html = "\n".join(item.value for item in app.get("html"))
+    assert "Capital Source" in capital_switch_html
+    assert "Liquid Bal." in capital_switch_html
+    assert "Tact Room." in capital_switch_html
     assert saved["settings"]["risk_liquid_balance"] == 2000.0
     assert saved["settings"]["risk_capital_source"] == "USE LIQUID BALANCE ENTERED"
     app.checkbox[0].check().run()
@@ -423,8 +427,9 @@ def main():
     assert liquid_metric("MAX SHARES") == "10"
     assert liquid_metric("POSITION NOTIONAL") == "$2,000.00"
     assert liquid_app.number_input(key="risk_liquid_balance").value == 2000.0
-    assert len(liquid_app.segmented_control) == 1
-    assert liquid_app.segmented_control(key="risk_capital_source").value == "USE LIQUID BALANCE ENTERED"
+    assert len(liquid_app.toggle) == 1
+    assert liquid_app.toggle(key="risk_capital_source_tactical").value is False
+    assert liquid_app.session_state["risk_capital_source"] == "USE LIQUID BALANCE ENTERED"
 
     tactical_app = AppTest.from_string(TACTICAL_LIMIT_FIXTURE, default_timeout=30).run()
     assert not tactical_app.exception, [e.message for e in tactical_app.exception]
@@ -438,8 +443,9 @@ def main():
     )
     assert tactical_metric("MAX SHARES") == "0"
     assert tactical_metric("POSITION NOTIONAL") == "$0.00"
-    assert len(tactical_app.segmented_control) == 1
-    assert tactical_app.segmented_control(key="risk_capital_source").value == "USE TACTICAL ROOM"
+    assert len(tactical_app.toggle) == 1
+    assert tactical_app.toggle(key="risk_capital_source_tactical").value is True
+    assert tactical_app.session_state["risk_capital_source"] == "USE TACTICAL ROOM"
 
     stale_liquid = AppTest.from_string(STALE_LIQUID_FIXTURE, default_timeout=30).run()
     assert not stale_liquid.exception, [e.message for e in stale_liquid.exception]
