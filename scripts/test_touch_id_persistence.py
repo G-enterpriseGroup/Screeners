@@ -72,15 +72,17 @@ def main() -> None:
     component_source = (
         root / "src" / "components" / "lock_keypad_v2" / "index.html"
     ).read_text(encoding="utf-8")
-    assert 'action == "restore_touch_id_memory"' in lock_source
-    assert 'action == "touch_id_memory_saved"' in lock_source
+    assert "st.components.v2.component" in lock_source
+    assert "raj_terminal_touch_id_memory_bridge_v2" in lock_source
+    assert 'command === "restore"' in lock_source
+    assert 'command === "save"' in lock_source
     assert 'secret_fn("security", "touch_id_memory_secret", "")' in lock_source
     assert 'secret_fn("etrade", "consumer_secret", "")' in lock_source
     assert "_touchid_persist_then_unlock" in lock_source
-    assert "localStorage.getItem" in component_source
-    assert "localStorage.setItem" in component_source
-    assert "restore_touch_id_memory" in component_source
-    assert "touch_id_memory_saved" in component_source
+    assert "localStorage.getItem" not in component_source
+    assert "localStorage.setItem" not in component_source
+    assert "touch_memory_checking" in component_source
+    assert "CHECKING SAVED TOUCH ID" in component_source
 
     app_source = (root / "streamlit_app.py").read_text(encoding="utf-8")
     assert "from src.lock_screen_v2 import render_seamless_lock_screen" in app_source
