@@ -149,8 +149,13 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     app_url = _current_app_url()
     identity_seed = _credential_identity_seed(namespace)
     touch_record = load_touch_id_record(app_url) if app_url and webauthn_ready() else None
+    persist_then_unlock = bool(st.session_state.get("_touchid_persist_then_unlock", False))
     registration_options = st.session_state.get("_touchid_registration_options")
-    authentication_options = _ensure_authentication_options(app_url, touch_record)
+    authentication_options = (
+        None
+        if persist_then_unlock
+        else _ensure_authentication_options(app_url, touch_record)
+    )
     touch_memory = None
     if touch_record and app_url:
         try:
@@ -160,8 +165,6 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     clear_browser_touch_memory = bool(
         st.session_state.pop("_touchid_clear_browser_memory", False)
     )
-    persist_then_unlock = bool(st.session_state.get("_touchid_persist_then_unlock", False))
-
     if not webauthn_ready() and not feedback:
         feedback = {
             "tone": "error",
