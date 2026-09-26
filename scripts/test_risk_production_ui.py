@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.risk_sizing import stock_position_size
 from src.risk_sizing_ui_v9 import _select_true_cash
+from src.risk_sizing_ui_v2 import _stock_risk_status
 FIXTURE = """import streamlit as st
 from src.risk_sizing_ui_v7 import render_risk_sizing
 import src.risk_sizing_ui_v9 as v9
@@ -288,6 +289,8 @@ def main():
     assert 'st.toggle(' in v2_source
     assert '"USE LIQUID BALANCE ENTERED"' in v2_source
     assert '"USE TACTICAL ROOM"' in v2_source
+    assert '"OVERUSED RISK" if overused else "UNUSED RISK"' in v2_source
+    assert 'f"{risk_state_label} // TARGET STOP {target_stop_text}"' in v2_source
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
 
@@ -392,6 +395,16 @@ def main():
     assert metric("TACTICAL ROOM") == "$13,438.00"
     assert metric("MAX DOLLAR RISK") == "$225.00"
     assert metric("MAX SHARES") == "10"
+    risk_status_dom = next(
+        BeautifulSoup(item.value, "html.parser")
+        for item in app.get("html")
+        if (
+            (dom := BeautifulSoup(item.value, "html.parser")).select_one(".rs9-label")
+            and dom.select_one(".rs9-label").text.startswith("UNUSED RISK // TARGET STOP")
+        )
+    )
+    assert risk_status_dom.select_one(".rs9-label").text == "UNUSED RISK // TARGET STOP $177.50"
+    assert risk_status_dom.select_one(".rs9-value").text == "$125.00 (55.56%)"
     app.checkbox[1].uncheck().run()
     clean()
     assert not app.checkbox[0].value and not app.checkbox[1].value
@@ -426,6 +439,22 @@ def main():
     assert liquid_limited["notional"] == 4627.92
     assert room_limited["shares"] == 1
     assert room_limited["notional"] == 771.32
+
+    unused_label, unused_amount, unused_pct, unused_target_stop = _stock_risk_status(
+        200.0, 10, 225.0, 100.0
+    )
+    assert unused_label == "UNUSED RISK"
+    assert unused_amount == 125.0
+    assert round(unused_pct, 2) == 55.56
+    assert unused_target_stop == 177.5
+
+    overused_label, overused_amount, overused_pct, overused_target_stop = _stock_risk_status(
+        200.0, 10, 225.0, 250.0
+    )
+    assert overused_label == "OVERUSED RISK"
+    assert overused_amount == 25.0
+    assert round(overused_pct, 2) == 11.11
+    assert overused_target_stop == 177.5
 
     liquid_app = AppTest.from_string(LIQUID_LIMIT_FIXTURE, default_timeout=30).run()
     assert not liquid_app.exception, [e.message for e in liquid_app.exception]

@@ -862,6 +862,35 @@ def _how_to_use() -> None:
 # PART 2 TRADE SIZING PANEL
 # ==============================
 
+def _stock_risk_status(
+    entry_price: float,
+    shares: int,
+    risk_budget: float,
+    actual_risk: float,
+) -> tuple[str, float, float, float | None]:
+    """Return the live risk-state label, amount, percentage, and $0-unused target stop."""
+    budget = max(0.0, float(risk_budget))
+    actual = max(0.0, float(actual_risk))
+    gap = budget - actual
+    overused = gap < -0.005
+    amount = actual - budget if overused else max(0.0, gap)
+    pct = amount / budget * 100.0 if budget > 0 else 0.0
+
+    quantity = max(0, int(shares))
+    target_stop = None
+    if quantity > 0:
+        candidate = float(entry_price) - (budget / quantity)
+        if candidate >= 0:
+            target_stop = candidate
+
+    return (
+        "OVERUSED RISK" if overused else "UNUSED RISK",
+        amount,
+        pct,
+        target_stop,
+    )
+
+
 def _render_next_trade(
     client,
     *,
@@ -1151,12 +1180,46 @@ def _render_next_trade(
                 "negative",
                 help_text=f"CALC: {sized['shares']} shares x {_money(sized['risk_per_share'])} risk/share = {_money(sized['actual_risk'])} if the stop is filled at the stop price. Slippage can make realized loss different.",
             )
+            risk_state_label, risk_state_amount, risk_state_pct, target_stop = _stock_risk_status(
+                entry_price,
+                sized["shares"],
+                risk_budget["selected_risk_budget"],
+                sized["actual_risk"],
+            )
+            target_stop_text = _money(target_stop) if target_stop is not None else "N/A"
+            if risk_state_label == "OVERUSED RISK":
+                risk_state_help = (
+                    f"CALC: Actual Stop Risk {_money(sized['actual_risk'])} - "
+                    f"Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} = "
+                    f"{_money(risk_state_amount)} OVERUSED RISK. "
+                )
+            else:
+                risk_state_help = (
+                    f"CALC: Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} - "
+                    f"Actual Stop Risk {_money(sized['actual_risk'])} = "
+                    f"{_money(risk_state_amount)} UNUSED RISK. "
+                )
+            if target_stop is not None:
+                risk_state_help += (
+                    f"TARGET STOP FOR $0 UNUSED RISK: Entry {_money(entry_price)} - "
+                    f"(Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} / "
+                    f"{sized['shares']} shares) = {target_stop_text}. "
+                    "This target uses the full modeled dollar-risk budget at the current MAX SHARES; "
+                    "slippage can make realized loss different."
+                )
+            elif sized["shares"] <= 0:
+                risk_state_help += "TARGET STOP is N/A because current MAX SHARES is 0."
+            else:
+                risk_state_help += (
+                    "TARGET STOP is N/A because using the full risk budget at this share count "
+                    "would require a stop below $0.00."
+                )
             _metric_box(
                 p5,
-                "UNUSED RISK",
-                _money(sized["unused_risk_budget"]),
-                "neutral",
-                help_text=f"CALC: Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} - Actual Stop Risk {_money(sized['actual_risk'])} = {_money(sized['unused_risk_budget'])}. This remainder exists because shares must be whole numbers.",
+                f"{risk_state_label} // TARGET STOP {target_stop_text}",
+                f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
+                "negative" if risk_state_label == "OVERUSED RISK" else "neutral",
+                help_text=risk_state_help,
             )
 
             if (
