@@ -78,9 +78,12 @@
   function requestOptions(raw){const o=structuredClone(raw);o.challenge=b64urlToBytes(o.challenge);if(Array.isArray(o.allowCredentials))o.allowCredentials=o.allowCredentials.map(x=>Object.assign({},x,{id:b64urlToBytes(x.id)}));return o}
   function credentialJSON(cred){const r=cred.response;const out={id:cred.id,rawId:bytesToB64url(cred.rawId),type:cred.type,authenticatorAttachment:cred.authenticatorAttachment||null,clientExtensionResults:cred.getClientExtensionResults?cred.getClientExtensionResults():{},response:{clientDataJSON:bytesToB64url(r.clientDataJSON)}};if(r.attestationObject){out.response.attestationObject=bytesToB64url(r.attestationObject);out.response.transports=r.getTransports?r.getTransports():[]}if(r.authenticatorData){out.response.authenticatorData=bytesToB64url(r.authenticatorData);out.response.signature=bytesToB64url(r.signature);out.response.userHandle=r.userHandle?bytesToB64url(r.userHandle):null}return out}
 
-  let buffer="",remaining=0,tickHandle=null,registrationOptions=null,authenticationOptions=null,touchRegistered=false,touchSupported=false,touchPlatformReported=false,touchChecked=false,firefoxMac=false,firefoxNeedsSetup=false,autoTouchAttempted=false,touchBusy=false;
+  let buffer="",remaining=0,tickHandle=null,registrationOptions=null,authenticationOptions=null,touchRegistered=false,touchSupported=false,touchPlatformReported=false,touchChecked=false,firefoxMac=false,firefoxNeedsSetup=false,autoTouchAttempted=false,touchBusy=false,touchMemoryRestoreSent=false,touchMemoryAckSent=false;
   const dots=document.getElementById("dots"),meta=document.getElementById("meta"),feedback=document.getElementById("feedback"),unlock=document.getElementById("unlock"),touch=document.getElementById("touch"),grid=document.getElementById("grid"),biohint=document.getElementById("biohint"),ffhelp=document.getElementById("ffhelp"),fftitle=document.getElementById("fftitle"),ffsteps=document.getElementById("ffsteps"),copyff=document.getElementById("copyff"),retestff=document.getElementById("retestff");
 
+  function readTouchMemory(key){try{const raw=localStorage.getItem(String(key||""));return raw?JSON.parse(raw):null}catch(_){return null}}
+  function writeTouchMemory(key,value){try{localStorage.setItem(String(key||""),JSON.stringify(value));return true}catch(_){return false}}
+  function clearTouchMemory(key){try{localStorage.removeItem(String(key||""));return true}catch(_){return false}}
   function uaInfo(){const host=credentialHost();const ua=String((host.navigator&&host.navigator.userAgent)||navigator.userAgent||"");const fx=ua.match(/Firefox\/(\d+)/i);return{isMac:/Macintosh|Mac OS X/i.test(ua),firefoxVersion:fx?Number(fx[1]):0,ua:ua}}
   function setFeedback(text,tone=""){feedback.className="feedback"+(tone?" "+tone:"");feedback.textContent=text}
   function showFirefoxHelp(info){firefoxNeedsSetup=true;ffhelp.hidden=false;fftitle.textContent="FIREFOX "+(info.firefoxVersion||"")+" // ENABLE MAC TOUCH ID";ffsteps.textContent="Raj's Terminal supports Firefox Touch ID. This Firefox profile is currently reporting that the macOS platform authenticator is unavailable. Enable the Firefox macOS passkey preference once, fully restart Firefox, then stay in Firefox.";height()}
@@ -108,7 +111,37 @@
     else{hideFirefoxHelp();if(!touchSupported){biohint.textContent="WEB AUTHENTICATION UNAVAILABLE HERE // USE ACCESS CODE"}else if(touchPlatformReported){biohint.textContent=(firefoxMac?"FIREFOX + ":"")+"MAC TOUCH ID PLATFORM AUTHENTICATOR READY // BIOMETRIC DATA NEVER LEAVES macOS";if(manual)setFeedback("MAC TOUCH ID READY // FIREFOX CAN USE IT","ok")}else{biohint.textContent="WEB AUTHENTICATION READY // TOUCH ID PLATFORM STATUS UNKNOWN // TAP TOUCH ID OR USE ACCESS CODE"}}
     renderTouch();height();maybeAutoTouch()}
 
-  function applyArgs(args){remaining=Math.max(0,Number(args.remaining||0));registrationOptions=args.registration_options||null;authenticationOptions=args.authentication_options||null;touchRegistered=Boolean(args.touch_id_registered);const message=String(args.feedback||""),tone=String(args.feedback_tone||"");setFeedback(message||"INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE",tone);if(tickHandle)clearInterval(tickHandle);if(remaining>0){const update=()=>{setFeedback("SECURITY LOCKOUT // TRY AGAIN IN "+remaining+" SECONDS","error");renderBuffer();if(remaining<=0){clearInterval(tickHandle);feedback.className="feedback";feedback.textContent="LOCKOUT CLEARED // ENTER ACCESS CODE";renderBuffer()}else{remaining-=1}};update();tickHandle=setInterval(update,1000)}else renderBuffer();setTimeout(()=>{height();maybeAutoTouch()},0)}
+  function applyArgs(args){
+    remaining=Math.max(0,Number(args.remaining||0));
+    registrationOptions=args.registration_options||null;
+    authenticationOptions=args.authentication_options||null;
+    touchRegistered=Boolean(args.touch_id_registered);
+    const storageKey=String(args.touch_id_storage_key||"raj-terminal-touch-id-memory-v1");
+    const serverMemory=args.touch_id_memory||null;
+    if(args.clear_touch_id_memory){clearTouchMemory(storageKey);touchMemoryRestoreSent=true}
+    if(serverMemory){
+      const saved=writeTouchMemory(storageKey,serverMemory);
+      if(args.touch_id_persist_required&&!touchMemoryAckSent){
+        touchMemoryAckSent=true;
+        send({action:"touch_id_memory_saved",nonce:Date.now()});
+      }
+      if(!saved)setFeedback("TOUCH ID VERIFIED // BROWSER MEMORY COULD NOT BE SAVED","error");
+    }else if(!touchRegistered&&!registrationOptions&&!authenticationOptions&&!touchMemoryRestoreSent&&!args.clear_touch_id_memory){
+      const remembered=readTouchMemory(storageKey);
+      if(remembered){
+        touchMemoryRestoreSent=true;
+        send({action:"restore_touch_id_memory",touch_id_memory:remembered,nonce:Date.now()});
+      }
+    }
+    const message=String(args.feedback||""),tone=String(args.feedback_tone||"");
+    setFeedback(message||"INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE",tone);
+    if(tickHandle)clearInterval(tickHandle);
+    if(remaining>0){
+      const update=()=>{setFeedback("SECURITY LOCKOUT // TRY AGAIN IN "+remaining+" SECONDS","error");renderBuffer();if(remaining<=0){clearInterval(tickHandle);feedback.className="feedback";feedback.textContent="LOCKOUT CLEARED // ENTER ACCESS CODE";renderBuffer()}else{remaining-=1}};
+      update();tickHandle=setInterval(update,1000)
+    }else renderBuffer();
+    setTimeout(()=>{height();maybeAutoTouch()},0)
+  }
   window.addEventListener("message",e=>{if(e.data&&e.data.type==="streamlit:render")applyArgs(e.data.args||{})});window.addEventListener("resize",height);ready();height();renderBuffer();checkTouch();
 </script>
 </body>
