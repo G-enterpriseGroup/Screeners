@@ -37,15 +37,32 @@ def main() -> None:
 
         assert guard.ensure_fresh_process(
             current_commit="commit-b",
+            repo_root=Path("/tmp/raj-terminal-local"),
             exit_fn=lambda code: exits.append(code),
         ) is True
         assert exits == [75]
+
+        # Community Cloud owns process restarts. A commit change there must never
+        # hard-kill the Streamlit process because that can surface the "Oh no"
+        # frontend instead of the platform's managed deploy/reboot state.
+        exits.clear()
+        setattr(builtins, marker, "commit-b")
+        assert guard.ensure_fresh_process(
+            current_commit="commit-c",
+            repo_root=Path("/mount/src/screeners"),
+            exit_fn=lambda code: exits.append(code),
+        ) is False
+        assert exits == []
+        assert getattr(builtins, marker) == "commit-c"
+        assert guard._is_streamlit_community_cloud(Path("/mount/src/screeners"))
+        assert not guard._is_streamlit_community_cloud(Path("/tmp/screeners"))
 
         root = Path(__file__).resolve().parents[1]
         app_source = (root / "streamlit_app.py").read_text(encoding="utf-8")
         agents = (root / "AGENTS.md").read_text(encoding="utf-8")
         assert "from src.reboot_guard import ensure_fresh_process" in app_source
         assert "ensure_fresh_process()" in app_source
+        assert "_STREAMLIT_COMMUNITY_CLOUD" in app_source
         assert "POST-COMMIT APP REBOOT" in agents
     finally:
         if had_previous:
