@@ -20,6 +20,8 @@ from src.passkey_auth import (
     complete_authentication,
     complete_registration,
     load_touch_id_record,
+    restore_touch_id_record,
+    seal_touch_id_record,
     webauthn_error,
     webauthn_ready,
 )
@@ -30,6 +32,8 @@ _lock_keypad = components.declare_component(
     "raj_terminal_lock_keypad_v2",
     path=str(_COMPONENT_PATH),
 )
+
+_TOUCH_ID_BROWSER_STORAGE_KEY = "raj-terminal-touch-id-memory-v1"
 
 
 _COMPACT_AUTH_CSS = """
@@ -143,9 +147,20 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     remaining = int(remaining_fn())
     feedback = st.session_state.get("_app_keypad_feedback_v2") or {}
     app_url = _current_app_url()
+    identity_seed = _credential_identity_seed(namespace)
     touch_record = load_touch_id_record(app_url) if app_url and webauthn_ready() else None
     registration_options = st.session_state.get("_touchid_registration_options")
     authentication_options = _ensure_authentication_options(app_url, touch_record)
+    touch_memory = None
+    if touch_record and app_url:
+        try:
+            touch_memory = seal_touch_id_record(app_url, touch_record, identity_seed)
+        except Exception:
+            touch_memory = None
+    clear_browser_touch_memory = bool(
+        st.session_state.pop("_touchid_clear_browser_memory", False)
+    )
+    persist_then_unlock = bool(st.session_state.get("_touchid_persist_then_unlock", False))
 
     if not webauthn_ready() and not feedback:
         feedback = {
@@ -160,6 +175,10 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
         touch_id_registered=bool(touch_record),
         registration_options=registration_options if isinstance(registration_options, dict) else None,
         authentication_options=authentication_options if isinstance(authentication_options, dict) else None,
+        touch_id_storage_key=_TOUCH_ID_BROWSER_STORAGE_KEY,
+        touch_id_memory=touch_memory if isinstance(touch_memory, dict) else None,
+        touch_id_persist_required=persist_then_unlock,
+        clear_touch_id_memory=clear_browser_touch_memory,
         key="raj_terminal_lock_keypad_v2",
         default={"action": "", "code": "", "credential": None, "nonce": 0},
     )
@@ -182,7 +201,25 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     code = str(result.get("code") or "")
     credential = result.get("credential")
 
-    if action == "code":
+    if action == "restore_touch_id_memory":
+        restored = restore_touch_id_record(app_url, result.get("touch_id_memory"), identity_seed)
+        if not restored:
+            st.session_state["_touchid_clear_browser_memory"] = True
+            _set_feedback(
+                "error",
+                "TOUCH ID MEMORY COULD NOT BE VERIFIED // ENTER ACCESS CODE ONCE TO RE-ENROLL",
+            )
+        else:
+            _clear_touch_id_session()
+            _set_feedback("ok", "TOUCH ID MEMORY RESTORED // VERIFYING MAC TOUCH ID")
+        st.rerun()
+
+    elif action == "touch_id_memory_saved":
+        if st.session_state.pop("_touchid_persist_then_unlock", False):
+            _unlock(namespace)
+        return
+
+    elif action == "code":
         if not code:
             return
         if verify_fn(code):
@@ -227,8 +264,11 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             _clear_touch_id_session()
             _set_feedback("error", f"TOUCH ID VERIFICATION FAILED // {exc}")
             st.rerun()
+        _clear_touch_id_session()
+        st.session_state["_touchid_persist_then_unlock"] = True
+        _set_feedback("ok", "TOUCH ID ENROLLED // SAVING REBOOT-SAFE PASSKEY MEMORY")
         clear_fn()
-        _unlock(namespace)
+        st.rerun()
 
     elif action == "authenticate":
         challenge = st.session_state.get("_touchid_authentication_challenge")
@@ -248,8 +288,12 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             st.session_state.pop("_touchid_authentication_challenge", None)
             _set_feedback("error", f"TOUCH ID VERIFICATION FAILED // {exc}")
             st.rerun()
+        st.session_state.pop("_touchid_authentication_options", None)
+        st.session_state.pop("_touchid_authentication_challenge", None)
+        st.session_state["_touchid_persist_then_unlock"] = True
+        _set_feedback("ok", "TOUCH ID VERIFIED // SAVING UPDATED PASSKEY MEMORY")
         clear_fn()
-        _unlock(namespace)
+        st.rerun()
 
     else:
         return
