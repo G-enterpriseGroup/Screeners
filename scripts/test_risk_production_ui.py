@@ -519,9 +519,8 @@ def main():
     assert "MATH CHECK: PASS" in stable_check_text
     assert "Target stop: 2 x ($771.35 - $704.58) = $133.54 modeled risk <= $133.55 budget" in stable_check_text
 
-    # Long stock safety: Stop Loss can never be at/above Entry Price. AppTest can
-    # inject an out-of-range value directly into Session State, so the server-side
-    # guard must clamp it even if the browser-side number_input max is bypassed.
+    # Long stock safety: even when AppTest attempts an out-of-range Stop Loss,
+    # the rendered control must remain strictly below Entry Price.
     stop_guard = AppTest.from_string(FIXTURE, default_timeout=30).run()
     assert not stop_guard.exception, [e.message for e in stop_guard.exception]
     stop_guard.number_input(key="risk_stop_price").set_value(250.0).run()
