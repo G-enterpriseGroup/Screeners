@@ -940,17 +940,24 @@ def _render_next_trade(
                     ),
                 )
             )
+        tactical_room_limit = max(0.0, float(summary["target_room"]))
         if "risk_capital_source_tactical" not in st.session_state:
             st.session_state["risk_capital_source_tactical"] = (
                 st.session_state["risk_capital_source"] == _CAPITAL_SOURCE_TACTICAL
             )
+        active_capital_balance = (
+            tactical_room_limit
+            if bool(st.session_state["risk_capital_source_tactical"])
+            else max(0.0, liquid_balance)
+        )
 
         with source_col:
             st.html(
                 f'<div class="risk-capital-source-title" '
                 f'style="color:{BB_ORANGE};font-family:\'Courier New\',monospace;'
                 'font-size:.86rem;line-height:1.1;margin:0 0 .28rem 0;">'
-                "Capital Source</div>"
+                f'Capital Source // USING <span style="color:{BB_GREEN};font-weight:900;">'
+                f'{_money(active_capital_balance)}</span></div>'
             )
             liquid_label_col, switch_col, tactical_label_col = st.columns(
                 [1.0, 0.18, 1.0],
@@ -991,7 +998,6 @@ def _render_next_trade(
             )
             st.session_state["risk_capital_source"] = capital_source
 
-        tactical_room_limit = max(0.0, float(summary["target_room"]))
         if capital_source == _CAPITAL_SOURCE_TACTICAL:
             capital_limit = tactical_room_limit
             capital_source_text = f"Tactical Room {_money(tactical_room_limit)}"
