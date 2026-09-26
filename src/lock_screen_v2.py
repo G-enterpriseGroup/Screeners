@@ -35,6 +35,67 @@ _lock_keypad = components.declare_component(
 
 _TOUCH_ID_BROWSER_STORAGE_KEY = "raj-terminal-touch-id-memory-v1"
 
+# Streamlit V2 components execute directly in the app page instead of the
+# legacy iframe path. Keep browser persistence here so a server/container reboot
+# cannot make the lock forget an already-enrolled public WebAuthn record.
+_TOUCH_ID_MEMORY_BRIDGE_JS = r"""
+export default function({ data, setTriggerValue }) {
+  const command = String(data?.command || "");
+  const commandId = String(data?.command_id || "");
+  if (!command || !commandId) return;
+
+  const seenKey = "__raj_terminal_touch_id_memory_commands_v2";
+  const seen = window[seenKey] || (window[seenKey] = new Set());
+  if (seen.has(commandId)) return;
+  seen.add(commandId);
+
+  const storageKey = String(data?.storage_key || "raj-terminal-touch-id-memory-v1");
+  const emit = (payload) => setTriggerValue("event", {
+    ...payload,
+    command_id: commandId,
+    nonce: Date.now(),
+  });
+
+  try {
+    if (command === "save") {
+      if (!data?.memory) throw new Error("No Touch ID memory payload was supplied.");
+      const serialized = JSON.stringify(data.memory);
+      window.localStorage.setItem(storageKey, serialized);
+      const roundTrip = window.localStorage.getItem(storageKey);
+      if (roundTrip !== serialized) throw new Error("Touch ID memory did not round-trip.");
+      emit({ action: "saved" });
+      return;
+    }
+
+    if (command === "restore") {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        emit({ action: "missing" });
+        return;
+      }
+      emit({ action: "restore", touch_id_memory: JSON.parse(raw) });
+      return;
+    }
+
+    if (command === "clear") {
+      window.localStorage.removeItem(storageKey);
+      emit({ action: "cleared" });
+      return;
+    }
+  } catch (err) {
+    emit({
+      action: "error",
+      error: String(err?.message || err || "browser storage failed"),
+    });
+  }
+}
+"""
+
+_touch_id_memory_bridge = st.components.v2.component(
+    "raj_terminal_touch_id_memory_bridge_v2",
+    js=_TOUCH_ID_MEMORY_BRIDGE_JS,
+)
+
 
 _COMPACT_AUTH_CSS = """
 <style>
@@ -126,6 +187,69 @@ def _set_feedback(tone: str, message: str) -> None:
     st.session_state["_app_keypad_feedback_v2"] = {"tone": tone, "message": message}
 
 
+def _new_touch_memory_command(prefix: str) -> str:
+    counter = int(st.session_state.get("_touchid_memory_command_counter", 0) or 0) + 1
+    st.session_state["_touchid_memory_command_counter"] = counter
+    return f"{prefix}:{counter}"
+
+
+def _request_touch_memory_save() -> None:
+    st.session_state["_touchid_persist_then_unlock"] = True
+    st.session_state["_touchid_memory_save_command_id"] = _new_touch_memory_command("save")
+
+
+def _touch_memory_bridge_event(
+    *,
+    touch_record: dict[str, Any] | None,
+    touch_memory: dict[str, Any] | None,
+    persist_then_unlock: bool,
+    clear_browser_touch_memory: bool,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Sync the sealed public credential record through first-party browser storage."""
+    restore_checked = bool(st.session_state.get("_touchid_memory_restore_checked", False))
+
+    command = ""
+    command_id = ""
+    memory = None
+
+    if clear_browser_touch_memory:
+        command = "clear"
+        command_id = _new_touch_memory_command("clear")
+    elif touch_memory:
+        command = "save"
+        memory = touch_memory
+        if persist_then_unlock:
+            command_id = str(
+                st.session_state.get("_touchid_memory_save_command_id")
+                or _new_touch_memory_command("save")
+            )
+            st.session_state["_touchid_memory_save_command_id"] = command_id
+        else:
+            command_id = f"sync:{str(touch_memory.get('mac') or '')}"
+    elif not touch_record and not restore_checked:
+        command = "restore"
+        command_id = str(
+            st.session_state.get("_touchid_memory_restore_command_id")
+            or _new_touch_memory_command("restore")
+        )
+        st.session_state["_touchid_memory_restore_command_id"] = command_id
+
+    result = _touch_id_memory_bridge(
+        data={
+            "command": command,
+            "command_id": command_id,
+            "storage_key": _TOUCH_ID_BROWSER_STORAGE_KEY,
+            "memory": memory,
+        },
+        on_event_change=lambda: None,
+        key="raj_terminal_touch_id_memory_bridge_v2",
+        width=1,
+        height=0,
+    )
+    event = getattr(result, "event", None)
+    return (event if isinstance(event, dict) else None), restore_checked
+
+
 def _unlock(namespace: dict[str, Any]) -> None:
     st.session_state["etrade_access_unlocked"] = True
     st.session_state.pop("app_access_code", None)
@@ -183,6 +307,71 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     clear_browser_touch_memory = bool(
         st.session_state.pop("_touchid_clear_browser_memory", False)
     )
+
+    memory_event, restore_checked = _touch_memory_bridge_event(
+        touch_record=touch_record,
+        touch_memory=touch_memory,
+        persist_then_unlock=persist_then_unlock,
+        clear_browser_touch_memory=clear_browser_touch_memory,
+    )
+    if memory_event:
+        memory_action = str(memory_event.get("action") or "")
+        command_id = str(memory_event.get("command_id") or "")
+        last_command_id = str(
+            st.session_state.get("_touchid_memory_last_processed_command_id") or ""
+        )
+        if command_id and command_id != last_command_id:
+            st.session_state["_touchid_memory_last_processed_command_id"] = command_id
+
+            if memory_action == "restore":
+                restored = restore_touch_id_record(
+                    app_url,
+                    memory_event.get("touch_id_memory"),
+                    memory_secret,
+                )
+                if restored:
+                    st.session_state.pop("_touchid_memory_restore_checked", None)
+                    st.session_state.pop("_touchid_memory_restore_command_id", None)
+                    _clear_touch_id_session()
+                    _set_feedback("ok", "TOUCH ID MEMORY RESTORED // VERIFYING MAC TOUCH ID")
+                else:
+                    st.session_state["_touchid_memory_restore_checked"] = True
+                    st.session_state["_touchid_clear_browser_memory"] = True
+                    _set_feedback(
+                        "error",
+                        "SAVED TOUCH ID MEMORY FAILED VERIFICATION // SET UP TOUCH ID ONCE",
+                    )
+                st.rerun()
+
+            if memory_action == "missing":
+                st.session_state["_touchid_memory_restore_checked"] = True
+                _set_feedback(
+                    "error",
+                    "NO SAVED TOUCH ID MEMORY FOUND IN THIS BROWSER // SET UP TOUCH ID ONCE",
+                )
+                st.rerun()
+
+            if memory_action == "saved":
+                st.session_state.pop("_touchid_memory_save_command_id", None)
+                if st.session_state.pop("_touchid_persist_then_unlock", False):
+                    _unlock(namespace)
+
+            if memory_action == "error":
+                st.session_state["_touchid_memory_restore_checked"] = True
+                _set_feedback(
+                    "error",
+                    "TOUCH ID BROWSER MEMORY FAILED // "
+                    + str(memory_event.get("error") or "BROWSER STORAGE UNAVAILABLE"),
+                )
+                st.rerun()
+
+    restore_checking = bool(
+        not touch_record
+        and not restore_checked
+        and webauthn_ready()
+        and not registration_options
+    )
+
     if not webauthn_ready() and not feedback:
         feedback = {
             "tone": "error",
@@ -194,12 +383,9 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
         feedback=str(feedback.get("message", "")),
         feedback_tone=str(feedback.get("tone", "")),
         touch_id_registered=bool(touch_record),
+        touch_memory_checking=restore_checking,
         registration_options=registration_options if isinstance(registration_options, dict) else None,
         authentication_options=authentication_options if isinstance(authentication_options, dict) else None,
-        touch_id_storage_key=_TOUCH_ID_BROWSER_STORAGE_KEY,
-        touch_id_memory=touch_memory if isinstance(touch_memory, dict) else None,
-        touch_id_persist_required=persist_then_unlock,
-        clear_touch_id_memory=clear_browser_touch_memory,
         key="raj_terminal_lock_keypad_v2",
         default={"action": "", "code": "", "credential": None, "nonce": 0},
     )
@@ -222,25 +408,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     code = str(result.get("code") or "")
     credential = result.get("credential")
 
-    if action == "restore_touch_id_memory":
-        restored = restore_touch_id_record(app_url, result.get("touch_id_memory"), memory_secret)
-        if not restored:
-            st.session_state["_touchid_clear_browser_memory"] = True
-            _set_feedback(
-                "error",
-                "TOUCH ID MEMORY COULD NOT BE VERIFIED // ENTER ACCESS CODE ONCE TO RE-ENROLL",
-            )
-        else:
-            _clear_touch_id_session()
-            _set_feedback("ok", "TOUCH ID MEMORY RESTORED // VERIFYING MAC TOUCH ID")
-        st.rerun()
-
-    elif action == "touch_id_memory_saved":
-        if st.session_state.pop("_touchid_persist_then_unlock", False):
-            _unlock(namespace)
-        return
-
-    elif action == "code":
+    if action == "code":
         if not code:
             return
         if verify_fn(code):
@@ -286,7 +454,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             _set_feedback("error", f"TOUCH ID VERIFICATION FAILED // {exc}")
             st.rerun()
         _clear_touch_id_session()
-        st.session_state["_touchid_persist_then_unlock"] = True
+        _request_touch_memory_save()
         _set_feedback("ok", "TOUCH ID ENROLLED // SAVING REBOOT-SAFE PASSKEY MEMORY")
         clear_fn()
         st.rerun()
@@ -311,7 +479,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             st.rerun()
         st.session_state.pop("_touchid_authentication_options", None)
         st.session_state.pop("_touchid_authentication_challenge", None)
-        st.session_state["_touchid_persist_then_unlock"] = True
+        _request_touch_memory_save()
         _set_feedback("ok", "TOUCH ID VERIFIED // SAVING UPDATED PASSKEY MEMORY")
         clear_fn()
         st.rerun()
