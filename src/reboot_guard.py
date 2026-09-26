@@ -22,6 +22,7 @@ from typing import Callable
 
 
 _BOOT_MARKER = "_raj_terminal_boot_commit_v1"
+_COMMUNITY_CLOUD_ROOT = Path("/mount/src")
 
 
 def _git_dir(repo_root: Path) -> Path | None:
@@ -78,17 +79,36 @@ def repo_commit(repo_root: Path | None = None) -> str:
     return value
 
 
+def _is_streamlit_community_cloud(repo_root: Path | None = None) -> bool:
+    """Return True for the managed Community Cloud repository mount."""
+    root = Path(repo_root or Path(__file__).resolve().parents[1]).resolve()
+    try:
+        root.relative_to(_COMMUNITY_CLOUD_ROOT)
+    except ValueError:
+        return False
+    return True
+
+
 def ensure_fresh_process(
     *,
     current_commit: str | None = None,
+    repo_root: Path | None = None,
     exit_fn: Callable[[int], object] = os._exit,
 ) -> bool:
-    """Exit the stale interpreter if its boot commit differs from repo HEAD.
+    """Exit a stale interpreter only when the host is not Community Cloud.
 
-    Returns True only when a restart was requested. Missing Git metadata is a
-    safe no-op so local packaged/test environments are not disrupted.
+    Community Cloud owns the app-process lifecycle. Hard-killing its Streamlit
+    server from inside the app can surface the browser-level "Oh no" failure
+    screen during Git updates. On Community Cloud, adopt the new commit marker
+    and let the platform perform its normal deploy/reboot lifecycle instead.
+
+    Returns True only when a non-Community-Cloud restart was requested. Missing
+    Git metadata is a safe no-op so packaged/test environments are unaffected.
     """
-    current = str(current_commit if current_commit is not None else repo_commit()).strip()
+    root = Path(repo_root or Path(__file__).resolve().parents[1])
+    current = str(
+        current_commit if current_commit is not None else repo_commit(root)
+    ).strip()
     if not current:
         return False
 
@@ -97,6 +117,10 @@ def ensure_fresh_process(
         setattr(builtins, _BOOT_MARKER, current)
         return False
     if boot == current:
+        return False
+
+    if _is_streamlit_community_cloud(root):
+        setattr(builtins, _BOOT_MARKER, current)
         return False
 
     exit_fn(75)
