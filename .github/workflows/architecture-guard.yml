@@ -41,14 +41,15 @@ jobs:
         run: |
           set -euo pipefail
           url="https://terminal8.streamlit.app/_stcore/health"
-          for attempt in $(seq 1 60); do
-            body="$(curl --connect-timeout 5 --max-time 10 -fsS "$url" 2>/dev/null || true)"
-            if [ "$body" = "ok" ]; then
+          for attempt in $(seq 1 36); do
+            status="$(curl -L --connect-timeout 5 --max-time 10 -sS -o /tmp/raj_terminal_health -w "%{http_code}" "$url" 2>/dev/null || true)"
+            if [ "$status" = "200" ]; then
               echo "Raj's Terminal health check PASS after commit $GITHUB_SHA"
+              cat /tmp/raj_terminal_health || true
               exit 0
             fi
-            echo "Waiting for Streamlit reboot/health... attempt $attempt/60"
+            echo "Waiting for Streamlit reboot/health... HTTP $status // attempt $attempt/36"
             sleep 5
           done
-          echo "Raj's Terminal did not return healthy after the production commit."
+          echo "Raj's Terminal did not return HTTP 200 after the production commit."
           exit 1
