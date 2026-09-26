@@ -80,6 +80,10 @@ def main() -> None:
     assert "restore_touch_id_memory" in component_source
     assert "touch_id_memory_saved" in component_source
 
+    app_source = (root / "streamlit_app.py").read_text(encoding="utf-8")
+    assert "from src.lock_screen_v2 import render_seamless_lock_screen" in app_source
+    assert "render_seamless_lock_screen(globals())" in app_source
+
     print("Touch ID reboot-safe sealed browser memory: PASS")
 
 
