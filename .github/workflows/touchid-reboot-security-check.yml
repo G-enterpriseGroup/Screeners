@@ -1,0 +1,44 @@
+name: Temporary Touch ID Reboot Security Validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/touchid-reboot-security-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  touchid-reboot-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check production auth and reboot path
+        run: python -m py_compile streamlit_app.py src/reboot_guard.py src/passkey_auth.py src/lock_screen_v2.py
+
+      - name: Touch ID persistence security regression
+        run: python scripts/test_touch_id_persistence.py
+
+      - name: Reboot guard regression
+        run: python scripts/test_reboot_guard.py
+
+      - name: Existing hot reload regression
+        run: python scripts/test_streamlit_hot_reload_import_guard.py
+
+      - name: Top-level tab regression
+        run: python scripts/test_tab_layout.py
+
+      - name: Architecture guard
+        run: python scripts/validate_architecture.py
