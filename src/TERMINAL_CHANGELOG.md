@@ -1258,3 +1258,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS. Complete diff and exact committed production files inspected; whitespace checks PASS.
 - **Implementation commit:** `89e97ff`.
 - **Lesson:** Auto-fill and editable override require separate broker-seed state. Verify wheel changes through the native widget/server calculation path, not just displayed text. Cash available for investment and margin buying power are separate E*TRADE fields: https://apisb.etrade.com/docs/api/account/api-balance-v1.html
+
+
+## 2026-09-25 — Replace Risk Capital Source segmented buttons with one flip switch
+
+- **Feature changed:** E*TRADE Risk Sizing Capital Source control only.
+- **Exact production file(s) changed:** `src/risk_sizing_ui_v2.py`; focused regression coverage updated in `scripts/test_risk_production_ui.py`.
+- **What was broken / missing:** Capital Source worked logically, but the UI was a two-segment button bar labeled `USE LIQUID BALANCE ENTERED` and `USE TACTICAL ROOM`, not the compact physical-style flip switch Raj requested.
+- **Root cause:** The base Risk Part 2 UI rendered `st.segmented_control` for the mutually exclusive capital source.
+- **What changed:** Replaced the segmented control with exactly one `st.toggle`. Switch OFF / left maps to `Liquid Bal.`; switch ON / right maps to `Tact Room.`. The existing persisted `risk_capital_source` string remains the source-of-truth value for browser/session memory and downstream sizing, so only the interaction/presentation changed.
+- **Important behavior that must remain:** Only one capital source can be active. Liquid Balance remains editable and broker-seeded exactly as before. Tactical Room remains the existing live sleeve room. Existing sizing formulas, ticker/quote behavior, ASK/Stop seeding, LONG-TERM persistence, and Risk Book behavior must remain unchanged.
+- **Files/features intentionally NOT changed:** `src/risk_sizing.py`, `src/trade_math.py`, `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v10.py`, ticker autocomplete, E*TRADE OAuth/session/client/cache plumbing, Holdings, GEX, Schwab Risk, Option Book, navigation, shared theme/config, Bull Debit, Muni, Orders, `streamlit_app.py`, and `src/terminal_core.py`.
+- **Tests performed:** Temporary GitHub Actions run `36203950997` installed production requirements; syntax-checked `streamlit_app.py` and the full v7 → v10 → v9 → v2 Risk path; passed `scripts/test_risk_production_ui.py`, `scripts/test_risk_intent_override.py`, `scripts/test_tab_layout.py`, and `python scripts/validate_architecture.py`. Standard Terminal Architecture Guard run `36203951045` also passed.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** production switch `4200771d62db77192496b922572e598eed969bd2`; regression updates `287aea69d00c4ca6821d8d83618db66389c795c8`, `ea48250e033481b72c40ffa62a653e3615819876`.
+- **Lesson:** When a binary choice is conceptually one lever, use one toggle and preserve the existing persisted semantic value underneath it rather than replacing the storage contract.
