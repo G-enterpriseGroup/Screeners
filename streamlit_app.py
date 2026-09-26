@@ -19,9 +19,13 @@ import streamlit as st
 from src.reboot_guard import ensure_fresh_process
 
 
-# A pulled production commit must become a fresh Python process, not only a
-# Streamlit hot reload. No-op when repository revision metadata is unavailable.
-ensure_fresh_process()
+# Community Cloud owns the deployed server lifecycle. Never hard-kill that
+# managed process from app code: doing so can surface Streamlit's browser-level
+# "Oh no" page during a Git update. Keep the fresh-process guard for non-Cloud
+# environments where an in-process hot reload can otherwise retain stale state.
+_STREAMLIT_COMMUNITY_CLOUD = str(Path(__file__).resolve()).startswith("/mount/src/")
+if not _STREAMLIT_COMMUNITY_CLOUD:
+    ensure_fresh_process()
 
 
 # Read-only TradingView bridge view. Check this before loading any terminal
