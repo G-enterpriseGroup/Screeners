@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import threading
 from pathlib import Path
@@ -24,6 +25,7 @@ _STORE_DIR = Path.home() / ".raj_terminal"
 _CREDENTIAL_FILE = _STORE_DIR / "touch_id_credential.json"
 _LOCK = threading.Lock()
 _CREDENTIAL_VERSION = 2
+_BROWSER_MEMORY_VERSION = 1
 
 try:
     from webauthn import (
@@ -91,6 +93,117 @@ def _write_record(payload: dict[str, Any]) -> None:
         tmp.replace(_CREDENTIAL_FILE)
 
 
+def _validated_record(app_url: str, raw: Any) -> dict[str, Any] | None:
+    """Validate and normalize the non-secret public passkey verification record."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        origin, rp_id = origin_and_rp_id(app_url)
+        credential_version = int(raw.get("credential_version") or 0)
+        sign_count = max(0, int(raw.get("sign_count") or 0))
+    except (TypeError, ValueError):
+        return None
+    if credential_version < _CREDENTIAL_VERSION:
+        return None
+    if str(raw.get("rp_id") or "") != rp_id:
+        return None
+    if str(raw.get("origin") or "") not in {"", origin}:
+        return None
+    credential_id = str(raw.get("credential_id") or "").strip()
+    public_key = str(raw.get("public_key") or "").strip()
+    if not credential_id or not public_key:
+        return None
+    if str(raw.get("authenticator_attachment") or "") != "platform":
+        return None
+    transports = [
+        str(value).strip().lower()
+        for value in (raw.get("transports") or [])
+        if str(value).strip()
+    ]
+    if transports and "internal" not in set(transports):
+        return None
+    if not transports:
+        transports = ["internal"]
+    return {
+        "credential_version": credential_version,
+        "rp_id": rp_id,
+        "origin": origin,
+        "credential_id": credential_id,
+        "public_key": public_key,
+        "sign_count": sign_count,
+        "device_type": str(raw.get("device_type") or ""),
+        "backed_up": bool(raw.get("backed_up")),
+        "authenticator_attachment": "platform",
+        "discoverable": bool(raw.get("discoverable", True)),
+        "transports": transports,
+    }
+
+
+def _browser_memory_key(identity_seed: str) -> bytes:
+    """Derive a stable server-only MAC key from the terminal access-code hash."""
+    material = ("raj-terminal-touch-id-memory-v1:" + str(identity_seed or "")).encode("utf-8")
+    return hashlib.sha256(material).digest()
+
+
+def _browser_memory_payload(record: dict[str, Any]) -> bytes:
+    return json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def seal_touch_id_record(
+    app_url: str,
+    record: dict[str, Any],
+    identity_seed: str,
+) -> dict[str, Any]:
+    """Create a tamper-evident browser-memory envelope for the public passkey record.
+
+    The fingerprint/biometric template and private key never enter this payload.
+    The HMAC prevents browser-local storage from becoming an unauthenticated
+    replacement trust anchor after a Streamlit process/container reboot.
+    """
+    cleaned = _validated_record(app_url, record)
+    if not cleaned:
+        raise ValueError("Touch ID record cannot be persisted for this terminal origin.")
+    mac = hmac.new(
+        _browser_memory_key(identity_seed),
+        _browser_memory_payload(cleaned),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "memory_version": _BROWSER_MEMORY_VERSION,
+        "record": cleaned,
+        "mac": mac,
+    }
+
+
+def restore_touch_id_record(
+    app_url: str,
+    envelope: Any,
+    identity_seed: str,
+) -> dict[str, Any] | None:
+    """Restore a sealed browser-backed passkey record after server reboot."""
+    if not isinstance(envelope, dict):
+        return None
+    try:
+        version = int(envelope.get("memory_version") or 0)
+    except (TypeError, ValueError):
+        return None
+    if version != _BROWSER_MEMORY_VERSION:
+        return None
+    record = _validated_record(app_url, envelope.get("record"))
+    supplied_mac = str(envelope.get("mac") or "")
+    if not record or not supplied_mac:
+        return None
+    expected_mac = hmac.new(
+        _browser_memory_key(identity_seed),
+        _browser_memory_payload(record),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(supplied_mac, expected_mac):
+        return None
+    _write_record(record)
+    return record
+
+
 def clear_touch_id_record() -> None:
     """Forget only the terminal's server-side passkey record."""
     with _LOCK:
@@ -105,27 +218,10 @@ def clear_touch_id_record() -> None:
 def load_touch_id_record(app_url: str) -> dict[str, Any] | None:
     """Return only a current platform/discoverable credential for this host.
 
-    Older v1 credentials are intentionally treated as unenrolled. They were
-    created before we required a discoverable platform passkey and could cause
-    macOS/Firefox to route the request to a USB security-key dialog.
+    The server file is a runtime cache. Durable reboot survival is provided by
+    the HMAC-sealed browser-memory envelope restored through the lock component.
     """
-    try:
-        _origin, rp_id = origin_and_rp_id(app_url)
-    except ValueError:
-        return None
-    record = _read_record()
-    if not record or str(record.get("rp_id") or "") != rp_id:
-        return None
-    if int(record.get("credential_version") or 0) < _CREDENTIAL_VERSION:
-        return None
-    if not record.get("credential_id") or not record.get("public_key"):
-        return None
-    if str(record.get("authenticator_attachment") or "") != "platform":
-        return None
-    transports = {str(value).lower() for value in (record.get("transports") or [])}
-    if transports and "internal" not in transports:
-        return None
-    return record
+    return _validated_record(app_url, _read_record())
 
 
 def build_registration_options(app_url: str, identity_seed: str) -> tuple[dict[str, Any], bytes]:
