@@ -281,8 +281,8 @@ def _render_css() -> None:
         }
 
         /* PART 2 ONLY: one grid, one baseline, no inherited offsets. */
-        .st-key-risk_part2_panel{margin:0!important;padding:0!important;gap:8px!important;}
-        .st-key-risk_part2_panel [data-testid="stVerticalBlock"]{gap:8px!important;}
+        .st-key-risk_part2_panel{margin:0!important;padding:0!important;gap:4px!important;}
+        .st-key-risk_part2_panel [data-testid="stVerticalBlock"]{gap:4px!important;}
         .st-key-risk_part2_panel [data-testid="stHorizontalBlock"]{gap:8px!important;}
         .st-key-risk_part2_panel [data-testid="stWidgetLabel"]{
             min-height:20px!important;
@@ -300,13 +300,13 @@ def _render_css() -> None:
         }
         .st-key-risk_part2_panel .rs9-card{
             height:auto!important;
-            min-height:56px!important;
+            min-height:0!important;
             box-sizing:border-box!important;
-            padding:6px 8px!important;
+            padding:3px 8px!important;
         }
         .st-key-risk_part2_panel .rs9-head{min-height:13px!important;}
         .st-key-risk_part2_panel .rs9-label{font-size:.80rem!important;line-height:1.25!important;white-space:normal;}
-        .st-key-risk_part2_panel .rs9-value{font-size:1.02rem!important;line-height:1.25!important;margin-top:4px!important;}
+        .st-key-risk_part2_panel .rs9-value{font-size:1.02rem!important;line-height:1.25!important;margin-top:2px!important;}
         .st-key-risk_part2_panel [data-testid="stSelectbox"]{margin:0!important;}
         .st-key-risk_part2_panel [data-testid="stSelectbox"] div[data-baseweb="select"]>div,
         .st-key-risk_part2_panel [data-testid="stSelectbox"] [role="group"],
@@ -562,7 +562,9 @@ def _single_stop_number_input(original_number_input):
             return original_number_input(label, *args, **kwargs)
 
         rendered = True
-        value = original_number_input(label, *args, **kwargs)
+        stop_col, distance_col = st.columns(2, gap="small")
+        with stop_col:
+            value = original_number_input(label, *args, **kwargs)
         try:
             entry = float(st.session_state.get("risk_entry_price", 0.0) or 0.0)
             stop = float(value or 0.0)
@@ -574,21 +576,22 @@ def _single_stop_number_input(original_number_input):
         # percentage before its widget is instantiated so manual Stop edits,
         # Entry edits, and quote reseeds stay synchronized through the existing fragment rerender.
         st.session_state["risk_stop_distance_pct"] = distance_pct
-        original_number_input(
-            "▼ % BELOW ENTRY",
-            min_value=0.01,
-            max_value=100.0,
-            step=0.25,
-            format="%.2f",
-            key="risk_stop_distance_pct",
-            on_change=_sync_stop_from_distance_pct,
-            help=(
-                "Editable stop distance. Defaults to 5.00% from the normal quote seed. "
-                "Type a percent, use + / −, or focus this field and scroll up/down in "
-                "0.25-point steps. Changing it updates Stop Loss and all Risk sizing "
-                "live inside this fragment; editing Stop Loss updates this percentage."
-            ),
-        )
+        with distance_col:
+            original_number_input(
+                "▼ % BELOW ENTRY",
+                min_value=0.01,
+                max_value=100.0,
+                step=0.25,
+                format="%.2f",
+                key="risk_stop_distance_pct",
+                on_change=_sync_stop_from_distance_pct,
+                help=(
+                    "Editable stop distance. Defaults to 5.00% from the normal quote seed. "
+                    "Type a percent, use + / −, or focus this field and scroll up/down in "
+                    "0.25-point steps. Changing it updates Stop Loss and all Risk sizing "
+                    "live inside this fragment; editing Stop Loss updates this percentage."
+                ),
+            )
         st.html(_STOP_WHEEL_SCRIPT, unsafe_allow_javascript=True)
         return value
     return wrapped
