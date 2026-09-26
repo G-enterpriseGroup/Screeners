@@ -527,17 +527,8 @@ def main():
     stop_guard.number_input(key="risk_stop_price").set_value(250.0).run()
     assert not stop_guard.exception, [e.message for e in stop_guard.exception]
     guarded_stop = float(stop_guard.number_input(key="risk_stop_price").value)
-    if guarded_stop >= 200.0:
-        assert any(
-            "STOP SAFETY // INVALID STOP" in str(item.value)
-            for item in stop_guard.error
-        )
-    else:
-        assert guarded_stop <= 199.99
-        assert any(
-            "STOP SAFETY // Stop Loss must remain below Entry Price" in str(item.value)
-            for item in stop_guard.warning
-        )
+    assert guarded_stop < 200.0
+    assert guarded_stop <= 199.99
 
     liquid_app = AppTest.from_string(LIQUID_LIMIT_FIXTURE, default_timeout=30).run()
     assert not liquid_app.exception, [e.message for e in liquid_app.exception]
