@@ -16,7 +16,7 @@ import src.passkey_auth as passkey
 
 def main() -> None:
     app_url = "https://terminal8.streamlit.app"
-    identity_seed = "stable-access-code-hash"
+    memory_secret = "stable-server-only-secret"
     record = {
         "credential_version": 2,
         "rp_id": "terminal8.streamlit.app",
@@ -39,15 +39,15 @@ def main() -> None:
             passkey._STORE_DIR = root
             passkey._CREDENTIAL_FILE = root / "touch_id_credential.json"
 
-            envelope = passkey.seal_touch_id_record(app_url, record, identity_seed)
+            envelope = passkey.seal_touch_id_record(app_url, record, memory_secret)
             assert envelope["memory_version"] == 1
             assert envelope["record"]["credential_id"] == record["credential_id"]
-            assert identity_seed not in str(envelope)
+            assert memory_secret not in str(envelope)
 
             # Simulate a full Streamlit/container reboot: the server-side home
             # cache is gone, but the browser-memory envelope survives.
             assert not passkey._CREDENTIAL_FILE.exists()
-            restored = passkey.restore_touch_id_record(app_url, envelope, identity_seed)
+            restored = passkey.restore_touch_id_record(app_url, envelope, memory_secret)
             assert restored is not None
             assert restored["credential_id"] == record["credential_id"]
             assert passkey.load_touch_id_record(app_url)["sign_count"] == 3
@@ -57,11 +57,11 @@ def main() -> None:
             tampered = copy.deepcopy(envelope)
             tampered["record"]["public_key"] = "attacker-key"
             passkey._CREDENTIAL_FILE.unlink()
-            assert passkey.restore_touch_id_record(app_url, tampered, identity_seed) is None
+            assert passkey.restore_touch_id_record(app_url, tampered, memory_secret) is None
             assert not passkey._CREDENTIAL_FILE.exists()
-            assert passkey.restore_touch_id_record(app_url, envelope, "wrong-seed") is None
+            assert passkey.restore_touch_id_record(app_url, envelope, "wrong-server-secret") is None
             assert passkey.restore_touch_id_record(
-                "https://other.streamlit.app", envelope, identity_seed
+                "https://other.streamlit.app", envelope, memory_secret
             ) is None
     finally:
         passkey._STORE_DIR = original_dir
@@ -74,6 +74,8 @@ def main() -> None:
     ).read_text(encoding="utf-8")
     assert 'action == "restore_touch_id_memory"' in lock_source
     assert 'action == "touch_id_memory_saved"' in lock_source
+    assert '_secret_value("security", "touch_id_memory_secret"' in lock_source
+    assert '_secret_value("etrade", "consumer_secret"' in lock_source
     assert "_touchid_persist_then_unlock" in lock_source
     assert "localStorage.getItem" in component_source
     assert "localStorage.setItem" in component_source
