@@ -940,19 +940,56 @@ def _render_next_trade(
                     ),
                 )
             )
-        with source_col:
-            capital_source = st.segmented_control(
-                "Capital Source",
-                [_CAPITAL_SOURCE_LIQUID, _CAPITAL_SOURCE_TACTICAL],
-                key="risk_capital_source",
-                selection_mode="single",
-                label_visibility="collapsed",
-                width="stretch",
-                help=(
-                    "One capital source is active at a time. Left uses the Liquid Balance entered; "
-                    "right uses the live Tactical Room shown above."
-                ),
+        if "risk_capital_source_tactical" not in st.session_state:
+            st.session_state["risk_capital_source_tactical"] = (
+                st.session_state["risk_capital_source"] == _CAPITAL_SOURCE_TACTICAL
             )
+
+        with source_col:
+            st.html(
+                f'<div class="risk-capital-source-title" '
+                f'style="color:{BB_ORANGE};font-family:\'Courier New\',monospace;'
+                'font-size:.86rem;line-height:1.1;margin:0 0 .28rem 0;">'
+                "Capital Source</div>"
+            )
+            liquid_label_col, switch_col, tactical_label_col = st.columns(
+                [1.0, 0.18, 1.0],
+                gap="small",
+                vertical_alignment="center",
+            )
+            with liquid_label_col:
+                st.html(
+                    f'<div class="risk-capital-source-label" '
+                    f'style="color:{BB_ORANGE};font-family:\'Courier New\',monospace;'
+                    'font-size:.82rem;font-weight:700;line-height:1.1;'
+                    'text-align:right;white-space:nowrap;">Liquid Bal.</div>'
+                )
+            with switch_col:
+                use_tactical_room = bool(
+                    st.toggle(
+                        "Capital Source",
+                        key="risk_capital_source_tactical",
+                        label_visibility="collapsed",
+                        help=(
+                            "Flip left for Liquid Balance or right for Tactical Room. "
+                            "Only one capital source is active at a time."
+                        ),
+                    )
+                )
+            with tactical_label_col:
+                st.html(
+                    f'<div class="risk-capital-source-label" '
+                    f'style="color:{BB_ORANGE};font-family:\'Courier New\',monospace;'
+                    'font-size:.82rem;font-weight:700;line-height:1.1;'
+                    'text-align:left;white-space:nowrap;">Tact Room.</div>'
+                )
+
+            capital_source = (
+                _CAPITAL_SOURCE_TACTICAL
+                if use_tactical_room
+                else _CAPITAL_SOURCE_LIQUID
+            )
+            st.session_state["risk_capital_source"] = capital_source
 
         tactical_room_limit = max(0.0, float(summary["target_room"]))
         if capital_source == _CAPITAL_SOURCE_TACTICAL:
