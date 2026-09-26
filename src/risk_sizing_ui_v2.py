@@ -895,6 +895,76 @@ def _stock_risk_status(
     )
 
 
+def _stock_math_check(
+    entry_price: float,
+    stop_price: float,
+    risk_budget: float,
+    capital_limit: float,
+    sized: dict[str, Any],
+    target_shares: int,
+    target_stop: float | None,
+) -> tuple[bool, str]:
+    """Independently reconcile the displayed stock sizing arithmetic."""
+    entry = float(entry_price)
+    stop = float(stop_price)
+    budget = max(0.0, float(risk_budget))
+    capital = max(0.0, float(capital_limit))
+    risk_per_share = abs(entry - stop)
+
+    expected_risk_limited = max(0, int(math.floor(budget / risk_per_share)))
+    expected_capital_limited = max(0, int(math.floor(capital / entry)))
+    expected_shares = min(expected_risk_limited, expected_capital_limited)
+    expected_actual_risk = expected_shares * risk_per_share
+    expected_notional = expected_shares * entry
+
+    checks = [
+        math.isclose(float(sized["risk_per_share"]), risk_per_share, abs_tol=1e-9),
+        int(sized["risk_limited_shares"]) == expected_risk_limited,
+        int(sized["capital_limited_shares"]) == expected_capital_limited,
+        int(sized["shares"]) == expected_shares,
+        math.isclose(float(sized["actual_risk"]), expected_actual_risk, abs_tol=1e-7),
+        math.isclose(float(sized["notional"]), expected_notional, abs_tol=1e-7),
+    ]
+
+    target_line = "Target stop: N/A."
+    quantity = max(0, int(target_shares))
+    if target_stop is not None and quantity > 0:
+        target = float(target_stop)
+        target_risk = quantity * max(0.0, entry - target)
+        target_slack = budget - target_risk
+        target_ok = (
+            target <= entry + 1e-9
+            and target_risk <= budget + 1e-7
+            and target_slack >= -1e-7
+            and target_slack < (quantity * 0.01) + 1e-7
+        )
+        checks.append(target_ok)
+        target_line = (
+            f"Target stop: {quantity} x ({_money(entry)} - {_money(target)}) = "
+            f"{_money(target_risk)} modeled risk <= {_money(budget)} budget; "
+            f"cent-rounding remainder {_money(max(0.0, target_slack))}."
+        )
+
+    passed = all(checks)
+    status = "PASS" if passed else "FAIL"
+    return (
+        passed,
+        "\n".join(
+            [
+                f"MATH CHECK: {status}",
+                f"Risk/share: |{_money(entry)} - {_money(stop)}| = {_money(risk_per_share)}.",
+                f"Risk-limited shares: floor({_money(budget)} / {_money(risk_per_share)}) = {expected_risk_limited}.",
+                f"Capital-limited shares: floor({_money(capital)} / {_money(entry)}) = {expected_capital_limited}.",
+                f"Max shares: min({expected_risk_limited}, {expected_capital_limited}) = {expected_shares}.",
+                f"Actual stop risk: {expected_shares} x {_money(risk_per_share)} = {_money(expected_actual_risk)}.",
+                f"Position notional: {expected_shares} x {_money(entry)} = {_money(expected_notional)}.",
+                target_line,
+                "CHECK SCOPE: arithmetic only; fills and slippage can change realized loss.",
+            ]
+        ),
+    )
+
+
 def _render_next_trade(
     client,
     *,
@@ -1224,11 +1294,23 @@ def _render_next_trade(
                     "TARGET STOP is N/A because using the full risk budget at the capital-funded "
                     "share count would require a stop below $0.00."
                 )
+            math_check_pass, math_check_help = _stock_math_check(
+                entry_price,
+                stop_price,
+                risk_budget["selected_risk_budget"],
+                capital_limit,
+                sized,
+                target_share_count,
+                target_stop,
+            )
+            risk_state_help = math_check_help + "\n\n" + risk_state_help
             _metric_box(
                 p5,
                 f"{risk_state_label} // TARGET STOP {target_stop_text}",
                 f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
-                "negative" if risk_state_label == "OVERUSED RISK" else "neutral",
+                "negative" if (
+                    risk_state_label == "OVERUSED RISK" or not math_check_pass
+                ) else "neutral",
                 help_text=risk_state_help,
             )
 
