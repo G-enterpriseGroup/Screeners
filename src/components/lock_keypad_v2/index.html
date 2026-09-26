@@ -121,7 +121,7 @@
     if(args.clear_touch_id_memory){clearTouchMemory(storageKey);touchMemoryRestoreSent=true}
     if(serverMemory){
       const saved=writeTouchMemory(storageKey,serverMemory);
-      if(args.touch_id_persist_required&&!touchMemoryAckSent){
+      if(saved&&args.touch_id_persist_required&&!touchMemoryAckSent){
         touchMemoryAckSent=true;
         send({action:"touch_id_memory_saved",nonce:Date.now()});
       }
