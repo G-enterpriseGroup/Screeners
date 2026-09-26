@@ -139,9 +139,12 @@ def _validated_record(app_url: str, raw: Any) -> dict[str, Any] | None:
     }
 
 
-def _browser_memory_key(identity_seed: str) -> bytes:
-    """Derive a stable server-only MAC key from the terminal access-code hash."""
-    material = ("raj-terminal-touch-id-memory-v1:" + str(identity_seed or "")).encode("utf-8")
+def _browser_memory_key(memory_secret: str) -> bytes:
+    """Derive the browser-record MAC key from a stable server-only secret."""
+    secret = str(memory_secret or "")
+    if not secret:
+        raise ValueError("A server-only Touch ID memory secret is required.")
+    material = ("raj-terminal-touch-id-memory-v1:" + secret).encode("utf-8")
     return hashlib.sha256(material).digest()
 
 
@@ -152,7 +155,7 @@ def _browser_memory_payload(record: dict[str, Any]) -> bytes:
 def seal_touch_id_record(
     app_url: str,
     record: dict[str, Any],
-    identity_seed: str,
+    memory_secret: str,
 ) -> dict[str, Any]:
     """Create a tamper-evident browser-memory envelope for the public passkey record.
 
@@ -164,7 +167,7 @@ def seal_touch_id_record(
     if not cleaned:
         raise ValueError("Touch ID record cannot be persisted for this terminal origin.")
     mac = hmac.new(
-        _browser_memory_key(identity_seed),
+        _browser_memory_key(memory_secret),
         _browser_memory_payload(cleaned),
         hashlib.sha256,
     ).hexdigest()
@@ -178,7 +181,7 @@ def seal_touch_id_record(
 def restore_touch_id_record(
     app_url: str,
     envelope: Any,
-    identity_seed: str,
+    memory_secret: str,
 ) -> dict[str, Any] | None:
     """Restore a sealed browser-backed passkey record after server reboot."""
     if not isinstance(envelope, dict):
@@ -194,7 +197,7 @@ def restore_touch_id_record(
     if not record or not supplied_mac:
         return None
     expected_mac = hmac.new(
-        _browser_memory_key(identity_seed),
+        _browser_memory_key(memory_secret),
         _browser_memory_payload(record),
         hashlib.sha256,
     ).hexdigest()
