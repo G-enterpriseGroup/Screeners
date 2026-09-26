@@ -291,6 +291,8 @@ def main():
     assert '"USE TACTICAL ROOM"' in v2_source
     assert '"OVERUSED RISK" if overused else "UNUSED RISK"' in v2_source
     assert 'f"{risk_state_label} // TARGET STOP {target_stop_text}"' in v2_source
+    assert 'target_share_count = sized["capital_limited_shares"]' in v2_source
+    assert 'math.ceil((candidate - 1e-9) * 100.0) / 100.0' in v2_source
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
 
@@ -455,6 +457,39 @@ def main():
     assert overused_amount == 25.0
     assert round(overused_pct, 2) == 11.11
     assert overused_target_stop == 177.5
+
+    # Regression for the live feedback loop Raj reported. With a $2,078.15
+    # capital cap, two shares are fundable at a $771.35 entry. The exact target
+    # stop is $704.575; displaying $704.57 would overuse the $133.55 budget by
+    # one cent and make MAX SHARES fall to one. The safe target must be $704.58
+    # and must remain stable after it is entered.
+    stable_entry = 771.35
+    stable_budget = 133.55
+    stable_capital = 2078.15
+    stable_initial = stock_position_size(
+        stable_entry, 732.78, stable_budget, capital_limit=stable_capital
+    )
+    assert stable_initial["shares"] == 2
+    assert stable_initial["capital_limited_shares"] == 2
+    _, _, _, stable_target = _stock_risk_status(
+        stable_entry,
+        stable_initial["capital_limited_shares"],
+        stable_budget,
+        stable_initial["actual_risk"],
+    )
+    assert stable_target == 704.58
+    stable_retargeted = stock_position_size(
+        stable_entry, stable_target, stable_budget, capital_limit=stable_capital
+    )
+    assert stable_retargeted["shares"] == 2
+    assert stable_retargeted["actual_risk"] <= stable_budget
+    _, _, _, stable_target_again = _stock_risk_status(
+        stable_entry,
+        stable_retargeted["capital_limited_shares"],
+        stable_budget,
+        stable_retargeted["actual_risk"],
+    )
+    assert stable_target_again == stable_target
 
     liquid_app = AppTest.from_string(LIQUID_LIMIT_FIXTURE, default_timeout=30).run()
     assert not liquid_app.exception, [e.message for e in liquid_app.exception]

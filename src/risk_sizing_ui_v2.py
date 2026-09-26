@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import math
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -864,11 +865,11 @@ def _how_to_use() -> None:
 
 def _stock_risk_status(
     entry_price: float,
-    shares: int,
+    target_shares: int,
     risk_budget: float,
     actual_risk: float,
 ) -> tuple[str, float, float, float | None]:
-    """Return the live risk-state label, amount, percentage, and $0-unused target stop."""
+    """Return live risk status plus a stable cent-valid target stop."""
     budget = max(0.0, float(risk_budget))
     actual = max(0.0, float(actual_risk))
     gap = budget - actual
@@ -876,12 +877,15 @@ def _stock_risk_status(
     amount = actual - budget if overused else max(0.0, gap)
     pct = amount / budget * 100.0 if budget > 0 else 0.0
 
-    quantity = max(0, int(shares))
+    quantity = max(0, int(target_shares))
     target_stop = None
     if quantity > 0:
         candidate = float(entry_price) - (budget / quantity)
         if candidate >= 0:
-            target_stop = candidate
+            # Stop Loss accepts cents. Rounding a long stop down can exceed the
+            # budget by a cent and make MAX SHARES fall, causing the target to
+            # chase itself. Round the stop upward so modeled risk stays <= budget.
+            target_stop = math.ceil((candidate - 1e-9) * 100.0) / 100.0
 
     return (
         "OVERUSED RISK" if overused else "UNUSED RISK",
@@ -1180,9 +1184,10 @@ def _render_next_trade(
                 "negative",
                 help_text=f"CALC: {sized['shares']} shares x {_money(sized['risk_per_share'])} risk/share = {_money(sized['actual_risk'])} if the stop is filled at the stop price. Slippage can make realized loss different.",
             )
+            target_share_count = sized["capital_limited_shares"]
             risk_state_label, risk_state_amount, risk_state_pct, target_stop = _stock_risk_status(
                 entry_price,
-                sized["shares"],
+                target_share_count,
                 risk_budget["selected_risk_budget"],
                 sized["actual_risk"],
             )
@@ -1201,18 +1206,23 @@ def _render_next_trade(
                 )
             if target_stop is not None:
                 risk_state_help += (
-                    f"TARGET STOP FOR $0 UNUSED RISK: Entry {_money(entry_price)} - "
+                    f"TARGET STOP FOR FULL MODELED RISK: Entry {_money(entry_price)} - "
                     f"(Max Dollar Risk {_money(risk_budget['selected_risk_budget'])} / "
-                    f"{sized['shares']} shares) = {target_stop_text}. "
-                    "This target uses the full modeled dollar-risk budget at the current MAX SHARES; "
-                    "slippage can make realized loss different."
+                    f"{target_share_count} capital-funded shares) = {target_stop_text}. "
+                    "The displayed long stop is rounded upward to the nearest cent so entering it "
+                    "cannot exceed Max Dollar Risk from cent rounding. The share anchor comes from "
+                    "the selected Capital Source, so the target does not chase itself when Stop Loss changes. "
+                    "A few cents of unused risk can remain because stock stops are entered in $0.01 increments. "
+                    "Slippage can make realized loss different."
                 )
-            elif sized["shares"] <= 0:
-                risk_state_help += "TARGET STOP is N/A because current MAX SHARES is 0."
+            elif target_share_count <= 0:
+                risk_state_help += (
+                    "TARGET STOP is N/A because the selected Capital Source cannot fund one whole share."
+                )
             else:
                 risk_state_help += (
-                    "TARGET STOP is N/A because using the full risk budget at this share count "
-                    "would require a stop below $0.00."
+                    "TARGET STOP is N/A because using the full risk budget at the capital-funded "
+                    "share count would require a stop below $0.00."
                 )
             _metric_box(
                 p5,
