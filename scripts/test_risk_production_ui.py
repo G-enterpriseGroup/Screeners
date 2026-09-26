@@ -366,7 +366,8 @@ def main():
     assert len(app.toggle) == 1
     assert app.toggle(key="risk_capital_source_tactical").value is False
     capital_switch_html = "\n".join(item.value for item in app.get("html"))
-    assert "Capital Source" in capital_switch_html
+    assert "Capital Source // USING" in capital_switch_html
+    assert "$2,000.00" in capital_switch_html
     assert "Liquid Bal." in capital_switch_html
     assert "Tact Room." in capital_switch_html
     assert saved["settings"]["risk_liquid_balance"] == 2000.0
@@ -430,6 +431,9 @@ def main():
     assert len(liquid_app.toggle) == 1
     assert liquid_app.toggle(key="risk_capital_source_tactical").value is False
     assert liquid_app.session_state["risk_capital_source"] == "USE LIQUID BALANCE ENTERED"
+    liquid_switch_html = "\n".join(item.value for item in liquid_app.get("html"))
+    assert "Capital Source // USING" in liquid_switch_html
+    assert "$2,000.00" in liquid_switch_html
 
     tactical_app = AppTest.from_string(TACTICAL_LIMIT_FIXTURE, default_timeout=30).run()
     assert not tactical_app.exception, [e.message for e in tactical_app.exception]
@@ -446,6 +450,9 @@ def main():
     assert len(tactical_app.toggle) == 1
     assert tactical_app.toggle(key="risk_capital_source_tactical").value is True
     assert tactical_app.session_state["risk_capital_source"] == "USE TACTICAL ROOM"
+    tactical_switch_html = "\n".join(item.value for item in tactical_app.get("html"))
+    assert "Capital Source // USING" in tactical_switch_html
+    assert "$0.00" in tactical_switch_html
 
     stale_liquid = AppTest.from_string(STALE_LIQUID_FIXTURE, default_timeout=30).run()
     assert not stale_liquid.exception, [e.message for e in stale_liquid.exception]
