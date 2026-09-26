@@ -256,7 +256,18 @@ Choose the approach that:
 
 Do not choose a broader refactor simply because it seems cleaner.
 
-## 14. FINAL REPORT REQUIREMENTS
+## 14. POST-COMMIT APP REBOOT
+
+After every production commit to Raj's Terminal:
+
+1. force or verify a fresh-process app reboot/redeploy before reporting completion;
+2. verify the deployed Streamlit health endpoint responds after the reboot;
+3. do not rely only on Streamlit hot reload for production completion;
+4. if the environment cannot perform the reboot directly, state that limitation explicitly rather than claiming it happened.
+
+The production app also contains a commit-change reboot guard so a pulled Git commit cannot remain only as a stale-process hot reload. Preserve that guard unless Raj explicitly removes this requirement.
+
+## 15. FINAL REPORT REQUIREMENTS
 
 After a completed coding task, report:
 - exact files changed;
