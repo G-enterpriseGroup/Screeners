@@ -96,11 +96,28 @@ def _clean_state(raw: Any) -> dict[str, Any]:
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
+        target_pct = min(100.0, max(0.0, _finite(item.get("target_pct"), 0.0)))
+        legacy_band = min(50.0, max(0.0, _finite(item.get("band_pct"), 0.0)))
+        lower_pct = min(
+            target_pct,
+            max(
+                0.0,
+                _finite(item.get("lower_pct"), max(0.0, target_pct - legacy_band)),
+            ),
+        )
+        upper_pct = max(
+            target_pct,
+            min(
+                100.0,
+                _finite(item.get("upper_pct"), min(100.0, target_pct + legacy_band)),
+            ),
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(item.get("target_pct"), 0.0))),
-                "band_pct": min(50.0, max(0.0, _finite(item.get("band_pct"), 0.0))),
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
             }
         )
 
@@ -249,7 +266,8 @@ def _build_rebalance_plan(
     config = {
         str(row.get("symbol") or "").strip().upper(): {
             "target_pct": min(100.0, max(0.0, _finite(row.get("target_pct"), 0.0))),
-            "band_pct": min(50.0, max(0.0, _finite(row.get("band_pct"), 0.0))),
+            "lower_pct": min(100.0, max(0.0, _finite(row.get("lower_pct"), 0.0))),
+            "upper_pct": min(100.0, max(0.0, _finite(row.get("upper_pct"), 100.0))),
         }
         for row in config_rows
         if str(row.get("symbol") or "").strip()
@@ -262,18 +280,27 @@ def _build_rebalance_plan(
         symbol = str(source.get("Symbol") or "").strip().upper()
         if not symbol:
             continue
-        cfg = config.get(symbol, {"target_pct": 0.0, "band_pct": 0.0})
+        cfg = config.get(
+            symbol,
+            {"target_pct": 0.0, "lower_pct": 0.0, "upper_pct": 100.0},
+        )
         target = cfg["target_pct"]
-        band = cfg["band_pct"]
+        lower = min(target, cfg["lower_pct"])
+        upper = max(target, cfg["upper_pct"])
         target_total += target
 
         market_value = _finite(source.get("Market Value"), 0.0)
         pnl_pct = _finite(source.get("Gain/Loss %"), 0.0)
         sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
         current_pct = (market_value / account_value * 100.0) if account_value > 0 else 0.0
-        lower = max(0.0, target - band)
-        upper = min(100.0, target + band)
+        lower_band = max(0.0, target - lower)
+        upper_band = max(0.0, upper - target)
         drift = current_pct - target
+        tolerance = (
+            "IN TOLERANCE"
+            if lower - 1e-9 <= current_pct <= upper + 1e-9
+            else "OUT OF TOLERANCE"
+        )
 
         action = "HOLD"
         reason = "INSIDE BAND"
@@ -292,7 +319,7 @@ def _build_rebalance_plan(
                 if mode == "TO TARGET":
                     goal_pct = target
                 else:
-                    goal_pct = _inside_band_goal(target, band, "UPPER")
+                    goal_pct = _inside_band_goal(target, upper_band, "UPPER")
                 if hard_breach:
                     goal_pct = min(
                         goal_pct,
@@ -317,7 +344,7 @@ def _build_rebalance_plan(
                     if mode == "TO TARGET":
                         goal_pct = target
                     else:
-                        goal_pct = _inside_band_goal(target, band, "LOWER")
+                        goal_pct = _inside_band_goal(target, lower_band, "LOWER")
                     raw_trade = account_value * goal_pct / 100.0 - market_value
                 else:
                     action = "ADD"
@@ -326,7 +353,7 @@ def _build_rebalance_plan(
                     if mode == "TO TARGET":
                         goal_pct = target
                     else:
-                        goal_pct = _inside_band_goal(target, band, "LOWER")
+                        goal_pct = _inside_band_goal(target, lower_band, "LOWER")
                     raw_trade = account_value * goal_pct / 100.0 - market_value
 
         if abs(raw_trade) > 0 and abs(raw_trade) < min_trade:
@@ -343,8 +370,9 @@ def _build_rebalance_plan(
                 "Market Value": market_value,
                 "Current %": current_pct,
                 "Target %": target,
-                "Band +/- %": band,
-                "Range": f"{lower:.2f}%–{upper:.2f}%",
+                "Lower %": lower,
+                "Upper %": upper,
+                "Tolerance": tolerance,
                 "Drift %": drift,
                 "Action": action,
                 "Reason": reason,
@@ -403,7 +431,7 @@ def _build_rebalance_plan(
         elif proposed < 0:
             proposed_sells += -proposed
 
-        if not str(row["Action"]).startswith("HOLD"):
+        if row["Tolerance"] == "OUT OF TOLERANCE":
             outside_count += 1
 
     post_cash = cash_available + proposed_sells - proposed_buys
@@ -416,8 +444,9 @@ def _build_rebalance_plan(
         "Market Value",
         "Current %",
         "Target %",
-        "Band +/- %",
-        "Range",
+        "Lower %",
+        "Upper %",
+        "Tolerance",
         "Drift %",
         "Action",
         "Raw Gap $",
@@ -441,6 +470,7 @@ def _build_rebalance_plan(
         "gross_trade": gross_trade,
         "post_cash": post_cash,
         "outside_count": float(outside_count),
+        "inside_count": float(max(0, len(records) - outside_count)),
         "buy_funding_ratio": buy_factor,
     }
     return plan, summary
