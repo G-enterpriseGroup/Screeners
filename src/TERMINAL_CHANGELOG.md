@@ -1549,5 +1549,7 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Tests performed:** Temporary validation run `36295075448` passed production Risk syntax checks, `scripts/test_risk_production_ui.py` with explicit main-account → Order Account and Order Account → main-account interaction checks, `scripts/test_risk_live_order_helpers.py`, `scripts/test_tab_layout.py`, and `python scripts/validate_architecture.py`.
 - **Architecture guard result:** PASS.
 - **Branch / PR:** `fix/risk-linked-account-pickers-20260927`, PR #79.
+- **Production commit SHA:** `cdda6f717c128807c7328249a13ac72d06f99d00`.
+- **Post-push verification:** production run `36295157744` passed architecture validation, live-order helper simulation, active workflow validation, deployed Streamlit health, and the real deployed-browser `Oh no` guard.
 - **Lesson:** Account identity should be synchronized by stable `accountIdKey`, while the legacy shared picker may continue storing its selected list index.
 
