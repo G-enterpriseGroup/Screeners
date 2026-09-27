@@ -1575,3 +1575,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Post-push verification:** production run `36296225090` passed architecture validation, Risk live-order helper simulation, active workflow validation, deployed Streamlit health, and the real deployed-browser `Oh no` guard.
 - **Important behavior that must remain:** the initial click submits only the reviewed BUY LIMIT; the protective GTC SELL STOP is submitted only from a later explicit user action after E*TRADE confirms the complete fill, using the locked entry account, planned quantity, and planned Stop Loss.
 
+
+
+## 2026-09-27 — Set every enabled editable terminal field to #555555
+
+- **Feature changed:** terminal-wide shared editable-input appearance only.
+- **Exact production file changed:** `src/theme.py`; all-tab regression coverage updated in `scripts/test_tab_layout.py`.
+- **What was inconsistent:** Editable controls across terminal tabs inherited several dark/black input fills, so there was no single terminal-wide editable-box background.
+- **Root cause:** The shared theme owned caret/dropdown readability but did not define one background fill for every enabled editable input surface.
+- **What changed:** Added one terminal-wide rule in `src/theme.py` that applies `#555555` to enabled text, search, password, number, email, telephone, URL, date, time, datetime-local, month, week, textarea, contenteditable, Streamlit text/number/date/time/textarea/chat inputs, and closed select/multiselect surfaces. Disabled/read-only controls are intentionally excluded. Dropdown option menus remain on their existing terminal-black menu treatment.
+- **Important behavior that must remain:** This is appearance-only. No calculations, formulas, broker/order behavior, OAuth/session behavior, tab routing, navigation layout, table math, or feature interaction changed. The native orange typing caret remains intact.
+- **Files/features intentionally NOT changed:** Risk Sizing feature files and formulas, GEX, Holdings, Option Book, E*TRADE OAuth/client/order transport, navigation, Bull Debit, Muni, `src/terminal_core.py`, `streamlit_app.py`, and `.streamlit/config.toml`.
+- **Tests performed:** PR #81 temporary validation run `36296935297` passed production requirements install, syntax checks for `src/theme.py` and `streamlit_app.py`, `scripts/test_tab_layout.py` across every top-level production tab with explicit `#555555` shared-theme assertions, and `python scripts/validate_architecture.py`. Architecture Guard run `36296935174` also passed production architecture validation, Risk live-order helper safety checks, and active workflow validation.
+- **Architecture guard result:** PASS.
+- **Validated implementation head:** `5f1a086da3ada6bf76c96341d558f431ac6343cd` on PR #81 before removal of the temporary validation workflow.
+- **Lesson:** Terminal-wide editable-box color belongs in `src/theme.py`; keep the selector limited to enabled editable surfaces so read-only displays and non-input controls do not change.
