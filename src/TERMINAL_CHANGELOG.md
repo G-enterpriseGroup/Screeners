@@ -1528,3 +1528,12 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Deployment status:** validated and ready to merge; production merge was not completed from this chat.
 - **Lesson:** Do not inject Risk order UI by temporarily replacing the Part 2 renderer. Use an explicit one-way render callback and geometry-test every dense warning/header/control boundary that can wrap.
 
+## 2026-09-27 — Production deployment confirmation for Risk Parts 3/4 order layout
+
+- **Feature changed:** deployment completion for the Risk Sizing live-order overlap/account-step fix documented immediately above.
+- **Production commit:** `f3b8325ca759b28e572c95f23420d1253cf76d24`.
+- **Production state verified:** `main` no longer contains the temporary `previous_next_trade = _v9._v2._render_next_trade` hook or the legacy `LIVE E*TRADE ORDER` header. Production contains exactly the new `3. PICK E*TRADE ACCOUNT` and `4. REVIEW + SEND ORDER` sections, the 5474 default-account rule, the explicit post-Part-2 callback, and the wrap-safe Tactical Capacity warning.
+- **Tests performed before production push:** focused validation run `36294275682` passed syntax checks, the full Risk production interaction regression, live-order payload simulation, the Selenium overlap/geometry regression, all top-level tab rendering, and the architecture guard.
+- **Post-push verification:** production run `36294722419` passed architecture validation, live-order helper simulation, workflow validation, the deployed Streamlit health check, and the real browser check confirming the deployed app is not on the Streamlit `Oh no` error page.
+- **Important behavior that must remain:** Part 3 chooses the E*TRADE account with Raj ending 5474 as default when available; Part 4 owns review/send; the live-order block renders once; no warning/header/control overlap; entry/stop safety and all existing Risk math remain unchanged.
+
