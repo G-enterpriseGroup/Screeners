@@ -2063,35 +2063,120 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
             st.rerun(scope="fragment")
         return
 
+    watch_row = _arm_stop_watch(entry_order, "entry_restore")
+    watch_state = _current_stop_watch_state()
+    watch_row = _stop_watch_row(watch_state, entry_order["order_id"]) or watch_row
+    watch_status = str((watch_row or {}).get("status") or "ARMED").upper()
+
     st.caption(
-        "PROTECTION HANDOFF // Click once after the entry is submitted. "
-        "The terminal rechecks E*TRADE; only a confirmed full fill can trigger the exact planned GTC stop. "
-        "Open or partial fills remain blocked."
+        "PROTECTION WATCH ARMED // Terminal 8 automatically checks this exact E*TRADE entry every 5 seconds "
+        "while the terminal is open and the live E*TRADE session is connected. "
+        "A full fill changes the watch status to READY TO SEND; no stop order is submitted without your live confirmation."
     )
     if st.button(
-        "CHECK FULL FILL + SEND PROTECTIVE STOP",
-        type="primary",
-        key="risk_live_check_fill_send_stop",
+        "REFRESH PROTECTION STATUS NOW",
+        key="risk_live_refresh_protection_status",
         width="stretch",
     ):
         try:
-            orders = client.list_orders(
-                entry_order["account_key"],
-                symbol=entry_order["symbol"],
-                count=100,
+            _refresh_stop_watch_entry_now(
+                client,
+                entry_order,
+                touch_session,
+                "manual_refresh",
             )
-            touch_session()
-            fill = _order_fill_snapshot(
-                orders,
-                entry_order["order_id"],
-                int(entry_order["quantity"]),
-            )
-            st.session_state[_RISK_FILL_KEY] = fill
         except Exception as exc:
             st.error(f"E*TRADE FILL CHECK FAILED // {exc}")
             return
+        watch_state = _current_stop_watch_state()
+        watch_row = _stop_watch_row(watch_state, entry_order["order_id"]) or watch_row
+        watch_status = str((watch_row or {}).get("status") or "ARMED").upper()
 
-        if fill.get("full") and not fill.get("partial"):
+    if watch_status == "PARTIAL_FILL":
+        st.warning(
+            f"AUTO WATCH // PARTIAL FILL // {float((watch_row or {}).get('filled') or 0):g} of "
+            f"{float((watch_row or {}).get('ordered') or entry_order['quantity']):g} shares // "
+            "Full-quantity protective stop remains blocked until E*TRADE confirms the complete fill."
+        )
+        return
+
+    if watch_status in {"ENTRY_CANCELLED", "ENTRY_EXPIRED", "ENTRY_REJECTED"}:
+        st.error(
+            f"AUTO WATCH // {watch_status.replace('ENTRY_', 'ENTRY ')} // "
+            "Protective stop remains blocked because the entry did not fully fill."
+        )
+        if st.button(
+            "CLEAR TERMINAL ORDER WORKFLOW",
+            key="risk_live_clear_terminal_entry",
+            width="stretch",
+        ):
+            _clear_risk_order_workflow()
+            st.rerun(scope="fragment")
+        return
+
+    if watch_status != _RISK_STOP_WATCH_READY:
+        last_checked = float((watch_row or {}).get("last_checked_at") or 0.0)
+        age_text = (
+            f"{max(0, int(time.time() - last_checked))}s AGO"
+            if last_checked > 0
+            else "WAITING FOR FIRST AUTO CHECK"
+        )
+        broker_error = str((watch_row or {}).get("last_error") or "").strip()
+        if broker_error:
+            st.warning(
+                f"AUTO WATCH // {watch_status} // LAST CHECK {age_text} // "
+                f"E*TRADE CHECK ERROR: {broker_error}"
+            )
+        else:
+            st.info(
+                f"AUTO WATCH // {watch_status} // LAST CHECK {age_text} // "
+                "NO PROTECTIVE STOP HAS BEEN SENT YET."
+            )
+        return
+
+    avg_price = (watch_row or {}).get("average_price")
+    avg_text = f" @ AVG USD {float(avg_price):,.2f}" if avg_price is not None else ""
+    st.success(
+        f"AUTO WATCH CONFIRMED FULL FILL // {int(entry_order['quantity']):,} "
+        f"{entry_order['symbol']}{avg_text} // PROTECTIVE STOP READY TO SEND"
+    )
+    st.warning(
+        f"READY STOP // SELL {int(entry_order['quantity']):,} {entry_order['symbol']} // "
+        f"STOP USD {float(entry_order['stop_price']):,.2f} // GTC // "
+        "E*TRADE requires a contemporaneous affirmative instruction for this specific order."
+    )
+
+    stop_review = st.session_state.get(_RISK_STOP_REVIEW_KEY)
+    if isinstance(stop_review, dict) and not _preview_is_fresh(stop_review):
+        st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+        st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+        stop_review = None
+
+    if not isinstance(stop_review, dict):
+        if st.button(
+            "REVIEW + SEND READY PROTECTIVE STOP",
+            type="primary",
+            key="risk_live_send_ready_stop",
+            width="stretch",
+        ):
+            # Recheck the exact entry during this user-authorized action so a
+            # stale watch state can never cause a protective order submission.
+            try:
+                fill, _ = _refresh_stop_watch_entry_now(
+                    client,
+                    entry_order,
+                    touch_session,
+                    "send_recheck",
+                )
+            except Exception as exc:
+                st.error(f"E*TRADE FINAL FILL RECHECK FAILED // {exc}")
+                return
+            if not fill.get("full") or fill.get("partial"):
+                st.error(
+                    "PROTECTIVE STOP BLOCKED // E*TRADE did not confirm a complete fill during this send action."
+                )
+                return
+
             try:
                 stop_review = _preview_protective_stop(
                     client,
@@ -2115,65 +2200,15 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
                 "E*TRADE STOP PREVIEW RETURNED MESSAGE(S) // "
                 "The stop was NOT sent. Review the broker message below before confirming."
             )
-
-    fill = st.session_state.get(_RISK_FILL_KEY)
-    if not isinstance(fill, dict):
-        st.info(
-            "PROTECTIVE STOP PENDING // Use CHECK FULL FILL + SEND PROTECTIVE STOP. "
-            "No stop is sent unless E*TRADE confirms the complete entry fill during that action."
-        )
-        return
-    if not fill.get("found"):
-        st.warning(
-            "ENTRY ORDER NOT FOUND IN THE CURRENT E*TRADE ORDER LIST // Stop remains blocked. "
-            "Check E*TRADE Orders before taking further action."
-        )
-        return
-
-    status = str(fill.get("status") or "UNKNOWN").upper()
-    if fill.get("partial"):
-        st.warning(
-            f"PARTIAL FILL // {float(fill.get('filled') or 0):g} of "
-            f"{float(fill.get('ordered') or entry_order['quantity']):g} shares // "
-            "Protective stop remains blocked. Manage the partial fill in E*TRADE."
-        )
-        return
-    if not fill.get("full"):
-        if status in {"CANCELLED", "EXPIRED", "REJECTED"}:
-            st.error(f"ENTRY {status} // Protective stop remains blocked.")
-            if st.button(
-                "CLEAR TERMINAL ORDER WORKFLOW",
-                key="risk_live_clear_terminal_entry",
-                width="stretch",
-            ):
-                _clear_risk_order_workflow()
-                st.rerun(scope="fragment")
         else:
-            st.info(
-                f"ENTRY STATUS {status} // Protective stop was NOT sent. "
-                "Click CHECK FULL FILL + SEND PROTECTIVE STOP again after the entry fills."
-            )
-        return
+            return
 
-    avg_price = fill.get("average_price")
-    avg_text = f" @ AVG USD {float(avg_price):,.2f}" if avg_price is not None else ""
-    st.success(
-        f"ENTRY FULLY FILLED // {int(entry_order['quantity']):,} {entry_order['symbol']}{avg_text}"
-    )
-
-    stop_review = st.session_state.get(_RISK_STOP_REVIEW_KEY)
-    if not isinstance(stop_review, dict):
-        st.info(
-            "FULL FILL CONFIRMED // Click CHECK FULL FILL + SEND PROTECTIVE STOP "
-            "to refresh the broker preview and submit the exact planned stop."
-        )
-        return
     if not _preview_is_fresh(stop_review):
         st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
         st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
         st.warning(
             "STOP PREVIEW EXPIRED // No stop was sent. "
-            "Click CHECK FULL FILL + SEND PROTECTIVE STOP again."
+            "Use REVIEW + SEND READY PROTECTIVE STOP again."
         )
         return
 
