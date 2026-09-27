@@ -1488,6 +1488,7 @@ def render_risk_sizing(
     account_balance: Callable[..., dict[str, Any]],
     balance_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
     touch_session: Callable[[], None],
+    after_next_trade: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     _render_tooltip_css()
 
@@ -2164,6 +2165,16 @@ def render_risk_sizing(
                 summary=summary,
                 cash_available=cash_available,
                 touch_session=touch_session,
+            )
+        if after_next_trade is not None:
+            after_next_trade(
+                {
+                    "investable_assets": investable_assets,
+                    "tactical_sleeve_pct": tactical_sleeve_pct,
+                    "full_position_risk_pct": full_position_risk_pct,
+                    "summary": summary,
+                    "cash_available": cash_available,
+                }
             )
 
     _persist_risk_book_snapshot(
