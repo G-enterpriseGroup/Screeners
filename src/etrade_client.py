@@ -200,6 +200,70 @@ class ETradeClient:
             page += 1
         return all_positions
 
+    def get_transactions(
+        self,
+        account_id_key: str,
+        *,
+        start_date: Any | None = None,
+        end_date: Any | None = None,
+        sort_order: str = "ASC",
+        count: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return brokerage transactions, following E*TRADE marker pagination."""
+        account_id_key = str(account_id_key or "").strip()
+        if not account_id_key:
+            raise ETradeError("A valid E*TRADE account is required for transactions.")
+
+        def format_date(value: Any | None) -> str | None:
+            if value is None:
+                return None
+            if hasattr(value, "strftime"):
+                return value.strftime("%m%d%Y")
+            text = str(value).strip()
+            if len(text) == 8 and text.isdigit():
+                return text
+            if len(text) == 10 and text[4] == "-" and text[7] == "-":
+                year, month, day = text.split("-")
+                return f"{month}{day}{year}"
+            raise ETradeError("Transaction dates must be date objects, MMDDYYYY, or YYYY-MM-DD.")
+
+        order = str(sort_order or "ASC").strip().upper()
+        if order not in {"ASC", "DESC"}:
+            raise ETradeError("Transaction sort order must be ASC or DESC.")
+        page_count = max(1, min(50, int(count or 50)))
+        start = format_date(start_date)
+        end = format_date(end_date)
+        if bool(start) != bool(end):
+            raise ETradeError("Provide both start_date and end_date for transaction history.")
+
+        params: dict[str, Any] = {"count": page_count, "sortOrder": order}
+        if start and end:
+            params["startDate"] = start
+            params["endDate"] = end
+
+        transactions: list[dict[str, Any]] = []
+        marker = ""
+        seen_markers: set[str] = set()
+        while True:
+            page_params = dict(params)
+            if marker:
+                page_params["marker"] = marker
+            data = self._get(
+                f"/v1/accounts/{quote(account_id_key, safe='')}/transactions",
+                page_params,
+                allow_no_content=True,
+            )
+            if not data:
+                break
+            batch = _as_list(_find_key(data, "Transaction"))
+            transactions.extend(row for row in batch if isinstance(row, dict))
+            next_marker = str(_find_key(data, "marker") or "").strip()
+            if not next_marker or next_marker == marker or next_marker in seen_markers:
+                break
+            seen_markers.add(next_marker)
+            marker = next_marker
+        return transactions
+
     def get_quote(self, symbol: str) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
         if not symbol:
