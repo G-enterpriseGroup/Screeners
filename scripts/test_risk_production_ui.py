@@ -359,7 +359,7 @@ def main():
     assert app.selectbox(key="risk_live_order_account_key").value == "otherkey"
     app.selectbox(key="risk_live_order_account_key").select("fixture").run()
     clean()
-    assert app.selectbox(key="risk_live_order_account_key").value == "rajkey"
+    assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
 
     margin_payload = {
         "Computed": {
