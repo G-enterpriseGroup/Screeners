@@ -1704,3 +1704,11 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated implementation head:** `e38f545b3c3e4cb385b63c21277fae5cf47718cb`; temporary validation workflow removed in cleanup commit `4c9a2bc93ac2daeaf4eef1a1a836029a10bfac9a`. Final production merge/deployment SHA is recorded after post-push verification.
 - **Lesson:** A smart rebalancer should separate deterministic allocation math from order execution, minimize turnover with drift bands, treat losses and LONG-TERM intent as explicit review constraints, and reuse Risk Sizing's read-only broker/book context without editing or coupling to its live-order workflow.
+
+## 2026-09-27 — Smart Rebalance v1 production verification addendum
+
+- **Production merge SHA:** `b93bb219d95d0ab4a23ac2b4e7046f8b3adbab31` from PR #86.
+- **Final pre-merge validation:** Temporary Rebalance Validation run `36345016987` passed syntax checks, focused deterministic rebalance math, connected simulated E*TRADE UI rendering, `python scripts/validate_architecture.py`, and `python scripts/test_tab_layout.py`. Terminal Architecture Guard run `36345103919` passed after temporary-workflow cleanup on the exact merge head.
+- **Persistence hardening:** Rebalance browser state now performs one final local-storage writer call per Streamlit rerun, preventing duplicate component keys when settings, reset actions, and target-editor changes occur together.
+- **Production scope preserved:** No Risk Sizing owner/support file, OAuth/session UI, E*TRADE client transport, Holdings, GEX, Performance, Bull Debit, shared theme, navigation implementation, Muni logic, Option Book, Orders, or `src/terminal_core.py` was changed for the Rebalance feature.
+- **Deployment verification:** recorded by the post-push `Terminal Architecture Guard` on the final changelog head below.
