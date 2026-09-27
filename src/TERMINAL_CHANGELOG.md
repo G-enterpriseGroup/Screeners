@@ -1674,3 +1674,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Change:** Permit wrapping only on the `UNUSED/OVERUSED RISK // TARGET STOP` value. All other card styles are unchanged. This supersedes the preceding entry's statement that v9 was untouched.
 - **Tests:** Focused Risk suite repeated with an equation-wrap assertion; all enabled tabs/repeated routes/second session repeated; all affected Python files syntax-checked; architecture guard PASS; complete diff inspected. Shared theme, Risk formulas, v10 order behavior and all unrelated features remain unchanged.
 - **Commit:** implementation `98386fa` (resolved in follow-up deployment record); lesson: inspect actual inherited overflow rules when extending metric text.
+
+## 2026-09-27 — Disable Muni Screeners tab and add Rebalance Portfolio shell
+
+- **Feature changed:** Top-level terminal navigation / routing only.
+- **Exact production file(s) changed:** `src/tab_bar_v4.py` and `streamlit_app.py`; production ownership documentation updated in `src/ARCHITECTURE.md`.
+- **What was requested:** Hide the Muni Screeners tab without deleting its implementation, and add a new top-level tab named Rebalance Portfolio.
+- **Root cause / prior state:** `MUNI SCREENERS` was still present in `DEFAULT_TAB_ORDER`, while no `REBALANCE PORTFOLIO` route or shared page-header entry existed.
+- **What changed:** Added `MUNI SCREENERS` to the existing dormant-route set and removed it from the visible default tab order without deleting its dispatch or municipal data/rendering code. Added `REBALANCE PORTFOLIO` in the same visible navigation slot, gave it the standard shared orange page header/subtitle, and added a deliberately empty routing shell ready for future Rebalance feature work.
+- **Important behavior that must remain:** Muni Screeners remains fully implemented and can be re-enabled later by restoring its key to `DEFAULT_TAB_ORDER`; do not delete or repurpose the dormant Muni route. Option Book and Orders remain disabled exactly as before. Rebalance Portfolio must continue to inherit the shared top-level page-header/navigation system rather than introducing one-off chrome.
+- **Files/features intentionally NOT changed:** `src/terminal_core.py`, `src/muni_data.py`, `src/treasury_data.py`, municipal calculations/renderers, Risk Sizing, Performance, GEX, Holdings, OAuth/session logic, Touch ID, Bull Debit Spread, shared theme, Option Book, Orders, and the navigation component HTML/CSS.
+- **Tests performed:** Main-branch Terminal Architecture Guard run `36340695380` completed successfully on architecture head `456f94c6e94710f0d1f4e11d9c2c9e882d377321`, including production architecture validation, broker-safety regressions, Streamlit health verification, and the deployed-browser `Oh no` guard. Temporary isolated validation run `36340776412` installed production requirements, syntax-checked `streamlit_app.py` and `src/tab_bar_v4.py`, passed `python scripts/validate_architecture.py`, and passed `python scripts/test_tab_layout.py`, rendering every enabled tab plus the preserved hidden Muni route.
+- **Architecture guard result:** PASS.
+- **Implementation commits:** navigation `0d551c87d541cc70bb98bbd4d41236d1d2e95cdf`; Rebalance route/header `20d814115742e7d3ba4a6372e8423323c4343412`; architecture map `456f94c6e94710f0d1f4e11d9c2c9e882d377321`.
+- **Lesson:** Disable a top-level feature by removing only its visible navigation key while preserving its production dispatch/implementation. New tabs should enter through the shared tab-order, page-header, and dispatch contracts without touching unrelated feature owners.
+
