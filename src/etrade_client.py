@@ -1,8 +1,8 @@
 """E*TRADE OAuth 1.0a client for Raj's Terminal.
 
-Account and market calls are read-only. Option Book may send non-transmitting
-Preview Order requests, but this client intentionally exposes no live-order
-placement method.
+Account and market calls are read-only except for explicitly reviewed order
+requests. Option Book remains preview-only; Risk Sizing may use preview, place,
+and order-list methods for its separately confirmed live stock workflow.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def complete_authorization(
 
 
 class ETradeClient:
-    """Authenticated client for account/market reads and non-transmitting previews."""
+    """Authenticated E*TRADE client with explicit preview/place order transport."""
 
     def __init__(
         self,
@@ -205,6 +205,48 @@ class ETradeClient:
         return self._post(
             f"/v1/accounts/{quote(account_id_key, safe='')}/orders/preview.json",
             payload,
+        )
+
+    def place_order(
+        self,
+        account_id_key: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Submit a previously previewed order to E*TRADE."""
+        account_id_key = str(account_id_key or "").strip()
+        if not account_id_key:
+            raise ETradeError("A valid E*TRADE account is required for order placement.")
+        if not isinstance(payload, dict) or "PlaceOrderRequest" not in payload:
+            raise ETradeError("A valid PlaceOrderRequest payload is required.")
+        request = payload.get("PlaceOrderRequest") or {}
+        preview_ids = request.get("PreviewIds") if isinstance(request, dict) else None
+        if not preview_ids:
+            raise ETradeError("E*TRADE placement requires a successful preview ID.")
+        return self._post(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/orders/place.json",
+            payload,
+        )
+
+    def list_orders(
+        self,
+        account_id_key: str,
+        *,
+        status: str | None = None,
+        symbol: str | None = None,
+        count: int = 100,
+    ) -> dict[str, Any]:
+        """Return recent E*TRADE orders for fill/status verification."""
+        account_id_key = str(account_id_key or "").strip()
+        if not account_id_key:
+            raise ETradeError("A valid E*TRADE account is required to list orders.")
+        params: dict[str, Any] = {"count": max(1, min(100, int(count or 100)))}
+        if status:
+            params["status"] = str(status).strip().upper()
+        if symbol:
+            params["symbol"] = str(symbol).strip().upper()
+        return self._get(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/orders",
+            params,
         )
 
     def get_option_expirations(self, symbol: str) -> dict[str, Any]:

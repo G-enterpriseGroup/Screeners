@@ -9,7 +9,8 @@ EDIT THIS FILE for:
 - automatic E*TRADE quote loading after ticker selection;
 - ASK -> Entry and 5%-below-ASK Stop interaction plumbing;
 - Part 2 fail-safe behavior when autocomplete fails;
-- narrowly scoped Part 2 layout fixes.
+- narrowly scoped Part 2 layout fixes;
+- live E*TRADE stock entry review, placement, fill-check, and protective-stop handoff.
 
 DO NOT edit GEX, OAuth, Holdings, or navigation files to fix Risk Sizing.
 DO NOT add module-level assignments such as `st.columns = ...` or
@@ -36,6 +37,7 @@ from __future__ import annotations
 import html
 import inspect
 import math
+import secrets
 import time
 
 import streamlit as st
@@ -512,6 +514,767 @@ def _render_disconnected_ticker_fallback() -> None:
             help_text="Price change returned or derived from Yahoo Finance.",
         )
 
+
+# ==============================
+# LIVE E*TRADE STOCK ORDER WORKFLOW
+# ==============================
+
+_RISK_ENTRY_REVIEW_KEY = "_risk_live_entry_review"
+_RISK_ENTRY_ORDER_KEY = "_risk_live_entry_order"
+_RISK_ENTRY_UNCERTAIN_KEY = "_risk_live_entry_uncertain"
+_RISK_STOP_REVIEW_KEY = "_risk_live_stop_review"
+_RISK_STOP_ORDER_KEY = "_risk_live_stop_order"
+_RISK_STOP_UNCERTAIN_KEY = "_risk_live_stop_uncertain"
+_RISK_FILL_KEY = "_risk_live_entry_fill"
+_RISK_ENTRY_CONFIRM_KEY = "risk_live_entry_confirm"
+_RISK_STOP_CONFIRM_KEY = "risk_live_stop_confirm"
+_PREVIEW_FRESH_SECONDS = 150.0
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _direct_key(value, wanted: str):
+    if not isinstance(value, dict):
+        return None
+    wanted = str(wanted).casefold()
+    for key, child in value.items():
+        if str(key).casefold() == wanted:
+            return child
+    return None
+
+
+def _find_key(value, wanted: str):
+    found = _direct_key(value, wanted)
+    if found is not None:
+        return found
+    if isinstance(value, dict):
+        for child in value.values():
+            found = _find_key(child, wanted)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_key(child, wanted)
+            if found is not None:
+                return found
+    return None
+
+
+def _collect_key_values(value, wanted: str) -> list:
+    values = []
+    wanted = str(wanted).casefold()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).casefold() == wanted:
+                values.extend(_as_list(child))
+            values.extend(_collect_key_values(child, wanted))
+    elif isinstance(value, list):
+        for child in value:
+            values.extend(_collect_key_values(child, wanted))
+    return values
+
+
+def _float_values(value, wanted: str) -> list[float]:
+    numbers = []
+    for child in _collect_key_values(value, wanted):
+        try:
+            number = float(child)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            numbers.append(number)
+    return numbers
+
+
+def _new_risk_client_order_id(prefix: str) -> str:
+    """Return an E*TRADE-safe <=20-character alphanumeric id."""
+    clean_prefix = "".join(ch for ch in str(prefix).upper() if ch.isalnum())[:3] or "RS"
+    return clean_prefix + secrets.token_hex(8).upper()
+
+
+def _selected_risk_account() -> dict | None:
+    accounts = st.session_state.get("etrade_accounts") or []
+    try:
+        selected = int(st.session_state.get("risk_sizing_account"))
+    except (TypeError, ValueError):
+        return None
+    if selected < 0 or selected >= len(accounts):
+        return None
+    account = accounts[selected]
+    return account if isinstance(account, dict) else None
+
+
+def _risk_account_label(account: dict) -> str:
+    name = str(
+        account.get("accountName")
+        or account.get("accountDesc")
+        or "E*TRADE ACCOUNT"
+    ).strip()
+    account_id = str(account.get("accountId") or "").strip()
+    suffix = account_id[-4:] if account_id else ""
+    return f"{name} ••••{suffix}" if suffix else name
+
+
+def _build_equity_preview_payload(
+    *,
+    symbol: str,
+    quantity: int,
+    action: str,
+    price_type: str,
+    limit_price: float = 0.0,
+    stop_price: float = 0.0,
+    order_term: str,
+    client_order_id: str,
+) -> dict:
+    symbol = str(symbol or "").strip().upper()
+    action = str(action or "").strip().upper()
+    price_type = str(price_type or "").strip().upper()
+    order_term = str(order_term or "").strip().upper()
+    client_order_id = str(client_order_id or "").strip().upper()
+    quantity = int(quantity or 0)
+    if not symbol or quantity <= 0:
+        raise ValueError("Ticker and whole-share quantity are required.")
+    if action not in {"BUY", "SELL"}:
+        raise ValueError("Risk Sizing supports BUY entry and SELL protective-stop orders only.")
+    if price_type not in {"LIMIT", "STOP"}:
+        raise ValueError("Risk Sizing live orders support LIMIT entry and STOP protection only.")
+    if order_term not in {"GOOD_FOR_DAY", "GOOD_UNTIL_CANCEL"}:
+        raise ValueError("Unsupported E*TRADE order duration.")
+    if not client_order_id.isalnum() or len(client_order_id) > 20:
+        raise ValueError("Client order id must be <=20 alphanumeric characters.")
+
+    order = {
+        "allOrNone": False,
+        "priceType": price_type,
+        "limitPrice": 0.0,
+        "stopPrice": 0.0,
+        "orderTerm": order_term,
+        "marketSession": "REGULAR",
+        "Instrument": [
+            {
+                "Product": {"securityType": "EQ", "symbol": symbol},
+                "orderAction": action,
+                "quantityType": "QUANTITY",
+                "quantity": quantity,
+            }
+        ],
+    }
+    if price_type == "LIMIT":
+        limit_value = float(limit_price)
+        if not math.isfinite(limit_value) or limit_value <= 0:
+            raise ValueError("Entry limit price must be positive.")
+        order["limitPrice"] = round(limit_value, 2)
+    else:
+        stop_value = float(stop_price)
+        if not math.isfinite(stop_value) or stop_value <= 0:
+            raise ValueError("Protective stop price must be positive.")
+        order["stopPrice"] = round(stop_value, 2)
+
+    return {
+        "PreviewOrderRequest": {
+            "orderType": "EQ",
+            "clientOrderId": client_order_id,
+            "Order": [order],
+        }
+    }
+
+
+def _preview_details(payload: dict) -> dict:
+    response = _find_key(payload, "PreviewOrderResponse")
+    response = response if isinstance(response, dict) else payload
+    preview_id = _find_key(response, "previewId")
+    messages = []
+    for item in _collect_key_values(response, "Message"):
+        if isinstance(item, dict):
+            parts = [
+                str(part)
+                for part in (
+                    item.get("type"),
+                    item.get("code"),
+                    item.get("description") or item.get("message"),
+                )
+                if part not in (None, "")
+            ]
+            if parts:
+                messages.append(" // ".join(parts))
+        elif item not in (None, ""):
+            messages.append(str(item))
+    return {
+        "preview_id": preview_id,
+        "messages": messages,
+        "total_order_value": _finite_number(_find_key(response, "totalOrderValue")),
+        "estimated_commission": _finite_number(_find_key(response, "estimatedCommission")),
+    }
+
+
+def _build_place_payload(preview_payload: dict, preview_id) -> dict:
+    request = preview_payload.get("PreviewOrderRequest")
+    if not isinstance(request, dict) or preview_id in (None, ""):
+        raise ValueError("A successful E*TRADE preview is required before placement.")
+    return {
+        "PlaceOrderRequest": {
+            "orderType": request.get("orderType"),
+            "clientOrderId": request.get("clientOrderId"),
+            "PreviewIds": [{"previewId": preview_id}],
+            "Order": request.get("Order") or [],
+        }
+    }
+
+
+def _extract_order_id(payload: dict):
+    order_ids = _find_key(payload, "OrderIds")
+    for item in _as_list(order_ids):
+        if isinstance(item, dict):
+            order_id = _direct_key(item, "orderId")
+        else:
+            order_id = item
+        if order_id not in (None, ""):
+            return order_id
+    return _find_key(payload, "orderId")
+
+
+def _matching_order_records(value, order_id) -> list[dict]:
+    wanted = str(order_id)
+    records = []
+    if isinstance(value, dict):
+        direct_id = _direct_key(value, "orderId")
+        if direct_id is not None and str(direct_id) == wanted:
+            records.append(value)
+        for child in value.values():
+            records.extend(_matching_order_records(child, order_id))
+    elif isinstance(value, list):
+        for child in value:
+            records.extend(_matching_order_records(child, order_id))
+    return records
+
+
+def _order_fill_snapshot(payload: dict, order_id, expected_quantity: int) -> dict:
+    records = _matching_order_records(payload, order_id)
+    if not records:
+        return {
+            "found": False,
+            "full": False,
+            "partial": False,
+            "status": "NOT FOUND",
+            "filled": 0.0,
+            "ordered": float(expected_quantity),
+            "average_price": None,
+        }
+
+    record = max(records, key=lambda item: len(str(item)))
+    statuses = [str(item).upper() for item in _collect_key_values(record, "status") if item not in (None, "")]
+    events = [str(item).upper() for item in _collect_key_values(record, "name") if item not in (None, "")]
+    ordered_values = _float_values(record, "orderedQuantity")
+    filled_values = _float_values(record, "filledQuantity")
+    average_values = _float_values(record, "averageExecutionPrice")
+
+    ordered = max(ordered_values) if ordered_values else float(expected_quantity)
+    filled = max(filled_values) if filled_values else 0.0
+    status = statuses[0] if statuses else ("ORDER_EXECUTED" if "ORDER_EXECUTED" in events else "OPEN")
+    executed = status == "EXECUTED" or "ORDER_EXECUTED" in events or "DONE_TRADE_EXECUTED" in events
+    partial = status == "INDIVIDUAL_FILLS" or (filled > 0 and ordered > 0 and filled + 1e-9 < ordered)
+    full = not partial and ((ordered > 0 and filled + 1e-9 >= ordered) or executed)
+    if full and filled <= 0:
+        filled = ordered
+    return {
+        "found": True,
+        "full": bool(full),
+        "partial": bool(partial),
+        "status": status,
+        "filled": filled,
+        "ordered": ordered,
+        "average_price": max(average_values) if average_values else None,
+    }
+
+
+def _preview_is_fresh(review: dict | None) -> bool:
+    if not isinstance(review, dict):
+        return False
+    try:
+        age = time.time() - float(review.get("previewed_at") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return 0.0 <= age <= _PREVIEW_FRESH_SECONDS
+
+
+def _clear_risk_order_workflow() -> None:
+    for key in (
+        _RISK_ENTRY_REVIEW_KEY,
+        _RISK_ENTRY_ORDER_KEY,
+        _RISK_ENTRY_UNCERTAIN_KEY,
+        _RISK_STOP_REVIEW_KEY,
+        _RISK_STOP_ORDER_KEY,
+        _RISK_STOP_UNCERTAIN_KEY,
+        _RISK_FILL_KEY,
+        _RISK_ENTRY_CONFIRM_KEY,
+        _RISK_STOP_CONFIRM_KEY,
+    ):
+        st.session_state.pop(key, None)
+
+
+def _current_stock_order_context(trade_kwargs: dict) -> dict | None:
+    if str(st.session_state.get("risk_trade_structure") or "").upper() != "STOCK / ETF":
+        return None
+
+    account = _selected_risk_account()
+    if not account:
+        return None
+    account_key = str(account.get("accountIdKey") or "").strip()
+    symbol = str(st.session_state.get("risk_ticker") or "").strip().upper()
+    try:
+        entry_price = float(st.session_state.get("risk_entry_price") or 0.0)
+        stop_price = float(st.session_state.get("risk_stop_price") or 0.0)
+        size_multiplier = float(st.session_state.get("risk_size_multiplier") or 1.0)
+        investable_assets = float(trade_kwargs.get("investable_assets") or 0.0)
+        tactical_sleeve_pct = float(trade_kwargs.get("tactical_sleeve_pct") or 0.0)
+        full_position_risk_pct = float(trade_kwargs.get("full_position_risk_pct") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not account_key or not symbol or entry_price <= 0 or stop_price <= 0 or stop_price >= entry_price:
+        return None
+
+    summary = trade_kwargs.get("summary") or {}
+    cash_available = float(trade_kwargs.get("cash_available") or 0.0)
+    if bool(st.session_state.get("risk_capital_source_tactical")):
+        capital_limit = max(0.0, float(summary.get("target_room") or 0.0))
+    else:
+        try:
+            liquid = float(st.session_state.get("risk_liquid_balance"))
+        except (TypeError, ValueError):
+            liquid = cash_available
+        capital_limit = max(0.0, liquid)
+
+    try:
+        risk_budget = _v9._v2.crown_risk_budget(
+            investable_assets,
+            tactical_sleeve_pct,
+            full_position_risk_pct,
+            size_multiplier,
+        )
+        sized = _v9._v2.stock_position_size(
+            entry_price,
+            stop_price,
+            risk_budget["selected_risk_budget"],
+            capital_limit=capital_limit,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    shares = int(sized.get("shares") or 0)
+    if shares <= 0:
+        return None
+
+    fingerprint = (
+        account_key,
+        symbol,
+        shares,
+        round(entry_price, 2),
+        round(stop_price, 2),
+    )
+    return {
+        "account_key": account_key,
+        "account_label": _risk_account_label(account),
+        "symbol": symbol,
+        "quantity": shares,
+        "entry_price": round(entry_price, 2),
+        "stop_price": round(stop_price, 2),
+        "fingerprint": fingerprint,
+    }
+
+
+def _render_preview_messages(review: dict) -> None:
+    details = review.get("details") or {}
+    total = details.get("total_order_value")
+    commission = details.get("estimated_commission")
+    if total is not None or commission is not None:
+        parts = []
+        if total is not None:
+            parts.append(f"EST. VALUE USD {float(total):,.2f}")
+        if commission is not None:
+            parts.append(f"EST. COMMISSION USD {float(commission):,.2f}")
+        st.caption("E*TRADE PREVIEW // " + " // ".join(parts))
+    for message in details.get("messages") or []:
+        st.warning("E*TRADE PREVIEW // " + str(message))
+
+
+def _preview_live_order(client, account_key: str, preview_payload: dict, touch_session) -> dict:
+    response = client.preview_order(account_key, preview_payload)
+    touch_session()
+    details = _preview_details(response)
+    if details.get("preview_id") in (None, ""):
+        raise ETradeError("E*TRADE preview returned no preview ID; nothing can be submitted.")
+    return {
+        "preview_payload": preview_payload,
+        "place_payload": _build_place_payload(preview_payload, details["preview_id"]),
+        "details": details,
+        "previewed_at": time.time(),
+    }
+
+
+def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> None:
+    st.html('<div class="risk-v9-section">LIVE E*TRADE ORDER</div>')
+    st.caption(
+        "TWO-STEP PROTECTION // BUY LIMIT FIRST // AFTER A FULL FILL, REVIEW + SEND THE SEPARATE SELL STOP"
+    )
+
+    entry_order = st.session_state.get(_RISK_ENTRY_ORDER_KEY)
+    entry_uncertain = st.session_state.get(_RISK_ENTRY_UNCERTAIN_KEY)
+    stop_order = st.session_state.get(_RISK_STOP_ORDER_KEY)
+    stop_uncertain = st.session_state.get(_RISK_STOP_UNCERTAIN_KEY)
+
+    if client is None:
+        st.warning("LIVE ORDERING BLOCKED // connect E*TRADE before reviewing or sending an order.")
+        return
+
+    if entry_uncertain and not entry_order:
+        st.error(
+            "ENTRY SUBMISSION STATUS UNCERTAIN // Check E*TRADE Orders before doing anything else. "
+            "The terminal has blocked retries so it cannot accidentally duplicate the buy."
+        )
+        st.caption(
+            f"PENDING CHECK // {entry_uncertain.get('account_label','')} // "
+            f"BUY {entry_uncertain.get('quantity',0)} {entry_uncertain.get('symbol','')} "
+            f"LIMIT USD {float(entry_uncertain.get('entry_price') or 0):,.2f}"
+        )
+        if st.button(
+            "I CHECKED E*TRADE ORDERS — RESET ENTRY WORKFLOW",
+            key="risk_live_reset_uncertain_entry",
+            width="stretch",
+        ):
+            _clear_risk_order_workflow()
+            st.rerun(scope="fragment")
+        return
+
+    if not entry_order:
+        context = _current_stock_order_context(trade_kwargs)
+        if context is None:
+            st.info("LIVE ORDER BLOCKED // valid STOCK / ETF sizing with at least 1 MAX SHARE is required.")
+            return
+
+        review = st.session_state.get(_RISK_ENTRY_REVIEW_KEY)
+        if isinstance(review, dict) and review.get("fingerprint") != context["fingerprint"]:
+            st.session_state.pop(_RISK_ENTRY_REVIEW_KEY, None)
+            st.session_state.pop(_RISK_ENTRY_CONFIRM_KEY, None)
+            review = None
+
+        st.caption(
+            f"ACCOUNT {context['account_label']} // BUY {context['quantity']:,} {context['symbol']} // "
+            f"LIMIT USD {context['entry_price']:,.2f} // DAY // PLANNED STOP USD {context['stop_price']:,.2f}"
+        )
+        if st.button(
+            "REVIEW BUY LIMIT WITH E*TRADE",
+            type="primary",
+            key="risk_live_preview_entry",
+            width="stretch",
+        ):
+            try:
+                client_order_id = _new_risk_client_order_id("RBE")
+                preview_payload = _build_equity_preview_payload(
+                    symbol=context["symbol"],
+                    quantity=context["quantity"],
+                    action="BUY",
+                    price_type="LIMIT",
+                    limit_price=context["entry_price"],
+                    order_term="GOOD_FOR_DAY",
+                    client_order_id=client_order_id,
+                )
+                review = _preview_live_order(
+                    client,
+                    context["account_key"],
+                    preview_payload,
+                    touch_session,
+                )
+                review.update(context)
+                st.session_state[_RISK_ENTRY_REVIEW_KEY] = review
+                st.session_state.pop(_RISK_ENTRY_CONFIRM_KEY, None)
+            except Exception as exc:
+                st.error(f"E*TRADE ENTRY PREVIEW FAILED // {exc}")
+                return
+
+        review = st.session_state.get(_RISK_ENTRY_REVIEW_KEY)
+        if not review:
+            return
+        if not _preview_is_fresh(review):
+            st.session_state.pop(_RISK_ENTRY_REVIEW_KEY, None)
+            st.session_state.pop(_RISK_ENTRY_CONFIRM_KEY, None)
+            st.warning("ENTRY PREVIEW EXPIRED // Review again before sending. E*TRADE preview IDs are short-lived.")
+            return
+
+        st.success("FINAL REVIEW // E*TRADE preview accepted. This next action submits a LIVE buy order.")
+        st.caption(
+            f"{review['account_label']} // BUY {int(review['quantity']):,} {review['symbol']} // "
+            f"LIMIT USD {float(review['entry_price']):,.2f} // DAY // STOP IS NOT SENT YET"
+        )
+        _render_preview_messages(review)
+        confirmed = st.checkbox(
+            "I CONFIRM THIS LIVE BUY LIMIT ORDER",
+            key=_RISK_ENTRY_CONFIRM_KEY,
+        )
+        if st.button(
+            "SEND LIVE BUY LIMIT",
+            type="primary",
+            key="risk_live_send_entry",
+            width="stretch",
+            disabled=not confirmed,
+        ):
+            if not _preview_is_fresh(review):
+                st.session_state.pop(_RISK_ENTRY_REVIEW_KEY, None)
+                st.session_state.pop(_RISK_ENTRY_CONFIRM_KEY, None)
+                st.error("ENTRY PREVIEW EXPIRED // Review again. No live order was sent.")
+                return
+            uncertain = {
+                key: review[key]
+                for key in ("account_key", "account_label", "symbol", "quantity", "entry_price", "stop_price")
+            }
+            st.session_state[_RISK_ENTRY_UNCERTAIN_KEY] = uncertain
+            try:
+                placed = client.place_order(review["account_key"], review["place_payload"])
+                touch_session()
+                order_id = _extract_order_id(placed)
+                if order_id in (None, ""):
+                    raise ETradeError("E*TRADE returned no order ID after placement.")
+                st.session_state[_RISK_ENTRY_ORDER_KEY] = {
+                    **uncertain,
+                    "order_id": order_id,
+                    "placed_at": time.time(),
+                }
+                st.session_state.pop(_RISK_ENTRY_UNCERTAIN_KEY, None)
+                st.session_state.pop(_RISK_ENTRY_REVIEW_KEY, None)
+                st.session_state.pop(_RISK_ENTRY_CONFIRM_KEY, None)
+                st.session_state.pop(_RISK_FILL_KEY, None)
+                st.rerun(scope="fragment")
+            except Exception as exc:
+                st.error(
+                    "ENTRY SUBMISSION STATUS UNCERTAIN // "
+                    + str(exc)
+                    + " // Check E*TRADE Orders before resetting or retrying."
+                )
+            return
+        return
+
+    st.success(
+        f"ENTRY SUBMITTED // E*TRADE ORDER {entry_order['order_id']} // "
+        f"{entry_order['account_label']} // BUY {int(entry_order['quantity']):,} "
+        f"{entry_order['symbol']} @ LIMIT USD {float(entry_order['entry_price']):,.2f}"
+    )
+
+    if stop_uncertain and not stop_order:
+        st.error(
+            "STOP SUBMISSION STATUS UNCERTAIN // Check E*TRADE Orders before any retry. "
+            "The terminal has blocked duplicate protective-stop submission."
+        )
+        if st.button(
+            "I CHECKED E*TRADE ORDERS — RESET STOP REVIEW",
+            key="risk_live_reset_uncertain_stop",
+            width="stretch",
+        ):
+            st.session_state.pop(_RISK_STOP_UNCERTAIN_KEY, None)
+            st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+            st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+            st.rerun(scope="fragment")
+        return
+
+    if stop_order:
+        st.success(
+            f"PROTECTIVE STOP SUBMITTED // E*TRADE ORDER {stop_order['order_id']} // "
+            f"SELL {int(stop_order['quantity']):,} {stop_order['symbol']} @ STOP "
+            f"USD {float(stop_order['stop_price']):,.2f} // GTC"
+        )
+        st.caption(
+            "WORKFLOW COMPLETE // Clearing this terminal workflow does not cancel either E*TRADE order."
+        )
+        if st.button(
+            "CLEAR TERMINAL ORDER WORKFLOW",
+            key="risk_live_clear_complete",
+            width="stretch",
+        ):
+            _clear_risk_order_workflow()
+            st.rerun(scope="fragment")
+        return
+
+    if st.button(
+        "CHECK ENTRY FILL IN E*TRADE",
+        type="primary",
+        key="risk_live_check_fill",
+        width="stretch",
+    ):
+        try:
+            orders = client.list_orders(
+                entry_order["account_key"],
+                symbol=entry_order["symbol"],
+                count=100,
+            )
+            touch_session()
+            fill = _order_fill_snapshot(
+                orders,
+                entry_order["order_id"],
+                int(entry_order["quantity"]),
+            )
+            st.session_state[_RISK_FILL_KEY] = fill
+        except Exception as exc:
+            st.error(f"E*TRADE FILL CHECK FAILED // {exc}")
+            return
+
+    fill = st.session_state.get(_RISK_FILL_KEY)
+    if not isinstance(fill, dict):
+        st.info("PROTECTIVE STOP LOCKED // Check the entry fill after E*TRADE executes the full buy.")
+        return
+    if not fill.get("found"):
+        st.warning(
+            "ENTRY ORDER NOT FOUND IN THE CURRENT E*TRADE ORDER LIST // Stop remains blocked. "
+            "Check E*TRADE Orders before taking further action."
+        )
+        return
+
+    status = str(fill.get("status") or "UNKNOWN").upper()
+    if fill.get("partial"):
+        st.warning(
+            f"PARTIAL FILL // {float(fill.get('filled') or 0):g} of "
+            f"{float(fill.get('ordered') or entry_order['quantity']):g} shares // "
+            "Protective stop remains blocked. Manage the partial fill in E*TRADE."
+        )
+        return
+    if not fill.get("full"):
+        if status in {"CANCELLED", "EXPIRED", "REJECTED"}:
+            st.error(f"ENTRY {status} // Protective stop remains blocked.")
+            if st.button(
+                "CLEAR TERMINAL ORDER WORKFLOW",
+                key="risk_live_clear_terminal_entry",
+                width="stretch",
+            ):
+                _clear_risk_order_workflow()
+                st.rerun(scope="fragment")
+        else:
+            st.info(f"ENTRY STATUS {status} // Protective stop remains locked until the full fill is confirmed.")
+        return
+
+    avg_price = fill.get("average_price")
+    avg_text = f" @ AVG USD {float(avg_price):,.2f}" if avg_price is not None else ""
+    st.success(
+        f"ENTRY FULLY FILLED // {int(entry_order['quantity']):,} {entry_order['symbol']}{avg_text} // "
+        "PROTECTIVE STOP UNLOCKED"
+    )
+
+    stop_fingerprint = (
+        str(entry_order["account_key"]),
+        str(entry_order["order_id"]),
+        str(entry_order["symbol"]),
+        int(entry_order["quantity"]),
+        round(float(entry_order["stop_price"]), 2),
+    )
+    stop_review = st.session_state.get(_RISK_STOP_REVIEW_KEY)
+    if isinstance(stop_review, dict) and stop_review.get("fingerprint") != stop_fingerprint:
+        st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+        st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+        stop_review = None
+
+    st.caption(
+        f"ACCOUNT {entry_order['account_label']} // SELL {int(entry_order['quantity']):,} "
+        f"{entry_order['symbol']} // STOP USD {float(entry_order['stop_price']):,.2f} // GTC"
+    )
+    if st.button(
+        "REVIEW PROTECTIVE STOP WITH E*TRADE",
+        type="primary",
+        key="risk_live_preview_stop",
+        width="stretch",
+    ):
+        try:
+            stop_preview_payload = _build_equity_preview_payload(
+                symbol=entry_order["symbol"],
+                quantity=int(entry_order["quantity"]),
+                action="SELL",
+                price_type="STOP",
+                stop_price=float(entry_order["stop_price"]),
+                order_term="GOOD_UNTIL_CANCEL",
+                client_order_id=_new_risk_client_order_id("RPS"),
+            )
+            stop_review = _preview_live_order(
+                client,
+                entry_order["account_key"],
+                stop_preview_payload,
+                touch_session,
+            )
+            stop_review.update(
+                {
+                    "fingerprint": stop_fingerprint,
+                    "account_key": entry_order["account_key"],
+                    "account_label": entry_order["account_label"],
+                    "symbol": entry_order["symbol"],
+                    "quantity": int(entry_order["quantity"]),
+                    "stop_price": float(entry_order["stop_price"]),
+                }
+            )
+            st.session_state[_RISK_STOP_REVIEW_KEY] = stop_review
+            st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+        except Exception as exc:
+            st.error(f"E*TRADE STOP PREVIEW FAILED // {exc}")
+            return
+
+    stop_review = st.session_state.get(_RISK_STOP_REVIEW_KEY)
+    if not stop_review:
+        return
+    if not _preview_is_fresh(stop_review):
+        st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+        st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+        st.warning("STOP PREVIEW EXPIRED // Review again before sending.")
+        return
+
+    st.success("FINAL REVIEW // E*TRADE preview accepted. This next action submits a LIVE protective stop.")
+    st.caption(
+        f"{stop_review['account_label']} // SELL {int(stop_review['quantity']):,} "
+        f"{stop_review['symbol']} // STOP USD {float(stop_review['stop_price']):,.2f} // GTC"
+    )
+    _render_preview_messages(stop_review)
+    stop_confirmed = st.checkbox(
+        "I CONFIRM THIS LIVE PROTECTIVE STOP ORDER",
+        key=_RISK_STOP_CONFIRM_KEY,
+    )
+    if st.button(
+        "SEND LIVE PROTECTIVE STOP",
+        type="primary",
+        key="risk_live_send_stop",
+        width="stretch",
+        disabled=not stop_confirmed,
+    ):
+        if not _preview_is_fresh(stop_review):
+            st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+            st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+            st.error("STOP PREVIEW EXPIRED // Review again. No live stop was sent.")
+            return
+        uncertain_stop = {
+            key: stop_review[key]
+            for key in ("account_key", "account_label", "symbol", "quantity", "stop_price")
+        }
+        st.session_state[_RISK_STOP_UNCERTAIN_KEY] = uncertain_stop
+        try:
+            placed_stop = client.place_order(
+                stop_review["account_key"],
+                stop_review["place_payload"],
+            )
+            touch_session()
+            stop_order_id = _extract_order_id(placed_stop)
+            if stop_order_id in (None, ""):
+                raise ETradeError("E*TRADE returned no order ID after protective-stop placement.")
+            st.session_state[_RISK_STOP_ORDER_KEY] = {
+                **uncertain_stop,
+                "order_id": stop_order_id,
+                "placed_at": time.time(),
+            }
+            st.session_state.pop(_RISK_STOP_UNCERTAIN_KEY, None)
+            st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+            st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+            st.rerun(scope="fragment")
+        except Exception as exc:
+            st.error(
+                "STOP SUBMISSION STATUS UNCERTAIN // "
+                + str(exc)
+                + " // Check E*TRADE Orders before resetting or retrying."
+            )
+
+
 def _safe_full_width_ticker_columns(original_columns, original_container, original_empty):
     """Do NOT intercept columns; CSS handles the one ticker row."""
     def wrapped(spec, *args, **kwargs):
@@ -525,8 +1288,17 @@ def render_risk_sizing(*args, **kwargs):
     previous_css = _v9._render_css
     previous_ticker = _v9._auto_quote_ticker_input
     previous_columns = _v9._full_width_ticker_columns
+    previous_next_trade = _v9._v2._render_next_trade
     previous_subheader = st.subheader
     previous_caption = st.caption
+
+    client = args[0] if args else kwargs.get("client")
+    touch_session = kwargs.get("touch_session") or (lambda: None)
+
+    def order_enabled_next_trade(*trade_args, **trade_kwargs):
+        result = previous_next_trade(*trade_args, **trade_kwargs)
+        _render_live_order_workflow(client, touch_session, trade_kwargs)
+        return result
 
     def filtered_subheader(body, *sub_args, **sub_kwargs):
         if str(body).strip().upper() == "RISK SIZING":
@@ -541,11 +1313,11 @@ def render_risk_sizing(*args, **kwargs):
     _v9._render_css = _render_css_v10
     _v9._auto_quote_ticker_input = _safe_auto_quote_ticker_input
     _v9._full_width_ticker_columns = _safe_full_width_ticker_columns
+    _v9._v2._render_next_trade = order_enabled_next_trade
     st.subheader = filtered_subheader
     st.caption = filtered_caption
 
     try:
-        client = args[0] if args else kwargs.get("client")
         if client is None and _v9._v2._load_persisted_risk_book_snapshot() is None:
             return _render_disconnected_ticker_fallback()
         return _v9.render_risk_sizing(*args, **kwargs)
@@ -555,6 +1327,7 @@ def render_risk_sizing(*args, **kwargs):
         _v9._render_css = previous_css
         _v9._auto_quote_ticker_input = previous_ticker
         _v9._full_width_ticker_columns = previous_columns
+        _v9._v2._render_next_trade = previous_next_trade
         st.subheader = previous_subheader
         st.caption = previous_caption
 
