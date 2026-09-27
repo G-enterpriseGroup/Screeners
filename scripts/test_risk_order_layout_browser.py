@@ -18,10 +18,13 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from scripts.test_risk_production_ui import FIXTURE
 
 
-ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = ROOT / ".tmp_risk_order_layout_fixture.py"
 PORT = 8769
 
