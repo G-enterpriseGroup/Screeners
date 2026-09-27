@@ -73,6 +73,8 @@ Use this decision tree:
 
 - Change **Risk Part 2 ticker entry, separate Company / ETF display, auto quote, quote fail-safe behavior, or the reviewed live stock entry/protective-stop workflow** → `src/risk_sizing_ui_v10.py`.
 - Change **authenticated Risk live-order Preview/Place/List/Cancel transport** → `src/etrade_client.py`. Option Book may reuse Preview transport but must remain unable to call live Place Order or Cancel Order.
+- Change **Risk automatic fill monitoring, persistent protection-watch log, ready-to-send handoff, or browser restoration of an armed entry** → `src/risk_sizing_ui_v10.py`. The read-only watcher is invoked from the existing hidden `terminal_background_hooks` container in `streamlit_app.py` so it can keep checking while another top-level tab is active.
+- **Critical broker constraint:** the background watcher may call E*TRADE `List Orders` only. It must never preview, place, change, or cancel an order. E*TRADE's developer terms prohibit Algorithmic / Automated Order Generation without a discrete, contemporaneous affirmative instruction for the specific order. A confirmed full fill may change the local state to `READY_TO_SEND`, but the protective stop still requires a live user click that rechecks the fill, previews the exact stop, and places it.
 - Change **shared ticker/company directory data or Option Book autocomplete behavior** → `src/ticker_autocomplete.py`; E*TRADE Risk Sizing no longer uses the combined `SYMBOL — COMPANY NAME` selector.
 - Change **compact card styling / Part 2 presentation inherited from v9** → `src/risk_sizing_ui_v9.py`.
 - Change **existing Part 1 / Part 2 base widget sequence** → `src/risk_sizing_ui_v2.py`, only if a wrapper cannot safely solve it.
