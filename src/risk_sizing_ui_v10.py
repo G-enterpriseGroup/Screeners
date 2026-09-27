@@ -633,22 +633,47 @@ def _order_accounts() -> list[dict]:
     ]
 
 
-def _default_order_account_key(accounts: list[dict]) -> str:
-    for account in accounts:
-        if str(account.get("accountId") or "").strip().endswith(_RISK_ORDER_DEFAULT_ACCOUNT_SUFFIX):
-            return str(account.get("accountIdKey") or "").strip()
-
+def _main_risk_account_key() -> str:
+    raw_accounts = st.session_state.get("etrade_accounts") or []
     try:
         risk_index = int(st.session_state.get("risk_sizing_account"))
     except (TypeError, ValueError):
-        risk_index = -1
-    raw_accounts = st.session_state.get("etrade_accounts") or []
+        return ""
     if 0 <= risk_index < len(raw_accounts):
-        selected = raw_accounts[risk_index]
-        if isinstance(selected, dict):
-            selected_key = str(selected.get("accountIdKey") or "").strip()
-            if selected_key:
-                return selected_key
+        account = raw_accounts[risk_index]
+        if isinstance(account, dict):
+            return str(account.get("accountIdKey") or "").strip()
+    return ""
+
+
+def _risk_account_index_for_key(account_key: str) -> int | None:
+    wanted = str(account_key or "").strip()
+    if not wanted:
+        return None
+    for index, account in enumerate(st.session_state.get("etrade_accounts") or []):
+        if not isinstance(account, dict):
+            continue
+        if str(account.get("accountIdKey") or "").strip() == wanted:
+            return index
+    return None
+
+
+def _locked_order_account_key() -> str:
+    return (
+        str((st.session_state.get(_RISK_ENTRY_ORDER_KEY) or {}).get("account_key") or "").strip()
+        or str((st.session_state.get(_RISK_ENTRY_UNCERTAIN_KEY) or {}).get("account_key") or "").strip()
+        or str((st.session_state.get(_RISK_STOP_ORDER_KEY) or {}).get("account_key") or "").strip()
+        or str((st.session_state.get(_RISK_STOP_UNCERTAIN_KEY) or {}).get("account_key") or "").strip()
+    )
+
+
+def _default_order_account_key(accounts: list[dict]) -> str:
+    main_key = _main_risk_account_key()
+    if main_key:
+        return main_key
+    for account in accounts:
+        if str(account.get("accountId") or "").strip().endswith(_RISK_ORDER_DEFAULT_ACCOUNT_SUFFIX):
+            return str(account.get("accountIdKey") or "").strip()
     return str(accounts[0].get("accountIdKey") or "").strip() if accounts else ""
 
 
@@ -661,6 +686,26 @@ def _clear_order_review_state() -> None:
         _RISK_STOP_CONFIRM_KEY,
     ):
         st.session_state.pop(key, None)
+
+
+def _sync_main_picker_from_order_picker() -> None:
+    selected_key = str(st.session_state.get(_RISK_ORDER_ACCOUNT_KEY) or "").strip()
+    selected_index = _risk_account_index_for_key(selected_key)
+    if selected_index is not None:
+        st.session_state["risk_sizing_account"] = selected_index
+    _clear_order_review_state()
+
+
+def _enforce_locked_account_picker_sync() -> None:
+    """Keep both selectors on the submitted-order account while the flow is locked."""
+    locked_key = _locked_order_account_key()
+    if not locked_key:
+        return
+    locked_index = _risk_account_index_for_key(locked_key)
+    if locked_index is None:
+        return
+    st.session_state["risk_sizing_account"] = locked_index
+    st.session_state[_RISK_ORDER_ACCOUNT_KEY] = locked_key
 
 
 def _render_order_account_picker() -> dict | None:
@@ -679,14 +724,14 @@ def _render_order_account_picker() -> dict | None:
         or st.session_state.get(_RISK_STOP_ORDER_KEY)
         or st.session_state.get(_RISK_STOP_UNCERTAIN_KEY)
     )
-    locked_key = (
-        str((st.session_state.get(_RISK_ENTRY_ORDER_KEY) or {}).get("account_key") or "").strip()
-        or str((st.session_state.get(_RISK_ENTRY_UNCERTAIN_KEY) or {}).get("account_key") or "").strip()
-        or str((st.session_state.get(_RISK_STOP_ORDER_KEY) or {}).get("account_key") or "").strip()
-        or str((st.session_state.get(_RISK_STOP_UNCERTAIN_KEY) or {}).get("account_key") or "").strip()
-    )
+    locked_key = _locked_order_account_key()
+    main_key = _main_risk_account_key()
     current = str(st.session_state.get(_RISK_ORDER_ACCOUNT_KEY) or "").strip()
-    desired = locked_key if locked_key in by_key else current
+
+    # The main E*TRADE Risk picker is the source of truth during normal sizing.
+    # If the user changes Part 3, its callback updates risk_sizing_account first,
+    # so the next fragment run brings both selectors back to the same account.
+    desired = locked_key if locked_key in by_key else main_key
     if desired not in by_key:
         desired = _default_order_account_key(accounts)
     if current != desired:
@@ -697,7 +742,7 @@ def _render_order_account_picker() -> dict | None:
         options,
         key=_RISK_ORDER_ACCOUNT_KEY,
         format_func=lambda key: _risk_account_label(by_key[key]),
-        on_change=_clear_order_review_state,
+        on_change=_sync_main_picker_from_order_picker,
         disabled=bool(locked_order),
         help=(
             "Choose the E*TRADE account that will receive the live order. "
@@ -1403,6 +1448,11 @@ def render_risk_sizing(*args, **kwargs):
 
     client = args[0] if args else kwargs.get("client")
     touch_session = kwargs.get("touch_session") or (lambda: None)
+
+    # This executes before the shared E*TRADE Account widget is instantiated.
+    # A submitted live order owns the account until its protective-stop flow is
+    # cleared, so both visible account selectors stay on the same broker account.
+    _enforce_locked_account_picker_sync()
 
     def render_live_order_sections(trade_context):
         with st.container(key="risk_live_order_panel"):
