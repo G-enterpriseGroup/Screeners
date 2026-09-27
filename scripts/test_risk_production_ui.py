@@ -54,6 +54,28 @@ class FixtureClient:
             }
         }
     def list_orders(self, account, *, status=None, symbol=None, count=100):
+        if st.session_state.get("fixture_open_order"):
+            return {
+                "OrdersResponse": {
+                    "Order": [{
+                        "orderId": 9100,
+                        "OrderDetail": [{
+                            "status": "OPEN",
+                            "priceType": "STOP",
+                            "stopPrice": 190.0,
+                            "limitPrice": 0.0,
+                            "orderTerm": "GOOD_UNTIL_CANCEL",
+                            "placedTime": 1234567890,
+                            "Instrument": [{
+                                "Product": {"symbol": "SPY", "securityType": "EQ"},
+                                "orderAction": "SELL",
+                                "orderedQuantity": 10,
+                                "filledQuantity": 0,
+                            }],
+                        }],
+                    }]
+                }
+            }
         partial = bool(st.session_state.get("fixture_partial_fill"))
         filled = 4 if partial else 10
         return {
@@ -72,6 +94,22 @@ class FixtureClient:
                         },
                     }],
                 }]
+            }
+        }
+    def cancel_order(self, account, order_id):
+        st.session_state.setdefault("fixture_order_cancels", []).append(
+            {"account": account, "order_id": int(order_id)}
+        )
+        return {
+            "CancelOrderResponse": {
+                "orderId": int(order_id),
+                "messages": {
+                    "Message": {
+                        "code": 5011,
+                        "type": "WARNING",
+                        "description": "cancel request processing",
+                    }
+                },
             }
         }
     def lookup(self,*a,**k): return {}
@@ -137,6 +175,12 @@ FILLED_ORDER_FIXTURE = FIXTURE.replace(
 PARTIAL_ORDER_FIXTURE = FILLED_ORDER_FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
     "st.session_state['fixture_partial_fill']=True\n"
+    "st.session_state['etrade_accounts']=",
+)
+
+PENDING_ORDER_FIXTURE = FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['fixture_open_order']=True\n"
     "st.session_state['etrade_accounts']=",
 )
 
@@ -391,6 +435,9 @@ def main():
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
     assert '"CHECK FULL FILL + SEND PROTECTIVE STOP"' in source
+    assert '5. PENDING / OPEN E*TRADE ORDERS' in source
+    assert 'client.cancel_order(account_key, order_id)' in source
+    assert 'E*TRADE\'S PUBLIC API DOES NOT EXPOSE BROKER-SAVED DRAFT ORDERS' in source
     assert '"CHECK ENTRY FILL IN E*TRADE"' not in source
     assert '"REVIEW PROTECTIVE STOP WITH E*TRADE"' not in source
 
@@ -492,6 +539,30 @@ def main():
     assert partial_order_app.session_state["_risk_live_entry_fill"]["partial"] is True
     assert "_risk_live_stop_order" not in partial_order_app.session_state
     assert "fixture_order_places" not in partial_order_app.session_state
+
+    # Part 5 must list live OPEN orders and require a deliberate second click
+    # before calling the broker cancellation endpoint.
+    pending_order_app = AppTest.from_string(PENDING_ORDER_FIXTURE, default_timeout=30).run()
+    assert not pending_order_app.exception, [e.message for e in pending_order_app.exception]
+    pending_cache = pending_order_app.session_state["_risk_live_pending_orders"]
+    assert pending_cache["account_key"] == "fixture"
+    assert len(pending_cache["rows"]) == 1
+    assert pending_cache["rows"][0]["order_id"] == 9100
+    assert pending_cache["rows"][0]["status"] == "OPEN"
+    assert "fixture_order_cancels" not in pending_order_app.session_state
+
+    pending_order_app.button(key="risk_live_cancel_order_fixture_9100").click().run()
+    assert not pending_order_app.exception, [e.message for e in pending_order_app.exception]
+    assert pending_order_app.session_state["_risk_live_cancel_confirm_order"] == "9100"
+    assert "fixture_order_cancels" not in pending_order_app.session_state
+
+    pending_order_app.button(key="risk_live_confirm_cancel_fixture_9100").click().run()
+    assert not pending_order_app.exception, [e.message for e in pending_order_app.exception]
+    assert pending_order_app.session_state["fixture_order_cancels"] == [
+        {"account": "fixture", "order_id": 9100}
+    ]
+    assert pending_order_app.session_state["_risk_live_pending_orders"]["rows"][0]["status"] == "CANCEL_REQUESTED"
+    assert "_risk_live_cancel_confirm_order" not in pending_order_app.session_state
 
     margin_payload = {
         "Computed": {
