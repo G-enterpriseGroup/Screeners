@@ -51,6 +51,11 @@ FEATURE_ROUTES = {
             "src/stockanalysis_cache.py",
         ],
     },
+    "performance": {
+        "entry": "src/performance_ui.py",
+        "owner": "src/performance_ui.py",
+        "support": ["src/etrade_client.py"],
+    },
     "option_book": {
         "entry": "src/option_book_ui.py",
         "owner": "src/option_book_ui.py",

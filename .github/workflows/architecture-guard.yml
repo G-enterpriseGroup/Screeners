@@ -32,6 +32,9 @@ jobs:
       - name: Test Risk live-order helpers without broker submission
         run: python scripts/test_risk_live_order_helpers.py
 
+      - name: Test Performance analytics and read-only boundary
+        run: python scripts/test_performance_ui.py
+
       - name: Install workflow YAML validator dependency
         run: python -m pip install PyYAML==6.0.3
 

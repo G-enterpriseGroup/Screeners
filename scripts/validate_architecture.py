@@ -47,6 +47,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "option_book.py",
     SRC / "option_book_ui.py",
     SRC / "holdings_snapshot_mode.py",
+    SRC / "performance_ui.py",
     SRC / "tab_bar_v4.py",
     SRC / "bull_debit_ui.py",
 ]
@@ -57,6 +58,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.gex_workspace_v2 import render_gex as render_gex_workspace",
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
     "from src.option_book_ui import render_option_book",
+    "from src.performance_ui import render_performance",
     "from src.risk_sizing_ui_v7 import render_risk_sizing",
     "from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries",
     "from src.schwab_risk_sizing_ui import render_schwab_risk_sizing",
@@ -211,6 +213,8 @@ def main() -> int:
             errors.append("APP ROUTE MISSING: SCHWAB RISK SIZING dispatch")
         if 'elif active_tab == "OPTION BOOK":' not in app_text:
             errors.append("APP ROUTE MISSING: OPTION BOOK dispatch")
+        if 'elif active_tab == "PERFORMANCE":' not in app_text:
+            errors.append("APP ROUTE MISSING: PERFORMANCE dispatch")
         if "maybe_auto_watch_risk_entries(_live_etrade_client())" not in app_text:
             errors.append("RISK AUTO-WATCH HOOK MISSING from terminal_background_hooks")
 
@@ -223,6 +227,8 @@ def main() -> int:
             errors.append("NAV LABEL MISSING: E*TRADE RISK SIZING display label")
         if '"OPTION BOOK"' not in nav_text:
             errors.append("NAV ROUTE MISSING: OPTION BOOK tab")
+        if '"PERFORMANCE"' not in nav_text:
+            errors.append("NAV ROUTE MISSING: PERFORMANCE tab")
 
     risk_route = SRC / "risk_sizing_ui_v7.py"
     if risk_route.exists():
@@ -253,8 +259,24 @@ def main() -> int:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.list_orders")
         if "def cancel_order(" not in client_text:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.cancel_order")
+        if "def get_transactions(" not in client_text:
+            errors.append("PERFORMANCE DATA ROUTE MISSING: ETradeClient.get_transactions")
         if '"CancelOrderRequest": {"orderId": order_number}' not in client_text:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient CancelOrderRequest payload")
+
+    performance_ui = SRC / "performance_ui.py"
+    if performance_ui.exists():
+        performance_text = performance_ui.read_text(encoding="utf-8")
+        for forbidden in ("preview_order(", "place_order(", "cancel_order("):
+            if forbidden in performance_text:
+                errors.append("PERFORMANCE SAFETY: read-only Performance may not call " + forbidden)
+        for required in (
+            '@st.fragment(run_every=_LIVE_REFRESH_SECONDS)',
+            'columns=["PERFORMANCE", "TODAY", "MTD", "YTD", "ALL-TIME"]',
+            'missing history is never invented',
+        ):
+            if required not in performance_text:
+                errors.append("PERFORMANCE ROUTE MISSING: " + required)
 
     risk_live_ui = SRC / "risk_sizing_ui_v10.py"
     if risk_live_ui.exists():
