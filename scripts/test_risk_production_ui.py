@@ -687,6 +687,7 @@ def main():
     assert chart["data"][2]["x"] == [190.0, 200.0, 210.0, 220.0]
     assert chart["data"][2]["y"] == [-100.0, 0.0, 100.0, 200.0]
     assert "Scenarios, not price history or a forecast" in " ".join(c.value for c in app.caption)
+    assert "white-space:normal" in risk_status_dom.select_one(".rs9-value")["style"]
     risk_tip = risk_status_dom.select_one(".rs9-tip")
     assert risk_tip is not None
     assert "MATH CHECK: PASS" in risk_tip.text

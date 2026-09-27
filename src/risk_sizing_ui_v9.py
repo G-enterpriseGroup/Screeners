@@ -176,6 +176,11 @@ def _compact_metric_box(container, label, value, tone="neutral", detail="", help
     if help_text:
         safe = html.escape(str(help_text)).replace("\n", "<br>")
         tip = '<span class="rs9-help" tabindex="0">?<span class="rs9-tip">' + safe + "</span></span>"
+    # The requested inline equation must remain visible in narrow ticket columns.
+    value_wrap = (
+        "white-space:normal;overflow-wrap:anywhere;"
+        if "RISK // TARGET STOP" in str(label) else ""
+    )
     detail_html = (
         f'<div class="rs9-detail" style="color:{color}!important;">{html.escape(str(detail))}</div>'
         if detail else ""
@@ -183,7 +188,7 @@ def _compact_metric_box(container, label, value, tone="neutral", detail="", help
     container.html(
         '<div class="rs9-card"><div class="rs9-head">'
         f'<span class="rs9-label">{html.escape(str(label))}</span>{tip}</div>'
-        f'<div class="rs9-value" style="color:{color}!important;">{html.escape(str(value))}</div>'
+        f'<div class="rs9-value" style="color:{color}!important;{value_wrap}">{html.escape(str(value))}</div>'
         f'{detail_html}</div>',
     )
 
