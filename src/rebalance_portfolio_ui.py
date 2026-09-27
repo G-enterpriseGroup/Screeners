@@ -176,6 +176,7 @@ def _load_rebalance_state(account_key: str) -> dict[str, Any]:
 
 
 def _persist_rebalance_state(account_key: str, candidate: dict[str, Any]) -> dict[str, Any]:
+    """Update the server copy; browser sync happens once at the end of render."""
     session_key = _session_state_key(account_key)
     current = _clean_state(st.session_state.get(session_key))
     cleaned = _clean_state(candidate)
@@ -191,15 +192,18 @@ def _persist_rebalance_state(account_key: str, candidate: dict[str, Any]) -> dic
             "portfolio_saved_at": now,
         }
         st.session_state[session_key] = state
+    return state
 
+
+def _sync_rebalance_state_browser(account_key: str, state: dict[str, Any]) -> None:
+    """Write the final per-rerun state exactly once to avoid duplicate component keys."""
     with st.container(key="rebalance_state_writer_shell", gap=None):
         _rebalance_state_component(
             storage_key=_browser_storage_key(account_key),
-            server_state=state,
+            server_state=_clean_state(state),
             key="raj_rebalance_state_writer_" + _account_token(account_key),
             default=None,
         )
-    return state
 
 
 # ==============================
@@ -925,6 +929,10 @@ def render_rebalance_portfolio(
                 account_key,
                 {**state, "settings": settings, "rows": config_rows},
             )
+
+        # One writer component per rerun: settings, reset actions, and data-editor
+        # changes may all mutate state in the same Streamlit pass.
+        _sync_rebalance_state_browser(account_key, state)
 
         target_total = sum(_finite(row.get("target_pct"), 0.0) for row in config_rows)
         if target_total > 100.0001:
