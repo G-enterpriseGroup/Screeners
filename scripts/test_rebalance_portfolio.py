@@ -113,7 +113,7 @@ def main() -> None:
     assert asym_plan.iloc[0]["Action"] == "TRIM"
 
     source = (ROOT / "src" / "rebalance_portfolio_ui.py").read_text(encoding="utf-8")
-    for forbidden in ("preview_order(", "place_order(", "cancel_order("):
+    for forbidden in ("preview_order(", "place_order(", "cancel_order(", "st.data_editor("):
         assert forbidden not in source, forbidden
     css = source.split('_REBALANCE_CSS = """', 1)[1].split('"""', 1)[0]
     assert "color:#000" not in css
@@ -128,6 +128,8 @@ def main() -> None:
         "IN TOLERANCE",
         "OUT OF TOLERANCE",
         "MEMORY ACTIVE",
+        "_render_ticker_band_editor",
+        "reb-grid-cell",
         "REVIEW LOSS",
         "LONG-TERM TRIM REVIEW",
         "ANALYSIS ONLY",
