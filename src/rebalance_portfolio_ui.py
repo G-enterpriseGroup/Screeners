@@ -609,9 +609,54 @@ _REBALANCE_CSS = """
     color:#ffad52!important;
     -webkit-text-fill-color:#ffad52!important;
 }
-.st-key-rebalance_root [data-testid="stDataFrame"],
-.st-key-rebalance_root [data-testid="stDataEditor"]{
+.st-key-rebalance_root [data-testid="stDataFrame"]{
     border:1px solid #fb8b1e!important;
+}
+.st-key-rebalance_root .reb-grid-head{
+    min-height:26px;
+    display:flex;
+    align-items:center;
+    padding:0 .38rem;
+    border:1px solid #fb8b1e;
+    background:#050505;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:900 .70rem/1 "Courier New",monospace;
+    text-transform:uppercase;
+}
+.st-key-rebalance_root .reb-grid-cell{
+    min-height:38px;
+    display:flex;
+    align-items:center;
+    padding:0 .38rem;
+    box-sizing:border-box;
+    border:1px solid #5d3605;
+    background:#050505;
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+    font:900 .76rem/1 "Courier New",monospace;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.st-key-rebalance_root .reb-grid-cell.orange{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+}
+.st-key-rebalance_root .reb-grid-cell.positive{
+    color:#4af6c3!important;
+    -webkit-text-fill-color:#4af6c3!important;
+}
+.st-key-rebalance_root .reb-grid-cell.negative{
+    color:#ff433d!important;
+    -webkit-text-fill-color:#ff433d!important;
+}
+.st-key-rebalance_root .reb-grid-row [data-testid="stNumberInput"]{
+    margin:0!important;
+}
+.st-key-rebalance_root .reb-grid-row [data-testid="stNumberInputContainer"]{
+    min-height:38px!important;
+    height:38px!important;
 }
 .st-key-rebalance_root [data-testid="stAlert"] p,
 .st-key-rebalance_root [data-testid="stAlert"] div{
@@ -836,6 +881,176 @@ def _style_plan(plan: pd.DataFrame):
             subset=["Proposed $"],
         )
     return styled
+
+
+def _render_static_grid_cell(value: Any, tone: str = "neutral") -> None:
+    tone_class = (
+        "positive"
+        if tone == "positive"
+        else "negative"
+        if tone == "negative"
+        else "orange"
+        if tone == "orange"
+        else ""
+    )
+    st.html(
+        f'<div class="reb-grid-cell {tone_class}">{str(value)}</div>'
+    )
+
+
+def _ticker_widget_key(account_key: str, symbol: str, field: str) -> str:
+    return (
+        "rebalance_ticker::"
+        + _account_token(account_key)
+        + "::"
+        + str(symbol or "").strip().upper()
+        + "::"
+        + field
+    )
+
+
+def _seed_ticker_widgets(
+    account_key: str,
+    config_rows: list[dict[str, Any]],
+    *,
+    force: bool = False,
+) -> None:
+    token = _account_token(account_key)
+    marker_key = "_rebalance_ticker_widgets_seeded::" + token
+    if st.session_state.get(marker_key) and not force:
+        return
+    for row in config_rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        st.session_state[_ticker_widget_key(account_key, symbol, "target")] = _finite(
+            row.get("target_pct"), 0.0
+        )
+        st.session_state[_ticker_widget_key(account_key, symbol, "lower")] = _finite(
+            row.get("lower_pct"), 0.0
+        )
+        st.session_state[_ticker_widget_key(account_key, symbol, "upper")] = _finite(
+            row.get("upper_pct"), 0.0
+        )
+    st.session_state[marker_key] = True
+
+
+def _render_ticker_band_editor(
+    *,
+    account_key: str,
+    classified: pd.DataFrame,
+    config_rows: list[dict[str, Any]],
+    account_value: float,
+) -> list[dict[str, Any]]:
+    """Render readable native controls instead of Streamlit's dark canvas editor."""
+    by_symbol = {
+        str(row.get("symbol") or "").strip().upper(): row for row in config_rows
+    }
+    _seed_ticker_widgets(account_key, config_rows)
+
+    widths = [1.0, 1.0, 0.82, 0.92, 0.94, 0.94, 0.94, 1.12]
+    headers = [
+        "SYMBOL",
+        "SLEEVE",
+        "P&L %",
+        "CURRENT %",
+        "TARGET %",
+        "LOWER %",
+        "UPPER %",
+        "TOLERANCE",
+    ]
+    header_cols = st.columns(widths, gap="small")
+    for column, title in zip(header_cols, headers):
+        with column:
+            st.html(f'<div class="reb-grid-head">{title}</div>')
+
+    edited_rows: list[dict[str, Any]] = []
+    for _, source in classified.iterrows():
+        symbol = str(source.get("Symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        cfg = by_symbol.get(symbol, {})
+        market_value = _finite(source.get("Market Value"), 0.0)
+        current_pct = market_value / account_value * 100.0 if account_value > 0 else 0.0
+        pnl_pct = _finite(source.get("Gain/Loss %"), 0.0)
+        sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
+
+        row_cols = st.columns(widths, gap="small")
+        with row_cols[0]:
+            _render_static_grid_cell(symbol, "orange")
+        with row_cols[1]:
+            _render_static_grid_cell(sleeve)
+        with row_cols[2]:
+            _render_static_grid_cell(
+                f"{pnl_pct:+.2f}%",
+                "positive" if pnl_pct >= 0 else "negative",
+            )
+        with row_cols[3]:
+            current_tone = (
+                "positive"
+                if _finite(cfg.get("lower_pct"), 0.0) - 1e-9
+                <= current_pct
+                <= _finite(cfg.get("upper_pct"), 100.0) + 1e-9
+                else "negative"
+            )
+            _render_static_grid_cell(f"{current_pct:.2f}%", current_tone)
+        with row_cols[4]:
+            target_pct = float(
+                st.number_input(
+                    f"{symbol} Target %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.25,
+                    format="%.2f",
+                    key=_ticker_widget_key(account_key, symbol, "target"),
+                    label_visibility="collapsed",
+                )
+            )
+        with row_cols[5]:
+            lower_input = float(
+                st.number_input(
+                    f"{symbol} Lower %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.25,
+                    format="%.2f",
+                    key=_ticker_widget_key(account_key, symbol, "lower"),
+                    label_visibility="collapsed",
+                )
+            )
+        with row_cols[6]:
+            upper_input = float(
+                st.number_input(
+                    f"{symbol} Upper %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.25,
+                    format="%.2f",
+                    key=_ticker_widget_key(account_key, symbol, "upper"),
+                    label_visibility="collapsed",
+                )
+            )
+
+        lower_pct = min(target_pct, lower_input)
+        upper_pct = max(target_pct, upper_input)
+        in_tolerance = lower_pct - 1e-9 <= current_pct <= upper_pct + 1e-9
+
+        with row_cols[7]:
+            _render_static_grid_cell(
+                "IN TOLERANCE" if in_tolerance else "OUT OF TOLERANCE",
+                "positive" if in_tolerance else "negative",
+            )
+
+        edited_rows.append(
+            {
+                "symbol": symbol,
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
+            }
+        )
+
+    return edited_rows
 
 
 def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
@@ -1137,55 +1352,14 @@ def render_rebalance_portfolio(
                 account_key,
                 {**state, "settings": settings, "rows": config_rows},
             )
-            st.session_state.pop(
-                "rebalance_target_editor_" + _account_token(account_key),
-                None,
-            )
+            _seed_ticker_widgets(account_key, config_rows, force=True)
 
-        editor = _editor_frame(classified, config_rows, account_value)
-        edited = st.data_editor(
-            editor,
-            hide_index=True,
-            width="stretch",
-            row_height=34,
-            disabled=["Symbol", "Sleeve", "P&L %", "Current %", "Tolerance"],
-            column_config={
-                "Symbol": st.column_config.TextColumn("SYMBOL"),
-                "Sleeve": st.column_config.TextColumn("SLEEVE"),
-                "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f%%"),
-                "Current %": st.column_config.NumberColumn("CURRENT %", format="%.2f%%"),
-                "Target %": st.column_config.NumberColumn(
-                    "TARGET %",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.25,
-                    format="%.2f%%",
-                    help="Desired portfolio weight for this ticker.",
-                ),
-                "Lower %": st.column_config.NumberColumn(
-                    "LOWER %",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.25,
-                    format="%.2f%%",
-                    help="Ticker-specific lower tolerance. Below this weight is out of tolerance.",
-                ),
-                "Upper %": st.column_config.NumberColumn(
-                    "UPPER %",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.25,
-                    format="%.2f%%",
-                    help="Ticker-specific upper tolerance. Above this weight is out of tolerance.",
-                ),
-                "Tolerance": st.column_config.TextColumn(
-                    "TOLERANCE",
-                    help="Green in the plan = inside the saved ticker band. Red = outside the saved ticker band.",
-                ),
-            },
-            key="rebalance_target_editor_" + _account_token(account_key),
+        edited_rows = _render_ticker_band_editor(
+            account_key=account_key,
+            classified=classified,
+            config_rows=config_rows,
+            account_value=account_value,
         )
-        edited_rows = _config_from_editor(edited)
         if edited_rows != config_rows:
             config_rows = edited_rows
             state = _persist_rebalance_state(
