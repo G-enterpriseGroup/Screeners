@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.etrade_client import ETradeClient
 from src.risk_sizing import stock_position_size
 from src.risk_sizing_ui_v9 import _select_true_cash
 from src.risk_sizing_ui_v2 import _stock_math_check, _stock_risk_status
@@ -398,6 +399,18 @@ render_risk_sizing(
 
 
 def main():
+    # Verify cancel transport without OAuth/network access.
+    cancel_calls = []
+    cancel_client = object.__new__(ETradeClient)
+    cancel_client._put = lambda path, payload: cancel_calls.append((path, payload)) or {"ok": True}
+    assert cancel_client.cancel_order("fixture-key", 9100) == {"ok": True}
+    assert cancel_calls == [
+        (
+            "/v1/accounts/fixture-key/orders/cancel",
+            {"CancelOrderRequest": {"orderId": 9100}},
+        )
+    ]
+
     source = (ROOT / "src" / "risk_sizing_ui_v10.py").read_text(encoding="utf-8")
     v9_source = (ROOT / "src" / "risk_sizing_ui_v9.py").read_text(encoding="utf-8")
     v2_source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
