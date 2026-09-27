@@ -410,6 +410,19 @@ def _load_transactions(client: Any, account_key: str, force: bool) -> list[dict[
     return rows
 
 
+def _merge_transactions(current: list[dict[str, Any]], fresh: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for tx in [*current, *fresh]:
+        if not isinstance(tx, dict):
+            continue
+        identity = str(
+            _find(tx, "transactionId")
+            or f"{_find(tx, 'transactionDate')}:{_find(tx, 'description')}:{_find(tx, 'amount')}"
+        )
+        merged[identity] = tx
+    return sorted(merged.values(), key=lambda tx: _when(tx) or datetime.min.replace(tzinfo=_ET))
+
+
 def _account_label(account: dict[str, Any]) -> str:
     name = str(account.get("accountName") or account.get("accountDesc") or account.get("accountType") or "E*TRADE ACCOUNT").strip()
     raw = str(account.get("accountId") or "")
@@ -434,8 +447,24 @@ def _live(client: Any, account: dict[str, Any], transactions: list[dict[str, Any
         st.error(f"PERFORMANCE LIVE DATA UNAVAILABLE // {exc}")
         return
 
-    events, income = _build_trade_events(transactions)
     now = datetime.now(_ET)
+    try:
+        recent = client.get_transactions(
+            account_key,
+            start_date=now.date() - timedelta(days=7),
+            end_date=now.date(),
+            sort_order="ASC",
+        )
+        transactions = _merge_transactions(transactions, recent)
+        st.session_state[_cache_key(account_key)] = transactions
+        if touch_session:
+            touch_session()
+    except Exception:
+        # Keep the last complete history snapshot if the lightweight live sync
+        # is temporarily unavailable; the manual refresh remains explicit.
+        pass
+
+    events, income = _build_trade_events(transactions)
     today_date = now.date()
     history_dates = [stamp.date() for tx in transactions if (stamp := _when(tx)) is not None]
     history_start = min(history_dates) if history_dates else today_date
@@ -468,7 +497,7 @@ def _live(client: Any, account: dict[str, Any], transactions: list[dict[str, Any
         '<div class="perf-status">'
         f'HISTORY COVERAGE // EARLIEST E*TRADE TRANSACTION LOADED: {history_start:%b %d, %Y} // '
         f'{len(transactions):,} TRANSACTIONS // {len(events):,} CLOSED TRADE EVENTS // '
-        'TODAY = live mark-to-market. MTD/YTD trade stats = realized FIFO trade P&L plus dividend/interest cash. '
+        'TODAY = live mark-to-market. Recent transactions auto-sync every 30 seconds while this tab is open. MTD/YTD trade stats = realized FIFO trade P&L plus dividend/interest cash. '
         'ALL-TIME adds current unrealized P&L. Return is cost-basis return, not TWR/XIRR; Max Drawdown is realized-P&L drawdown versus current account value. '
         'If the account predates the E*TRADE API history window, ALL-TIME is partial until older history is seeded; missing history is never invented.'
         '</div>'
