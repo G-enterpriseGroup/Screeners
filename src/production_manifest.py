@@ -56,6 +56,15 @@ FEATURE_ROUTES = {
         "owner": "src/performance_ui.py",
         "support": ["src/etrade_client.py"],
     },
+    "rebalance_portfolio": {
+        "entry": "src/rebalance_portfolio_ui.py",
+        "owner": "src/rebalance_portfolio_ui.py",
+        "support": [
+            "src/risk_sizing_ui.py",
+            "src/risk_sizing_ui_v2.py",
+            "src/risk_sizing.py",
+        ],
+    },
     "option_book": {
         "entry": "src/option_book_ui.py",
         "owner": "src/option_book_ui.py",

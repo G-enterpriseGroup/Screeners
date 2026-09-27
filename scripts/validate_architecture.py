@@ -48,6 +48,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "option_book_ui.py",
     SRC / "holdings_snapshot_mode.py",
     SRC / "performance_ui.py",
+    SRC / "rebalance_portfolio_ui.py",
     SRC / "tab_bar_v4.py",
     SRC / "bull_debit_ui.py",
 ]
@@ -59,6 +60,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
     "from src.option_book_ui import render_option_book",
     "from src.performance_ui import render_performance",
+    "from src.rebalance_portfolio_ui import render_rebalance_portfolio",
     "from src.risk_sizing_ui_v7 import render_risk_sizing",
     "from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries",
     "from src.schwab_risk_sizing_ui import render_schwab_risk_sizing",
@@ -215,6 +217,8 @@ def main() -> int:
             errors.append("APP ROUTE MISSING: OPTION BOOK dispatch")
         if 'elif active_tab == "PERFORMANCE":' not in app_text:
             errors.append("APP ROUTE MISSING: PERFORMANCE dispatch")
+        if 'elif active_tab == "REBALANCE PORTFOLIO":' not in app_text:
+            errors.append("APP ROUTE MISSING: REBALANCE PORTFOLIO dispatch")
         if "maybe_auto_watch_risk_entries(_live_etrade_client())" not in app_text:
             errors.append("RISK AUTO-WATCH HOOK MISSING from terminal_background_hooks")
 
@@ -277,6 +281,23 @@ def main() -> int:
         ):
             if required not in performance_text:
                 errors.append("PERFORMANCE ROUTE MISSING: " + required)
+
+    rebalance_ui = SRC / "rebalance_portfolio_ui.py"
+    if rebalance_ui.exists():
+        rebalance_text = rebalance_ui.read_text(encoding="utf-8")
+        for forbidden in ("preview_order(", "place_order(", "cancel_order("):
+            if forbidden in rebalance_text:
+                errors.append("REBALANCE SAFETY: read-only Rebalance may not call " + forbidden)
+        for required in (
+            'account_picker("risk_sizing_account")',
+            "RESET TARGETS TO CURRENT",
+            "APPLY DEFAULT BANDS",
+            "REVIEW LOSS",
+            "LONG-TERM TRIM REVIEW",
+            "ANALYSIS ONLY",
+        ):
+            if required not in rebalance_text:
+                errors.append("REBALANCE ROUTE MISSING: " + required)
 
     risk_live_ui = SRC / "risk_sizing_ui_v10.py"
     if risk_live_ui.exists():

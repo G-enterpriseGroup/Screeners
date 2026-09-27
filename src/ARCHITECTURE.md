@@ -58,7 +58,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | E*TRADE Performance | `src/performance_ui.py` | `src/etrade_client.py` read-only transaction/portfolio/balance transport | Risk/GEX/OAuth/order files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
-| Rebalance Portfolio shell | `streamlit_app.py` | `src/tab_bar_v4.py` | Feature logic until a dedicated Rebalance owner is created |
+| Rebalance Portfolio | `src/rebalance_portfolio_ui.py` | `src/risk_sizing_ui.py`, `src/risk_sizing_ui_v2.py`, `src/risk_sizing.py` for shared read-only Risk book normalization/classification/intent memory | `streamlit_app.py`, Risk live-order workflow, OAuth/session UI, Holdings/GEX/Performance |
 | Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py` | Risk/GEX files |
 | Municipal tools | functions loaded from `src/terminal_core.py` + `src/muni_data.py` / `src/treasury_data.py` | muni/treasury data modules | Risk/GEX/OAuth files |
 | Theme / shared appearance | `src/theme.py`, `src/layout_guardrails.py` | shared CSS helpers | Change only when the requested change is truly global |
@@ -168,6 +168,22 @@ Production path:
 - E*TRADE transaction history is a rolling API window. Never label unavailable pre-window history as complete ITD; show the earliest loaded transaction and keep ALL-TIME explicitly coverage-aware until older history is seeded.
 - The 30-second live fragment refreshes current portfolio/balance data only while Performance is active. Historical transactions are session-cached until the user selects REFRESH PERFORMANCE.
 - Do not change Risk Sizing, GEX, Holdings, OAuth, or shared theme files for Performance-only work.
+
+## Rebalance Portfolio edit map
+
+Production path:
+
+`streamlit_app.py` → `src/rebalance_portfolio_ui.py`
+
+- Change **target weights, per-position drift bands, loss-review threshold, hard concentration limit, minimum-trade rule, cash-first funding, plan table, or Rebalance-only layout** → `src/rebalance_portfolio_ui.py`.
+- Rebalance intentionally shares Risk Sizing's `risk_sizing_account` selector state, holdings normalization, account balance source, and persisted LONG-TERM intent memory so both workspaces describe the same E*TRADE book. This is a read-only dependency; do not edit Risk Sizing to change Rebalance behavior.
+- Rebalance v1 is long-only and analysis-only. It may read accounts, portfolio, balances, and Risk intent state, but it must never preview, place, change, or cancel an E*TRADE order.
+- Targets/bands are browser-persisted per hashed account key. New positions seed their target to the current account weight; this intentionally produces no trade until Raj defines a desired target.
+- `TO BAND` is the default low-turnover mode: trade only after a band breach and move just inside the band. `TO TARGET` is optional and intentionally higher turnover.
+- Underweights at or below the configured loss-review threshold must be labeled `REVIEW LOSS` and receive no automatic ADD proposal.
+- LONG-TERM overweights use the wider saved/default band and remain explicit review items; do not silently convert Risk LONG-TERM classifications into routine tactical trims.
+- Excess cash above the target cash allocation funds underweights first; required trim proceeds may fund remaining eligible buys. Trades below the configured minimum dollar threshold are suppressed.
+- Do not change OAuth/session UI, Risk live-order logic, Holdings, GEX, Performance, navigation, or shared theme files for Rebalance-only work.
 
 ## Top navigation edit map
 

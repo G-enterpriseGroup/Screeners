@@ -101,6 +101,7 @@ from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.lock_screen_v2 import render_seamless_lock_screen
 from src.option_book_ui import render_option_book
 from src.performance_ui import render_performance
+from src.rebalance_portfolio_ui import render_rebalance_portfolio
 from src.risk_sizing_ui_v7 import render_risk_sizing
 from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries
 from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
@@ -520,7 +521,7 @@ _TERMINAL_PAGE_HEADERS = {
     ),
     "REBALANCE PORTFOLIO": (
         "REBALANCE PORTFOLIO",
-        "PORTFOLIO ALLOCATION // TARGET WEIGHTS // REBALANCE WORKSPACE",
+        "SMART E*TRADE REBALANCER // TARGET WEIGHTS + DRIFT BANDS // LOSS REVIEW // CASH-FIRST MINIMUM-TRADE PLAN",
     ),
     "ORDERS": (
         "TRIGGERS — OCO ORDER SIMULATOR",
@@ -716,7 +717,14 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
         )
 
     elif active_tab == "REBALANCE PORTFOLIO":
-        pass
+        render_rebalance_portfolio(
+            _etrade_client(),
+            account_picker=_account_picker,
+            refresh_accounts=_refresh_accounts,
+            account_balance=_account_balance,
+            balance_snapshot=_balance_snapshot,
+            touch_session=_touch_etrade_session,
+        )
 
     elif active_tab == "MUNI SCREENERS":
         load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
