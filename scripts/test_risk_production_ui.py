@@ -28,7 +28,7 @@ class FixtureClient:
         return dict(symbol=symbol,companyName=("State Street SPDR S&P 500 ETF Trust" if symbol == "SPY" else company_name(symbol)),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
     def lookup(self,*a,**k): return {}
 st.session_state['etrade_accounts']=[
-    {'accountIdKey':'rajkey','accountId':'10005474','accountName':'Raj Singh'},
+    {'accountIdKey':'fixture','accountId':'10005474','accountName':'Raj Singh'},
     {'accountIdKey':'otherkey','accountId':'10001234','accountName':'Secondary Account'},
 ]
 def fixture_balance(client, account, refresh=False):
@@ -353,11 +353,11 @@ def main():
     ]
     assert sum(text == "3. PICK E*TRADE ACCOUNT" for text in live_headers) == 1
     assert sum(text == "4. REVIEW + SEND ORDER" for text in live_headers) == 1
-    assert app.selectbox(key="risk_live_order_account_key").value == "rajkey"
+    assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
     app.selectbox(key="risk_live_order_account_key").select("otherkey").run()
     clean()
     assert app.selectbox(key="risk_live_order_account_key").value == "otherkey"
-    app.selectbox(key="risk_live_order_account_key").select("rajkey").run()
+    app.selectbox(key="risk_live_order_account_key").select("fixture").run()
     clean()
     assert app.selectbox(key="risk_live_order_account_key").value == "rajkey"
 
