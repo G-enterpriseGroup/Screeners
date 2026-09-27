@@ -1655,3 +1655,15 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Commit SHA:** validated Performance implementation head 271fa1ac964ca54c1b1e2e47730d142fe5454f25; permanent Performance regression hook 1810580033424e8e205328e6eba105bb9c3f3083.
 - **Lesson:** Account performance must distinguish broker current-position gain from historical account performance. Use live broker data where it is authoritative, reconstruct only what transaction history actually supports, and make history coverage/formula limitations visible instead of filling gaps with assumptions.
 
+
+## 2026-09-27 — Visual Risk ticket map and inline unused-risk percentage formula
+
+- **Feature / production file:** Risk Sizing Part 2 presentation in `src/risk_sizing_ui_v2.py`; focused coverage in `scripts/test_risk_production_ui.py`.
+- **Missing behavior / root cause:** The stock ticket had numeric results only, and the unused-risk percentage did not show its arithmetic beside the value.
+- **Change:** Add a compact interactive price-versus-P&L map beneath the Risk Book, populated directly from Part 2's computed stock/ETF share count, Entry and Stop. Mark Stop Loss, Entry, +1R and +2R with colored lines/points and hover values. Label these as scenarios, not price history/forecasts; distinguish modeled stop risk from actual execution. Show no chart when zero shares are sized. Append `= unused risk ÷ max dollar risk × 100` with current dollar amounts to the stock percentage; zero budgets display undefined rather than divide by zero.
+- **Preserve:** Existing sizing formulas, risk budgets, cent-safe target stop, copy iframe, quote reseeding, editable stop distance, capital-source switch, fragment reruns, account synchronization, explicit order review/send and read-only fill watcher.
+- **Intentionally untouched:** Risk math, v9/v10, broker/OAuth/session/order code, Holdings, Performance, GEX, navigation, shared theme, all other features and synced references. No global Streamlit patches or new market-data calls.
+- **Tests:** Production route traced (`streamlit_app.py → v7 → v10 → v9 → v2`); Python syntax checks PASS; production Risk interaction regression PASS, including plotted prices/P&L, Stop edits updating levels, formula display, and zero-share empty state; intent override regression PASS; all seven enabled tabs plus repeated routes/second session PASS; diff audit PASS; fresh-process local browser graph and inline formula visually inspected at 1280px. Broker test data only; no live orders placed.
+- **Architecture guard:** PASS.
+- **Implementation commit:** `eb4e3ed` (exact committed production source inspected). Deployment verification follows separately; this entry does not claim a managed Cloud reboot.
+- **Lesson:** Feed a trade visual from the same computed ticket as the result cards, and clearly separate hypothetical profit levels from actual price history or forecasts. Keep dollar-containing captions out of accidental Markdown math rendering.
