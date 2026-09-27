@@ -863,6 +863,70 @@ def _how_to_use() -> None:
 # PART 2 TRADE SIZING PANEL
 # ==============================
 
+# ==============================
+# PART 2 TRADE MAP / SCENARIO P&L
+# ==============================
+
+def _trade_map_figure(entry: float, stop: float, shares: int):
+    """Plot the current long-stock ticket, never a forecast or historical tape."""
+    import plotly.graph_objects as go
+
+    distance = entry - stop
+    levels = [stop, entry, entry + distance, entry + 2 * distance]
+    pnl = [(price - entry) * shares for price in levels]
+    labels = ["STOP LOSS", "ENTRY", "+1R SCENARIO", "+2R SCENARIO"]
+    colors = [BB_RED, BB_ORANGE, BB_GREEN, BB_GREEN]
+    fig = go.Figure()
+    for indices, color, fill in [
+        ([0, 1], BB_RED, "rgba(255,67,61,0.14)"),
+        ([1, 2, 3], BB_GREEN, "rgba(74,246,195,0.12)"),
+    ]:
+        fig.add_trace(go.Scatter(
+            x=[levels[i] for i in indices], y=[pnl[i] for i in indices],
+            mode="lines", line=dict(color=color, width=3),
+            fill="tozeroy", fillcolor=fill, hoverinfo="skip", showlegend=False,
+        ))
+    fig.add_trace(go.Scatter(
+        x=levels, y=pnl, mode="markers", marker=dict(size=9, color=colors),
+        customdata=labels, showlegend=False,
+        hovertemplate="%{customdata}<br>Price $%{x:,.2f}<br>P&L $%{y:,.2f}<extra></extra>",
+    ))
+    for price, color in zip(levels, colors):
+        fig.add_vline(x=price, line_color=color, line_width=1, line_dash="dot")
+    fig.add_hline(y=0, line_color=BB_ORANGE, line_width=1)
+    fig.update_layout(
+        height=290, margin=dict(l=10, r=10, t=12, b=10),
+        paper_bgcolor=BB_BLACK, plot_bgcolor=BB_BLACK,
+        font=dict(family="Courier New, monospace", size=12, color=BB_ORANGE),
+        xaxis=dict(
+            title="SCENARIO SHARE PRICE", tickmode="array", tickvals=levels,
+            ticktext=[f"{label}<br>${price:,.2f}" for label, price in zip(labels, levels)],
+            range=[max(0, stop - distance * .18), levels[-1] + distance * .18],
+            gridcolor="#292929", fixedrange=True,
+        ),
+        yaxis=dict(title="TRADE P&L ($)", tickprefix="$", tickformat=",.2f",
+                   gridcolor="#292929", zeroline=False, fixedrange=True),
+        hoverlabel=dict(bgcolor="#222222", font_size=13),
+    )
+    return fig
+
+
+def _render_trade_map(ticker: str, entry: float, stop: float, shares: int) -> None:
+    st.html('<div class="risk-v9-section">TRADE MAP // ' + html.escape(ticker)
+            + f' // {shares:,} SHARES</div>')
+    if shares <= 0:
+        st.caption("NO POSITION SIZED // available capital or risk budget cannot fund one share.")
+        return
+    st.plotly_chart(_trade_map_figure(entry, stop, shares), width="stretch",
+                    config={"displayModeBar": False}, key="risk_ticket_trade_map")
+    risk = (entry - stop) * shares
+    st.caption(
+        f"STOP −USD {risk:,.2f}  ·  +1R +USD {risk:,.2f}  ·  +2R +USD {2 * risk:,.2f}. "
+        "1R = current entry-to-stop risk. Scenarios, not price history or a forecast. "
+        "Before fees/slippage; a stop does not guarantee the fill price."
+    )
+
+
 def _stock_risk_status(
     entry_price: float,
     target_shares: int,
@@ -1042,6 +1106,7 @@ def _render_next_trade(
     summary: dict[str, Any],
     cash_available: float,
     touch_session: Callable[[], None],
+    trade_map_container=None,
 ) -> None:
     """Render the existing Part 2 sizing workflow inside its assigned pane."""
     st.markdown("**2 // SIZE THE NEXT TRADE**")
@@ -1365,6 +1430,12 @@ def _render_next_trade(
                 sized["actual_risk"],
             )
             target_stop_text = _money(target_stop) if target_stop is not None else "N/A"
+            risk_pct_value = (
+                f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%) = "
+                f"{_money(risk_state_amount)} ÷ {_money(risk_budget['selected_risk_budget'])} × 100"
+                if risk_budget["selected_risk_budget"] > 0
+                else f"{_money(risk_state_amount)} (N/A%) = undefined (zero risk budget)"
+            )
             if risk_state_label == "OVERUSED RISK":
                 risk_state_help = (
                     f"CALC: Actual Stop Risk {_money(sized['actual_risk'])} - "
@@ -1418,7 +1489,7 @@ def _render_next_trade(
                 _metric_box(
                     target_card_col,
                     f"{risk_state_label} // TARGET STOP {target_stop_text}",
-                    f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
+                    risk_pct_value,
                     "negative" if (
                         risk_state_label == "OVERUSED RISK" or not math_check_pass
                     ) else "neutral",
@@ -1430,12 +1501,16 @@ def _render_next_trade(
                 _metric_box(
                     p5,
                     f"{risk_state_label} // TARGET STOP {target_stop_text}",
-                    f"{_money(risk_state_amount)} ({risk_state_pct:.2f}%)",
+                    risk_pct_value,
                     "negative" if (
                         risk_state_label == "OVERUSED RISK" or not math_check_pass
                     ) else "neutral",
                     help_text=risk_state_help,
                 )
+
+            if trade_map_container is not None:
+                with trade_map_container:
+                    _render_trade_map(ticker, entry_price, stop_price, sized["shares"])
 
             if (
                 capital_source != _CAPITAL_SOURCE_TACTICAL
@@ -2154,6 +2229,7 @@ def render_risk_sizing(
                     f'<div class="risk-book-cell risk-book-right">{account_pct:.2f}%</div>',
                 )
 
+        trade_map_container = st.container(key="risk_trade_map")
 
     with trade_col:
         with st.container(key="risk_part2_panel"):
@@ -2165,6 +2241,7 @@ def render_risk_sizing(
                 summary=summary,
                 cash_available=cash_available,
                 touch_session=touch_session,
+                trade_map_container=trade_map_container,
             )
         if after_next_trade is not None:
             after_next_trade(

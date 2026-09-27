@@ -681,7 +681,12 @@ def main():
         )
     )
     assert risk_status_dom.select_one(".rs9-label").text == "UNUSED RISK // TARGET STOP $177.50"
-    assert risk_status_dom.select_one(".rs9-value").text == "$125.00 (55.56%)"
+    assert risk_status_dom.select_one(".rs9-value").text == "$125.00 (55.56%) = $125.00 ÷ $225.00 × 100"
+    import json
+    chart = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert chart["data"][2]["x"] == [190.0, 200.0, 210.0, 220.0]
+    assert chart["data"][2]["y"] == [-100.0, 0.0, 100.0, 200.0]
+    assert "Scenarios, not price history or a forecast" in " ".join(c.value for c in app.caption)
     risk_tip = risk_status_dom.select_one(".rs9-tip")
     assert risk_tip is not None
     assert "MATH CHECK: PASS" in risk_tip.text
@@ -695,6 +700,9 @@ def main():
     clean()
     assert metric("MAX SHARES") == "10"
     assert app.number_input(key="risk_stop_distance_pct").value == 10.0
+    chart = json.loads(app.get("plotly_chart")[0].proto.spec)
+    assert chart["data"][2]["x"] == [180.0, 200.0, 220.0, 240.0]
+    assert chart["data"][2]["y"] == [-200.0, 0.0, 200.0, 400.0]
     app.number_input(key="risk_stop_distance_pct").set_value(7.5).run()
     clean()
     assert app.number_input(key="risk_stop_price").value == 185.0
@@ -831,6 +839,8 @@ def main():
         )
     )
     assert tactical_metric("MAX SHARES") == "0"
+    assert len(tactical_app.get("plotly_chart")) == 0
+    assert any("NO POSITION SIZED" in item.value for item in tactical_app.caption)
     assert tactical_metric("POSITION NOTIONAL") == "$0.00"
     assert len(tactical_app.toggle) == 1
     assert tactical_app.toggle(key="risk_capital_source_tactical").value is True
