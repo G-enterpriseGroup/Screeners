@@ -238,6 +238,8 @@ def main() -> int:
         errors.append("OPTION BOOK SAFETY: helper must not construct a PlaceOrderRequest payload")
     if option_book_ui.exists() and "place_order(" in option_book_ui.read_text(encoding="utf-8"):
         errors.append("OPTION BOOK SAFETY: UI must not call live place_order")
+    if option_book_ui.exists() and "cancel_order(" in option_book_ui.read_text(encoding="utf-8"):
+        errors.append("OPTION BOOK SAFETY: UI must not call live cancel_order")
     if etrade_client.exists():
         client_text = etrade_client.read_text(encoding="utf-8")
         if "def preview_order(" not in client_text:
