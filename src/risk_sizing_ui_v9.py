@@ -224,6 +224,32 @@ def _render_css() -> None:
             text-transform:uppercase;
         }
         .risk-v9-section::before{content:none!important;display:none!important;}
+        .risk-v9-capacity-warning{
+            display:block;
+            width:100%;
+            box-sizing:border-box;
+            height:auto!important;
+            min-height:0!important;
+            margin:2px 0 6px 0;
+            padding:6px 8px;
+            border:1px solid #7d6500;
+            background:#222200;
+            color:#fb8b1e!important;
+            -webkit-text-fill-color:#fb8b1e!important;
+            font-family:"Courier New",monospace;
+            font-size:.72rem;
+            font-weight:800;
+            line-height:1.28;
+            white-space:normal;
+            overflow:visible;
+            overflow-wrap:anywhere;
+        }
+        [data-testid="stElementContainer"]:has(.risk-v9-capacity-warning),
+        [data-testid="stHtml"]:has(.risk-v9-capacity-warning){
+            height:auto!important;
+            min-height:0!important;
+            overflow:visible!important;
+        }
         .risk-v9-book-note{
             display:flex;
             align-items:center;
@@ -416,10 +442,10 @@ def _compact_warning(original_warning):
     def wrapped(body, *args, **kwargs):
         text = str(body or "")
         if text.startswith("TACTICAL CAPACITY CHECK"):
-            st.markdown(
-                '<div style="border:1px solid #7d6500;background:#222200;color:#fb8b1e;padding:.27rem .46rem;margin:.10rem 0;font:800 .66rem/1.15 Courier New,monospace;">'
-                + html.escape(text) + "</div>",
-                unsafe_allow_html=True,
+            st.html(
+                '<div class="risk-v9-capacity-warning">'
+                + html.escape(text)
+                + "</div>"
             )
             return None
         return original_warning(body, *args, **kwargs)
@@ -618,6 +644,7 @@ def render_risk_sizing(
     account_balance: Callable[..., dict[str, Any]],
     balance_snapshot: Callable[[dict[str, Any]], tuple[float, float, float]],
     touch_session: Callable[[], None],
+    after_next_trade: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     _render_css()
 
@@ -697,6 +724,7 @@ def render_risk_sizing(
             account_balance=risk_account_balance,
             balance_snapshot=cash_only_snapshot,
             touch_session=touch_session,
+            after_next_trade=after_next_trade,
         )
     finally:
         _v2.quote_summary = previous_quote_summary

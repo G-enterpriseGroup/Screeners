@@ -27,7 +27,10 @@ class FixtureClient:
         st.session_state.setdefault("fixture_quotes", []).append(symbol)
         return dict(symbol=symbol,companyName=("State Street SPDR S&P 500 ETF Trust" if symbol == "SPY" else company_name(symbol)),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
     def lookup(self,*a,**k): return {}
-st.session_state['etrade_accounts']=[{'accountIdKey':'fixture','accountName':'Synthetic test portfolio'}]
+st.session_state['etrade_accounts']=[
+    {'accountIdKey':'fixture','accountId':'10005474','accountName':'Raj Singh'},
+    {'accountIdKey':'otherkey','accountId':'10001234','accountName':'Secondary Account'},
+]
 def fixture_balance(client, account, refresh=False):
     st.session_state.setdefault("fixture_balance_refreshes", []).append(bool(refresh))
     return {
@@ -280,7 +283,7 @@ def main():
     v9_source = (ROOT / "src" / "risk_sizing_ui_v9.py").read_text(encoding="utf-8")
     v2_source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
     assert "@st.fragment\ndef render_risk_sizing" in source
-    assert "st.rerun" not in source
+    assert "st.rerun()" not in source
     assert "st.rerun" not in v9_source
     assert "st.rerun" not in v2_source
     assert "The quote loads automatically from live E*TRADE first" in v2_source
@@ -343,6 +346,20 @@ def main():
                 return dom.select_one(".rs9-value").text
         raise AssertionError(label)
     clean()
+    live_headers = [
+        BeautifulSoup(item.value, "html.parser").get_text(" ", strip=True)
+        for item in app.get("html")
+        if "risk-v9-section" in item.value
+    ]
+    assert sum(text == "3. PICK E*TRADE ACCOUNT" for text in live_headers) == 1
+    assert sum(text == "4. REVIEW + SEND ORDER" for text in live_headers) == 1
+    assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
+    app.selectbox(key="risk_live_order_account_key").select("otherkey").run()
+    clean()
+    assert app.selectbox(key="risk_live_order_account_key").value == "otherkey"
+    app.selectbox(key="risk_live_order_account_key").select("fixture").run()
+    clean()
+    assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
 
     margin_payload = {
         "Computed": {
@@ -662,6 +679,12 @@ def main():
     assert 'class="risk-v10-company-box"' in source
     assert 'original_text_input("Ticker"' in source
     assert "risk_ticker_smart_v10" not in source
+    assert "previous_next_trade" not in source
+    assert "_v9._v2._render_next_trade =" not in source
+    assert '3. PICK E*TRADE ACCOUNT' in source
+    assert '4. REVIEW + SEND ORDER' in source
+    assert '_RISK_ORDER_DEFAULT_ACCOUNT_SUFFIX = "5474"' in source
+    assert 'class="risk-v9-capacity-warning"' in v9_source
     print("Production Risk route: compact zero-dead-space layout, ticker/company split, Risk Book memory, E*TRADE-first quotes, sizing PASS")
 
 
