@@ -110,9 +110,19 @@ def main() -> None:
     ):
         assert expected in html, expected
 
-    # Reaching the final plan section with no AppTest exception proves the
-    # target/band editor executed successfully; AppTest does not expose
-    # st.data_editor under a stable "data_editor" element accessor.
+    number_labels = {item.label for item in app.number_input}
+    for expected in (
+        "NVDA Target %",
+        "NVDA Lower %",
+        "NVDA Upper %",
+        "GLD Target %",
+        "GLD Lower %",
+        "GLD Upper %",
+    ):
+        assert expected in number_labels, (expected, sorted(number_labels))
+
+    assert "NVDA" in html
+    assert "GLD" in html
     assert app.dataframe, "rebalance plan dataframe missing"
 
     print("REBALANCE CONNECTED UI SMOKE: PASS")
