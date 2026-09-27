@@ -38,7 +38,7 @@ These are durable terminal preferences and should be checked on every UI change:
 5. **Retest neighboring top-level tabs after any UI change** so a feature-specific improvement does not regress another tab.
 6. For custom components, explicitly control iframe/component height when the visible UI is compact; do not rely on Streamlit's larger default frame height.
 7. **Every editable text field must keep a clearly visible native blinking insertion caret.** Shared caret styling belongs in `src/theme.py`; do not fake the typing cursor with JavaScript or feature-specific pseudo-elements.
-8. **All top-level terminal tabs use one shared page-header system owned by `streamlit_app.py`.** Holdings, Risk Sizing, Option Book, Bull Debit Spread, Muni Screeners, Orders, and GEX must use the same full-width orange title bar, compact subtitle spacing, typography, and left alignment. Do not add competing one-off top-level headers inside feature files; internal feature section headers remain feature-owned.
+8. **All top-level terminal tabs use one shared page-header system owned by `streamlit_app.py`.** Holdings, Performance, Risk Sizing, Option Book, Bull Debit Spread, Muni Screeners, Rebalance Portfolio, Orders, and GEX must use the same full-width orange title bar, compact subtitle spacing, typography, and left alignment. Do not add competing one-off top-level headers inside feature files; internal feature section headers remain feature-owned.
 9. **Session-scoped CSS must be emitted on every Streamlit render/session.** Do not use process-global "CSS already installed" flags for page/header styles; a later browser session may otherwise receive the markup without the stylesheet.
 
 ## Production feature map
@@ -58,6 +58,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | E*TRADE Performance | `src/performance_ui.py` | `src/etrade_client.py` read-only transaction/portfolio/balance transport | Risk/GEX/OAuth/order files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
+| Rebalance Portfolio shell | `streamlit_app.py` | `src/tab_bar_v4.py` | Feature logic until a dedicated Rebalance owner is created |
 | Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py` | Risk/GEX files |
 | Municipal tools | functions loaded from `src/terminal_core.py` + `src/muni_data.py` / `src/treasury_data.py` | muni/treasury data modules | Risk/GEX/OAuth files |
 | Theme / shared appearance | `src/theme.py`, `src/layout_guardrails.py` | shared CSS helpers | Change only when the requested change is truly global |
