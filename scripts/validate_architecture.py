@@ -211,7 +211,7 @@ def main() -> int:
             errors.append("APP ROUTE MISSING: SCHWAB RISK SIZING dispatch")
         if 'elif active_tab == "OPTION BOOK":' not in app_text:
             errors.append("APP ROUTE MISSING: OPTION BOOK dispatch")
-        if "maybe_auto_watch_risk_entries(_live_etrade_client(), _touch_etrade_session)" not in app_text:
+        if "maybe_auto_watch_risk_entries(_live_etrade_client())" not in app_text:
             errors.append("RISK AUTO-WATCH HOOK MISSING from terminal_background_hooks")
 
     nav_path = SRC / "tab_bar_v4.py"
