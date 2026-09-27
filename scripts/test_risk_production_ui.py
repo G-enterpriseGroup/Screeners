@@ -173,9 +173,26 @@ FILLED_ORDER_FIXTURE = FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
 )
 
+READY_STOP_FIXTURE = FILLED_ORDER_FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['_risk_stop_watch_state_v1']={"
+    "'revision':3,'updated_at':3.0,'portfolio_saved_at':3.0,'rows':["
+    "{'entry_order_id':9001,'account_key':'fixture','account_label':'Raj Singh ••••5474',"
+    "'symbol':'SPY','quantity':10,'entry_price':200.0,'stop_price':190.0,'entry_placed_at':1.0,"
+    "'status':'READY_TO_SEND','filled':10.0,'ordered':10.0,'average_price':199.75,"
+    "'last_checked_at':2.0,'last_error':'','stop_order_id':None,'stop_sent_at':0.0,'events':[]}]}\n"
+    "st.session_state['etrade_accounts']=",
+)
+
 PARTIAL_ORDER_FIXTURE = FILLED_ORDER_FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
     "st.session_state['fixture_partial_fill']=True\n"
+    "st.session_state['_risk_stop_watch_state_v1']={"
+    "'revision':2,'updated_at':2.0,'portfolio_saved_at':2.0,'rows':["
+    "{'entry_order_id':9001,'account_key':'fixture','account_label':'Raj Singh ••••5474',"
+    "'symbol':'SPY','quantity':10,'entry_price':200.0,'stop_price':190.0,'entry_placed_at':1.0,"
+    "'status':'PARTIAL_FILL','filled':4.0,'ordered':10.0,'average_price':199.75,"
+    "'last_checked_at':2.0,'last_error':'','stop_order_id':None,'stop_sent_at':0.0,'events':[]}]}\n"
     "st.session_state['etrade_accounts']=",
 )
 
@@ -447,7 +464,10 @@ def main():
     assert 'risk-v9-stop-pct' not in v9_source
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
-    assert '"CHECK FULL FILL + SEND PROTECTIVE STOP"' in source
+    assert '"CHECK FULL FILL + SEND PROTECTIVE STOP"' not in source
+    assert '"REVIEW + SEND READY PROTECTIVE STOP"' in source
+    assert 'def maybe_auto_watch_risk_entries(' in source
+    assert '6. PROTECTION WATCH LOG' in source
     assert '5. PENDING / OPEN E*TRADE ORDERS' in source
     assert 'client.cancel_order(account_key, order_id)' in source
     assert 'E*TRADE\'S PUBLIC API DOES NOT EXPOSE BROKER-SAVED DRAFT ORDERS' in source
@@ -491,6 +511,8 @@ def main():
     ]
     assert sum(text == "3. PICK E*TRADE ACCOUNT" for text in live_headers) == 1
     assert sum(text == "4. REVIEW + SEND ORDER" for text in live_headers) == 1
+    assert sum(text == "5. PENDING / OPEN E*TRADE ORDERS" for text in live_headers) == 1
+    assert sum(text == "6. PROTECTION WATCH LOG" for text in live_headers) == 1
     assert app.selectbox(key="risk_sizing_account").value == 0
     assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
 
@@ -506,9 +528,8 @@ def main():
     assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
     assert app.selectbox(key="risk_sizing_account").value == 0
 
-    # Part 4 integrated protection: the first explicit action submits only the
-    # BUY LIMIT. A later explicit action rechecks the broker fill and, only when
-    # fully executed, previews + places the exact GTC SELL STOP.
+    # Part 4: sending the BUY arms the persistent protection watcher, but
+    # still places only the BUY LIMIT during that user action.
     order_app = AppTest.from_string(FIXTURE, default_timeout=30).run()
     assert not order_app.exception, [e.message for e in order_app.exception]
     order_app.button(key="risk_live_preview_entry").click().run()
@@ -524,13 +545,16 @@ def main():
     assert first_order["priceType"] == "LIMIT"
     assert first_order["Instrument"][0]["orderAction"] == "BUY"
     assert first_order["Instrument"][0]["quantity"] == 10
+    watch_state = order_app.session_state["_risk_stop_watch_state_v1"]
+    assert watch_state["rows"][0]["entry_order_id"] == 9001
+    assert watch_state["rows"][0]["status"] == "ARMED"
 
-    # Use a fresh AppTest tree with the submitted entry seeded in session state.
-    # This avoids carrying stale fragment widget IDs while still exercising the
-    # production post-fill button end to end.
-    filled_stop_app = AppTest.from_string(FILLED_ORDER_FIXTURE, default_timeout=30).run()
+    # A previously auto-detected full fill exposes the exact stop as READY TO
+    # SEND. The user's click contemporaneously rechecks the fill, previews, and
+    # places the GTC SELL STOP.
+    filled_stop_app = AppTest.from_string(READY_STOP_FIXTURE, default_timeout=30).run()
     assert not filled_stop_app.exception, [e.message for e in filled_stop_app.exception]
-    filled_stop_app.button(key="risk_live_check_fill_send_stop").click().run()
+    filled_stop_app.button(key="risk_live_send_ready_stop").click().run()
     assert not filled_stop_app.exception, [e.message for e in filled_stop_app.exception]
     assert filled_stop_app.session_state["_risk_live_stop_order"]["order_id"] == 9002
     assert len(filled_stop_app.session_state["fixture_order_places"]) == 1
@@ -542,14 +566,14 @@ def main():
     assert stop_order["orderTerm"] == "GOOD_UNTIL_CANCEL"
     assert stop_order["Instrument"][0]["orderAction"] == "SELL"
     assert stop_order["Instrument"][0]["quantity"] == 10
+    assert filled_stop_app.session_state["_risk_stop_watch_state_v1"]["rows"][0]["status"] == "STOP_SENT"
+    assert filled_stop_app.session_state["_risk_stop_watch_state_v1"]["rows"][0]["stop_order_id"] == 9002
 
-    # Partial fills must never submit the protective stop for the full planned
-    # quantity. They remain blocked for manual management in E*TRADE.
+    # Partial fills stay auto-tracked and must not expose/send the full planned stop.
     partial_order_app = AppTest.from_string(PARTIAL_ORDER_FIXTURE, default_timeout=30).run()
     assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
-    partial_order_app.button(key="risk_live_check_fill_send_stop").click().run()
-    assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
-    assert partial_order_app.session_state["_risk_live_entry_fill"]["partial"] is True
+    assert partial_order_app.session_state["_risk_stop_watch_state_v1"]["rows"][0]["status"] == "PARTIAL_FILL"
+    assert "risk_live_send_ready_stop" not in [button.key for button in partial_order_app.button]
     assert "_risk_live_stop_order" not in partial_order_app.session_state
     assert "fixture_order_places" not in partial_order_app.session_state
 

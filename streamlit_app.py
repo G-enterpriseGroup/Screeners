@@ -101,6 +101,7 @@ from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.lock_screen_v2 import render_seamless_lock_screen
 from src.option_book_ui import render_option_book
 from src.risk_sizing_ui_v7 import render_risk_sizing
+from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries
 from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
 from src.session_persistence import (
     clear_etrade_session,
@@ -651,11 +652,13 @@ _render_offline_snapshot_notice()
 
 with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
 
-    # GEX owns this login-triggered background action. When another top-level tab is
-    # active, invoke only the zero-height GEX state reader/start hook; the normal GEX
-    # render path handles the same behavior itself to avoid duplicate component keys.
-    if active_tab != "GEX":
-        with st.container(key="terminal_background_hooks", gap=None):
+    # Nonvisual background state hooks live in this zero-height container.
+    # Risk's watcher performs read-only E*TRADE order-status checks only; it is
+    # forbidden from previewing, placing, changing, or canceling an order.
+    # GEX keeps its existing login-triggered refresh behavior.
+    with st.container(key="terminal_background_hooks", gap=None):
+        maybe_auto_watch_risk_entries(_live_etrade_client())
+        if active_tab != "GEX":
             maybe_auto_refresh_gex_on_login()
 
     if active_tab == "HOLDINGS":

@@ -58,6 +58,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
     "from src.option_book_ui import render_option_book",
     "from src.risk_sizing_ui_v7 import render_risk_sizing",
+    "from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries",
     "from src.schwab_risk_sizing_ui import render_schwab_risk_sizing",
     "from src.tab_bar_v4 import render_terminal_tab_bar",
 ]
@@ -210,6 +211,8 @@ def main() -> int:
             errors.append("APP ROUTE MISSING: SCHWAB RISK SIZING dispatch")
         if 'elif active_tab == "OPTION BOOK":' not in app_text:
             errors.append("APP ROUTE MISSING: OPTION BOOK dispatch")
+        if "maybe_auto_watch_risk_entries(_live_etrade_client())" not in app_text:
+            errors.append("RISK AUTO-WATCH HOOK MISSING from terminal_background_hooks")
 
     nav_path = SRC / "tab_bar_v4.py"
     if nav_path.exists():
@@ -261,12 +264,47 @@ def main() -> int:
             "client.place_order(",
             "client.list_orders(",
             "client.cancel_order(",
-            "CHECK FULL FILL + SEND PROTECTIVE STOP",
+            "REVIEW + SEND READY PROTECTIVE STOP",
             "SEND LIVE PROTECTIVE STOP",
             "5. PENDING / OPEN E*TRADE ORDERS",
+            "6. PROTECTION WATCH LOG",
+            "def maybe_auto_watch_risk_entries(",
         ):
             if required not in risk_live_text:
                 errors.append(f"RISK LIVE ORDER FLOW MISSING: {required}")
+
+        try:
+            risk_tree = parse_file(risk_live_ui)
+            watcher = next(
+                (
+                    node
+                    for node in risk_tree.body
+                    if isinstance(node, ast.FunctionDef)
+                    and node.name == "maybe_auto_watch_risk_entries"
+                ),
+                None,
+            )
+        except Exception as exc:
+            watcher = None
+            errors.append(f"RISK AUTO-WATCH GUARD COULD NOT PARSE WATCHER: {exc}")
+        if watcher is None:
+            errors.append("RISK AUTO-WATCH GUARD: maybe_auto_watch_risk_entries missing")
+        else:
+            watcher_source = ast.unparse(watcher)
+            if "list_orders(" not in watcher_source:
+                errors.append("RISK AUTO-WATCH GUARD: watcher must use read-only list_orders")
+            for forbidden in (
+                "preview_order(",
+                "place_order(",
+                "cancel_order(",
+                "_preview_protective_stop(",
+                "_place_reviewed_protective_stop(",
+            ):
+                if forbidden in watcher_source:
+                    errors.append(
+                        "RISK AUTO-WATCH GUARD: unattended watcher may not mutate orders: "
+                        + forbidden
+                    )
 
     architecture = SRC / "ARCHITECTURE.md"
     manifest = SRC / "production_manifest.py"

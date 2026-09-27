@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import math
+import time
 from pathlib import Path
 
 
@@ -27,6 +28,9 @@ PURE_FUNCTIONS = {
     "_matching_order_records",
     "_order_fill_snapshot",
     "_pending_order_rows",
+    "_append_stop_watch_event",
+    "_bump_stop_watch_state",
+    "_set_stop_watch_fill",
 }
 
 
@@ -42,7 +46,11 @@ def _load_helpers() -> dict:
         raise AssertionError(f"Missing production helpers: {sorted(missing)}")
     module = ast.Module(body=nodes, type_ignores=[])
     ast.fix_missing_locations(module)
-    namespace = {"math": math}
+    namespace = {
+        "math": math,
+        "time": time,
+        "_RISK_STOP_WATCH_READY": "READY_TO_SEND",
+    }
     exec(compile(module, str(RISK_UI), "exec"), namespace)
     return namespace
 
@@ -194,8 +202,43 @@ def main() -> int:
     assert pending_rows[0]["price_type"] == "STOP"
     assert pending_rows[0]["stop_price"] == 475.0
 
+    watch_state = {"revision": 1, "updated_at": 1.0, "portfolio_saved_at": 1.0}
+    watch_row = {
+        "status": "ARMED",
+        "filled": 0.0,
+        "ordered": 10.0,
+        "quantity": 10,
+        "average_price": None,
+        "last_checked_at": 0.0,
+        "last_error": "",
+        "events": [],
+    }
+    changed = ns["_set_stop_watch_fill"](watch_state, watch_row, full)
+    assert changed is True
+    assert watch_row["status"] == "READY_TO_SEND"
+    assert watch_row["filled"] == 10
+    assert watch_state["revision"] == 2
+    assert watch_row["events"][-1]["event"] == "READY_TO_SEND"
+
+    partial_watch_state = {"revision": 10, "updated_at": 1.0, "portfolio_saved_at": 1.0}
+    partial_watch_row = {
+        "status": "WAITING_FILL",
+        "filled": 0.0,
+        "ordered": 10.0,
+        "quantity": 10,
+        "average_price": None,
+        "last_checked_at": 0.0,
+        "last_error": "",
+        "events": [],
+    }
+    changed = ns["_set_stop_watch_fill"](partial_watch_state, partial_watch_row, partial)
+    assert changed is True
+    assert partial_watch_row["status"] == "PARTIAL_FILL"
+    assert partial_watch_row["filled"] == 4
+    assert partial_watch_state["revision"] == 11
+
     print("RISK LIVE ORDER SIMULATION: PASS")
-    print("BUY LIMIT preview/place payload, GTC SELL STOP payload, full-fill unlock, partial-fill block, and pending-order normalization verified.")
+    print("BUY LIMIT/STOP payloads, full/partial fill detection, pending-order normalization, and protection-watch transitions verified.")
     return 0
 
 
