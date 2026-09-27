@@ -100,6 +100,7 @@ from src.gex_workspace_v2 import (
 from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.lock_screen_v2 import render_seamless_lock_screen
 from src.option_book_ui import render_option_book
+from src.performance_ui import render_performance
 from src.risk_sizing_ui_v7 import render_risk_sizing
 from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries
 from src.schwab_risk_sizing_ui import render_schwab_risk_sizing
@@ -493,6 +494,10 @@ _TERMINAL_PAGE_HEADERS = {
         "E*TRADE HOLDINGS",
         "BROKERAGE POSITIONS // MANUAL SNAPSHOT // E*TRADE ACCOUNT",
     ),
+    "PERFORMANCE": (
+        "E*TRADE PERFORMANCE",
+        "LIVE ACCOUNT PERFORMANCE // TODAY + MTD + YTD + ALL-TIME COVERAGE // REALIZED TRADE STATS + CURRENT UNREALIZED // 30-SECOND LIVE P&L CURVE",
+    ),
     "RISK SIZING": (
         "E*TRADE RISK SIZING",
         "CROWN MACRO RISK ENGINE // E*TRADE HOLDINGS + QUOTES // PORTFOLIO SLEEVE CONTROL // STOP-BASED POSITION SIZING // RAJ CLASSIFICATION RULE",
@@ -663,6 +668,13 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
 
     if active_tab == "HOLDINGS":
         _render_without_legacy_page_header("HOLDINGS", render_etrade_holdings)
+
+    elif active_tab == "PERFORMANCE":
+        render_performance(
+            _etrade_client(),
+            refresh_accounts=_refresh_accounts,
+            touch_session=_touch_etrade_session,
+        )
 
     elif active_tab == "RISK SIZING":
         _render_without_legacy_page_header(
