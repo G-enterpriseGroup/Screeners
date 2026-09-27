@@ -1281,6 +1281,41 @@ def _mark_stop_watch_uncertain(entry_order_id, message: str, component_key: str)
     _persist_stop_watch_state(state, component_key)
 
 
+def _refresh_stop_watch_entry_now(
+    client,
+    entry_order: dict,
+    touch_session,
+    component_key: str,
+) -> tuple[dict, dict]:
+    """Read the exact entry now and persist any protection-status transition."""
+    state = _current_stop_watch_state()
+    row = _stop_watch_row(state, entry_order["order_id"])
+    if row is None:
+        _arm_stop_watch(entry_order, component_key + "_arm")
+        state = _current_stop_watch_state()
+        row = _stop_watch_row(state, entry_order["order_id"])
+    if row is None:
+        raise ETradeError("Protection watch could not be armed for this entry.")
+
+    orders = client.list_orders(
+        entry_order["account_key"],
+        symbol=entry_order["symbol"],
+        count=100,
+    )
+    touch_session()
+    fill = _order_fill_snapshot(
+        orders,
+        entry_order["order_id"],
+        int(entry_order["quantity"]),
+    )
+    changed = _set_stop_watch_fill(state, row, fill)
+    if changed:
+        _persist_stop_watch_state(state, component_key)
+    else:
+        st.session_state[_RISK_STOP_WATCH_SESSION_KEY] = _clean_stop_watch_state(state)
+    return fill, row
+
+
 @st.fragment(run_every=_RISK_STOP_WATCH_POLL_SECONDS)
 def maybe_auto_watch_risk_entries(client=None, touch_session=None) -> None:
     """Automatically monitor armed entries; never preview/place/cancel an order."""
