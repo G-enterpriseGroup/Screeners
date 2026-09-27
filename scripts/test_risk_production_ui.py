@@ -446,6 +446,7 @@ def main():
     assert not order_app.exception, [e.message for e in order_app.exception]
     order_app.checkbox(key="risk_live_entry_confirm").check().run()
     order_app.button(key="risk_live_send_entry").click().run()
+    order_app.run()
     assert not order_app.exception, [e.message for e in order_app.exception]
     assert order_app.session_state["_risk_live_entry_order"]["order_id"] == 9001
     assert len(order_app.session_state["fixture_order_places"]) == 1
@@ -476,6 +477,7 @@ def main():
     partial_order_app.button(key="risk_live_preview_entry").click().run()
     partial_order_app.checkbox(key="risk_live_entry_confirm").check().run()
     partial_order_app.button(key="risk_live_send_entry").click().run()
+    partial_order_app.run()
     partial_order_app.button(key="risk_live_check_fill_send_stop").click().run()
     assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
     assert partial_order_app.session_state["_risk_live_entry_fill"]["partial"] is True
