@@ -1632,3 +1632,11 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated implementation head:** `c5c3cfd610493b7ab6ee53b30fad02452f2d5463` before removal of the temporary validation workflow.
 - **Lesson:** Automate read-only fill detection and durable protection tracking, but keep every later E*TRADE order submission behind a contemporaneous, specific user instruction as required by the broker's current developer terms.
+
+
+## 2026-09-27 — Production deployment confirmation for Risk automatic fill watcher
+
+- **Production commit SHA:** `d0e0dad4a8726af3ed9a2de900e56daafadd970e` (PR #83 squash merge).
+- **Production state verified:** `main` contains the cross-tab read-only `maybe_auto_watch_risk_entries()` hook, browser-persistent protection watch state, Risk Part 6 `PROTECTION WATCH LOG`, and the `REVIEW + SEND READY PROTECTIVE STOP` contemporaneous send control. The legacy `CHECK FULL FILL + SEND PROTECTIVE STOP` path is absent.
+- **Post-push verification:** production run `36298579778` passed architecture validation, Risk live-order helper simulation, active workflow validation, deployed Streamlit health, and the real deployed-browser `Oh no` guard.
+- **Important behavior that must remain:** the unattended watcher performs E*TRADE List Orders reads only; it does not preview/place/change/cancel orders or extend the user session. Full fills become `READY_TO_SEND`; the exact GTC SELL STOP is placed only from a contemporaneous user send action that rechecks the fill.
