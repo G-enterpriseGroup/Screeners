@@ -99,10 +99,13 @@ def main() -> None:
     for expected in (
         "ACCOUNT + LIVE BOOK",
         "SMART RULES",
-        "TARGETS + BANDS",
+        "TARGETS + TICKER BANDS // AUTO-SAVED",
         "SMART REBALANCE PLAN",
         "ACCOUNT VALUE",
         "CASH AVAILABLE",
+        "MEMORY ACTIVE",
+        "IN TOLERANCE",
+        "OUT OF TOLERANCE",
         "ANALYSIS ONLY",
     ):
         assert expected in html, expected

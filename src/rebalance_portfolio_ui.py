@@ -96,11 +96,28 @@ def _clean_state(raw: Any) -> dict[str, Any]:
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
+        target_pct = min(100.0, max(0.0, _finite(item.get("target_pct"), 0.0)))
+        legacy_band = min(50.0, max(0.0, _finite(item.get("band_pct"), 0.0)))
+        lower_pct = min(
+            target_pct,
+            max(
+                0.0,
+                _finite(item.get("lower_pct"), max(0.0, target_pct - legacy_band)),
+            ),
+        )
+        upper_pct = max(
+            target_pct,
+            min(
+                100.0,
+                _finite(item.get("upper_pct"), min(100.0, target_pct + legacy_band)),
+            ),
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(item.get("target_pct"), 0.0))),
-                "band_pct": min(50.0, max(0.0, _finite(item.get("band_pct"), 0.0))),
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
             }
         )
 
@@ -249,7 +266,8 @@ def _build_rebalance_plan(
     config = {
         str(row.get("symbol") or "").strip().upper(): {
             "target_pct": min(100.0, max(0.0, _finite(row.get("target_pct"), 0.0))),
-            "band_pct": min(50.0, max(0.0, _finite(row.get("band_pct"), 0.0))),
+            "lower_pct": min(100.0, max(0.0, _finite(row.get("lower_pct"), 0.0))),
+            "upper_pct": min(100.0, max(0.0, _finite(row.get("upper_pct"), 100.0))),
         }
         for row in config_rows
         if str(row.get("symbol") or "").strip()
@@ -262,18 +280,27 @@ def _build_rebalance_plan(
         symbol = str(source.get("Symbol") or "").strip().upper()
         if not symbol:
             continue
-        cfg = config.get(symbol, {"target_pct": 0.0, "band_pct": 0.0})
+        cfg = config.get(
+            symbol,
+            {"target_pct": 0.0, "lower_pct": 0.0, "upper_pct": 100.0},
+        )
         target = cfg["target_pct"]
-        band = cfg["band_pct"]
+        lower = min(target, cfg["lower_pct"])
+        upper = max(target, cfg["upper_pct"])
         target_total += target
 
         market_value = _finite(source.get("Market Value"), 0.0)
         pnl_pct = _finite(source.get("Gain/Loss %"), 0.0)
         sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
         current_pct = (market_value / account_value * 100.0) if account_value > 0 else 0.0
-        lower = max(0.0, target - band)
-        upper = min(100.0, target + band)
+        lower_band = max(0.0, target - lower)
+        upper_band = max(0.0, upper - target)
         drift = current_pct - target
+        tolerance = (
+            "IN TOLERANCE"
+            if lower - 1e-9 <= current_pct <= upper + 1e-9
+            else "OUT OF TOLERANCE"
+        )
 
         action = "HOLD"
         reason = "INSIDE BAND"
@@ -292,7 +319,7 @@ def _build_rebalance_plan(
                 if mode == "TO TARGET":
                     goal_pct = target
                 else:
-                    goal_pct = _inside_band_goal(target, band, "UPPER")
+                    goal_pct = _inside_band_goal(target, upper_band, "UPPER")
                 if hard_breach:
                     goal_pct = min(
                         goal_pct,
@@ -317,7 +344,7 @@ def _build_rebalance_plan(
                     if mode == "TO TARGET":
                         goal_pct = target
                     else:
-                        goal_pct = _inside_band_goal(target, band, "LOWER")
+                        goal_pct = _inside_band_goal(target, lower_band, "LOWER")
                     raw_trade = account_value * goal_pct / 100.0 - market_value
                 else:
                     action = "ADD"
@@ -326,7 +353,7 @@ def _build_rebalance_plan(
                     if mode == "TO TARGET":
                         goal_pct = target
                     else:
-                        goal_pct = _inside_band_goal(target, band, "LOWER")
+                        goal_pct = _inside_band_goal(target, lower_band, "LOWER")
                     raw_trade = account_value * goal_pct / 100.0 - market_value
 
         if abs(raw_trade) > 0 and abs(raw_trade) < min_trade:
@@ -343,8 +370,9 @@ def _build_rebalance_plan(
                 "Market Value": market_value,
                 "Current %": current_pct,
                 "Target %": target,
-                "Band +/- %": band,
-                "Range": f"{lower:.2f}%–{upper:.2f}%",
+                "Lower %": lower,
+                "Upper %": upper,
+                "Tolerance": tolerance,
                 "Drift %": drift,
                 "Action": action,
                 "Reason": reason,
@@ -403,7 +431,7 @@ def _build_rebalance_plan(
         elif proposed < 0:
             proposed_sells += -proposed
 
-        if not str(row["Action"]).startswith("HOLD"):
+        if row["Tolerance"] == "OUT OF TOLERANCE":
             outside_count += 1
 
     post_cash = cash_available + proposed_sells - proposed_buys
@@ -416,8 +444,9 @@ def _build_rebalance_plan(
         "Market Value",
         "Current %",
         "Target %",
-        "Band +/- %",
-        "Range",
+        "Lower %",
+        "Upper %",
+        "Tolerance",
         "Drift %",
         "Action",
         "Raw Gap $",
@@ -441,6 +470,7 @@ def _build_rebalance_plan(
         "gross_trade": gross_trade,
         "post_cash": post_cash,
         "outside_count": float(outside_count),
+        "inside_count": float(max(0, len(records) - outside_count)),
         "buy_funding_ratio": buy_factor,
     }
     return plan, summary
@@ -452,14 +482,142 @@ def _build_rebalance_plan(
 
 _REBALANCE_CSS = """
 <style>
-.st-key-rebalance_root{gap:4px!important;padding:0!important;margin:0!important;font-family:"Courier New",monospace}
-.st-key-rebalance_root .reb-section{background:#fb8b1e;color:#000!important;font:900 .82rem/1.08 "Courier New",monospace;letter-spacing:.04em;padding:.30rem .48rem;margin:0;text-transform:uppercase}
-.st-key-rebalance_root .reb-note{border:1px solid #5f431c;background:#080808;color:#b87621!important;font:800 .68rem/1.25 "Courier New",monospace;padding:.34rem .48rem;margin:0}
-.st-key-rebalance_root .reb-kpi{border:1px solid #5f431c;background:#050505;min-height:54px;padding:.35rem .48rem;margin:0}
-.st-key-rebalance_root .reb-kpi-label{color:#b87621!important;font:900 .64rem/1.05 "Courier New",monospace;letter-spacing:.03em}
-.st-key-rebalance_root .reb-kpi-value{color:#f4f4f4!important;font:900 1.02rem/1.15 "Courier New",monospace;margin-top:.12rem}
+.st-key-rebalance_root{
+    gap:4px!important;
+    padding:0!important;
+    margin:0!important;
+    font-family:"Courier New",monospace!important;
+}
+.st-key-rebalance_root [data-testid="stVerticalBlock"]{gap:4px!important;}
+.st-key-rebalance_root [data-testid="stHorizontalBlock"]{gap:8px!important;}
+.st-key-rebalance_root .reb-section{
+    display:flex;
+    align-items:center;
+    width:100%;
+    height:36px;
+    min-height:36px;
+    box-sizing:border-box;
+    margin:0;
+    padding:0 10px;
+    border:1px solid #fb8b1e;
+    background:#050505;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:900 1.02rem/1 "Courier New",monospace;
+    text-transform:uppercase;
+}
+.st-key-rebalance_root .reb-note{
+    border:1px solid #fb8b1e;
+    background:#050505;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:800 .72rem/1.28 "Courier New",monospace;
+    padding:.36rem .50rem;
+    margin:0;
+}
+.st-key-rebalance_root .reb-memory{
+    border:1px solid #4af6c3;
+    background:#04110d;
+    color:#4af6c3!important;
+    -webkit-text-fill-color:#4af6c3!important;
+    font:900 .70rem/1.2 "Courier New",monospace;
+    padding:.32rem .48rem;
+    margin:0;
+}
+.st-key-rebalance_root .reb-kpi{
+    border:1px solid #fb8b1e;
+    background:#000;
+    min-height:0!important;
+    height:auto!important;
+    padding:.25rem .38rem .28rem;
+    margin:0;
+}
+.st-key-rebalance_root .reb-kpi-label{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:900 .61rem/1 "Courier New",monospace;
+    letter-spacing:.03em;
+}
+.st-key-rebalance_root .reb-kpi-value{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+    font:900 1.02rem/1.08 "Courier New",monospace;
+    margin-top:.10rem;
+}
+.st-key-rebalance_root .reb-kpi-value.positive{
+    color:#4af6c3!important;
+    -webkit-text-fill-color:#4af6c3!important;
+}
+.st-key-rebalance_root .reb-kpi-value.negative{
+    color:#ff433d!important;
+    -webkit-text-fill-color:#ff433d!important;
+}
+.st-key-rebalance_root [data-testid="stWidgetLabel"] p,
+.st-key-rebalance_root [data-testid="stWidgetLabel"] span{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font-family:"Courier New",monospace!important;
+    font-weight:900!important;
+}
+.st-key-rebalance_root [data-testid="stSelectbox"] div[data-baseweb="select"]>div,
+.st-key-rebalance_root [data-testid="stNumberInputContainer"],
+.st-key-rebalance_root [data-testid="stTextInputRootElement"]{
+    min-height:38px!important;
+    height:38px!important;
+    background:#444444!important;
+    border-color:#fb8b1e!important;
+    border-radius:0!important;
+}
+.st-key-rebalance_root [data-testid="stSelectbox"] div[data-baseweb="select"] span,
+.st-key-rebalance_root [data-testid="stSelectbox"] div[data-baseweb="select"] input,
+.st-key-rebalance_root [data-testid="stNumberInput"] input,
+.st-key-rebalance_root [data-testid="stTextInput"] input{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+    font-family:"Courier New",monospace!important;
+    font-weight:900!important;
+}
+.st-key-rebalance_root [data-testid="stNumberInputStepDown"],
+.st-key-rebalance_root [data-testid="stNumberInputStepUp"]{
+    min-width:38px!important;
+    width:38px!important;
+    height:36px!important;
+    flex:0 0 38px!important;
+    background:#050505!important;
+    border-color:#fb8b1e!important;
+    border-radius:0!important;
+    color:#fb8b1e!important;
+}
+.st-key-rebalance_root [data-testid="stNumberInputStepDown"] *,
+.st-key-rebalance_root [data-testid="stNumberInputStepUp"] *{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+}
+.st-key-rebalance_root [data-testid="stButton"] button,
+.st-key-rebalance_root [data-testid="stDownloadButton"] button{
+    background:#050505!important;
+    border:1px solid #fb8b1e!important;
+    border-radius:0!important;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font-family:"Courier New",monospace!important;
+    font-weight:900!important;
+}
+.st-key-rebalance_root [data-testid="stButton"] button:hover,
+.st-key-rebalance_root [data-testid="stDownloadButton"] button:hover{
+    background:#171007!important;
+    color:#ffad52!important;
+    -webkit-text-fill-color:#ffad52!important;
+}
 .st-key-rebalance_root [data-testid="stDataFrame"],
-.st-key-rebalance_root [data-testid="stDataEditor"]{border:1px solid #5f431c}
+.st-key-rebalance_root [data-testid="stDataEditor"]{
+    border:1px solid #fb8b1e!important;
+}
+.st-key-rebalance_root [data-testid="stAlert"] p,
+.st-key-rebalance_root [data-testid="stAlert"] div{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+}
 .st-key-rebalance_state_reader_shell,
 .st-key-rebalance_state_writer_shell,
 .st-key-risk_intent_state_reader_shell,
@@ -482,11 +640,12 @@ def _section(title: str) -> None:
     st.html(f'<div class="reb-section">{title}</div>')
 
 
-def _kpi(label: str, value: str) -> None:
+def _kpi(label: str, value: str, tone: str = "neutral") -> None:
+    tone_class = "positive" if tone == "positive" else "negative" if tone == "negative" else ""
     st.html(
         '<div class="reb-kpi">'
         f'<div class="reb-kpi-label">{label}</div>'
-        f'<div class="reb-kpi-value">{value}</div>'
+        f'<div class="reb-kpi-value {tone_class}">{value}</div>'
         '</div>'
     )
 
@@ -540,17 +699,32 @@ def _config_from_state(
         )
         row = existing.get(symbol)
         if row is None:
+            target_pct = max(0.0, current_pct)
             row = {
                 "symbol": symbol,
-                "target_pct": max(0.0, current_pct),
-                "band_pct": default_band,
+                "target_pct": target_pct,
+                "lower_pct": max(0.0, target_pct - default_band),
+                "upper_pct": min(100.0, target_pct + default_band),
             }
             changed = True
+        target_pct = min(
+            100.0,
+            max(0.0, _finite(row.get("target_pct"), current_pct)),
+        )
+        lower_pct = min(
+            target_pct,
+            max(0.0, _finite(row.get("lower_pct"), max(0.0, target_pct - default_band))),
+        )
+        upper_pct = max(
+            target_pct,
+            min(100.0, _finite(row.get("upper_pct"), min(100.0, target_pct + default_band))),
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(row.get("target_pct"), current_pct))),
-                "band_pct": min(50.0, max(0.0, _finite(row.get("band_pct"), default_band))),
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
             }
         )
 
@@ -593,17 +767,75 @@ def _editor_frame(
         if not symbol:
             continue
         market_value = _finite(source.get("Market Value"), 0.0)
+        current_pct = (market_value / account_value * 100.0) if account_value > 0 else 0.0
+        target_pct = _finite(cfg.get(symbol, {}).get("target_pct"), 0.0)
+        lower_pct = _finite(cfg.get(symbol, {}).get("lower_pct"), target_pct)
+        upper_pct = _finite(cfg.get(symbol, {}).get("upper_pct"), target_pct)
         rows.append(
             {
                 "Symbol": symbol,
                 "Sleeve": str(source.get("Sleeve") or "TACTICAL"),
                 "P&L %": _finite(source.get("Gain/Loss %"), 0.0),
-                "Current %": (market_value / account_value * 100.0) if account_value > 0 else 0.0,
-                "Target %": _finite(cfg.get(symbol, {}).get("target_pct"), 0.0),
-                "Band +/- %": _finite(cfg.get(symbol, {}).get("band_pct"), 0.0),
+                "Current %": current_pct,
+                "Target %": target_pct,
+                "Lower %": lower_pct,
+                "Upper %": upper_pct,
+                "Tolerance": (
+                    "IN TOLERANCE"
+                    if lower_pct - 1e-9 <= current_pct <= upper_pct + 1e-9
+                    else "OUT OF TOLERANCE"
+                ),
             }
         )
     return pd.DataFrame(rows)
+
+
+
+def _style_plan(plan: pd.DataFrame):
+    """Make tolerance state unmistakable while keeping every cell light on dark."""
+    styled = plan.style.map(
+        lambda _value: "color:#f2f2f2;background-color:#050505;"
+    )
+
+    def tolerance_row(row: pd.Series) -> list[str]:
+        in_tolerance = str(row.get("Tolerance") or "").strip().upper() == "IN TOLERANCE"
+        tone = "#4af6c3" if in_tolerance else "#ff433d"
+        emphasized = {"Current %", "Tolerance", "Drift %", "Action"}
+        return [
+            (
+                f"color:{tone};background-color:#050505;font-weight:900;"
+                if column in emphasized
+                else ""
+            )
+            for column in row.index
+        ]
+
+    if not plan.empty and "Tolerance" in plan.columns:
+        styled = styled.apply(tolerance_row, axis=1)
+
+    if "P&L %" in plan.columns:
+        styled = styled.map(
+            lambda value: (
+                "color:#4af6c3;background-color:#050505;font-weight:900;"
+                if _finite(value, 0.0) >= 0
+                else "color:#ff433d;background-color:#050505;font-weight:900;"
+            ),
+            subset=["P&L %"],
+        )
+    if "Proposed $" in plan.columns:
+        styled = styled.map(
+            lambda value: (
+                "color:#4af6c3;background-color:#050505;font-weight:900;"
+                if _finite(value, 0.0) > 0
+                else (
+                    "color:#ff433d;background-color:#050505;font-weight:900;"
+                    if _finite(value, 0.0) < 0
+                    else "color:#f2f2f2;background-color:#050505;"
+                )
+            ),
+            subset=["Proposed $"],
+        )
+    return styled
 
 
 def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
@@ -612,11 +844,21 @@ def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
         symbol = str(source.get("Symbol") or "").strip().upper()
         if not symbol:
             continue
+        target_pct = min(100.0, max(0.0, _finite(source.get("Target %"), 0.0)))
+        lower_pct = min(
+            target_pct,
+            max(0.0, _finite(source.get("Lower %"), target_pct)),
+        )
+        upper_pct = max(
+            target_pct,
+            min(100.0, _finite(source.get("Upper %"), target_pct)),
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(source.get("Target %"), 0.0))),
-                "band_pct": min(50.0, max(0.0, _finite(source.get("Band +/- %"), 0.0))),
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
             }
         )
     return rows
@@ -843,7 +1085,7 @@ def render_rebalance_portfolio(
                 {**state, "settings": settings, "rows": config_rows},
             )
 
-        _section("3. TARGETS + BANDS")
+        _section("3. TARGETS + TICKER BANDS // AUTO-SAVED")
         control_a, control_b, _ = st.columns([1.4, 1.5, 4.0], gap="small")
         reset_targets = control_a.button(
             "RESET TARGETS TO CURRENT",
@@ -868,19 +1110,26 @@ def render_rebalance_portfolio(
                 sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
                 band = long_term_band if sleeve == "LONG-TERM" else tactical_band
                 previous = by_symbol.get(symbol, {})
+                previous_target = _finite(previous.get("target_pct"), max(0.0, current_pct))
+                target_pct = max(0.0, current_pct) if reset_targets else previous_target
+                if reset_targets or apply_bands:
+                    lower_pct = max(0.0, target_pct - band)
+                    upper_pct = min(100.0, target_pct + band)
+                else:
+                    lower_pct = min(
+                        target_pct,
+                        _finite(previous.get("lower_pct"), max(0.0, target_pct - band)),
+                    )
+                    upper_pct = max(
+                        target_pct,
+                        _finite(previous.get("upper_pct"), min(100.0, target_pct + band)),
+                    )
                 rebuilt.append(
                     {
                         "symbol": symbol,
-                        "target_pct": (
-                            max(0.0, current_pct)
-                            if reset_targets
-                            else _finite(previous.get("target_pct"), max(0.0, current_pct))
-                        ),
-                        "band_pct": (
-                            band
-                            if apply_bands
-                            else _finite(previous.get("band_pct"), band)
-                        ),
+                        "target_pct": target_pct,
+                        "lower_pct": lower_pct,
+                        "upper_pct": upper_pct,
                     }
                 )
             config_rows = rebuilt
@@ -899,7 +1148,7 @@ def render_rebalance_portfolio(
             hide_index=True,
             width="stretch",
             row_height=34,
-            disabled=["Symbol", "Sleeve", "P&L %", "Current %"],
+            disabled=["Symbol", "Sleeve", "P&L %", "Current %", "Tolerance"],
             column_config={
                 "Symbol": st.column_config.TextColumn("SYMBOL"),
                 "Sleeve": st.column_config.TextColumn("SLEEVE"),
@@ -911,13 +1160,27 @@ def render_rebalance_portfolio(
                     max_value=100.0,
                     step=0.25,
                     format="%.2f%%",
+                    help="Desired portfolio weight for this ticker.",
                 ),
-                "Band +/- %": st.column_config.NumberColumn(
-                    "BAND +/- %",
+                "Lower %": st.column_config.NumberColumn(
+                    "LOWER %",
                     min_value=0.0,
-                    max_value=50.0,
+                    max_value=100.0,
                     step=0.25,
                     format="%.2f%%",
+                    help="Ticker-specific lower tolerance. Below this weight is out of tolerance.",
+                ),
+                "Upper %": st.column_config.NumberColumn(
+                    "UPPER %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.25,
+                    format="%.2f%%",
+                    help="Ticker-specific upper tolerance. Above this weight is out of tolerance.",
+                ),
+                "Tolerance": st.column_config.TextColumn(
+                    "TOLERANCE",
+                    help="Green in the plan = inside the saved ticker band. Red = outside the saved ticker band.",
                 ),
             },
             key="rebalance_target_editor_" + _account_token(account_key),
@@ -933,6 +1196,12 @@ def render_rebalance_portfolio(
         # One writer component per rerun: settings, reset actions, and data-editor
         # changes may all mutate state in the same Streamlit pass.
         _sync_rebalance_state_browser(account_key, state)
+        st.html(
+            '<div class="reb-memory">'
+            'MEMORY ACTIVE // TARGET %, LOWER %, UPPER %, MODE, DEFAULT BANDS, MIN TRADE, LOSS TRIGGER, '
+            'AND HARD MAX ARE AUTO-SAVED PER E*TRADE ACCOUNT.'
+            '</div>'
+        )
 
         target_total = sum(_finite(row.get("target_pct"), 0.0) for row in config_rows)
         if target_total > 100.0001:
@@ -951,17 +1220,19 @@ def render_rebalance_portfolio(
         )
 
         _section("4. SMART REBALANCE PLAN")
-        p1, p2, p3, p4, p5 = st.columns(5, gap="small")
+        p1, p2, p3, p4, p5, p6 = st.columns(6, gap="small")
         with p1:
             _kpi("TARGETS", f"{summary['target_total_pct']:.2f}%")
         with p2:
             _kpi("TARGET CASH", f"{summary['target_cash_pct']:.2f}%")
         with p3:
-            _kpi("NEEDS ATTENTION", f"{int(summary['outside_count']):,}")
+            _kpi("IN TOLERANCE", f"{int(summary['inside_count']):,}", tone="positive")
         with p4:
-            _kpi("PROPOSED SELLS", _money(summary["trim_proceeds"]))
+            _kpi("OUT OF TOLERANCE", f"{int(summary['outside_count']):,}", tone="negative")
         with p5:
-            _kpi("PROPOSED BUYS", _money(summary["proposed_buys"]))
+            _kpi("PROPOSED SELLS", _money(summary["trim_proceeds"]), tone="negative")
+        with p6:
+            _kpi("PROPOSED BUYS", _money(summary["proposed_buys"]), tone="positive")
 
         q1, q2, q3 = st.columns(3, gap="small")
         with q1:
@@ -972,7 +1243,7 @@ def render_rebalance_portfolio(
             _kpi("BUY FUNDING", f"{summary['buy_funding_ratio'] * 100.0:.1f}%")
 
         st.dataframe(
-            plan,
+            _style_plan(plan),
             hide_index=True,
             width="stretch",
             row_height=34,
@@ -981,7 +1252,9 @@ def render_rebalance_portfolio(
                 "Market Value": st.column_config.NumberColumn(format="$%.0f"),
                 "Current %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Target %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Band +/- %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Lower %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Upper %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Tolerance": st.column_config.TextColumn("TOLERANCE"),
                 "Drift %": st.column_config.NumberColumn(format="%+.2f%%"),
                 "Raw Gap $": st.column_config.NumberColumn(format="$%+.0f"),
                 "Proposed $": st.column_config.NumberColumn(format="$%+.0f"),
@@ -1002,9 +1275,10 @@ def render_rebalance_portfolio(
 
         st.html(
             '<div class="reb-note">'
-            'SMART RULES // inside band = HOLD // excess cash funds underweights first // required trim proceeds can fund remaining adds // '
-            'underweights beyond the loss-review trigger are REVIEW LOSS, not automatic average-downs // LONG-TERM overweights are review flags // '
-            'TO BAND minimizes turnover // ANALYSIS ONLY: NO E*TRADE ORDER PREVIEW, PLACE, CHANGE, OR CANCEL.'
+            'GREEN = IN TOLERANCE // RED = OUT OF TOLERANCE OR ACTION REQUIRED // '
+            'EACH TICKER HAS ITS OWN SAVED LOWER / TARGET / UPPER BAND // '
+            'EXCESS CASH FUNDS ELIGIBLE UNDERWEIGHTS FIRST // LOSS REVIEW NEVER AUTO-AVERAGES DOWN // '
+            'TO BAND MINIMIZES TURNOVER // ANALYSIS ONLY: NO E*TRADE ORDER PREVIEW, PLACE, CHANGE, OR CANCEL.'
             '</div>'
         )
 
