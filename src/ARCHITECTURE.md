@@ -71,7 +71,8 @@ The visible top-tab label is **E*TRADE RISK SIZING**, while the stable internal 
 
 Use this decision tree:
 
-- Change **Risk Part 2 ticker entry, separate Company / ETF display, auto quote, or quote fail-safe behavior** → `src/risk_sizing_ui_v10.py`.
+- Change **Risk Part 2 ticker entry, separate Company / ETF display, auto quote, quote fail-safe behavior, or the reviewed live stock entry/protective-stop workflow** → `src/risk_sizing_ui_v10.py`.
+- Change **authenticated Risk live-order Preview/Place/List transport** → `src/etrade_client.py`. Option Book may reuse Preview transport but must remain unable to call live Place Order.
 - Change **shared ticker/company directory data or Option Book autocomplete behavior** → `src/ticker_autocomplete.py`; E*TRADE Risk Sizing no longer uses the combined `SYMBOL — COMPANY NAME` selector.
 - Change **compact card styling / Part 2 presentation inherited from v9** → `src/risk_sizing_ui_v9.py`.
 - Change **existing Part 1 / Part 2 base widget sequence** → `src/risk_sizing_ui_v2.py`, only if a wrapper cannot safely solve it.
@@ -106,7 +107,7 @@ Production path:
 - Change **ticket layout, strategy controls, legs, quote presentation, local drafts** → `src/option_book_ui.py`.
 - **Visual reference:** E*TRADE Risk Sizing is the canonical Option Book UI reference. Match its orange-filled internal section bars, Courier New typography, 38px control height, 52px metric-card height, 4px vertical rhythm, 8px horizontal rhythm, black surfaces, orange borders, and green/red/blue financial meaning. Copy the visual contract into Option Book locally; do not edit Risk Sizing to style Option Book.
 - Change **net debit/credit math, option-chain normalization, PreviewOrderRequest construction** → `src/option_book.py`.
-- Change **authenticated E*TRADE Preview Order POST transport** → `src/etrade_client.py`; keep OAuth UI changes in `src/etrade_connection_ui_v2.py`.
+- Change **authenticated E*TRADE order transport** → `src/etrade_client.py`; Option Book is preview-only and must never call `place_order`, while Risk Sizing may call Preview/Place/List only through its explicit final-review flow. Keep OAuth UI changes in `src/etrade_connection_ui_v2.py`.
 - Reuse `src/ticker_autocomplete.py` for ticker/company-name search; do not create a second symbol directory.
 - The public E*TRADE Order API documents Preview and Place endpoints but not a Power E*TRADE Saved Orders endpoint. Option Book therefore stores drafts locally and may broker-preview them, but must not map a Save button to live Place Order submission.
 - Preserve single-leg LIMIT/STOP/STOP_LIMIT/MARKET and multi-leg NET_DEBIT/NET_CREDIT/MARKET behavior. E*TRADE rejects multi-leg stop/stop-limit orders.
