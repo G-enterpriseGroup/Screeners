@@ -304,6 +304,19 @@ def _render_css() -> None:
             box-sizing:border-box!important;
             padding:3px 8px!important;
         }
+        /* One border encloses the target-risk metric and its isolated copy iframe. */
+        .st-key-risk_part2_panel .st-key-risk_target_stop_card{
+            border:1px solid #fb8b1e;
+            background:#000;
+            padding-right:6px;
+        }
+        .st-key-risk_part2_panel .st-key-risk_target_stop_card .rs9-card{border:0;}
+        .st-key-risk_target_stop_card [data-testid="stColumn"]:first-child{
+            flex:1 1 0!important;width:auto!important;min-width:0!important;
+        }
+        .st-key-risk_target_stop_card [data-testid="stColumn"]:last-child{
+            flex:0 0 24px!important;width:24px!important;min-width:24px!important;
+        }
         .st-key-risk_part2_panel .rs9-head{min-height:13px!important;}
         .st-key-risk_part2_panel .rs9-label{font-size:.80rem!important;line-height:1.25!important;white-space:normal;}
         .st-key-risk_part2_panel .rs9-value{font-size:1.02rem!important;line-height:1.25!important;margin-top:2px!important;}
