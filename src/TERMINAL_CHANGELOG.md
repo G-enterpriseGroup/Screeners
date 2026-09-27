@@ -1537,3 +1537,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Post-push verification:** production run `36294722419` passed architecture validation, live-order helper simulation, workflow validation, the deployed Streamlit health check, and the real browser check confirming the deployed app is not on the Streamlit `Oh no` error page.
 - **Important behavior that must remain:** Part 3 chooses the E*TRADE account with Raj ending 5474 as default when available; Part 4 owns review/send; the live-order block renders once; no warning/header/control overlap; entry/stop safety and all existing Risk math remain unchanged.
 
+## 2026-09-27 — Link Risk E*TRADE account picker and Order Account picker bidirectionally
+
+- **Feature changed:** E*TRADE Risk Sizing account-selection synchronization only.
+- **Exact production file changed:** `src/risk_sizing_ui_v10.py`; focused regression coverage updated in `scripts/test_risk_production_ui.py`.
+- **What was broken:** The main Risk `E*TRADE Account` selector and Part 3 `Order Account` selector could point at different broker accounts. Changing one did not guarantee the other matched.
+- **Root cause:** Part 3 maintained its own `risk_live_order_account_key` state and only used the main Risk account as a fallback/default; it did not synchronize changes back to `risk_sizing_account`, nor did it always mirror a new main-account selection.
+- **What changed:** During normal sizing, the main Risk `risk_sizing_account` selection is the source of truth and Part 3 mirrors its `accountIdKey` every render. When the user changes Part 3 `Order Account`, its callback maps that account key back to the matching index in `etrade_accounts` and updates `risk_sizing_account` before the fragment reruns. Thus either selector immediately drives the other. The existing submitted-order safety lock remains authoritative: once a live/uncertain entry or stop owns an account, both selectors are forced back to that locked account until the order workflow is cleared.
+- **Important behavior that must remain:** Raj account ending 5474 remains the default when available. The two selectors must never disagree. Changing either selector before submission must update the other. A submitted live-order workflow must stay on its original account. Changing account clears stale preview/review state but does not alter Risk formulas or live-order transport.
+- **Files/features intentionally NOT changed:** `src/terminal_core.py`, `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, Risk math, E*TRADE OAuth/client transport, Holdings, GEX, navigation, Option Book, Schwab Risk, theme, and unrelated features.
+- **Tests performed:** Temporary validation run `36295075448` passed production Risk syntax checks, `scripts/test_risk_production_ui.py` with explicit main-account → Order Account and Order Account → main-account interaction checks, `scripts/test_risk_live_order_helpers.py`, `scripts/test_tab_layout.py`, and `python scripts/validate_architecture.py`.
+- **Architecture guard result:** PASS.
+- **Branch / PR:** `fix/risk-linked-account-pickers-20260927`, PR #79.
+- **Lesson:** Account identity should be synchronized by stable `accountIdKey`, while the legacy shared picker may continue storing its selected list index.
+
