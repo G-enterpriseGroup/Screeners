@@ -1,13 +1,15 @@
 """Focused regression checks for the read-only Smart Rebalance Portfolio."""
 
 from pathlib import Path
+import sys
 
 import pandas as pd
 
-from src.rebalance_portfolio_ui import _build_rebalance_plan
-
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src.rebalance_portfolio_ui import _build_rebalance_plan
 
 
 def _settings(**overrides):
