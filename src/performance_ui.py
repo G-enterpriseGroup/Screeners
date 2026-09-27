@@ -109,6 +109,8 @@ def _action(tx: dict[str, Any]) -> str:
     raw = str(
         _find(brokerage, "transactionType")
         or _find(tx, "transactionType")
+        or _find(tx, "transactionShortDesc")
+        or _find(tx, "transactionDescription")
         or _find(tx, "description")
         or ""
     ).upper().replace("-", "_").replace(" ", "_")
@@ -124,9 +126,17 @@ def _action(tx: dict[str, Any]) -> str:
 
 
 def _instrument(tx: dict[str, Any]) -> tuple[str, str, str]:
-    product = _dict(tx, "product")
-    symbol = str(_find(product, "displaySymbol", "symbol") or _find(tx, "symbol") or "").strip().upper()
-    security = str(_find(product, "securityType") or _find(tx, "securityType") or "EQ").strip().upper()
+    product = _dict(tx, "product") or _dict(tx, "productId")
+    symbol = str(
+        _find(product, "displaySymbol", "symbol")
+        or _find(tx, "displaySymbol", "symbol")
+        or ""
+    ).strip().upper()
+    security = str(
+        _find(product, "securityType", "typeCode")
+        or _find(tx, "securityType", "typeCode")
+        or "EQ"
+    ).strip().upper()
     option = "|".join(
         str(value)
         for key in ("callPut", "strikePrice", "expiryYear", "expiryMonth", "expiryDay")
@@ -146,7 +156,7 @@ def _trade_record(tx: dict[str, Any]) -> dict[str, Any] | None:
     price = _num(brokerage, "price")
     if price is None:
         price = _num(tx, "price")
-    fee = abs(_num(brokerage, "fee") or _num(tx, "fee") or 0.0)
+    fee = abs(_num(brokerage, "fee") or _num(tx, "fee", "commission") or 0.0)
     if not symbol or when is None or qty <= 0 or price is None or price < 0:
         return None
     multiplier = _num(brokerage, "optionMultiplier", "multiplier")
@@ -170,7 +180,10 @@ def _income_record(tx: dict[str, Any]) -> dict[str, Any] | None:
         return None
     when = _when(tx)
     amount = _num(tx, "amount")
-    text = " ".join(str(_find(tx, key) or "") for key in ("transactionType", "description", "description2", "memo")).lower()
+    text = " ".join(
+        str(_find(tx, key) or "")
+        for key in ("transactionType", "transactionShortDesc", "transactionDescription", "description", "description2", "memo")
+    ).lower()
     if when is not None and amount is not None and ("dividend" in text or "interest" in text):
         return {"when": when, "amount": float(amount)}
     return None
