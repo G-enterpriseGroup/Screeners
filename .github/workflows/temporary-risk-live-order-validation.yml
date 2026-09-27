@@ -1,0 +1,29 @@
+name: Temporary Risk Live Order Validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-risk-live-orders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+      - name: Syntax-check production Risk and ETRADE paths
+        run: |
+          python -m py_compile streamlit_app.py src/risk_sizing_ui_v7.py src/risk_sizing_ui_v10.py src/risk_sizing_ui_v9.py src/risk_sizing_ui_v2.py src/etrade_client.py
+      - name: Simulate Risk live-order helpers
+        run: python scripts/test_risk_live_order_helpers.py
+      - name: Render all top-level tabs
+        run: python scripts/test_tab_layout.py
+      - name: Architecture guard
+        run: python scripts/validate_architecture.py
