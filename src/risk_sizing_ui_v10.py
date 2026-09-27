@@ -1857,8 +1857,9 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
 
     st.html('<div class="risk-v9-section">4. REVIEW + SEND ORDER</div>')
     st.caption(
-        "PROTECTED ENTRY WORKFLOW // BUY LIMIT FIRST // AFTER A FULL FILL, "
-        "ONE ACTION RECHECKS THE FILL + SENDS THE GTC SELL STOP"
+        "PROTECTED ENTRY WORKFLOW // BUY LIMIT FIRST // TERMINAL 8 AUTO-MONITORS THE EXACT E*TRADE ENTRY "
+        "EVERY 5 SECONDS WHILE OPEN // AFTER A CONFIRMED FULL FILL, THE PLANNED GTC STOP BECOMES READY "
+        "FOR YOUR LIVE SEND CONFIRMATION"
     )
 
     if entry_uncertain and not entry_order:
@@ -1948,7 +1949,7 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
             key=_RISK_ENTRY_CONFIRM_KEY,
         )
         if st.button(
-            "SEND LIVE BUY LIMIT // STOP FOLLOWS AFTER FULL FILL",
+            "SEND LIVE BUY LIMIT // ARM AUTOMATIC FILL WATCH",
             type="primary",
             key="risk_live_send_entry",
             width="stretch",
@@ -1970,11 +1971,13 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
                 order_id = _extract_order_id(placed)
                 if order_id in (None, ""):
                     raise ETradeError("E*TRADE returned no order ID after placement.")
-                st.session_state[_RISK_ENTRY_ORDER_KEY] = {
+                entry_order_record = {
                     **uncertain,
                     "order_id": order_id,
                     "placed_at": time.time(),
                 }
+                st.session_state[_RISK_ENTRY_ORDER_KEY] = entry_order_record
+                _arm_stop_watch(entry_order_record, "entry_submit")
                 st.session_state.pop(_RISK_ENTRY_UNCERTAIN_KEY, None)
                 st.session_state.pop(_RISK_ENTRY_REVIEW_KEY, None)
                 st.session_state.pop(_RISK_ENTRY_CONFIRM_KEY, None)
