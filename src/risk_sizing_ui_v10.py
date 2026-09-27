@@ -40,14 +40,24 @@ import inspect
 import math
 import secrets
 import time
+from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import src.risk_sizing_ui_v9 as _v9
 from src.etrade_client import ETradeError
 
 
 _BASE_RENDER_CSS = _v9._render_css
+
+_RISK_STOP_WATCH_COMPONENT_PATH = (
+    Path(__file__).parent / "components" / "risk_book_state_v1"
+)
+_risk_stop_watch_component = components.declare_component(
+    "raj_risk_stop_watch_state_v1",
+    path=str(_RISK_STOP_WATCH_COMPONENT_PATH),
+)
 
 
 def _render_css_v10() -> None:
@@ -556,6 +566,11 @@ _RISK_ENTRY_CONFIRM_KEY = "risk_live_entry_confirm"
 _RISK_STOP_CONFIRM_KEY = "risk_live_stop_confirm"
 _RISK_PENDING_ORDERS_KEY = "_risk_live_pending_orders"
 _RISK_CANCEL_CONFIRM_KEY = "_risk_live_cancel_confirm_order"
+_RISK_STOP_WATCH_SESSION_KEY = "_risk_stop_watch_state_v1"
+_RISK_STOP_WATCH_STORAGE_KEY = "raj-terminal-risk-stop-watch-v1"
+_RISK_STOP_WATCH_READY = "READY_TO_SEND"
+_RISK_STOP_WATCH_ACTIVE = {"ARMED", "WAITING_FILL", "PARTIAL_FILL"}
+_RISK_STOP_WATCH_POLL_SECONDS = 5
 _PREVIEW_FRESH_SECONDS = 150.0
 
 
