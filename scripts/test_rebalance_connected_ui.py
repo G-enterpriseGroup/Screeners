@@ -125,6 +125,17 @@ def main() -> None:
     assert "GLD" in html
     assert app.dataframe, "rebalance plan dataframe missing"
 
+    nvda_target = next(
+        item for item in app.number_input if item.label == "NVDA Target %"
+    )
+    nvda_target.set_value(11.0)
+    app.run()
+    assert not app.exception, [item.message for item in app.exception]
+    nvda_target_after = next(
+        item for item in app.number_input if item.label == "NVDA Target %"
+    )
+    assert abs(float(nvda_target_after.value) - 11.0) < 1e-9
+
     print("REBALANCE CONNECTED UI SMOKE: PASS")
 
 
