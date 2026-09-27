@@ -26,6 +26,54 @@ class FixtureClient:
     def get_quote(self,symbol):
         st.session_state.setdefault("fixture_quotes", []).append(symbol)
         return dict(symbol=symbol,companyName=("State Street SPDR S&P 500 ETF Trust" if symbol == "SPY" else company_name(symbol)),lastTrade=199.98,bid=199.95,ask=200,changeClose=-.5)
+    def preview_order(self, account, payload):
+        request = payload["PreviewOrderRequest"]
+        order = request["Order"][0]
+        action = order["Instrument"][0]["orderAction"]
+        st.session_state.setdefault("fixture_order_previews", []).append(
+            {"account": account, "payload": payload}
+        )
+        preview_id = 7001 if action == "BUY" else 7002
+        return {
+            "PreviewOrderResponse": {
+                "PreviewIds": [{"previewId": preview_id}],
+                "totalOrderValue": 2000.0,
+                "estimatedCommission": 0.0,
+            }
+        }
+    def place_order(self, account, payload):
+        request = payload["PlaceOrderRequest"]
+        order = request["Order"][0]
+        action = order["Instrument"][0]["orderAction"]
+        st.session_state.setdefault("fixture_order_places", []).append(
+            {"account": account, "payload": payload}
+        )
+        return {
+            "PlaceOrderResponse": {
+                "OrderIds": [{"orderId": 9001 if action == "BUY" else 9002}]
+            }
+        }
+    def list_orders(self, account, *, status=None, symbol=None, count=100):
+        partial = bool(st.session_state.get("fixture_partial_fill"))
+        filled = 4 if partial else 10
+        return {
+            "OrdersResponse": {
+                "Order": [{
+                    "orderId": 9001,
+                    "OrderDetail": [{
+                        "status": "INDIVIDUAL_FILLS" if partial else "EXECUTED",
+                        "Instrument": [{
+                            "orderedQuantity": 10,
+                            "filledQuantity": filled,
+                            "averageExecutionPrice": 199.75,
+                        }],
+                        "Events": {
+                            "Event": [{"name": "ORDER_PARTIAL_FILL" if partial else "ORDER_EXECUTED"}]
+                        },
+                    }],
+                }]
+            }
+        }
     def lookup(self,*a,**k): return {}
 st.session_state['etrade_accounts']=[
     {'accountIdKey':'fixture','accountId':'10005474','accountName':'Raj Singh'},
@@ -74,6 +122,12 @@ LIQUID_LIMIT_FIXTURE = FIXTURE.replace(
 TACTICAL_LIMIT_FIXTURE = FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
     "st.session_state['risk_capital_source']='USE TACTICAL ROOM'\n"
+    "st.session_state['etrade_accounts']=",
+)
+
+PARTIAL_ORDER_FIXTURE = FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['fixture_partial_fill']=True\n"
     "st.session_state['etrade_accounts']=",
 )
 
@@ -327,6 +381,9 @@ def main():
     assert 'risk-v9-stop-pct' not in v9_source
     assert 'key="risk_book_sort"' in v2_source
     assert 'key="risk_book_export_csv"' in v2_source
+    assert '"CHECK FULL FILL + SEND PROTECTIVE STOP"' in source
+    assert '"CHECK ENTRY FILL IN E*TRADE"' not in source
+    assert '"REVIEW PROTECTIVE STOP WITH E*TRADE"' not in source
 
     # CSS-only style payloads must use st.html so Streamlit routes them outside
     # the visible flex stack instead of reserving empty rows above Risk content.
@@ -379,6 +436,51 @@ def main():
     clean()
     assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
     assert app.selectbox(key="risk_sizing_account").value == 0
+
+    # Part 4 integrated protection: the first explicit action submits only the
+    # BUY LIMIT. A later explicit action rechecks the broker fill and, only when
+    # fully executed, previews + places the exact GTC SELL STOP.
+    order_app = AppTest.from_string(FIXTURE, default_timeout=30).run()
+    assert not order_app.exception, [e.message for e in order_app.exception]
+    order_app.button(key="risk_live_preview_entry").click().run()
+    assert not order_app.exception, [e.message for e in order_app.exception]
+    order_app.checkbox(key="risk_live_entry_confirm").check().run()
+    order_app.button(key="risk_live_send_entry").click().run()
+    assert not order_app.exception, [e.message for e in order_app.exception]
+    assert order_app.session_state["_risk_live_entry_order"]["order_id"] == 9001
+    assert len(order_app.session_state["fixture_order_places"]) == 1
+    first_place = order_app.session_state["fixture_order_places"][0]
+    first_order = first_place["payload"]["PlaceOrderRequest"]["Order"][0]
+    assert first_place["account"] == "fixture"
+    assert first_order["priceType"] == "LIMIT"
+    assert first_order["Instrument"][0]["orderAction"] == "BUY"
+    assert first_order["Instrument"][0]["quantity"] == 10
+
+    order_app.button(key="risk_live_check_fill_send_stop").click().run()
+    assert not order_app.exception, [e.message for e in order_app.exception]
+    assert order_app.session_state["_risk_live_stop_order"]["order_id"] == 9002
+    assert len(order_app.session_state["fixture_order_places"]) == 2
+    stop_place = order_app.session_state["fixture_order_places"][1]
+    stop_order = stop_place["payload"]["PlaceOrderRequest"]["Order"][0]
+    assert stop_place["account"] == "fixture"
+    assert stop_order["priceType"] == "STOP"
+    assert stop_order["stopPrice"] == 190.0
+    assert stop_order["orderTerm"] == "GOOD_UNTIL_CANCEL"
+    assert stop_order["Instrument"][0]["orderAction"] == "SELL"
+    assert stop_order["Instrument"][0]["quantity"] == 10
+
+    # Partial fills must never submit the protective stop for the full planned
+    # quantity. They remain blocked for manual management in E*TRADE.
+    partial_order_app = AppTest.from_string(PARTIAL_ORDER_FIXTURE, default_timeout=30).run()
+    assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
+    partial_order_app.button(key="risk_live_preview_entry").click().run()
+    partial_order_app.checkbox(key="risk_live_entry_confirm").check().run()
+    partial_order_app.button(key="risk_live_send_entry").click().run()
+    partial_order_app.button(key="risk_live_check_fill_send_stop").click().run()
+    assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
+    assert partial_order_app.session_state["_risk_live_entry_fill"]["partial"] is True
+    assert "_risk_live_stop_order" not in partial_order_app.session_state
+    assert len(partial_order_app.session_state["fixture_order_places"]) == 1
 
     margin_payload = {
         "Computed": {
