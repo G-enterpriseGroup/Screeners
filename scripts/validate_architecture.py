@@ -242,8 +242,23 @@ def main() -> int:
         client_text = etrade_client.read_text(encoding="utf-8")
         if "def preview_order(" not in client_text:
             errors.append("OPTION BOOK ROUTE MISSING: ETradeClient.preview_order")
-        if "def place_order(" in client_text:
-            errors.append("OPTION BOOK SAFETY: ETradeClient must not expose place_order")
+        if "def place_order(" not in client_text:
+            errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.place_order")
+        if "def list_orders(" not in client_text:
+            errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.list_orders")
+
+    risk_live_ui = SRC / "risk_sizing_ui_v10.py"
+    if risk_live_ui.exists():
+        risk_live_text = risk_live_ui.read_text(encoding="utf-8")
+        for required in (
+            "client.preview_order(",
+            "client.place_order(",
+            "client.list_orders(",
+            "CHECK ENTRY FILL IN E*TRADE",
+            "SEND LIVE PROTECTIVE STOP",
+        ):
+            if required not in risk_live_text:
+                errors.append(f"RISK LIVE ORDER FLOW MISSING: {required}")
 
     architecture = SRC / "ARCHITECTURE.md"
     manifest = SRC / "production_manifest.py"
