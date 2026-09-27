@@ -1567,3 +1567,11 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **PR / validated implementation head:** PR #80, branch `fix/risk-protective-stop-send-20260927`; validated production-code head `1ae50c1df2f4cbc632ed228858cf5a9459334606`.
 - **Lesson:** Keep the protective stop tied to the exact reviewed entry context, require a broker-confirmed full fill before submission, and use one explicit user action for the post-fill preview/place handoff instead of pretending the public API supports a linked bracket order.
 
+## 2026-09-27 — Production deployment confirmation for Risk protective-stop handoff
+
+- **Feature changed:** production deployment confirmation for the Risk Part 4 integrated protective-stop send handoff documented immediately above.
+- **Production commit SHA:** `8835f8cc476a3447754718baa9c6e11cf239f569` (PR #80 squash merge).
+- **Production state verified:** `main` contains `CHECK FULL FILL + SEND PROTECTIVE STOP`, no longer contains the legacy `CHECK ENTRY FILL IN E*TRADE` or `REVIEW PROTECTIVE STOP WITH E*TRADE` paths, and keeps the same full-fill / partial-fill / uncertain-submission safety gates.
+- **Post-push verification:** production run `36296225090` passed architecture validation, Risk live-order helper simulation, active workflow validation, deployed Streamlit health, and the real deployed-browser `Oh no` guard.
+- **Important behavior that must remain:** the initial click submits only the reviewed BUY LIMIT; the protective GTC SELL STOP is submitted only from a later explicit user action after E*TRADE confirms the complete fill, using the locked entry account, planned quantity, and planned Stop Loss.
+
