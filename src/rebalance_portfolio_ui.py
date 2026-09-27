@@ -646,6 +646,8 @@ def render_rebalance_portfolio(
                 st.error(f"E*TRADE ACCOUNTS UNAVAILABLE // {exc}")
                 return
 
+        _section("1. ACCOUNT + LIVE BOOK")
+
         # Intentionally share Risk Sizing's account-state key so changing the
         # account in either workspace keeps both workspaces on the same book.
         account = account_picker("risk_sizing_account")
@@ -658,7 +660,6 @@ def render_rebalance_portfolio(
             st.info("SELECTED E*TRADE ACCOUNT HAS NO ACCOUNT KEY.")
             return
 
-        _section("1. ACCOUNT + LIVE BOOK")
         account_col, refresh_col = st.columns([5.2, 1.5], gap="small", vertical_alignment="bottom")
         with account_col:
             st.html(
@@ -882,6 +883,10 @@ def render_rebalance_portfolio(
             state = _persist_rebalance_state(
                 account_key,
                 {**state, "settings": settings, "rows": config_rows},
+            )
+            st.session_state.pop(
+                "rebalance_target_editor_" + _account_token(account_key),
+                None,
             )
 
         editor = _editor_frame(classified, config_rows, account_value)
