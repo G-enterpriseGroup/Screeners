@@ -984,24 +984,6 @@ def _render_ticker_band_editor(
         sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
 
         row_cols = st.columns(widths, gap="small")
-        with row_cols[0]:
-            _render_static_grid_cell(symbol, "orange")
-        with row_cols[1]:
-            _render_static_grid_cell(sleeve)
-        with row_cols[2]:
-            _render_static_grid_cell(
-                f"{pnl_pct:+.2f}%",
-                "positive" if pnl_pct >= 0 else "negative",
-            )
-        with row_cols[3]:
-            current_tone = (
-                "positive"
-                if _finite(cfg.get("lower_pct"), 0.0) - 1e-9
-                <= current_pct
-                <= _finite(cfg.get("upper_pct"), 100.0) + 1e-9
-                else "negative"
-            )
-            _render_static_grid_cell(f"{current_pct:.2f}%", current_tone)
         with row_cols[4]:
             target_pct = float(
                 st.number_input(
@@ -1043,6 +1025,20 @@ def _render_ticker_band_editor(
         upper_pct = max(target_pct, upper_input)
         in_tolerance = lower_pct - 1e-9 <= current_pct <= upper_pct + 1e-9
 
+        with row_cols[0]:
+            _render_static_grid_cell(symbol, "orange")
+        with row_cols[1]:
+            _render_static_grid_cell(sleeve)
+        with row_cols[2]:
+            _render_static_grid_cell(
+                f"{pnl_pct:+.2f}%",
+                "positive" if pnl_pct >= 0 else "negative",
+            )
+        with row_cols[3]:
+            _render_static_grid_cell(
+                f"{current_pct:.2f}%",
+                "positive" if in_tolerance else "negative",
+            )
         with row_cols[7]:
             _render_static_grid_cell(
                 "IN TOLERANCE" if in_tolerance else "OUT OF TOLERANCE",
