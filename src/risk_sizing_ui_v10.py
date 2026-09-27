@@ -1163,6 +1163,38 @@ def _arm_stop_watch(entry_order: dict, component_key: str = "entry_submit") -> d
     return existing
 
 
+def _restore_entry_order_from_watch() -> dict | None:
+    """Recover an armed/ready entry after refresh from the persistent watch log."""
+    current = st.session_state.get(_RISK_ENTRY_ORDER_KEY)
+    if isinstance(current, dict) and current.get("order_id") not in (None, ""):
+        return current
+
+    state = _current_stop_watch_state()
+    recoverable = {
+        "ARMED",
+        "WAITING_FILL",
+        "PARTIAL_FILL",
+        _RISK_STOP_WATCH_READY,
+        "STOP_UNCERTAIN",
+    }
+    for row in state.get("rows") or []:
+        if str(row.get("status") or "").upper() not in recoverable:
+            continue
+        restored = {
+            "account_key": row["account_key"],
+            "account_label": row.get("account_label") or "",
+            "symbol": row["symbol"],
+            "quantity": int(row["quantity"]),
+            "entry_price": float(row.get("entry_price") or 0.0),
+            "stop_price": float(row["stop_price"]),
+            "order_id": row["entry_order_id"],
+            "placed_at": float(row.get("entry_placed_at") or 0.0),
+        }
+        st.session_state[_RISK_ENTRY_ORDER_KEY] = restored
+        return restored
+    return None
+
+
 def _set_stop_watch_fill(
     state: dict,
     row: dict,
@@ -2156,6 +2188,11 @@ def render_risk_sizing(*args, **kwargs):
 
     client = args[0] if args else kwargs.get("client")
     touch_session = kwargs.get("touch_session") or (lambda: None)
+
+    # Restore the persistent protection ledger before account locking/rendering.
+    # This lets an armed or full-fill-ready entry survive refresh/redeploy.
+    _sync_stop_watch_state_from_browser("risk_render")
+    _restore_entry_order_from_watch()
 
     # This executes before the shared E*TRADE Account widget is instantiated.
     # A submitted live order owns the account until its protective-stop flow is
