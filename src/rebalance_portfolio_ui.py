@@ -792,24 +792,48 @@ def _editor_frame(
 
 
 def _style_plan(plan: pd.DataFrame):
-    """Make tolerance state unmistakable while keeping every other cell light on dark."""
-    def cell_style(value: Any) -> str:
-        text = str(value).strip().upper()
-        if text == "IN TOLERANCE":
-            return "color:#4af6c3;background-color:#050505;font-weight:900;"
-        if text == "OUT OF TOLERANCE":
-            return "color:#ff433d;background-color:#050505;font-weight:900;"
-        return "color:#f2f2f2;background-color:#050505;"
+    """Make tolerance state unmistakable while keeping every cell light on dark."""
+    styled = plan.style.map(
+        lambda _value: "color:#f2f2f2;background-color:#050505;"
+    )
 
-    styled = plan.style.map(cell_style)
-    if "Tolerance" in plan.columns:
+    def tolerance_row(row: pd.Series) -> list[str]:
+        in_tolerance = str(row.get("Tolerance") or "").strip().upper() == "IN TOLERANCE"
+        tone = "#4af6c3" if in_tolerance else "#ff433d"
+        emphasized = {"Current %", "Tolerance", "Drift %", "Action"}
+        return [
+            (
+                f"color:{tone};background-color:#050505;font-weight:900;"
+                if column in emphasized
+                else ""
+            )
+            for column in row.index
+        ]
+
+    if not plan.empty and "Tolerance" in plan.columns:
+        styled = styled.apply(tolerance_row, axis=1)
+
+    if "P&L %" in plan.columns:
         styled = styled.map(
             lambda value: (
                 "color:#4af6c3;background-color:#050505;font-weight:900;"
-                if str(value).strip().upper() == "IN TOLERANCE"
+                if _finite(value, 0.0) >= 0
                 else "color:#ff433d;background-color:#050505;font-weight:900;"
             ),
-            subset=["Tolerance"],
+            subset=["P&L %"],
+        )
+    if "Proposed $" in plan.columns:
+        styled = styled.map(
+            lambda value: (
+                "color:#4af6c3;background-color:#050505;font-weight:900;"
+                if _finite(value, 0.0) > 0
+                else (
+                    "color:#ff433d;background-color:#050505;font-weight:900;"
+                    if _finite(value, 0.0) < 0
+                    else "color:#f2f2f2;background-color:#050505;"
+                )
+            ),
+            subset=["Proposed $"],
         )
     return styled
 
@@ -1061,7 +1085,7 @@ def render_rebalance_portfolio(
                 {**state, "settings": settings, "rows": config_rows},
             )
 
-        _section("3. TARGETS + BANDS")
+        _section("3. TARGETS + TICKER BANDS // AUTO-SAVED")
         control_a, control_b, _ = st.columns([1.4, 1.5, 4.0], gap="small")
         reset_targets = control_a.button(
             "RESET TARGETS TO CURRENT",
@@ -1086,19 +1110,26 @@ def render_rebalance_portfolio(
                 sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
                 band = long_term_band if sleeve == "LONG-TERM" else tactical_band
                 previous = by_symbol.get(symbol, {})
+                previous_target = _finite(previous.get("target_pct"), max(0.0, current_pct))
+                target_pct = max(0.0, current_pct) if reset_targets else previous_target
+                if reset_targets or apply_bands:
+                    lower_pct = max(0.0, target_pct - band)
+                    upper_pct = min(100.0, target_pct + band)
+                else:
+                    lower_pct = min(
+                        target_pct,
+                        _finite(previous.get("lower_pct"), max(0.0, target_pct - band)),
+                    )
+                    upper_pct = max(
+                        target_pct,
+                        _finite(previous.get("upper_pct"), min(100.0, target_pct + band)),
+                    )
                 rebuilt.append(
                     {
                         "symbol": symbol,
-                        "target_pct": (
-                            max(0.0, current_pct)
-                            if reset_targets
-                            else _finite(previous.get("target_pct"), max(0.0, current_pct))
-                        ),
-                        "band_pct": (
-                            band
-                            if apply_bands
-                            else _finite(previous.get("band_pct"), band)
-                        ),
+                        "target_pct": target_pct,
+                        "lower_pct": lower_pct,
+                        "upper_pct": upper_pct,
                     }
                 )
             config_rows = rebuilt
@@ -1117,7 +1148,7 @@ def render_rebalance_portfolio(
             hide_index=True,
             width="stretch",
             row_height=34,
-            disabled=["Symbol", "Sleeve", "P&L %", "Current %"],
+            disabled=["Symbol", "Sleeve", "P&L %", "Current %", "Tolerance"],
             column_config={
                 "Symbol": st.column_config.TextColumn("SYMBOL"),
                 "Sleeve": st.column_config.TextColumn("SLEEVE"),
@@ -1129,13 +1160,27 @@ def render_rebalance_portfolio(
                     max_value=100.0,
                     step=0.25,
                     format="%.2f%%",
+                    help="Desired portfolio weight for this ticker.",
                 ),
-                "Band +/- %": st.column_config.NumberColumn(
-                    "BAND +/- %",
+                "Lower %": st.column_config.NumberColumn(
+                    "LOWER %",
                     min_value=0.0,
-                    max_value=50.0,
+                    max_value=100.0,
                     step=0.25,
                     format="%.2f%%",
+                    help="Ticker-specific lower tolerance. Below this weight is out of tolerance.",
+                ),
+                "Upper %": st.column_config.NumberColumn(
+                    "UPPER %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.25,
+                    format="%.2f%%",
+                    help="Ticker-specific upper tolerance. Above this weight is out of tolerance.",
+                ),
+                "Tolerance": st.column_config.TextColumn(
+                    "TOLERANCE",
+                    help="Green in the plan = inside the saved ticker band. Red = outside the saved ticker band.",
                 ),
             },
             key="rebalance_target_editor_" + _account_token(account_key),
@@ -1151,6 +1196,12 @@ def render_rebalance_portfolio(
         # One writer component per rerun: settings, reset actions, and data-editor
         # changes may all mutate state in the same Streamlit pass.
         _sync_rebalance_state_browser(account_key, state)
+        st.html(
+            '<div class="reb-memory">'
+            'MEMORY ACTIVE // TARGET %, LOWER %, UPPER %, MODE, DEFAULT BANDS, MIN TRADE, LOSS TRIGGER, '
+            'AND HARD MAX ARE AUTO-SAVED PER E*TRADE ACCOUNT.'
+            '</div>'
+        )
 
         target_total = sum(_finite(row.get("target_pct"), 0.0) for row in config_rows)
         if target_total > 100.0001:
@@ -1169,17 +1220,19 @@ def render_rebalance_portfolio(
         )
 
         _section("4. SMART REBALANCE PLAN")
-        p1, p2, p3, p4, p5 = st.columns(5, gap="small")
+        p1, p2, p3, p4, p5, p6 = st.columns(6, gap="small")
         with p1:
             _kpi("TARGETS", f"{summary['target_total_pct']:.2f}%")
         with p2:
             _kpi("TARGET CASH", f"{summary['target_cash_pct']:.2f}%")
         with p3:
-            _kpi("NEEDS ATTENTION", f"{int(summary['outside_count']):,}")
+            _kpi("IN TOLERANCE", f"{int(summary['inside_count']):,}", tone="positive")
         with p4:
-            _kpi("PROPOSED SELLS", _money(summary["trim_proceeds"]))
+            _kpi("OUT OF TOLERANCE", f"{int(summary['outside_count']):,}", tone="negative")
         with p5:
-            _kpi("PROPOSED BUYS", _money(summary["proposed_buys"]))
+            _kpi("PROPOSED SELLS", _money(summary["trim_proceeds"]), tone="negative")
+        with p6:
+            _kpi("PROPOSED BUYS", _money(summary["proposed_buys"]), tone="positive")
 
         q1, q2, q3 = st.columns(3, gap="small")
         with q1:
@@ -1190,7 +1243,7 @@ def render_rebalance_portfolio(
             _kpi("BUY FUNDING", f"{summary['buy_funding_ratio'] * 100.0:.1f}%")
 
         st.dataframe(
-            plan,
+            _style_plan(plan),
             hide_index=True,
             width="stretch",
             row_height=34,
@@ -1199,7 +1252,9 @@ def render_rebalance_portfolio(
                 "Market Value": st.column_config.NumberColumn(format="$%.0f"),
                 "Current %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Target %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Band +/- %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Lower %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Upper %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Tolerance": st.column_config.TextColumn("TOLERANCE"),
                 "Drift %": st.column_config.NumberColumn(format="%+.2f%%"),
                 "Raw Gap $": st.column_config.NumberColumn(format="$%+.0f"),
                 "Proposed $": st.column_config.NumberColumn(format="$%+.0f"),
@@ -1220,9 +1275,10 @@ def render_rebalance_portfolio(
 
         st.html(
             '<div class="reb-note">'
-            'SMART RULES // inside band = HOLD // excess cash funds underweights first // required trim proceeds can fund remaining adds // '
-            'underweights beyond the loss-review trigger are REVIEW LOSS, not automatic average-downs // LONG-TERM overweights are review flags // '
-            'TO BAND minimizes turnover // ANALYSIS ONLY: NO E*TRADE ORDER PREVIEW, PLACE, CHANGE, OR CANCEL.'
+            'GREEN = IN TOLERANCE // RED = OUT OF TOLERANCE OR ACTION REQUIRED // '
+            'EACH TICKER HAS ITS OWN SAVED LOWER / TARGET / UPPER BAND // '
+            'EXCESS CASH FUNDS ELIGIBLE UNDERWEIGHTS FIRST // LOSS REVIEW NEVER AUTO-AVERAGES DOWN // '
+            'TO BAND MINIMIZES TURNOVER // ANALYSIS ONLY: NO E*TRADE ORDER PREVIEW, PLACE, CHANGE, OR CANCEL.'
             '</div>'
         )
 
