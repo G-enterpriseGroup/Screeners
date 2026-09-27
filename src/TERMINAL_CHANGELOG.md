@@ -1727,3 +1727,11 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Implementation branch head before changelog:** `de0347cc8a402fd4e609db939e5f62177009dd8f`. Final merge/deployment SHA recorded after production verification.
 - **Lesson:** Keep Rebalance visual fixes local to its owner; use explicit lower/target/upper ticker bands for clarity, preserve old saved state through schema migration, and make tolerance status visible with color without modifying the shared global theme.
+
+## 2026-09-27 — Rebalance theme/band production verification addendum
+
+- **Production merge SHA:** `52c187d3c552deab03f13f0a0857b204b482bdc7` from PR #88.
+- **Production validation:** Terminal Architecture Guard run `36350283183` completed PASS on the merge SHA, including production architecture validation, Risk live-order helper safety, Performance read-only safety, workflow YAML validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Pre-merge full UI validation:** Temporary Rebalance Theme Validation run `36350173531` passed syntax, focused Rebalance math/memory regression, connected simulated E*TRADE Rebalance rendering, architecture guard, and `scripts/test_tab_layout.py` across every enabled top-level tab.
+- **Final behavior:** Rebalance now exposes saved per-ticker LOWER / TARGET / UPPER bands; legacy symmetric saved bands migrate automatically; green means IN TOLERANCE; red means OUT OF TOLERANCE/action-required; Rebalance feature text avoids black-on-dark rendering while retaining the orange/black Risk-terminal visual language.
+- **Production scope preserved:** Risk Sizing, global theme, app routing, OAuth/session/client transport, Holdings, Performance, GEX, navigation, Bull Debit, Muni, Option Book, Orders, and `src/terminal_core.py` were not changed.
