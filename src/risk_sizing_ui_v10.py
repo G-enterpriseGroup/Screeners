@@ -86,6 +86,15 @@ def _render_css_v10() -> None:
             min-width:100%!important;
             flex:1 1 100%!important;
         }
+        [class*="st-key-risk_stop_watch_reader_shell_"],
+        [class*="st-key-risk_stop_watch_writer_shell_"]{
+            display:none!important;
+            height:0!important;
+            min-height:0!important;
+            margin:0!important;
+            padding:0!important;
+        }
+
         [data-testid="stHorizontalBlock"]:has(
             > [data-testid="stColumn"]:first-child .risk-v10-ticker-marker
         ) > [data-testid="stColumn"]:nth-child(2){
@@ -2276,6 +2285,7 @@ def render_risk_sizing(*args, **kwargs):
         with st.container(key="risk_live_order_panel"):
             _render_live_order_workflow(client, touch_session, trade_context)
             _render_pending_orders_panel(client, touch_session)
+            _render_stop_watch_log()
 
     def filtered_subheader(body, *sub_args, **sub_kwargs):
         if str(body).strip().upper() == "RISK SIZING":
