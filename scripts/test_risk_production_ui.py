@@ -125,7 +125,16 @@ TACTICAL_LIMIT_FIXTURE = FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
 )
 
-PARTIAL_ORDER_FIXTURE = FIXTURE.replace(
+FILLED_ORDER_FIXTURE = FIXTURE.replace(
+    "st.session_state['etrade_accounts']=",
+    "st.session_state['_risk_live_entry_order']={"
+    "'account_key':'fixture','account_label':'Raj Singh ••••5474',"
+    "'symbol':'SPY','quantity':10,'entry_price':200.0,'stop_price':190.0,"
+    "'order_id':9001,'placed_at':1.0}\n"
+    "st.session_state['etrade_accounts']=",
+)
+
+PARTIAL_ORDER_FIXTURE = FILLED_ORDER_FIXTURE.replace(
     "st.session_state['etrade_accounts']=",
     "st.session_state['fixture_partial_fill']=True\n"
     "st.session_state['etrade_accounts']=",
@@ -446,7 +455,6 @@ def main():
     assert not order_app.exception, [e.message for e in order_app.exception]
     order_app.checkbox(key="risk_live_entry_confirm").check().run()
     order_app.button(key="risk_live_send_entry").click().run()
-    order_app.run()
     assert not order_app.exception, [e.message for e in order_app.exception]
     assert order_app.session_state["_risk_live_entry_order"]["order_id"] == 9001
     assert len(order_app.session_state["fixture_order_places"]) == 1
@@ -457,11 +465,16 @@ def main():
     assert first_order["Instrument"][0]["orderAction"] == "BUY"
     assert first_order["Instrument"][0]["quantity"] == 10
 
-    order_app.button(key="risk_live_check_fill_send_stop").click().run()
-    assert not order_app.exception, [e.message for e in order_app.exception]
-    assert order_app.session_state["_risk_live_stop_order"]["order_id"] == 9002
-    assert len(order_app.session_state["fixture_order_places"]) == 2
-    stop_place = order_app.session_state["fixture_order_places"][1]
+    # Use a fresh AppTest tree with the submitted entry seeded in session state.
+    # This avoids carrying stale fragment widget IDs while still exercising the
+    # production post-fill button end to end.
+    filled_stop_app = AppTest.from_string(FILLED_ORDER_FIXTURE, default_timeout=30).run()
+    assert not filled_stop_app.exception, [e.message for e in filled_stop_app.exception]
+    filled_stop_app.button(key="risk_live_check_fill_send_stop").click().run()
+    assert not filled_stop_app.exception, [e.message for e in filled_stop_app.exception]
+    assert filled_stop_app.session_state["_risk_live_stop_order"]["order_id"] == 9002
+    assert len(filled_stop_app.session_state["fixture_order_places"]) == 1
+    stop_place = filled_stop_app.session_state["fixture_order_places"][0]
     stop_order = stop_place["payload"]["PlaceOrderRequest"]["Order"][0]
     assert stop_place["account"] == "fixture"
     assert stop_order["priceType"] == "STOP"
@@ -474,15 +487,11 @@ def main():
     # quantity. They remain blocked for manual management in E*TRADE.
     partial_order_app = AppTest.from_string(PARTIAL_ORDER_FIXTURE, default_timeout=30).run()
     assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
-    partial_order_app.button(key="risk_live_preview_entry").click().run()
-    partial_order_app.checkbox(key="risk_live_entry_confirm").check().run()
-    partial_order_app.button(key="risk_live_send_entry").click().run()
-    partial_order_app.run()
     partial_order_app.button(key="risk_live_check_fill_send_stop").click().run()
     assert not partial_order_app.exception, [e.message for e in partial_order_app.exception]
     assert partial_order_app.session_state["_risk_live_entry_fill"]["partial"] is True
     assert "_risk_live_stop_order" not in partial_order_app.session_state
-    assert len(partial_order_app.session_state["fixture_order_places"]) == 1
+    assert "fixture_order_places" not in partial_order_app.session_state
 
     margin_payload = {
         "Computed": {
