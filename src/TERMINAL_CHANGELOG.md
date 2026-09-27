@@ -1751,3 +1751,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated branch head before cleanup:** `098cdfc4ef83daa8c447d4831568886b5150f9b4`; temporary workflow removed in cleanup commit `35671a5deeccc63ae8842354ebaf673dd24e3891`. Final production merge/deployment SHA recorded after verification.
 - **Lesson:** Do not use Streamlit's editable canvas grid for terminal-critical Rebalance inputs when body text color cannot be controlled reliably; native compact row controls are more robust, visible, and preserve per-ticker memory without touching global theme code.
+
+## 2026-09-27 — Rebalance visibility production verification addendum
+
+- **Production merge SHA:** `fd1ae4f47f837d1c4442786f00c56842518f9700` from PR #89.
+- **Production verification:** Terminal Architecture Guard run `36351223626` completed PASS on the merge SHA, including production architecture validation, Risk live-order helper safety, Performance read-only safety, active workflow YAML validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Final visible-editor behavior:** The invisible Streamlit `st.data_editor` canvas is no longer used in Rebalance. Actual holdings render as compact native rows with visible SYMBOL / SLEEVE / P&L / CURRENT / TARGET / LOWER / UPPER / TOLERANCE values, and only actual holdings rows consume vertical space.
+- **Production scope preserved:** Risk Sizing, global theme, app routing, OAuth/session/client transport, Holdings, Performance, GEX, navigation, Bull Debit, Muni, Option Book, Orders, and `src/terminal_core.py` were not changed.
