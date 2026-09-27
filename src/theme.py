@@ -260,6 +260,51 @@ select:not(:disabled) option {
 }
 
 /*
+   TERMINAL-WIDE EDITABLE FIELD SURFACES
+   Every enabled box the user can directly type into or choose from uses the
+   same #555555 fill. Disabled/read-only fields are intentionally excluded.
+   Keep this terminal-wide in theme.py rather than duplicating per-tab CSS.
+*/
+[data-testid="stTextInput"] [data-baseweb="input"],
+[data-testid="stTextInput"] [data-baseweb="base-input"],
+[data-testid="stNumberInput"] [data-baseweb="input"],
+[data-testid="stNumberInput"] [data-baseweb="base-input"],
+[data-testid="stTextArea"] [data-baseweb="textarea"],
+[data-testid="stDateInput"] [data-baseweb="input"],
+[data-testid="stDateInput"] [data-baseweb="base-input"],
+[data-testid="stTimeInput"] [data-baseweb="input"],
+[data-testid="stTimeInput"] [data-baseweb="base-input"],
+[data-testid="stTextInput"] input:not(:disabled),
+[data-testid="stNumberInput"] input:not(:disabled),
+[data-testid="stTextArea"] textarea:not(:disabled),
+[data-testid="stDateInput"] input:not(:disabled),
+[data-testid="stTimeInput"] input:not(:disabled),
+[data-testid="stChatInput"] textarea:not(:disabled),
+[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+[data-testid="stSelectbox"] [aria-haspopup="listbox"],
+[data-testid="stMultiSelect"] [aria-haspopup="listbox"],
+select:not(:disabled),
+input[type="text"]:not(:disabled),
+input[type="search"]:not(:disabled),
+input[type="password"]:not(:disabled),
+input[type="number"]:not(:disabled),
+input[type="email"]:not(:disabled),
+input[type="tel"]:not(:disabled),
+input[type="url"]:not(:disabled),
+input[type="date"]:not(:disabled),
+input[type="time"]:not(:disabled),
+input[type="datetime-local"]:not(:disabled),
+input[type="month"]:not(:disabled),
+input[type="week"]:not(:disabled),
+input:not([type]):not(:disabled),
+textarea:not(:disabled),
+[contenteditable="true"] {
+    background:#555555 !important;
+    background-color:#555555 !important;
+}
+
+/*
    DATAFRAME COLUMN-MENU READABILITY
    Streamlit renders dataframe column actions in its shared overlay portal.
    The app-level textColor is intentionally black for black-on-orange dataframe
