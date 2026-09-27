@@ -913,11 +913,12 @@ def _seed_ticker_widgets(
     account_key: str,
     config_rows: list[dict[str, Any]],
     *,
+    revision: int,
     force: bool = False,
 ) -> None:
     token = _account_token(account_key)
     marker_key = "_rebalance_ticker_widgets_seeded::" + token
-    if st.session_state.get(marker_key) and not force:
+    if st.session_state.get(marker_key) == int(revision) and not force:
         return
     for row in config_rows:
         symbol = str(row.get("symbol") or "").strip().upper()
@@ -932,7 +933,7 @@ def _seed_ticker_widgets(
         st.session_state[_ticker_widget_key(account_key, symbol, "upper")] = _finite(
             row.get("upper_pct"), 0.0
         )
-    st.session_state[marker_key] = True
+    st.session_state[marker_key] = int(revision)
 
 
 def _render_ticker_band_editor(
@@ -946,7 +947,14 @@ def _render_ticker_band_editor(
     by_symbol = {
         str(row.get("symbol") or "").strip().upper(): row for row in config_rows
     }
-    _seed_ticker_widgets(account_key, config_rows)
+    state_revision = int(
+        st.session_state.get(_session_state_key(account_key), {}).get("revision", 0) or 0
+    )
+    _seed_ticker_widgets(
+        account_key,
+        config_rows,
+        revision=state_revision,
+    )
 
     widths = [1.0, 1.0, 0.82, 0.92, 0.94, 0.94, 0.94, 1.12]
     headers = [
@@ -1352,7 +1360,12 @@ def render_rebalance_portfolio(
                 account_key,
                 {**state, "settings": settings, "rows": config_rows},
             )
-            _seed_ticker_widgets(account_key, config_rows, force=True)
+            _seed_ticker_widgets(
+                account_key,
+                config_rows,
+                revision=int(state.get("revision", 0) or 0),
+                force=True,
+            )
 
         edited_rows = _render_ticker_band_editor(
             account_key=account_key,
