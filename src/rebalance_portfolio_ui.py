@@ -482,14 +482,142 @@ def _build_rebalance_plan(
 
 _REBALANCE_CSS = """
 <style>
-.st-key-rebalance_root{gap:4px!important;padding:0!important;margin:0!important;font-family:"Courier New",monospace}
-.st-key-rebalance_root .reb-section{background:#fb8b1e;color:#000!important;font:900 .82rem/1.08 "Courier New",monospace;letter-spacing:.04em;padding:.30rem .48rem;margin:0;text-transform:uppercase}
-.st-key-rebalance_root .reb-note{border:1px solid #5f431c;background:#080808;color:#b87621!important;font:800 .68rem/1.25 "Courier New",monospace;padding:.34rem .48rem;margin:0}
-.st-key-rebalance_root .reb-kpi{border:1px solid #5f431c;background:#050505;min-height:54px;padding:.35rem .48rem;margin:0}
-.st-key-rebalance_root .reb-kpi-label{color:#b87621!important;font:900 .64rem/1.05 "Courier New",monospace;letter-spacing:.03em}
-.st-key-rebalance_root .reb-kpi-value{color:#f4f4f4!important;font:900 1.02rem/1.15 "Courier New",monospace;margin-top:.12rem}
+.st-key-rebalance_root{
+    gap:4px!important;
+    padding:0!important;
+    margin:0!important;
+    font-family:"Courier New",monospace!important;
+}
+.st-key-rebalance_root [data-testid="stVerticalBlock"]{gap:4px!important;}
+.st-key-rebalance_root [data-testid="stHorizontalBlock"]{gap:8px!important;}
+.st-key-rebalance_root .reb-section{
+    display:flex;
+    align-items:center;
+    width:100%;
+    height:36px;
+    min-height:36px;
+    box-sizing:border-box;
+    margin:0;
+    padding:0 10px;
+    border:1px solid #fb8b1e;
+    background:#050505;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:900 1.02rem/1 "Courier New",monospace;
+    text-transform:uppercase;
+}
+.st-key-rebalance_root .reb-note{
+    border:1px solid #fb8b1e;
+    background:#050505;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:800 .72rem/1.28 "Courier New",monospace;
+    padding:.36rem .50rem;
+    margin:0;
+}
+.st-key-rebalance_root .reb-memory{
+    border:1px solid #4af6c3;
+    background:#04110d;
+    color:#4af6c3!important;
+    -webkit-text-fill-color:#4af6c3!important;
+    font:900 .70rem/1.2 "Courier New",monospace;
+    padding:.32rem .48rem;
+    margin:0;
+}
+.st-key-rebalance_root .reb-kpi{
+    border:1px solid #fb8b1e;
+    background:#000;
+    min-height:0!important;
+    height:auto!important;
+    padding:.25rem .38rem .28rem;
+    margin:0;
+}
+.st-key-rebalance_root .reb-kpi-label{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font:900 .61rem/1 "Courier New",monospace;
+    letter-spacing:.03em;
+}
+.st-key-rebalance_root .reb-kpi-value{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+    font:900 1.02rem/1.08 "Courier New",monospace;
+    margin-top:.10rem;
+}
+.st-key-rebalance_root .reb-kpi-value.positive{
+    color:#4af6c3!important;
+    -webkit-text-fill-color:#4af6c3!important;
+}
+.st-key-rebalance_root .reb-kpi-value.negative{
+    color:#ff433d!important;
+    -webkit-text-fill-color:#ff433d!important;
+}
+.st-key-rebalance_root [data-testid="stWidgetLabel"] p,
+.st-key-rebalance_root [data-testid="stWidgetLabel"] span{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font-family:"Courier New",monospace!important;
+    font-weight:900!important;
+}
+.st-key-rebalance_root [data-testid="stSelectbox"] div[data-baseweb="select"]>div,
+.st-key-rebalance_root [data-testid="stNumberInputContainer"],
+.st-key-rebalance_root [data-testid="stTextInputRootElement"]{
+    min-height:38px!important;
+    height:38px!important;
+    background:#444444!important;
+    border-color:#fb8b1e!important;
+    border-radius:0!important;
+}
+.st-key-rebalance_root [data-testid="stSelectbox"] div[data-baseweb="select"] span,
+.st-key-rebalance_root [data-testid="stSelectbox"] div[data-baseweb="select"] input,
+.st-key-rebalance_root [data-testid="stNumberInput"] input,
+.st-key-rebalance_root [data-testid="stTextInput"] input{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+    font-family:"Courier New",monospace!important;
+    font-weight:900!important;
+}
+.st-key-rebalance_root [data-testid="stNumberInputStepDown"],
+.st-key-rebalance_root [data-testid="stNumberInputStepUp"]{
+    min-width:38px!important;
+    width:38px!important;
+    height:36px!important;
+    flex:0 0 38px!important;
+    background:#050505!important;
+    border-color:#fb8b1e!important;
+    border-radius:0!important;
+    color:#fb8b1e!important;
+}
+.st-key-rebalance_root [data-testid="stNumberInputStepDown"] *,
+.st-key-rebalance_root [data-testid="stNumberInputStepUp"] *{
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+}
+.st-key-rebalance_root [data-testid="stButton"] button,
+.st-key-rebalance_root [data-testid="stDownloadButton"] button{
+    background:#050505!important;
+    border:1px solid #fb8b1e!important;
+    border-radius:0!important;
+    color:#fb8b1e!important;
+    -webkit-text-fill-color:#fb8b1e!important;
+    font-family:"Courier New",monospace!important;
+    font-weight:900!important;
+}
+.st-key-rebalance_root [data-testid="stButton"] button:hover,
+.st-key-rebalance_root [data-testid="stDownloadButton"] button:hover{
+    background:#171007!important;
+    color:#ffad52!important;
+    -webkit-text-fill-color:#ffad52!important;
+}
 .st-key-rebalance_root [data-testid="stDataFrame"],
-.st-key-rebalance_root [data-testid="stDataEditor"]{border:1px solid #5f431c}
+.st-key-rebalance_root [data-testid="stDataEditor"]{
+    border:1px solid #fb8b1e!important;
+}
+.st-key-rebalance_root [data-testid="stAlert"] p,
+.st-key-rebalance_root [data-testid="stAlert"] div{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
+}
 .st-key-rebalance_state_reader_shell,
 .st-key-rebalance_state_writer_shell,
 .st-key-risk_intent_state_reader_shell,
@@ -512,11 +640,12 @@ def _section(title: str) -> None:
     st.html(f'<div class="reb-section">{title}</div>')
 
 
-def _kpi(label: str, value: str) -> None:
+def _kpi(label: str, value: str, tone: str = "neutral") -> None:
+    tone_class = "positive" if tone == "positive" else "negative" if tone == "negative" else ""
     st.html(
         '<div class="reb-kpi">'
         f'<div class="reb-kpi-label">{label}</div>'
-        f'<div class="reb-kpi-value">{value}</div>'
+        f'<div class="reb-kpi-value {tone_class}">{value}</div>'
         '</div>'
     )
 
@@ -570,17 +699,32 @@ def _config_from_state(
         )
         row = existing.get(symbol)
         if row is None:
+            target_pct = max(0.0, current_pct)
             row = {
                 "symbol": symbol,
-                "target_pct": max(0.0, current_pct),
-                "band_pct": default_band,
+                "target_pct": target_pct,
+                "lower_pct": max(0.0, target_pct - default_band),
+                "upper_pct": min(100.0, target_pct + default_band),
             }
             changed = True
+        target_pct = min(
+            100.0,
+            max(0.0, _finite(row.get("target_pct"), current_pct)),
+        )
+        lower_pct = min(
+            target_pct,
+            max(0.0, _finite(row.get("lower_pct"), max(0.0, target_pct - default_band))),
+        )
+        upper_pct = max(
+            target_pct,
+            min(100.0, _finite(row.get("upper_pct"), min(100.0, target_pct + default_band))),
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(row.get("target_pct"), current_pct))),
-                "band_pct": min(50.0, max(0.0, _finite(row.get("band_pct"), default_band))),
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
             }
         )
 
@@ -623,17 +767,51 @@ def _editor_frame(
         if not symbol:
             continue
         market_value = _finite(source.get("Market Value"), 0.0)
+        current_pct = (market_value / account_value * 100.0) if account_value > 0 else 0.0
+        target_pct = _finite(cfg.get(symbol, {}).get("target_pct"), 0.0)
+        lower_pct = _finite(cfg.get(symbol, {}).get("lower_pct"), target_pct)
+        upper_pct = _finite(cfg.get(symbol, {}).get("upper_pct"), target_pct)
         rows.append(
             {
                 "Symbol": symbol,
                 "Sleeve": str(source.get("Sleeve") or "TACTICAL"),
                 "P&L %": _finite(source.get("Gain/Loss %"), 0.0),
-                "Current %": (market_value / account_value * 100.0) if account_value > 0 else 0.0,
-                "Target %": _finite(cfg.get(symbol, {}).get("target_pct"), 0.0),
-                "Band +/- %": _finite(cfg.get(symbol, {}).get("band_pct"), 0.0),
+                "Current %": current_pct,
+                "Target %": target_pct,
+                "Lower %": lower_pct,
+                "Upper %": upper_pct,
+                "Tolerance": (
+                    "IN TOLERANCE"
+                    if lower_pct - 1e-9 <= current_pct <= upper_pct + 1e-9
+                    else "OUT OF TOLERANCE"
+                ),
             }
         )
     return pd.DataFrame(rows)
+
+
+
+def _style_plan(plan: pd.DataFrame):
+    """Make tolerance state unmistakable while keeping every other cell light on dark."""
+    def cell_style(value: Any) -> str:
+        text = str(value).strip().upper()
+        if text == "IN TOLERANCE":
+            return "color:#4af6c3;background-color:#050505;font-weight:900;"
+        if text == "OUT OF TOLERANCE":
+            return "color:#ff433d;background-color:#050505;font-weight:900;"
+        return "color:#f2f2f2;background-color:#050505;"
+
+    styled = plan.style.map(cell_style)
+    if "Tolerance" in plan.columns:
+        styled = styled.map(
+            lambda value: (
+                "color:#4af6c3;background-color:#050505;font-weight:900;"
+                if str(value).strip().upper() == "IN TOLERANCE"
+                else "color:#ff433d;background-color:#050505;font-weight:900;"
+            ),
+            subset=["Tolerance"],
+        )
+    return styled
 
 
 def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
@@ -642,11 +820,21 @@ def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
         symbol = str(source.get("Symbol") or "").strip().upper()
         if not symbol:
             continue
+        target_pct = min(100.0, max(0.0, _finite(source.get("Target %"), 0.0)))
+        lower_pct = min(
+            target_pct,
+            max(0.0, _finite(source.get("Lower %"), target_pct)),
+        )
+        upper_pct = max(
+            target_pct,
+            min(100.0, _finite(source.get("Upper %"), target_pct)),
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(source.get("Target %"), 0.0))),
-                "band_pct": min(50.0, max(0.0, _finite(source.get("Band +/- %"), 0.0))),
+                "target_pct": target_pct,
+                "lower_pct": lower_pct,
+                "upper_pct": upper_pct,
             }
         )
     return rows
