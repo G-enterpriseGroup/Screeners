@@ -657,7 +657,7 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
     # forbidden from previewing, placing, changing, or canceling an order.
     # GEX keeps its existing login-triggered refresh behavior.
     with st.container(key="terminal_background_hooks", gap=None):
-        maybe_auto_watch_risk_entries(_live_etrade_client(), _touch_etrade_session)
+        maybe_auto_watch_risk_entries(_live_etrade_client())
         if active_tab != "GEX":
             maybe_auto_refresh_gex_on_login()
 
