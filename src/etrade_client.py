@@ -122,13 +122,21 @@ class ETradeClient:
             resource_owner_secret=oauth_token_secret,
         )
 
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        allow_no_content: bool = False,
+    ) -> dict[str, Any]:
         response = self.session.get(
             f"{self.base}{path}",
             params=params or {},
             headers={"Accept": "application/json"},
             timeout=30,
         )
+        if allow_no_content and response.status_code == 204:
+            return {}
         return _json_response(response)
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -257,6 +265,7 @@ class ETradeClient:
         return self._get(
             f"/v1/accounts/{quote(account_id_key, safe='')}/orders",
             params,
+            allow_no_content=True,
         )
 
     def cancel_order(
