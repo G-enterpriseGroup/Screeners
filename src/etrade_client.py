@@ -2,7 +2,7 @@
 
 Account and market calls are read-only except for explicitly reviewed order
 requests. Option Book remains preview-only; Risk Sizing may use preview, place,
-and order-list methods for its separately confirmed live stock workflow.
+order-list, and explicit cancel methods for its confirmed live stock workflow.
 """
 
 from __future__ import annotations
@@ -141,6 +141,16 @@ class ETradeClient:
         )
         return _json_response(response)
 
+    def _put(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """PUT JSON to an authenticated E*TRADE endpoint."""
+        response = self.session.put(
+            f"{self.base}{path}",
+            json=payload,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=30,
+        )
+        return _json_response(response)
+
     def renew(self) -> None:
         response = self.session.get(
             f"{self.base}/oauth/renew_access_token",
@@ -247,6 +257,26 @@ class ETradeClient:
         return self._get(
             f"/v1/accounts/{quote(account_id_key, safe='')}/orders",
             params,
+        )
+
+    def cancel_order(
+        self,
+        account_id_key: str,
+        order_id: int | str,
+    ) -> dict[str, Any]:
+        """Submit an explicit cancellation request for one existing E*TRADE order."""
+        account_id_key = str(account_id_key or "").strip()
+        if not account_id_key:
+            raise ETradeError("A valid E*TRADE account is required to cancel an order.")
+        try:
+            order_number = int(str(order_id).strip())
+        except (TypeError, ValueError) as exc:
+            raise ETradeError("A numeric E*TRADE order ID is required for cancellation.") from exc
+        if order_number <= 0:
+            raise ETradeError("A positive E*TRADE order ID is required for cancellation.")
+        return self._put(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/orders/cancel",
+            {"CancelOrderRequest": {"orderId": order_number}},
         )
 
     def get_option_expirations(self, symbol: str) -> dict[str, Any]:
