@@ -9,7 +9,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.rebalance_portfolio_ui import _build_rebalance_plan
+from src.rebalance_portfolio_ui import _build_rebalance_plan, _clean_state, _config_from_state, _persist_rebalance_state, _session_state_key
+import streamlit as st
 
 
 def _settings(**overrides):
@@ -98,6 +99,22 @@ def main() -> None:
     ):
         assert required in source, required
 
+    # Disappearing tickers retain their exact rules and do not affect the live
+    # target total; a returning ticker recovers its original band, including 0.
+    account = "MEMORY-TEST-A"
+    original = _clean_state({"rows": config + [{"symbol": "OLD", "target_pct": 8, "band_pct": 0}]})
+    st.session_state[_session_state_key(account)] = original
+    active, changed = _config_from_state(original, holdings, 1_000_000)
+    assert not changed
+    assert "OLD" not in {r["symbol"] for r in active}
+    active[0]["band_pct"] = 3.75
+    saved = _persist_rebalance_state(account, {**original, "rows": active})
+    assert next(r for r in saved["rows"] if r["symbol"] == "OLD")["band_pct"] == 0
+    returning = pd.DataFrame([{"Symbol": "OLD", "Market Value": 50000, "Sleeve": "TACTICAL"}])
+    restored, changed = _config_from_state(saved, returning, 1_000_000)
+    assert restored == [{"symbol": "OLD", "target_pct": 8.0, "band_pct": 0.0}]
+    assert not changed
+    assert _session_state_key(account) != _session_state_key("MEMORY-TEST-B")
     print("REBALANCE PORTFOLIO TESTS: PASS")
 
 

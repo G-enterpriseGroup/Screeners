@@ -19,6 +19,7 @@ describe the same book.
 from __future__ import annotations
 
 import hashlib
+from html import escape
 import math
 from pathlib import Path
 import time
@@ -50,7 +51,7 @@ _DEFAULT_LOSS_REVIEW_TRIGGER = -10.0
 _DEFAULT_HARD_MAX = 25.0
 _BAND_REENTRY_BUFFER = 0.10
 
-_REBALANCE_COMPONENT_PATH = Path(__file__).parent / "components" / "risk_book_state_v1"
+_REBALANCE_COMPONENT_PATH = Path(__file__).parent / "components" / "rebalance_state_v1"
 _rebalance_state_component = components.declare_component(
     "raj_rebalance_state_v1",
     path=str(_REBALANCE_COMPONENT_PATH),
@@ -142,15 +143,16 @@ def _clean_state(raw: Any) -> dict[str, Any]:
         ),
         "rows": rows,
         "settings": settings,
+        "selected_symbol": str(raw.get("selected_symbol") or "").strip().upper(),
     }
 
 
-def _state_payload(state: dict[str, Any]) -> tuple[Any, Any]:
+def _state_payload(state: dict[str, Any]) -> tuple[Any, ...]:
     cleaned = _clean_state(state)
-    return cleaned["rows"], cleaned["settings"]
+    return cleaned["rows"], cleaned["settings"], cleaned["selected_symbol"]
 
 
-def _load_rebalance_state(account_key: str) -> dict[str, Any]:
+def _load_rebalance_state(account_key: str) -> dict[str, Any] | None:
     session_key = _session_state_key(account_key)
     session_state = _clean_state(st.session_state.get(session_key))
 
@@ -158,18 +160,24 @@ def _load_rebalance_state(account_key: str) -> dict[str, Any]:
         browser = _rebalance_state_component(
             storage_key=_browser_storage_key(account_key),
             server_state=session_state,
+            read_only=True,
             key="raj_rebalance_state_reader_" + _account_token(account_key),
             default=None,
         )
 
-    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
-        browser_state = _clean_state(browser["state"])
-        if browser_state["revision"] > session_state["revision"] or (
-            session_state["revision"] == 0
-            and not session_state["rows"]
-            and browser_state["rows"]
+    ready_key = "_rebalance_browser_ready::" + _account_token(account_key)
+    if isinstance(browser, dict) and browser.get("ready"):
+        st.session_state[ready_key] = True
+        st.session_state[ready_key + "::available"] = bool(browser.get("available"))
+        browser_state = _clean_state(browser.get("state"))
+        if (browser_state["revision"], browser_state["saved_at"]) > (
+            session_state["revision"], session_state["saved_at"]
         ):
             session_state = browser_state
+    if not st.session_state.get(ready_key):
+        # Never seed or write defaults until the browser has answered, including
+        # an explicit empty-storage response. Otherwise revision 1 can collide.
+        return None
 
     st.session_state[session_key] = session_state
     return session_state
@@ -180,6 +188,10 @@ def _persist_rebalance_state(account_key: str, candidate: dict[str, Any]) -> dic
     session_key = _session_state_key(account_key)
     current = _clean_state(st.session_state.get(session_key))
     cleaned = _clean_state(candidate)
+    # Keep inactive tickers too: leaving the live book must not erase their rules.
+    merged = {row["symbol"]: row for row in current["rows"]}
+    merged.update({row["symbol"]: row for row in cleaned["rows"]})
+    cleaned["rows"] = list(merged.values())
 
     if _state_payload(current) == _state_payload(cleaned):
         state = current
@@ -192,18 +204,31 @@ def _persist_rebalance_state(account_key: str, candidate: dict[str, Any]) -> dic
             "portfolio_saved_at": now,
         }
         st.session_state[session_key] = state
+        marker = "_rebalance_loaded_revision::" + _account_token(account_key)
+        if st.session_state.get(marker) == current["revision"]:
+            st.session_state[marker] = state["revision"]
     return state
 
 
 def _sync_rebalance_state_browser(account_key: str, state: dict[str, Any]) -> None:
     """Write the final per-rerun state exactly once to avoid duplicate component keys."""
     with st.container(key="rebalance_state_writer_shell", gap=None):
-        _rebalance_state_component(
+        result = _rebalance_state_component(
             storage_key=_browser_storage_key(account_key),
             server_state=_clean_state(state),
             key="raj_rebalance_state_writer_" + _account_token(account_key),
             default=None,
         )
+
+    available = st.session_state.get(
+        "_rebalance_browser_ready::" + _account_token(account_key) + "::available", True
+    )
+    if not available or (isinstance(result, dict) and result.get("available") is False):
+        st.warning("Browser memory is unavailable. Changes last only for this session; allow site storage to remember them.")
+    elif isinstance(result, dict) and result.get("saved_revision") == state["revision"]:
+        st.caption("SAVED IN THIS BROWSER · Targets, ticker bands and all rules are remembered per account, including tickers no longer held.")
+    else:
+        st.caption("Saving account settings to this browser…")
 
 
 # ==============================
@@ -453,13 +478,30 @@ def _build_rebalance_plan(
 _REBALANCE_CSS = """
 <style>
 .st-key-rebalance_root{gap:4px!important;padding:0!important;margin:0!important;font-family:"Courier New",monospace}
-.st-key-rebalance_root .reb-section{background:#fb8b1e;color:#000!important;font:900 .82rem/1.08 "Courier New",monospace;letter-spacing:.04em;padding:.30rem .48rem;margin:0;text-transform:uppercase}
-.st-key-rebalance_root .reb-note{border:1px solid #5f431c;background:#080808;color:#b87621!important;font:800 .68rem/1.25 "Courier New",monospace;padding:.34rem .48rem;margin:0}
-.st-key-rebalance_root .reb-kpi{border:1px solid #5f431c;background:#050505;min-height:54px;padding:.35rem .48rem;margin:0}
-.st-key-rebalance_root .reb-kpi-label{color:#b87621!important;font:900 .64rem/1.05 "Courier New",monospace;letter-spacing:.03em}
+.st-key-rebalance_root .reb-section{background:#fb8b1e;color:#000!important;font:900 1.02rem/1.08 "Courier New",monospace;letter-spacing:.04em;padding:0 10px;height:36px;display:flex;align-items:center;box-sizing:border-box;margin:0;text-transform:uppercase;-webkit-text-fill-color:#000!important}
+.st-key-rebalance_root .reb-note{border:1px solid #fb8b1e;background:#080808;color:#fb8b1e!important;font:800 .80rem/1.25 "Courier New",monospace;padding:.34rem .48rem;margin:0}
+.st-key-rebalance_root .reb-kpi{border:1px solid #fb8b1e;background:#000;box-sizing:border-box;min-height:52px;padding:.35rem .48rem;margin:0}
+.st-key-rebalance_root .reb-kpi-label{color:#fb8b1e!important;font:900 .80rem/1.25 "Courier New",monospace;letter-spacing:.03em}
 .st-key-rebalance_root .reb-kpi-value{color:#f4f4f4!important;font:900 1.02rem/1.15 "Courier New",monospace;margin-top:.12rem}
-.st-key-rebalance_root [data-testid="stDataFrame"],
-.st-key-rebalance_root [data-testid="stDataEditor"]{border:1px solid #5f431c}
+.st-key-rebalance_root [data-testid="stVerticalBlock"]{gap:4px!important}
+.st-key-rebalance_root [data-testid="stHorizontalBlock"]{gap:8px!important}
+.st-key-rebalance_root [data-testid="stWidgetLabel"] p{font:900 .80rem/1.25 "Courier New",monospace!important;color:#fb8b1e!important}
+.st-key-rebalance_root [data-testid="stNumberInputContainer"],
+.st-key-rebalance_root [data-baseweb="select"]>div{min-height:38px!important;height:38px!important;border-color:#fb8b1e!important;border-radius:0!important}
+.st-key-rebalance_root [data-testid="stNumberInputStepDown"],
+.st-key-rebalance_root [data-testid="stNumberInputStepUp"]{color:#fb8b1e!important;background:#050505!important;border-color:#fb8b1e!important}
+.st-key-rebalance_root [data-testid="stNumberInputStepDown"] svg,
+.st-key-rebalance_root [data-testid="stNumberInputStepUp"] svg{fill:#fb8b1e!important;color:#fb8b1e!important}
+.st-key-rebalance_root [data-testid="stCaptionContainer"] p{color:#fb8b1e!important}
+.st-key-rebalance_root input{font:900 1rem "Courier New",monospace!important}
+.st-key-rebalance_root [data-testid="stButton"] button,
+.st-key-rebalance_root [data-testid="stDownloadButton"] button{min-height:38px!important;border:1px solid #fb8b1e!important;border-radius:0!important;font-family:"Courier New",monospace!important}
+.st-key-rebalance_root .reb-table{width:100%;table-layout:fixed;border-collapse:collapse;background:#000;margin:0;font:800 1.02rem/1.25 "Courier New",monospace}
+.st-key-rebalance_root .reb-table th{background:#fb8b1e!important;color:#000!important;-webkit-text-fill-color:#000!important;border:1px solid #553008;padding:8px 6px;text-align:left;text-transform:uppercase;overflow-wrap:anywhere}
+.st-key-rebalance_root .reb-table td{border:1px solid #fb8b1e;padding:8px 6px;color:#fb8b1e;overflow-wrap:anywhere}
+.st-key-rebalance_root .reb-table .reb-positive{color:#00e676!important;-webkit-text-fill-color:#00e676!important}
+.st-key-rebalance_root .reb-table .reb-negative{color:#ff433d!important;-webkit-text-fill-color:#ff433d!important}
+.st-key-rebalance_root .reb-table .reb-review{color:#62b5ff!important;-webkit-text-fill-color:#62b5ff!important}
 .st-key-rebalance_state_reader_shell,
 .st-key-rebalance_state_writer_shell,
 .st-key-risk_intent_state_reader_shell,
@@ -491,6 +533,31 @@ def _kpi(label: str, value: str) -> None:
     )
 
 
+def _table(frame: pd.DataFrame, *, percent_columns: set[str] | None = None,
+           money_columns: set[str] | None = None) -> None:
+    """Feature-local, width-fitting Risk-style table; escape all broker text."""
+    percent_columns = percent_columns or set()
+    money_columns = money_columns or set()
+    headers = "".join(f"<th>{escape(str(column))}</th>" for column in frame.columns)
+    rows = []
+    for _, record in frame.iterrows():
+        cells = []
+        for column, value in record.items():
+            text = str(value)
+            tone = ""
+            if column in percent_columns:
+                text = f"{_finite(value):.2f}%"
+            if column in money_columns:
+                text = _money(value)
+            if column in {"P&L %", "Proposed $"}:
+                tone = "reb-positive" if _finite(value) > 0 else "reb-negative" if _finite(value) < 0 else ""
+            if column == "Action":
+                tone = "reb-review" if "REVIEW" in text else "reb-positive" if text == "ADD" else ""
+            cells.append(f'<td class="{tone}">{escape(text)}</td>')
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    st.html('<table class="reb-table"><thead><tr>' + headers + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>')
+
+
 def _money(value: float) -> str:
     value = _finite(value, 0.0)
     sign = "-" if value < 0 else ""
@@ -518,7 +585,6 @@ def _config_from_state(
         for row in state.get("rows", []) or []
         if str(row.get("symbol") or "").strip()
     }
-    active: set[str] = set()
     rows: list[dict[str, Any]] = []
     changed = False
 
@@ -526,7 +592,6 @@ def _config_from_state(
         symbol = str(source.get("Symbol") or "").strip().upper()
         if not symbol:
             continue
-        active.add(symbol)
         current_pct = (
             _finite(source.get("Market Value"), 0.0) / account_value * 100.0
             if account_value > 0
@@ -554,8 +619,6 @@ def _config_from_state(
             }
         )
 
-    if set(existing) != active:
-        changed = True
     return rows, changed
 
 
@@ -574,7 +637,7 @@ def _settings_widget_keys(account_key: str) -> dict[str, str]:
 def _hydrate_setting_widgets(account_key: str, state: dict[str, Any]) -> dict[str, str]:
     keys = _settings_widget_keys(account_key)
     marker = "_rebalance_loaded_revision::" + _account_token(account_key)
-    if st.session_state.get(marker) != state["revision"]:
+    if st.session_state.get(marker) != state["revision"] or any(key not in st.session_state for key in keys.values()):
         for field, key in keys.items():
             st.session_state[key] = state["settings"][field]
         st.session_state[marker] = state["revision"]
@@ -605,21 +668,6 @@ def _editor_frame(
         )
     return pd.DataFrame(rows)
 
-
-def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    rows = []
-    for _, source in frame.iterrows():
-        symbol = str(source.get("Symbol") or "").strip().upper()
-        if not symbol:
-            continue
-        rows.append(
-            {
-                "symbol": symbol,
-                "target_pct": min(100.0, max(0.0, _finite(source.get("Target %"), 0.0))),
-                "band_pct": min(50.0, max(0.0, _finite(source.get("Band +/- %"), 0.0))),
-            }
-        )
-    return rows
 
 
 # ==============================
@@ -726,6 +774,9 @@ def render_rebalance_portfolio(
         classified = _apply_intent_overrides(classified, account_overrides)
 
         state = _load_rebalance_state(account_key)
+        if state is None:
+            st.info("Restoring saved Rebalance settings…")
+            return
         config_rows, config_changed = _config_from_state(
             state,
             classified,
@@ -888,47 +939,42 @@ def render_rebalance_portfolio(
                 account_key,
                 {**state, "settings": settings, "rows": config_rows},
             )
-            st.session_state.pop(
-                "rebalance_target_editor_" + _account_token(account_key),
-                None,
-            )
 
+        st.caption("Choose a ticker to edit its target and band. A 10% target with a ±2 percentage-point band allows 8–12%. Changes save automatically after Enter or leaving the field.")
+        symbols = [row["symbol"] for row in config_rows]
+        token = _account_token(account_key)
+        picker_key = "rebalance_ticker::" + token
+        if picker_key not in st.session_state:
+            saved_symbol = state["selected_symbol"]
+            st.session_state[picker_key] = saved_symbol if saved_symbol in symbols else symbols[0]
+        if st.session_state[picker_key] not in symbols:
+            st.session_state[picker_key] = symbols[0]
+        ticker_col, target_col, band_col, range_col = st.columns([1.2, 1, 1, 1.3], gap="small", vertical_alignment="bottom")
+        with ticker_col:
+            symbol = st.selectbox("Ticker", symbols, key=picker_key)
+        selected = next(row for row in config_rows if row["symbol"] == symbol)
+        # Stable widget keys allow consecutive edits; only rehydrate when the
+        # saved row changes externally (restore/reset) or widgets are recreated.
+        input_key = f"rebalance_position::{token}::{symbol}"
+        row_marker = input_key + "::loaded"
+        saved_values = (selected["target_pct"], selected["band_pct"])
+        if st.session_state.get(row_marker) != saved_values or input_key + "::target" not in st.session_state:
+            st.session_state[input_key + "::target"] = float(selected["target_pct"])
+            st.session_state[input_key + "::band"] = float(selected["band_pct"])
+        with target_col:
+            target = st.number_input("Target weight %", min_value=0.0, max_value=100.0,
+                                     step=0.25, format="%.2f", key=input_key + "::target")
+        with band_col:
+            band = st.number_input("Band ± percentage points", min_value=0.0, max_value=50.0,
+                                   step=0.25, format="%.2f", key=input_key + "::band")
+        with range_col:
+            _kpi("ALLOWED RANGE", f"{max(0, target-band):.2f}% – {min(100, target+band):.2f}%")
+        st.session_state[row_marker] = (target, band)
+        selected.update(target_pct=target, band_pct=band)
+        state = _persist_rebalance_state(account_key, {**state, "rows": config_rows, "selected_symbol": symbol})
         editor = _editor_frame(classified, config_rows, account_value)
-        edited = st.data_editor(
-            editor,
-            hide_index=True,
-            width="stretch",
-            row_height=34,
-            disabled=["Symbol", "Sleeve", "P&L %", "Current %"],
-            column_config={
-                "Symbol": st.column_config.TextColumn("SYMBOL"),
-                "Sleeve": st.column_config.TextColumn("SLEEVE"),
-                "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f%%"),
-                "Current %": st.column_config.NumberColumn("CURRENT %", format="%.2f%%"),
-                "Target %": st.column_config.NumberColumn(
-                    "TARGET %",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.25,
-                    format="%.2f%%",
-                ),
-                "Band +/- %": st.column_config.NumberColumn(
-                    "BAND +/- %",
-                    min_value=0.0,
-                    max_value=50.0,
-                    step=0.25,
-                    format="%.2f%%",
-                ),
-            },
-            key="rebalance_target_editor_" + _account_token(account_key),
-        )
-        edited_rows = _config_from_editor(edited)
-        if edited_rows != config_rows:
-            config_rows = edited_rows
-            state = _persist_rebalance_state(
-                account_key,
-                {**state, "settings": settings, "rows": config_rows},
-            )
+        editor["Allowed range"] = [f"{max(0, r['target_pct']-r['band_pct']):.2f}% – {min(100, r['target_pct']+r['band_pct']):.2f}%" for r in config_rows]
+        _table(editor, percent_columns={"P&L %", "Current %", "Target %", "Band +/- %"})
 
         # One writer component per rerun: settings, reset actions, and data-editor
         # changes may all mutate state in the same Streamlit pass.
@@ -971,23 +1017,14 @@ def render_rebalance_portfolio(
         with q3:
             _kpi("BUY FUNDING", f"{summary['buy_funding_ratio'] * 100.0:.1f}%")
 
-        st.dataframe(
-            plan,
-            hide_index=True,
-            width="stretch",
-            row_height=34,
-            column_config={
-                "P&L %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Market Value": st.column_config.NumberColumn(format="$%.0f"),
-                "Current %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Target %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Band +/- %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Drift %": st.column_config.NumberColumn(format="%+.2f%%"),
-                "Raw Gap $": st.column_config.NumberColumn(format="$%+.0f"),
-                "Proposed $": st.column_config.NumberColumn(format="$%+.0f"),
-                "Post %": st.column_config.NumberColumn(format="%.2f%%"),
-            },
+        _table(
+            plan[["Symbol", "Current %", "Range", "Action", "Proposed $", "Post %", "P&L %"]],
+            percent_columns={"Current %", "Post %", "P&L %"},
+            money_columns={"Proposed $"},
         )
+        with st.expander("PLAN DETAILS · sleeves, drift and reasons"):
+            _table(plan[["Symbol", "Sleeve", "Drift %", "Raw Gap $", "Reason"]],
+                   percent_columns={"Drift %"}, money_columns={"Raw Gap $"})
 
         export_col, _ = st.columns([1.2, 5.0], gap="small")
         with export_col:

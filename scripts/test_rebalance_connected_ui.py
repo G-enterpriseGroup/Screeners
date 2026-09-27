@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
@@ -84,7 +85,19 @@ render_rebalance_portfolio(
 
 def main() -> None:
     app = AppTest.from_string(APP_SOURCE, default_timeout=60)
+    # Components have no browser in AppTest. Prove the initial restore gate,
+    # then provide explicit hydration/save acknowledgements like the real bridge.
     app.run()
+    assert any("Restoring saved" in item.value for item in app.info)
+    saved = {}
+    def bridge(**kwargs):
+        key = kwargs["storage_key"]
+        if kwargs.get("read_only"):
+            return {"ready": True, "available": True, "state": saved.get(key)}
+        saved[key] = kwargs["server_state"]
+        return {"ready": True, "available": True, "saved_revision": saved[key]["revision"]}
+    with patch("src.rebalance_portfolio_ui._rebalance_state_component", side_effect=bridge):
+        app.run()
     assert not app.exception, [item.message for item in app.exception]
 
     labels = {button.label for button in app.button}
@@ -107,10 +120,25 @@ def main() -> None:
     ):
         assert expected in html, expected
 
-    # Reaching the final plan section with no AppTest exception proves the
-    # target/band editor executed successfully; AppTest does not expose
-    # st.data_editor under a stable "data_editor" element accessor.
-    assert app.dataframe, "rebalance plan dataframe missing"
+    # Both target rules and the resulting plan use feature-local Risk tables.
+    assert 'class="reb-table"' in html, "rebalance plan table missing"
+    with patch("src.rebalance_portfolio_ui._rebalance_state_component", side_effect=bridge):
+        band = next(item for item in app.number_input if item.label == "Band ± percentage points")
+        band.set_value(3.5).run()
+        assert not app.exception
+        assert next(row for row in next(iter(saved.values()))["rows"] if row["symbol"] == "NVDA")["band_pct"] == 3.5
+        # Consecutive settings changes must not be undone by revision hydration.
+        next(item for item in app.number_input if item.label == "Minimum Rebalance Trade $").set_value(1200.0).run()
+        next(item for item in app.number_input if item.label == "Loss Review Trigger %").set_value(-15.0).run()
+        assert not app.exception
+        state = next(iter(saved.values()))
+        assert state["settings"]["min_trade"] == 1200.0
+        assert state["settings"]["loss_review_trigger"] == -15.0
+        restored = AppTest.from_string(APP_SOURCE, default_timeout=60).run()
+        assert not restored.exception
+        assert next(item for item in restored.number_input if item.label == "Band ± percentage points").value == 3.5
+        assert next(item for item in restored.number_input if item.label == "Minimum Rebalance Trade $").value == 1200.0
+
 
     print("REBALANCE CONNECTED UI SMOKE: PASS")
 
