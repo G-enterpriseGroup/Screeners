@@ -42,9 +42,21 @@ def fixture_balance(client, account, refresh=False):
             'marginBuyingPower':25000,
         }
     }
+
+def fixture_account_picker(key):
+    accounts = st.session_state['etrade_accounts']
+    selected = st.selectbox(
+        "E*TRADE Account",
+        range(len(accounts)),
+        index=0,
+        format_func=lambda index: accounts[index]['accountName'],
+        key=key,
+    )
+    return accounts[selected]
+
 render_risk_sizing(
     FixtureClient(),
-    account_picker=lambda _:st.session_state['etrade_accounts'][0],
+    account_picker=fixture_account_picker,
     refresh_accounts=lambda _:None,
     account_balance=fixture_balance,
     balance_snapshot=lambda p:(100000,100000,98000),
@@ -353,13 +365,20 @@ def main():
     ]
     assert sum(text == "3. PICK E*TRADE ACCOUNT" for text in live_headers) == 1
     assert sum(text == "4. REVIEW + SEND ORDER" for text in live_headers) == 1
+    assert app.selectbox(key="risk_sizing_account").value == 0
     assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
-    app.selectbox(key="risk_live_order_account_key").select("otherkey").run()
+
+    # Main E*TRADE Account -> Part 3 Order Account.
+    app.selectbox(key="risk_sizing_account").select(1).run()
     clean()
+    assert app.selectbox(key="risk_sizing_account").value == 1
     assert app.selectbox(key="risk_live_order_account_key").value == "otherkey"
+
+    # Part 3 Order Account -> main E*TRADE Account.
     app.selectbox(key="risk_live_order_account_key").select("fixture").run()
     clean()
     assert app.selectbox(key="risk_live_order_account_key").value == "fixture"
+    assert app.selectbox(key="risk_sizing_account").value == 0
 
     margin_payload = {
         "Computed": {
@@ -684,6 +703,9 @@ def main():
     assert '3. PICK E*TRADE ACCOUNT' in source
     assert '4. REVIEW + SEND ORDER' in source
     assert '_RISK_ORDER_DEFAULT_ACCOUNT_SUFFIX = "5474"' in source
+    assert 'on_change=_sync_main_picker_from_order_picker' in source
+    assert 'main_key = _main_risk_account_key()' in source
+    assert '_enforce_locked_account_picker_sync()' in source
     assert 'class="risk-v9-capacity-warning"' in v9_source
     print("Production Risk route: compact zero-dead-space layout, ticker/company split, Risk Book memory, E*TRADE-first quotes, sizing PASS")
 
