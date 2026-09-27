@@ -254,7 +254,7 @@ def main() -> int:
             "client.preview_order(",
             "client.place_order(",
             "client.list_orders(",
-            "CHECK ENTRY FILL IN E*TRADE",
+            "CHECK FULL FILL + SEND PROTECTIVE STOP",
             "SEND LIVE PROTECTIVE STOP",
         ):
             if required not in risk_live_text:

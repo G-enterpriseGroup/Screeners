@@ -1058,6 +1058,86 @@ def _preview_live_order(client, account_key: str, preview_payload: dict, touch_s
     }
 
 
+def _preview_protective_stop(client, entry_order: dict, touch_session) -> dict:
+    """Broker-preview the exact GTC stop tied to one fully filled Risk entry."""
+    stop_fingerprint = (
+        str(entry_order["account_key"]),
+        str(entry_order["order_id"]),
+        str(entry_order["symbol"]),
+        int(entry_order["quantity"]),
+        round(float(entry_order["stop_price"]), 2),
+    )
+    stop_preview_payload = _build_equity_preview_payload(
+        symbol=entry_order["symbol"],
+        quantity=int(entry_order["quantity"]),
+        action="SELL",
+        price_type="STOP",
+        stop_price=float(entry_order["stop_price"]),
+        order_term="GOOD_UNTIL_CANCEL",
+        client_order_id=_new_risk_client_order_id("RPS"),
+    )
+    stop_review = _preview_live_order(
+        client,
+        entry_order["account_key"],
+        stop_preview_payload,
+        touch_session,
+    )
+    stop_review.update(
+        {
+            "fingerprint": stop_fingerprint,
+            "account_key": entry_order["account_key"],
+            "account_label": entry_order["account_label"],
+            "symbol": entry_order["symbol"],
+            "quantity": int(entry_order["quantity"]),
+            "stop_price": float(entry_order["stop_price"]),
+        }
+    )
+    return stop_review
+
+
+def _place_reviewed_protective_stop(client, stop_review: dict, touch_session) -> bool:
+    """Place one user-authorized protective stop after a successful broker preview."""
+    uncertain_stop = {
+        key: stop_review[key]
+        for key in ("account_key", "account_label", "symbol", "quantity", "stop_price")
+    }
+    st.session_state[_RISK_STOP_UNCERTAIN_KEY] = uncertain_stop
+    try:
+        placed_stop = client.place_order(
+            stop_review["account_key"],
+            stop_review["place_payload"],
+        )
+        touch_session()
+        stop_order_id = _extract_order_id(placed_stop)
+        if stop_order_id in (None, ""):
+            raise ETradeError("E*TRADE returned no order ID after protective-stop placement.")
+        st.session_state[_RISK_STOP_ORDER_KEY] = {
+            **uncertain_stop,
+            "order_id": stop_order_id,
+            "placed_at": time.time(),
+        }
+        st.session_state.pop(_RISK_STOP_UNCERTAIN_KEY, None)
+        st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
+        st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+        return True
+    except Exception as exc:
+        st.error(
+            "STOP SUBMISSION STATUS UNCERTAIN // "
+            + str(exc)
+            + " // Check E*TRADE Orders before resetting or retrying."
+        )
+        return False
+
+
+def _render_stop_submitted_confirmation(stop_order: dict) -> None:
+    """Show the broker order id immediately without forcing another rerun."""
+    st.success(
+        f"PROTECTIVE STOP SUBMITTED // E*TRADE ORDER {stop_order['order_id']} // "
+        f"SELL {int(stop_order['quantity']):,} {stop_order['symbol']} @ STOP "
+        f"USD {float(stop_order['stop_price']):,.2f} // GTC"
+    )
+
+
 def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> None:
     st.html('<div class="risk-v9-section">3. PICK E*TRADE ACCOUNT</div>')
 
@@ -1081,7 +1161,8 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
 
     st.html('<div class="risk-v9-section">4. REVIEW + SEND ORDER</div>')
     st.caption(
-        "TWO-STEP PROTECTION // BUY LIMIT FIRST // AFTER A FULL FILL, REVIEW + SEND THE SEPARATE SELL STOP"
+        "PROTECTED ENTRY WORKFLOW // BUY LIMIT FIRST // AFTER A FULL FILL, "
+        "ONE ACTION RECHECKS THE FILL + SENDS THE GTC SELL STOP"
     )
 
     if entry_uncertain and not entry_order:
@@ -1161,15 +1242,17 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
         st.success("FINAL REVIEW // E*TRADE preview accepted. This next action submits a LIVE buy order.")
         st.caption(
             f"{review['account_label']} // BUY {int(review['quantity']):,} {review['symbol']} // "
-            f"LIMIT USD {float(review['entry_price']):,.2f} // DAY // STOP IS NOT SENT YET"
+            f"LIMIT USD {float(review['entry_price']):,.2f} // DAY // "
+            f"PLANNED GTC STOP USD {float(review['stop_price']):,.2f} // "
+            "STOP SENDS ONLY AFTER E*TRADE CONFIRMS THE FULL FILL"
         )
         _render_preview_messages(review)
         confirmed = st.checkbox(
-            "I CONFIRM THIS LIVE BUY LIMIT ORDER",
+            "I CONFIRM THIS LIVE BUY LIMIT AND THE PLANNED PROTECTIVE STOP SHOWN ABOVE",
             key=_RISK_ENTRY_CONFIRM_KEY,
         )
         if st.button(
-            "SEND LIVE BUY LIMIT",
+            "SEND LIVE BUY LIMIT // STOP FOLLOWS AFTER FULL FILL",
             type="primary",
             key="risk_live_send_entry",
             width="stretch",
@@ -1233,11 +1316,7 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
         return
 
     if stop_order:
-        st.success(
-            f"PROTECTIVE STOP SUBMITTED // E*TRADE ORDER {stop_order['order_id']} // "
-            f"SELL {int(stop_order['quantity']):,} {stop_order['symbol']} @ STOP "
-            f"USD {float(stop_order['stop_price']):,.2f} // GTC"
-        )
+        _render_stop_submitted_confirmation(stop_order)
         st.caption(
             "WORKFLOW COMPLETE // Clearing this terminal workflow does not cancel either E*TRADE order."
         )
@@ -1250,10 +1329,15 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
             st.rerun(scope="fragment")
         return
 
+    st.caption(
+        "PROTECTION HANDOFF // Click once after the entry is submitted. "
+        "The terminal rechecks E*TRADE; only a confirmed full fill can trigger the exact planned GTC stop. "
+        "Open or partial fills remain blocked."
+    )
     if st.button(
-        "CHECK ENTRY FILL IN E*TRADE",
+        "CHECK FULL FILL + SEND PROTECTIVE STOP",
         type="primary",
-        key="risk_live_check_fill",
+        key="risk_live_check_fill_send_stop",
         width="stretch",
     ):
         try:
@@ -1273,9 +1357,37 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
             st.error(f"E*TRADE FILL CHECK FAILED // {exc}")
             return
 
+        if fill.get("full") and not fill.get("partial"):
+            try:
+                stop_review = _preview_protective_stop(
+                    client,
+                    entry_order,
+                    touch_session,
+                )
+                st.session_state[_RISK_STOP_REVIEW_KEY] = stop_review
+                st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+            except Exception as exc:
+                st.error(f"E*TRADE STOP PREVIEW FAILED // {exc}")
+                return
+
+            if not (stop_review.get("details") or {}).get("messages"):
+                if _place_reviewed_protective_stop(client, stop_review, touch_session):
+                    _render_stop_submitted_confirmation(
+                        st.session_state[_RISK_STOP_ORDER_KEY]
+                    )
+                return
+
+            st.warning(
+                "E*TRADE STOP PREVIEW RETURNED MESSAGE(S) // "
+                "The stop was NOT sent. Review the broker message below before confirming."
+            )
+
     fill = st.session_state.get(_RISK_FILL_KEY)
     if not isinstance(fill, dict):
-        st.info("PROTECTIVE STOP LOCKED // Check the entry fill after E*TRADE executes the full buy.")
+        st.info(
+            "PROTECTIVE STOP PENDING // Use CHECK FULL FILL + SEND PROTECTIVE STOP. "
+            "No stop is sent unless E*TRADE confirms the complete entry fill during that action."
+        )
         return
     if not fill.get("found"):
         st.warning(
@@ -1303,92 +1415,49 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
                 _clear_risk_order_workflow()
                 st.rerun(scope="fragment")
         else:
-            st.info(f"ENTRY STATUS {status} // Protective stop remains locked until the full fill is confirmed.")
+            st.info(
+                f"ENTRY STATUS {status} // Protective stop was NOT sent. "
+                "Click CHECK FULL FILL + SEND PROTECTIVE STOP again after the entry fills."
+            )
         return
 
     avg_price = fill.get("average_price")
     avg_text = f" @ AVG USD {float(avg_price):,.2f}" if avg_price is not None else ""
     st.success(
-        f"ENTRY FULLY FILLED // {int(entry_order['quantity']):,} {entry_order['symbol']}{avg_text} // "
-        "PROTECTIVE STOP UNLOCKED"
+        f"ENTRY FULLY FILLED // {int(entry_order['quantity']):,} {entry_order['symbol']}{avg_text}"
     )
-
-    stop_fingerprint = (
-        str(entry_order["account_key"]),
-        str(entry_order["order_id"]),
-        str(entry_order["symbol"]),
-        int(entry_order["quantity"]),
-        round(float(entry_order["stop_price"]), 2),
-    )
-    stop_review = st.session_state.get(_RISK_STOP_REVIEW_KEY)
-    if isinstance(stop_review, dict) and stop_review.get("fingerprint") != stop_fingerprint:
-        st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
-        st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
-        stop_review = None
-
-    st.caption(
-        f"ACCOUNT {entry_order['account_label']} // SELL {int(entry_order['quantity']):,} "
-        f"{entry_order['symbol']} // STOP USD {float(entry_order['stop_price']):,.2f} // GTC"
-    )
-    if st.button(
-        "REVIEW PROTECTIVE STOP WITH E*TRADE",
-        type="primary",
-        key="risk_live_preview_stop",
-        width="stretch",
-    ):
-        try:
-            stop_preview_payload = _build_equity_preview_payload(
-                symbol=entry_order["symbol"],
-                quantity=int(entry_order["quantity"]),
-                action="SELL",
-                price_type="STOP",
-                stop_price=float(entry_order["stop_price"]),
-                order_term="GOOD_UNTIL_CANCEL",
-                client_order_id=_new_risk_client_order_id("RPS"),
-            )
-            stop_review = _preview_live_order(
-                client,
-                entry_order["account_key"],
-                stop_preview_payload,
-                touch_session,
-            )
-            stop_review.update(
-                {
-                    "fingerprint": stop_fingerprint,
-                    "account_key": entry_order["account_key"],
-                    "account_label": entry_order["account_label"],
-                    "symbol": entry_order["symbol"],
-                    "quantity": int(entry_order["quantity"]),
-                    "stop_price": float(entry_order["stop_price"]),
-                }
-            )
-            st.session_state[_RISK_STOP_REVIEW_KEY] = stop_review
-            st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
-        except Exception as exc:
-            st.error(f"E*TRADE STOP PREVIEW FAILED // {exc}")
-            return
 
     stop_review = st.session_state.get(_RISK_STOP_REVIEW_KEY)
-    if not stop_review:
+    if not isinstance(stop_review, dict):
+        st.info(
+            "FULL FILL CONFIRMED // Click CHECK FULL FILL + SEND PROTECTIVE STOP "
+            "to refresh the broker preview and submit the exact planned stop."
+        )
         return
     if not _preview_is_fresh(stop_review):
         st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
         st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
-        st.warning("STOP PREVIEW EXPIRED // Review again before sending.")
+        st.warning(
+            "STOP PREVIEW EXPIRED // No stop was sent. "
+            "Click CHECK FULL FILL + SEND PROTECTIVE STOP again."
+        )
         return
 
-    st.success("FINAL REVIEW // E*TRADE preview accepted. This next action submits a LIVE protective stop.")
+    st.warning(
+        "STOP PREVIEW PAUSED FOR BROKER MESSAGE REVIEW // "
+        "No protective stop has been sent yet."
+    )
     st.caption(
         f"{stop_review['account_label']} // SELL {int(stop_review['quantity']):,} "
         f"{stop_review['symbol']} // STOP USD {float(stop_review['stop_price']):,.2f} // GTC"
     )
     _render_preview_messages(stop_review)
     stop_confirmed = st.checkbox(
-        "I CONFIRM THIS LIVE PROTECTIVE STOP ORDER",
+        "I REVIEWED THE E*TRADE MESSAGE(S) AND CONFIRM THIS LIVE PROTECTIVE STOP",
         key=_RISK_STOP_CONFIRM_KEY,
     )
     if st.button(
-        "SEND LIVE PROTECTIVE STOP",
+        "SEND LIVE PROTECTIVE STOP AFTER MESSAGE REVIEW",
         type="primary",
         key="risk_live_send_stop",
         width="stretch",
@@ -1397,36 +1466,11 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
         if not _preview_is_fresh(stop_review):
             st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
             st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
-            st.error("STOP PREVIEW EXPIRED // Review again. No live stop was sent.")
+            st.error("STOP PREVIEW EXPIRED // No live stop was sent.")
             return
-        uncertain_stop = {
-            key: stop_review[key]
-            for key in ("account_key", "account_label", "symbol", "quantity", "stop_price")
-        }
-        st.session_state[_RISK_STOP_UNCERTAIN_KEY] = uncertain_stop
-        try:
-            placed_stop = client.place_order(
-                stop_review["account_key"],
-                stop_review["place_payload"],
-            )
-            touch_session()
-            stop_order_id = _extract_order_id(placed_stop)
-            if stop_order_id in (None, ""):
-                raise ETradeError("E*TRADE returned no order ID after protective-stop placement.")
-            st.session_state[_RISK_STOP_ORDER_KEY] = {
-                **uncertain_stop,
-                "order_id": stop_order_id,
-                "placed_at": time.time(),
-            }
-            st.session_state.pop(_RISK_STOP_UNCERTAIN_KEY, None)
-            st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
-            st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
-            st.rerun(scope="fragment")
-        except Exception as exc:
-            st.error(
-                "STOP SUBMISSION STATUS UNCERTAIN // "
-                + str(exc)
-                + " // Check E*TRADE Orders before resetting or retrying."
+        if _place_reviewed_protective_stop(client, stop_review, touch_session):
+            _render_stop_submitted_confirmation(
+                st.session_state[_RISK_STOP_ORDER_KEY]
             )
 
 
