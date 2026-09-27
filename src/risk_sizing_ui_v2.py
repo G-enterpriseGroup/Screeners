@@ -1409,11 +1409,12 @@ def _render_next_trade(
             risk_state_help = math_check_help + "\n\n" + risk_state_help
             if target_stop is not None:
                 with p5:
-                    target_card_col, target_copy_col = st.columns(
-                        [1.0, 0.055],
-                        gap="small",
-                        vertical_alignment="center",
-                    )
+                    with st.container(key="risk_target_stop_card"):
+                        target_card_col, target_copy_col = st.columns(
+                            [1.0, 0.055],
+                            gap="small",
+                            vertical_alignment="center",
+                        )
                 _metric_box(
                     target_card_col,
                     f"{risk_state_label} // TARGET STOP {target_stop_text}",

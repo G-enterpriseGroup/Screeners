@@ -1485,3 +1485,14 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Validation:** Production route re-traced; affected files syntax-checked; complete existing Risk interaction/sizing regression PASS; all eight top-level tabs plus repeated routes/second session PASS; architecture guard PASS; diff/whitespace audit PASS; committed production source inspected. Browser preview at 1280px and 885px shows all three price controls on one row and content-sized cards (46.39px vs live baseline 56px). Matched live/preview computed typography: metric labels 12.8px/900, values 16.32px/900, ticker 14px/400, source labels 13.12px/700, identical line heights. Editing distance to 6% changed a $200 Entry's stop to $188 and recalculated results. No deployed verification is claimed by this pre-release entry.
 - **Commit:** `d6e2e1b800f057d9c5e187619de972df8afdf7eb`.
 - **Lesson:** Recover layout space from padding, minimum heights and vacant rows while preserving readable type and native control behavior.
+
+## 2026-09-26 — Enclose target-stop copy button in UNUSED RISK card
+
+- **Feature / exact files:** Risk result-card layout in `src/risk_sizing_ui_v2.py` and `src/risk_sizing_ui_v9.py`.
+- **Issue / root cause:** The isolated 24px copy iframe was placed in a separate column outside the metric's border.
+- **Change:** A Risk-only keyed container now draws a single border around the metric and copy column; the inner duplicate border is removed only there. Reserve 24px for the button and 6px right inset. Retain the isolated clipboard iframe implementation unchanged.
+- **Preserve:** Clipboard success checkmark, no-copy N/A state, tooltip/math check, compact 46.39px card height, all fonts/weights, target-stop/cash/stop behavior and formulas. No main-document clipboard script.
+- **Intentionally untouched:** Risk math, Risk Book, v10, OAuth, GEX, Holdings, navigation, shared theme and other features.
+- **Validation:** Unchanged architecture/guardrails and production route reviewed; relevant copy-iframe fix history reviewed; syntax PASS; existing production Risk regression PASS; all eight top-level tabs/repeated routes/second session PASS; architecture guard PASS; diff audit PASS. Browser copy click produced a success checkmark; measured iframe entirely inside card border (24x24 within 556x46.39), unchanged card height. Committed production files inspected.
+- **Commit:** `f39b790`.
+- **Lesson:** Keep clipboard execution isolated while using a feature-owned outer card border to visually group its controls.
