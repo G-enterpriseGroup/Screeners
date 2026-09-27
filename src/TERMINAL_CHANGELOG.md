@@ -1667,3 +1667,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS.
 - **Implementation commit:** `eb4e3ed` (exact committed production source inspected). Deployment verification follows separately; this entry does not claim a managed Cloud reboot.
 - **Lesson:** Feed a trade visual from the same computed ticket as the result cards, and clearly separate hypothetical profit levels from actual price history or forecasts. Keep dollar-containing captions out of accidental Markdown math rendering.
+
+### 2026-09-27 — Trade-map percentage equation fit verification
+
+- **Additional production owner:** `src/risk_sizing_ui_v9.py` owns the actual compact card renderer. Its inherited `white-space:nowrap`/ellipsis would clip the new equation; the file whitelist was expanded only for this proven presentation dependency.
+- **Change:** Permit wrapping only on the `UNUSED/OVERUSED RISK // TARGET STOP` value. All other card styles are unchanged. This supersedes the preceding entry's statement that v9 was untouched.
+- **Tests:** Focused Risk suite repeated with an equation-wrap assertion; all enabled tabs/repeated routes/second session repeated; all affected Python files syntax-checked; architecture guard PASS; complete diff inspected. Shared theme, Risk formulas, v10 order behavior and all unrelated features remain unchanged.
+- **Commit:** implementation `98386fa` (resolved in follow-up deployment record); lesson: inspect actual inherited overflow rules when extending metric text.
