@@ -56,6 +56,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Terminal access / Touch ID lock | `src/lock_screen_v2.py` | `src/passkey_auth.py`, `src/components/lock_keypad_v2/` | Broker/Risk/GEX logic |
 | Commit-triggered fresh-process reboot | `src/reboot_guard.py` | `streamlit_app.py` invokes the guard before app routing | Feature renderers |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
+| E*TRADE Performance | `src/performance_ui.py` | `src/etrade_client.py` read-only transaction/portfolio/balance transport | Risk/GEX/OAuth/order files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
 | Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py` | Risk/GEX files |
 | Municipal tools | functions loaded from `src/terminal_core.py` + `src/muni_data.py` / `src/treasury_data.py` | muni/treasury data modules | Risk/GEX/OAuth files |
@@ -153,6 +154,19 @@ Production path:
 - Change Holdings UI → `src/holdings_snapshot_mode.py`.
 - Change classification panels → `src/stockanalysis_portfolio_v5.py` and its cache helpers.
 - Do not change Risk Sizing or GEX to fix Holdings.
+
+## Performance edit map
+
+Production path:
+
+`streamlit_app.py` → `src/performance_ui.py` → `src/etrade_client.py` (read-only account/transaction data)
+
+- Change **Performance table, live line chart, metric formulas, account picker, refresh behavior, or coverage messaging** → `src/performance_ui.py`.
+- Change **read-only E*TRADE transaction HTTP transport/pagination** → `src/etrade_client.py`.
+- Performance is read-only and must never call order preview/place/cancel methods.
+- E*TRADE transaction history is a rolling API window. Never label unavailable pre-window history as complete ITD; show the earliest loaded transaction and keep ALL-TIME explicitly coverage-aware until older history is seeded.
+- The 30-second live fragment refreshes current portfolio/balance data only while Performance is active. Historical transactions are session-cached until the user selects REFRESH PERFORMANCE.
+- Do not change Risk Sizing, GEX, Holdings, OAuth, or shared theme files for Performance-only work.
 
 ## Top navigation edit map
 
