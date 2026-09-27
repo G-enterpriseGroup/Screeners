@@ -39,15 +39,17 @@ from src.layout_guardrails import install_layout_guardrails
 # FEATURE OWNERSHIP
 # ==============================
 
+# Dormant routes stay implemented in streamlit_app.py and their feature modules.
+# Remove a key from this set and add it back to DEFAULT_TAB_ORDER when re-enabled.
+DISABLED_TAB_ROUTES = {"OPTION BOOK", "ORDERS"}
+
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
     "RISK SIZING",
     "SCHWAB RISK SIZING",
     "GEX",
-    "OPTION BOOK",
     "BULL DEBIT SPREAD",
     "MUNI SCREENERS",
-    "ORDERS",
 ]
 
 TAB_DISPLAY_LABELS = {
