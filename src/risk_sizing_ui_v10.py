@@ -1736,6 +1736,7 @@ def _preview_protective_stop(client, entry_order: dict, touch_session) -> dict:
     stop_review.update(
         {
             "fingerprint": stop_fingerprint,
+            "entry_order_id": entry_order["order_id"],
             "account_key": entry_order["account_key"],
             "account_label": entry_order["account_label"],
             "symbol": entry_order["symbol"],
@@ -1770,8 +1771,20 @@ def _place_reviewed_protective_stop(client, stop_review: dict, touch_session) ->
         st.session_state.pop(_RISK_STOP_UNCERTAIN_KEY, None)
         st.session_state.pop(_RISK_STOP_REVIEW_KEY, None)
         st.session_state.pop(_RISK_STOP_CONFIRM_KEY, None)
+        if stop_review.get("entry_order_id") not in (None, ""):
+            _mark_stop_watch_sent(
+                stop_review["entry_order_id"],
+                stop_order_id,
+                "stop_sent",
+            )
         return True
     except Exception as exc:
+        if stop_review.get("entry_order_id") not in (None, ""):
+            _mark_stop_watch_uncertain(
+                stop_review["entry_order_id"],
+                str(exc),
+                "stop_uncertain",
+            )
         st.error(
             "STOP SUBMISSION STATUS UNCERTAIN // "
             + str(exc)
