@@ -1129,6 +1129,15 @@ def _place_reviewed_protective_stop(client, stop_review: dict, touch_session) ->
         return False
 
 
+def _render_stop_submitted_confirmation(stop_order: dict) -> None:
+    """Show the broker order id immediately without forcing another rerun."""
+    st.success(
+        f"PROTECTIVE STOP SUBMITTED // E*TRADE ORDER {stop_order['order_id']} // "
+        f"SELL {int(stop_order['quantity']):,} {stop_order['symbol']} @ STOP "
+        f"USD {float(stop_order['stop_price']):,.2f} // GTC"
+    )
+
+
 def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> None:
     st.html('<div class="risk-v9-section">3. PICK E*TRADE ACCOUNT</div>')
 
@@ -1307,11 +1316,7 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
         return
 
     if stop_order:
-        st.success(
-            f"PROTECTIVE STOP SUBMITTED // E*TRADE ORDER {stop_order['order_id']} // "
-            f"SELL {int(stop_order['quantity']):,} {stop_order['symbol']} @ STOP "
-            f"USD {float(stop_order['stop_price']):,.2f} // GTC"
-        )
+        _render_stop_submitted_confirmation(stop_order)
         st.caption(
             "WORKFLOW COMPLETE // Clearing this terminal workflow does not cancel either E*TRADE order."
         )
@@ -1367,7 +1372,9 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
 
             if not (stop_review.get("details") or {}).get("messages"):
                 if _place_reviewed_protective_stop(client, stop_review, touch_session):
-                    st.rerun(scope="fragment")
+                    _render_stop_submitted_confirmation(
+                        st.session_state[_RISK_STOP_ORDER_KEY]
+                    )
                 return
 
             st.warning(
@@ -1462,7 +1469,9 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
             st.error("STOP PREVIEW EXPIRED // No live stop was sent.")
             return
         if _place_reviewed_protective_stop(client, stop_review, touch_session):
-            st.rerun(scope="fragment")
+            _render_stop_submitted_confirmation(
+                st.session_state[_RISK_STOP_ORDER_KEY]
+            )
 
 
 def _safe_full_width_ticker_columns(original_columns, original_container, original_empty):
