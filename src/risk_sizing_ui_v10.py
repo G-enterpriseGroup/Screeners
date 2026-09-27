@@ -1326,7 +1326,7 @@ def _refresh_stop_watch_entry_now(
 
 
 @st.fragment(run_every=_RISK_STOP_WATCH_POLL_SECONDS)
-def maybe_auto_watch_risk_entries(client=None, touch_session=None) -> None:
+def maybe_auto_watch_risk_entries(client=None) -> None:
     """Automatically monitor armed entries; never preview/place/cancel an order."""
     state = _sync_stop_watch_state_from_browser("background")
     active_rows = [
@@ -1338,7 +1338,6 @@ def maybe_auto_watch_risk_entries(client=None, touch_session=None) -> None:
         _persist_stop_watch_state(state, "background")
         return
 
-    touch = touch_session or (lambda: None)
     by_account: dict[str, list[dict]] = {}
     for row in active_rows:
         by_account.setdefault(str(row["account_key"]), []).append(row)
@@ -1347,7 +1346,6 @@ def maybe_auto_watch_risk_entries(client=None, touch_session=None) -> None:
     for account_key, account_rows in by_account.items():
         try:
             orders = client.list_orders(account_key, count=100)
-            touch()
         except Exception as exc:
             for row in account_rows:
                 changed = _set_stop_watch_error(state, row, exc) or changed
