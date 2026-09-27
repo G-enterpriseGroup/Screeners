@@ -40,7 +40,7 @@ def check_session(tabs):
         ]
         assert len(theme_blocks) == 1, (tab, len(theme_blocks))
         editable_css = theme_blocks[0]
-        assert "background:#555555 !important;" in editable_css, tab
+        assert "background:#444444 !important;" in editable_css, tab
         for selector in (
             '[data-testid="stTextInput"]',
             '[data-testid="stNumberInput"]',

@@ -10,7 +10,8 @@ EDIT THIS FILE for:
 - ASK -> Entry and 5%-below-ASK Stop interaction plumbing;
 - Part 2 fail-safe behavior when autocomplete fails;
 - narrowly scoped Part 2 layout fixes;
-- live E*TRADE stock entry review, placement, fill-check, and protective-stop handoff.
+- live E*TRADE stock entry review, placement, fill-check, protective-stop handoff,
+  and compact open-order status/cancellation controls.
 
 DO NOT edit GEX, OAuth, Holdings, or navigation files to fix Risk Sizing.
 DO NOT add module-level assignments such as `st.columns = ...` or
@@ -553,6 +554,8 @@ _RISK_STOP_UNCERTAIN_KEY = "_risk_live_stop_uncertain"
 _RISK_FILL_KEY = "_risk_live_entry_fill"
 _RISK_ENTRY_CONFIRM_KEY = "risk_live_entry_confirm"
 _RISK_STOP_CONFIRM_KEY = "risk_live_stop_confirm"
+_RISK_PENDING_ORDERS_KEY = "_risk_live_pending_orders"
+_RISK_CANCEL_CONFIRM_KEY = "_risk_live_cancel_confirm_order"
 _PREVIEW_FRESH_SECONDS = 150.0
 
 
@@ -934,6 +937,268 @@ def _order_fill_snapshot(payload: dict, order_id, expected_quantity: int) -> dic
         "ordered": ordered,
         "average_price": max(average_values) if average_values else None,
     }
+
+
+def _pending_order_rows(payload: dict) -> list[dict]:
+    """Normalize cancellable/pending E*TRADE order records for compact display."""
+    response = _find_key(payload, "OrdersResponse")
+    response = response if isinstance(response, dict) else payload
+    raw_orders = _direct_key(response, "Order") if isinstance(response, dict) else None
+    pending_statuses = {"OPEN", "INDIVIDUAL_FILLS", "CANCEL_REQUESTED"}
+    rows_by_id: dict[str, dict] = {}
+
+    for order in _as_list(raw_orders):
+        if not isinstance(order, dict):
+            continue
+        order_id = _direct_key(order, "orderId")
+        if order_id in (None, ""):
+            order_id = _direct_key(order, "orderNumber")
+        if order_id in (None, ""):
+            continue
+
+        details = _direct_key(order, "OrderDetail")
+        if details is None:
+            details = _direct_key(order, "orderDetail")
+        for detail in _as_list(details or order):
+            if not isinstance(detail, dict):
+                continue
+            status = str(_direct_key(detail, "status") or "").strip().upper()
+            if status not in pending_statuses:
+                continue
+
+            instruments = _direct_key(detail, "Instrument")
+            if instruments is None:
+                instruments = _direct_key(detail, "instrument")
+            instrument = next(
+                (item for item in _as_list(instruments) if isinstance(item, dict)),
+                {},
+            )
+            product = _direct_key(instrument, "Product")
+            product = product if isinstance(product, dict) else {}
+
+            symbol = str(
+                _direct_key(product, "symbol")
+                or _direct_key(instrument, "symbol")
+                or _direct_key(instrument, "symbolDescription")
+                or "—"
+            ).strip().upper()
+            action = str(_direct_key(instrument, "orderAction") or "—").strip().upper()
+            quantity = (
+                _direct_key(instrument, "orderedQuantity")
+                or _direct_key(instrument, "quantity")
+                or 0
+            )
+            filled = _direct_key(instrument, "filledQuantity") or 0
+            price_type = str(_direct_key(detail, "priceType") or "—").strip().upper()
+            order_term = str(_direct_key(detail, "orderTerm") or "—").strip().upper()
+            limit_price = _direct_key(detail, "limitPrice")
+            stop_price = _direct_key(detail, "stopPrice")
+            placed_time = _direct_key(detail, "placedTime") or 0
+
+            row = {
+                "order_id": order_id,
+                "status": status,
+                "symbol": symbol,
+                "action": action,
+                "quantity": quantity,
+                "filled": filled,
+                "price_type": price_type,
+                "order_term": order_term,
+                "limit_price": limit_price,
+                "stop_price": stop_price,
+                "placed_time": placed_time,
+            }
+            rows_by_id[str(order_id)] = row
+
+    def sort_value(row: dict) -> float:
+        try:
+            return float(row.get("placed_time") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return sorted(rows_by_id.values(), key=sort_value, reverse=True)
+
+
+def _load_pending_order_rows(client, account_key: str, touch_session) -> list[dict]:
+    """Fetch all broker statuses that may still require user action."""
+    merged: dict[str, dict] = {}
+    for status in ("OPEN", "INDIVIDUAL_FILLS", "CANCEL_REQUESTED"):
+        payload = client.list_orders(account_key, status=status, count=100)
+        for row in _pending_order_rows(payload):
+            merged[str(row["order_id"])] = row
+    touch_session()
+
+    def sort_value(row: dict) -> float:
+        try:
+            return float(row.get("placed_time") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return sorted(merged.values(), key=sort_value, reverse=True)
+
+
+def _pending_order_account() -> dict | None:
+    accounts = _order_accounts()
+    if not accounts:
+        return None
+    by_key = {
+        str(account.get("accountIdKey") or "").strip(): account
+        for account in accounts
+    }
+    selected_key = (
+        _locked_order_account_key()
+        or str(st.session_state.get(_RISK_ORDER_ACCOUNT_KEY) or "").strip()
+        or _main_risk_account_key()
+        or _default_order_account_key(accounts)
+    )
+    return by_key.get(selected_key)
+
+
+def _format_pending_order_price(row: dict) -> str:
+    price_type = str(row.get("price_type") or "—").upper()
+    try:
+        limit_price = float(row.get("limit_price") or 0.0)
+    except (TypeError, ValueError):
+        limit_price = 0.0
+    try:
+        stop_price = float(row.get("stop_price") or 0.0)
+    except (TypeError, ValueError):
+        stop_price = 0.0
+
+    if price_type == "LIMIT" and limit_price > 0:
+        return f"LIMIT USD {limit_price:,.2f}"
+    if price_type == "STOP" and stop_price > 0:
+        return f"STOP USD {stop_price:,.2f}"
+    if price_type == "STOP_LIMIT":
+        return f"STOP USD {stop_price:,.2f} / LIMIT USD {limit_price:,.2f}"
+    return price_type
+
+
+def _mark_cached_cancel_requested(account_key: str, order_id) -> None:
+    cache = st.session_state.get(_RISK_PENDING_ORDERS_KEY)
+    if not isinstance(cache, dict) or cache.get("account_key") != account_key:
+        return
+    for row in cache.get("rows") or []:
+        if str(row.get("order_id")) == str(order_id):
+            row["status"] = "CANCEL_REQUESTED"
+
+
+def _render_pending_orders_panel(client, touch_session) -> None:
+    """Render open E*TRADE orders at the bottom of Risk with safe cancellation."""
+    st.html('<div class="risk-v9-section">5. PENDING / OPEN E*TRADE ORDERS</div>')
+    st.caption(
+        "LIVE BROKER ORDERS ONLY // OPEN, PARTIAL, AND CANCEL-REQUESTED // "
+        "E*TRADE'S PUBLIC API DOES NOT EXPOSE BROKER-SAVED DRAFT ORDERS"
+    )
+
+    if client is None or not hasattr(client, "list_orders"):
+        st.info("PENDING ORDERS UNAVAILABLE // connect live E*TRADE.")
+        return
+
+    account = _pending_order_account()
+    if account is None:
+        st.info("PENDING ORDERS UNAVAILABLE // select an E*TRADE account first.")
+        return
+
+    account_key = str(account.get("accountIdKey") or "").strip()
+    account_label = _risk_account_label(account)
+    cache = st.session_state.get(_RISK_PENDING_ORDERS_KEY)
+    needs_load = not isinstance(cache, dict) or cache.get("account_key") != account_key
+
+    refresh_clicked = st.button(
+        "REFRESH PENDING ORDERS",
+        key="risk_live_refresh_pending_orders",
+        width="stretch",
+    )
+    if needs_load or refresh_clicked:
+        try:
+            rows = _load_pending_order_rows(client, account_key, touch_session)
+            cache = {"account_key": account_key, "rows": rows, "loaded_at": time.time()}
+            st.session_state[_RISK_PENDING_ORDERS_KEY] = cache
+            if refresh_clicked:
+                st.session_state.pop(_RISK_CANCEL_CONFIRM_KEY, None)
+        except Exception as exc:
+            st.error(f"PENDING ORDER REFRESH FAILED // {exc}")
+            if not isinstance(cache, dict) or cache.get("account_key") != account_key:
+                return
+
+    rows = list((cache or {}).get("rows") or [])
+    st.caption(f"ACCOUNT {account_label} // {len(rows)} PENDING / OPEN ORDER(S)")
+    if not rows:
+        st.info("NO OPEN, PARTIALLY FILLED, OR CANCEL-REQUESTED E*TRADE ORDERS.")
+        return
+
+    for row in rows:
+        order_id = row.get("order_id")
+        status = str(row.get("status") or "UNKNOWN").upper()
+        symbol = str(row.get("symbol") or "—")
+        action = str(row.get("action") or "—")
+        try:
+            quantity = float(row.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0.0
+        try:
+            filled = float(row.get("filled") or 0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        qty_text = f"{quantity:g}"
+        if status == "INDIVIDUAL_FILLS" and filled > 0:
+            qty_text = f"{filled:g}/{quantity:g}"
+
+        info_col, cancel_col = st.columns([6, 1.35], gap="small")
+        info_col.caption(
+            f"ORDER {order_id} // {status} // {action} {qty_text} {symbol} // "
+            f"{_format_pending_order_price(row)} // {str(row.get('order_term') or '—')}"
+        )
+
+        cancellable = status in {"OPEN", "INDIVIDUAL_FILLS"}
+        if cancellable and hasattr(client, "cancel_order"):
+            if cancel_col.button(
+                "CANCEL",
+                key=f"risk_live_cancel_order_{account_key}_{order_id}",
+                width="stretch",
+            ):
+                st.session_state[_RISK_CANCEL_CONFIRM_KEY] = str(order_id)
+        else:
+            cancel_col.caption("CANCEL PENDING" if status == "CANCEL_REQUESTED" else "—")
+
+        if str(st.session_state.get(_RISK_CANCEL_CONFIRM_KEY) or "") != str(order_id):
+            continue
+
+        if action == "SELL" and str(row.get("price_type") or "").upper() == "STOP":
+            st.warning(
+                f"PROTECTIVE STOP WARNING // Canceling order {order_id} removes this live stop protection."
+            )
+        else:
+            st.warning(
+                f"CONFIRM CANCEL // E*TRADE order {order_id} // {action} {qty_text} {symbol}"
+            )
+
+        confirm_col, keep_col = st.columns([2, 1], gap="small")
+        if confirm_col.button(
+            f"CONFIRM CANCEL ORDER {order_id}",
+            type="primary",
+            key=f"risk_live_confirm_cancel_{account_key}_{order_id}",
+            width="stretch",
+        ):
+            try:
+                client.cancel_order(account_key, order_id)
+                touch_session()
+                _mark_cached_cancel_requested(account_key, order_id)
+                st.session_state.pop(_RISK_CANCEL_CONFIRM_KEY, None)
+                st.success(
+                    f"CANCEL REQUEST SUBMITTED // E*TRADE ORDER {order_id} // "
+                    "refresh pending orders to verify final broker status."
+                )
+            except Exception as exc:
+                st.error(f"CANCEL REQUEST FAILED // E*TRADE ORDER {order_id} // {exc}")
+
+        if keep_col.button(
+            "KEEP ORDER",
+            key=f"risk_live_keep_order_{account_key}_{order_id}",
+            width="stretch",
+        ):
+            st.session_state.pop(_RISK_CANCEL_CONFIRM_KEY, None)
 
 
 def _preview_is_fresh(review: dict | None) -> bool:
@@ -1501,6 +1766,7 @@ def render_risk_sizing(*args, **kwargs):
     def render_live_order_sections(trade_context):
         with st.container(key="risk_live_order_panel"):
             _render_live_order_workflow(client, touch_session, trade_context)
+            _render_pending_orders_panel(client, touch_session)
 
     def filtered_subheader(body, *sub_args, **sub_kwargs):
         if str(body).strip().upper() == "RISK SIZING":

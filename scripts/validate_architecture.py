@@ -238,6 +238,8 @@ def main() -> int:
         errors.append("OPTION BOOK SAFETY: helper must not construct a PlaceOrderRequest payload")
     if option_book_ui.exists() and "place_order(" in option_book_ui.read_text(encoding="utf-8"):
         errors.append("OPTION BOOK SAFETY: UI must not call live place_order")
+    if option_book_ui.exists() and "cancel_order(" in option_book_ui.read_text(encoding="utf-8"):
+        errors.append("OPTION BOOK SAFETY: UI must not call live cancel_order")
     if etrade_client.exists():
         client_text = etrade_client.read_text(encoding="utf-8")
         if "def preview_order(" not in client_text:
@@ -246,6 +248,10 @@ def main() -> int:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.place_order")
         if "def list_orders(" not in client_text:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.list_orders")
+        if "def cancel_order(" not in client_text:
+            errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient.cancel_order")
+        if '"CancelOrderRequest": {"orderId": order_number}' not in client_text:
+            errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient CancelOrderRequest payload")
 
     risk_live_ui = SRC / "risk_sizing_ui_v10.py"
     if risk_live_ui.exists():
@@ -254,8 +260,10 @@ def main() -> int:
             "client.preview_order(",
             "client.place_order(",
             "client.list_orders(",
+            "client.cancel_order(",
             "CHECK FULL FILL + SEND PROTECTIVE STOP",
             "SEND LIVE PROTECTIVE STOP",
+            "5. PENDING / OPEN E*TRADE ORDERS",
         ):
             if required not in risk_live_text:
                 errors.append(f"RISK LIVE ORDER FLOW MISSING: {required}")

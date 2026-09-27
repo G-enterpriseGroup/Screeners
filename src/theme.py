@@ -262,7 +262,7 @@ select:not(:disabled) option {
 /*
    TERMINAL-WIDE EDITABLE FIELD SURFACES
    Every enabled box the user can directly type into or choose from uses the
-   same #555555 fill. Disabled/read-only fields are intentionally excluded.
+   same #444444 fill. Disabled/read-only fields are intentionally excluded.
    Keep this terminal-wide in theme.py rather than duplicating per-tab CSS.
 */
 [data-testid="stTextInput"] [data-baseweb="input"],
@@ -300,8 +300,8 @@ input[type="week"]:not(:disabled),
 input:not([type]):not(:disabled),
 textarea:not(:disabled),
 [contenteditable="true"] {
-    background:#555555 !important;
-    background-color:#555555 !important;
+    background:#444444 !important;
+    background-color:#444444 !important;
 }
 
 /*
