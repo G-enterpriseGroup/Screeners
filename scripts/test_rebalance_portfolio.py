@@ -70,13 +70,13 @@ def main() -> None:
     assert review.iloc[0]["Action"] == "LONG-TERM TRIM REVIEW"
 
     tiny = pd.DataFrame(
-        [{"Symbol": "SPY", "Sleeve": "TACTICAL", "Market Value": 120_100.0, "Gain/Loss %": 5.0}]
+        [{"Symbol": "SPY", "Sleeve": "TACTICAL", "Market Value": 100_300.0, "Gain/Loss %": 5.0}]
     )
     held, _ = _build_rebalance_plan(
         tiny,
         account_value=1_000_000.0,
         cash_available=0.0,
-        config_rows=[{"symbol": "SPY", "target_pct": 10.0, "band_pct": 2.0}],
+        config_rows=[{"symbol": "SPY", "target_pct": 10.0, "band_pct": 0.0}],
         settings=_settings(min_trade=500.0),
     )
     assert held.iloc[0]["Action"] == "HOLD // BELOW MIN"
