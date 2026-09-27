@@ -26,6 +26,7 @@ PURE_FUNCTIONS = {
     "_build_place_payload",
     "_matching_order_records",
     "_order_fill_snapshot",
+    "_pending_order_rows",
 }
 
 
@@ -153,8 +154,48 @@ def main() -> int:
     assert missing["found"] is False
     assert missing["full"] is False
 
+    pending_rows = ns["_pending_order_rows"](
+        {
+            "OrdersResponse": {
+                "Order": [
+                    {
+                        "orderId": 77,
+                        "OrderDetail": [
+                            {
+                                "status": "OPEN",
+                                "priceType": "STOP",
+                                "stopPrice": 475.0,
+                                "orderTerm": "GOOD_UNTIL_CANCEL",
+                                "placedTime": 123456,
+                                "Instrument": [
+                                    {
+                                        "Product": {"symbol": "SPY", "securityType": "EQ"},
+                                        "orderAction": "SELL",
+                                        "orderedQuantity": 10,
+                                        "filledQuantity": 0,
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "orderId": 78,
+                        "OrderDetail": [{"status": "EXECUTED"}],
+                    },
+                ]
+            }
+        }
+    )
+    assert len(pending_rows) == 1
+    assert pending_rows[0]["order_id"] == 77
+    assert pending_rows[0]["status"] == "OPEN"
+    assert pending_rows[0]["symbol"] == "SPY"
+    assert pending_rows[0]["action"] == "SELL"
+    assert pending_rows[0]["price_type"] == "STOP"
+    assert pending_rows[0]["stop_price"] == 475.0
+
     print("RISK LIVE ORDER SIMULATION: PASS")
-    print("BUY LIMIT preview/place payload, GTC SELL STOP payload, full-fill unlock, and partial-fill block verified.")
+    print("BUY LIMIT preview/place payload, GTC SELL STOP payload, full-fill unlock, partial-fill block, and pending-order normalization verified.")
     return 0
 
 
