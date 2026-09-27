@@ -1,0 +1,35 @@
+name: Editable Field Theme Validation
+
+on:
+  pull_request:
+    paths:
+      - "src/theme.py"
+      - "scripts/test_tab_layout.py"
+      - ".github/workflows/editable-field-theme-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-editable-theme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install production requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Syntax check shared theme
+        run: python -m py_compile src/theme.py streamlit_app.py
+
+      - name: Render every top-level tab with shared editable theme
+        run: python scripts/test_tab_layout.py
+
+      - name: Validate architecture
+        run: python scripts/validate_architecture.py
