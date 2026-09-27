@@ -31,6 +31,27 @@ def check_session(tabs):
         assert len(headers) == 1, (tab, len(headers))
         # Import-cached navigation CSS must still be sent on every rerun/session.
         assert any(".st-key-terminal_navigation" in h.value for h in app.get("html")), tab
+
+        # Shared editable-field styling must be emitted in every tab/session.
+        theme_blocks = [
+            h.value
+            for h in app.get("html")
+            if "TERMINAL-WIDE EDITABLE FIELD SURFACES" in h.value
+        ]
+        assert len(theme_blocks) == 1, (tab, len(theme_blocks))
+        editable_css = theme_blocks[0]
+        assert "background:#555555 !important;" in editable_css, tab
+        for selector in (
+            '[data-testid="stTextInput"]',
+            '[data-testid="stNumberInput"]',
+            '[data-testid="stTextArea"]',
+            '[data-testid="stDateInput"]',
+            '[data-testid="stTimeInput"]',
+            '[data-testid="stSelectbox"]',
+            '[data-testid="stMultiSelect"]',
+            '[contenteditable="true"]',
+        ):
+            assert selector in editable_css, (tab, selector)
         print(f"PASS: {tab}")
 
 
