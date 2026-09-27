@@ -518,6 +518,10 @@ _TERMINAL_PAGE_HEADERS = {
         "MUNI SCREENERS",
         "MUNICIPAL BOND SCREENING // TAX-EXEMPT STATUS // STATE TAX COMPARISON",
     ),
+    "REBALANCE PORTFOLIO": (
+        "REBALANCE PORTFOLIO",
+        "PORTFOLIO ALLOCATION // TARGET WEIGHTS // REBALANCE WORKSPACE",
+    ),
     "ORDERS": (
         "TRIGGERS — OCO ORDER SIMULATOR",
         "BUY LIMIT → WHEN FILLED, ACTIVATES A TAKE-PROFIT LIMIT AND STOP-MARKET EXIT // SIMULATION ONLY // NO ORDER CAN BE TRANSMITTED",
@@ -710,6 +714,9 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
                 timezone_name="America/New_York",
             ),
         )
+
+    elif active_tab == "REBALANCE PORTFOLIO":
+        pass
 
     elif active_tab == "MUNI SCREENERS":
         load_col, refresh_col, _ = st.columns([1.5, 1.4, 3.1])
