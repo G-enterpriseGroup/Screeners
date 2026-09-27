@@ -103,6 +103,9 @@ def main() -> None:
         "SMART REBALANCE PLAN",
         "ACCOUNT VALUE",
         "CASH AVAILABLE",
+        "MEMORY ACTIVE",
+        "IN TOLERANCE",
+        "OUT OF TOLERANCE",
         "ANALYSIS ONLY",
     ):
         assert expected in html, expected
