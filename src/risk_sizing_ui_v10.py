@@ -954,6 +954,377 @@ def _order_fill_snapshot(payload: dict, order_id, expected_quantity: int) -> dic
     }
 
 
+def _clean_stop_watch_state(raw) -> dict:
+    """Validate the browser-backed Risk protection watch/audit state."""
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        revision = max(0, int(raw.get("revision", 0) or 0))
+    except (TypeError, ValueError):
+        revision = 0
+
+    rows = []
+    for source in raw.get("rows", []) or []:
+        if not isinstance(source, dict):
+            continue
+        entry_order_id = source.get("entry_order_id")
+        account_key = str(source.get("account_key") or "").strip()
+        symbol = str(source.get("symbol") or "").strip().upper()
+        if entry_order_id in (None, "") or not account_key or not symbol:
+            continue
+        try:
+            quantity = max(0, int(float(source.get("quantity") or 0)))
+        except (TypeError, ValueError):
+            quantity = 0
+        if quantity <= 0:
+            continue
+
+        events = []
+        for item in source.get("events", []) or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                at = float(item.get("at") or 0.0)
+            except (TypeError, ValueError):
+                at = 0.0
+            events.append(
+                {
+                    "at": at,
+                    "event": str(item.get("event") or "").strip().upper()[:40],
+                    "message": str(item.get("message") or "").strip()[:500],
+                }
+            )
+
+        def number(name, default=0.0):
+            try:
+                return float(source.get(name) if source.get(name) is not None else default)
+            except (TypeError, ValueError):
+                return float(default)
+
+        rows.append(
+            {
+                "entry_order_id": entry_order_id,
+                "account_key": account_key,
+                "account_label": str(source.get("account_label") or "").strip(),
+                "symbol": symbol,
+                "quantity": quantity,
+                "entry_price": number("entry_price"),
+                "stop_price": number("stop_price"),
+                "entry_placed_at": number("entry_placed_at"),
+                "status": str(source.get("status") or "ARMED").strip().upper(),
+                "filled": number("filled"),
+                "ordered": number("ordered", quantity),
+                "average_price": (
+                    None
+                    if source.get("average_price") in (None, "")
+                    else number("average_price")
+                ),
+                "last_checked_at": number("last_checked_at"),
+                "last_error": str(source.get("last_error") or "").strip()[:500],
+                "stop_order_id": source.get("stop_order_id"),
+                "stop_sent_at": number("stop_sent_at"),
+                "events": events[-40:],
+            }
+        )
+
+    def sort_key(row: dict) -> float:
+        return float(row.get("entry_placed_at") or 0.0)
+
+    rows.sort(key=sort_key, reverse=True)
+    try:
+        updated_at = float(raw.get("updated_at") or 0.0)
+    except (TypeError, ValueError):
+        updated_at = 0.0
+    return {
+        "revision": revision,
+        "updated_at": updated_at,
+        # The shared zero-height browser-state component uses this timestamp
+        # only as a revision tie-breaker/event token; it is not portfolio data.
+        "portfolio_saved_at": updated_at,
+        "rows": rows[:100],
+    }
+
+
+def _current_stop_watch_state() -> dict:
+    state = _clean_stop_watch_state(
+        st.session_state.get(_RISK_STOP_WATCH_SESSION_KEY)
+    )
+    st.session_state[_RISK_STOP_WATCH_SESSION_KEY] = state
+    return state
+
+
+def _sync_stop_watch_state_from_browser(component_key: str) -> dict:
+    """Restore the persistent browser watch log after refresh/redeploy."""
+    state = _current_stop_watch_state()
+    with st.container(key=f"risk_stop_watch_reader_shell_{component_key}", gap=None):
+        browser = _risk_stop_watch_component(
+            storage_key=_RISK_STOP_WATCH_STORAGE_KEY,
+            server_state=state,
+            key=f"raj_risk_stop_watch_reader_{component_key}",
+            default=None,
+        )
+    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
+        browser_state = _clean_stop_watch_state(browser["state"])
+        if browser_state["revision"] > state["revision"] or (
+            browser_state["revision"] == state["revision"]
+            and browser_state["updated_at"] > state["updated_at"]
+        ):
+            state = browser_state
+            st.session_state[_RISK_STOP_WATCH_SESSION_KEY] = state
+    return state
+
+
+def _persist_stop_watch_state(state: dict, component_key: str) -> dict:
+    """Write the current watch log to session + browser local storage."""
+    cleaned = _clean_stop_watch_state(state)
+    st.session_state[_RISK_STOP_WATCH_SESSION_KEY] = cleaned
+    with st.container(key=f"risk_stop_watch_writer_shell_{component_key}", gap=None):
+        _risk_stop_watch_component(
+            storage_key=_RISK_STOP_WATCH_STORAGE_KEY,
+            server_state=cleaned,
+            key=f"raj_risk_stop_watch_writer_{component_key}",
+            default=None,
+        )
+    return cleaned
+
+
+def _stop_watch_row(state: dict, entry_order_id):
+    wanted = str(entry_order_id)
+    for row in state.get("rows") or []:
+        if str(row.get("entry_order_id")) == wanted:
+            return row
+    return None
+
+
+def _append_stop_watch_event(row: dict, event: str, message: str) -> None:
+    events = list(row.get("events") or [])
+    events.append(
+        {
+            "at": time.time(),
+            "event": str(event or "").strip().upper()[:40],
+            "message": str(message or "").strip()[:500],
+        }
+    )
+    row["events"] = events[-40:]
+
+
+def _bump_stop_watch_state(state: dict) -> dict:
+    state["revision"] = int(state.get("revision") or 0) + 1
+    state["updated_at"] = time.time()
+    state["portfolio_saved_at"] = state["updated_at"]
+    return state
+
+
+def _arm_stop_watch(entry_order: dict, component_key: str = "entry_submit") -> dict:
+    """Persist one exact filled-entry protection obligation before monitoring."""
+    state = _current_stop_watch_state()
+    existing = _stop_watch_row(state, entry_order.get("order_id"))
+    if existing is None:
+        row = {
+            "entry_order_id": entry_order["order_id"],
+            "account_key": str(entry_order["account_key"]),
+            "account_label": str(entry_order.get("account_label") or ""),
+            "symbol": str(entry_order["symbol"]).strip().upper(),
+            "quantity": int(entry_order["quantity"]),
+            "entry_price": float(entry_order["entry_price"]),
+            "stop_price": float(entry_order["stop_price"]),
+            "entry_placed_at": float(entry_order.get("placed_at") or time.time()),
+            "status": "ARMED",
+            "filled": 0.0,
+            "ordered": float(entry_order["quantity"]),
+            "average_price": None,
+            "last_checked_at": 0.0,
+            "last_error": "",
+            "stop_order_id": None,
+            "stop_sent_at": 0.0,
+            "events": [],
+        }
+        _append_stop_watch_event(
+            row,
+            "ARMED",
+            "Entry submitted; automatic fill monitoring armed. Stop still requires a contemporaneous send confirmation.",
+        )
+        state["rows"] = [row, *(state.get("rows") or [])]
+        _bump_stop_watch_state(state)
+        _persist_stop_watch_state(state, component_key)
+        return row
+
+    # Do not reset terminal states if the same order is restored after a rerun.
+    if existing.get("status") not in {
+        "STOP_SENT",
+        "STOP_UNCERTAIN",
+        "ENTRY_CANCELLED",
+        "ENTRY_EXPIRED",
+        "ENTRY_REJECTED",
+    }:
+        existing["account_label"] = str(entry_order.get("account_label") or existing.get("account_label") or "")
+        existing["stop_price"] = float(entry_order["stop_price"])
+        existing["quantity"] = int(entry_order["quantity"])
+    return existing
+
+
+def _set_stop_watch_fill(
+    state: dict,
+    row: dict,
+    fill: dict,
+) -> bool:
+    """Apply a read-only E*TRADE fill result; return True on persisted transition."""
+    prior_status = str(row.get("status") or "ARMED").upper()
+    row["last_checked_at"] = time.time()
+    row["last_error"] = ""
+    row["filled"] = float(fill.get("filled") or 0.0)
+    row["ordered"] = float(fill.get("ordered") or row.get("quantity") or 0.0)
+    row["average_price"] = fill.get("average_price")
+
+    broker_status = str(fill.get("status") or "UNKNOWN").upper()
+    if fill.get("full") and not fill.get("partial"):
+        next_status = _RISK_STOP_WATCH_READY
+        message = (
+            f"Full fill confirmed by E*TRADE: {row['filled']:g}/{row['ordered']:g}. "
+            "Protective stop is ready for a contemporaneous user send instruction."
+        )
+    elif fill.get("partial"):
+        next_status = "PARTIAL_FILL"
+        message = (
+            f"Partial fill: {row['filled']:g}/{row['ordered']:g}. "
+            "Full-quantity protective stop remains blocked."
+        )
+    elif broker_status in {"CANCELLED", "EXPIRED", "REJECTED"}:
+        next_status = f"ENTRY_{broker_status}"
+        message = f"Entry order status is {broker_status}; protective stop remains blocked."
+    else:
+        next_status = "WAITING_FILL"
+        message = f"Entry order status is {broker_status}; waiting for complete fill."
+
+    row["status"] = next_status
+    if next_status != prior_status:
+        _append_stop_watch_event(row, next_status, message)
+        _bump_stop_watch_state(state)
+        return True
+    return False
+
+
+def _set_stop_watch_error(state: dict, row: dict, exc: Exception) -> bool:
+    message = str(exc).strip()[:500]
+    row["last_checked_at"] = time.time()
+    if message == row.get("last_error"):
+        return False
+    row["last_error"] = message
+    _append_stop_watch_event(row, "CHECK_ERROR", message)
+    _bump_stop_watch_state(state)
+    return True
+
+
+def _mark_stop_watch_sent(entry_order_id, stop_order_id, component_key: str) -> None:
+    state = _current_stop_watch_state()
+    row = _stop_watch_row(state, entry_order_id)
+    if row is None:
+        return
+    row["status"] = "STOP_SENT"
+    row["stop_order_id"] = stop_order_id
+    row["stop_sent_at"] = time.time()
+    row["last_error"] = ""
+    _append_stop_watch_event(
+        row,
+        "STOP_SENT",
+        f"Protective GTC SELL STOP submitted as E*TRADE order {stop_order_id}.",
+    )
+    _bump_stop_watch_state(state)
+    _persist_stop_watch_state(state, component_key)
+
+
+def _mark_stop_watch_uncertain(entry_order_id, message: str, component_key: str) -> None:
+    state = _current_stop_watch_state()
+    row = _stop_watch_row(state, entry_order_id)
+    if row is None:
+        return
+    row["status"] = "STOP_UNCERTAIN"
+    row["last_error"] = str(message or "")[:500]
+    _append_stop_watch_event(
+        row,
+        "STOP_UNCERTAIN",
+        "Protective-stop submission result is uncertain; verify E*TRADE Orders before any retry.",
+    )
+    _bump_stop_watch_state(state)
+    _persist_stop_watch_state(state, component_key)
+
+
+@st.fragment(run_every=_RISK_STOP_WATCH_POLL_SECONDS)
+def maybe_auto_watch_risk_entries(client=None, touch_session=None) -> None:
+    """Automatically monitor armed entries; never preview/place/cancel an order."""
+    state = _sync_stop_watch_state_from_browser("background")
+    active_rows = [
+        row
+        for row in state.get("rows") or []
+        if str(row.get("status") or "").upper() in _RISK_STOP_WATCH_ACTIVE
+    ]
+    if not active_rows or client is None or bool(getattr(client, "is_offline", False)):
+        _persist_stop_watch_state(state, "background")
+        return
+
+    touch = touch_session or (lambda: None)
+    by_account: dict[str, list[dict]] = {}
+    for row in active_rows:
+        by_account.setdefault(str(row["account_key"]), []).append(row)
+
+    changed = False
+    for account_key, account_rows in by_account.items():
+        try:
+            orders = client.list_orders(account_key, count=100)
+            touch()
+        except Exception as exc:
+            for row in account_rows:
+                changed = _set_stop_watch_error(state, row, exc) or changed
+            continue
+
+        for row in account_rows:
+            fill = _order_fill_snapshot(
+                orders,
+                row["entry_order_id"],
+                int(row["quantity"]),
+            )
+            changed = _set_stop_watch_fill(state, row, fill) or changed
+
+    # The browser state is written only on meaningful transitions/errors. The
+    # in-session last_checked_at can advance every poll without revision churn.
+    if changed:
+        _persist_stop_watch_state(state, "background")
+    else:
+        st.session_state[_RISK_STOP_WATCH_SESSION_KEY] = _clean_stop_watch_state(state)
+
+
+def _render_stop_watch_log() -> None:
+    """Compact persistent audit trail for armed/ready/sent protective stops."""
+    state = _current_stop_watch_state()
+    st.html('<div class="risk-v9-section">6. PROTECTION WATCH LOG</div>')
+    st.caption(
+        "AUTO FILL MONITOR // RECHECKS ARMED E*TRADE ENTRIES EVERY 5 SECONDS WHILE TERMINAL 8 IS OPEN "
+        "// LOG PERSISTS IN THIS BROWSER ACROSS REFRESH/REDEPLOY // STOP SUBMISSION STILL REQUIRES YOUR LIVE CONFIRMATION"
+    )
+    rows = list(state.get("rows") or [])
+    if not rows:
+        st.info("NO ARMED OR HISTORICAL PROTECTION WATCH ENTRIES YET.")
+        return
+
+    for row in rows[:20]:
+        status = str(row.get("status") or "UNKNOWN").upper()
+        avg = row.get("average_price")
+        avg_text = f" // AVG USD {float(avg):,.2f}" if avg is not None else ""
+        stop_order = row.get("stop_order_id")
+        stop_text = f" // STOP ORDER {stop_order}" if stop_order not in (None, "") else ""
+        st.caption(
+            f"ENTRY {row['entry_order_id']} // {status} // {row['symbol']} // "
+            f"{float(row.get('filled') or 0):g}/{float(row.get('ordered') or row['quantity']):g} FILLED"
+            f"{avg_text} // PLANNED STOP USD {float(row['stop_price']):,.2f}{stop_text}"
+        )
+        events = row.get("events") or []
+        if events:
+            latest = events[-1]
+            st.caption(
+                f"↳ {str(latest.get('event') or '')} // {str(latest.get('message') or '')}"
+            )
+
+
 def _pending_order_rows(payload: dict) -> list[dict]:
     """Normalize cancellable/pending E*TRADE order records for compact display."""
     response = _find_key(payload, "OrdersResponse")
