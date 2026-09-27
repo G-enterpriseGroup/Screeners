@@ -80,6 +80,31 @@ def _render_css_v10() -> None:
         ) > [data-testid="stColumn"]:nth-child(2){
             display:none!important;
         }
+
+        /* Parts 3/4: explicit standalone stack below Part 2. No negative
+           margins, fixed content heights, absolute positioning, or overlap. */
+        .st-key-risk_live_order_panel{
+            width:100%!important;
+            margin:8px 0 0 0!important;
+            padding:0!important;
+            overflow:visible!important;
+        }
+        .st-key-risk_live_order_panel > [data-testid="stVerticalBlock"],
+        .st-key-risk_live_order_panel [data-testid="stVerticalBlock"]{
+            gap:6px!important;
+            overflow:visible!important;
+        }
+        .st-key-risk_live_order_panel [data-testid="stElementContainer"],
+        .st-key-risk_live_order_panel [data-testid="stHtml"]{
+            min-height:0!important;
+            overflow:visible!important;
+        }
+        .st-key-risk_live_order_panel [data-testid="stAlert"]{
+            margin:0!important;
+            height:auto!important;
+            min-height:0!important;
+            overflow:visible!important;
+        }
         .risk-v10-ticker-marker{display:none!important;}
 
         /* Prevent long values/help content from forcing sibling controls across
@@ -596,16 +621,91 @@ def _new_risk_client_order_id(prefix: str) -> str:
     return clean_prefix + secrets.token_hex(8).upper()
 
 
-def _selected_risk_account() -> dict | None:
-    accounts = st.session_state.get("etrade_accounts") or []
+_RISK_ORDER_ACCOUNT_KEY = "risk_live_order_account_key"
+_RISK_ORDER_DEFAULT_ACCOUNT_SUFFIX = "5474"
+
+
+def _order_accounts() -> list[dict]:
+    return [
+        account
+        for account in (st.session_state.get("etrade_accounts") or [])
+        if isinstance(account, dict) and str(account.get("accountIdKey") or "").strip()
+    ]
+
+
+def _default_order_account_key(accounts: list[dict]) -> str:
+    for account in accounts:
+        if str(account.get("accountId") or "").strip().endswith(_RISK_ORDER_DEFAULT_ACCOUNT_SUFFIX):
+            return str(account.get("accountIdKey") or "").strip()
+
     try:
-        selected = int(st.session_state.get("risk_sizing_account"))
+        risk_index = int(st.session_state.get("risk_sizing_account"))
     except (TypeError, ValueError):
+        risk_index = -1
+    raw_accounts = st.session_state.get("etrade_accounts") or []
+    if 0 <= risk_index < len(raw_accounts):
+        selected = raw_accounts[risk_index]
+        if isinstance(selected, dict):
+            selected_key = str(selected.get("accountIdKey") or "").strip()
+            if selected_key:
+                return selected_key
+    return str(accounts[0].get("accountIdKey") or "").strip() if accounts else ""
+
+
+def _clear_order_review_state() -> None:
+    for key in (
+        _RISK_ENTRY_REVIEW_KEY,
+        _RISK_STOP_REVIEW_KEY,
+        _RISK_FILL_KEY,
+        _RISK_ENTRY_CONFIRM_KEY,
+        _RISK_STOP_CONFIRM_KEY,
+    ):
+        st.session_state.pop(key, None)
+
+
+def _render_order_account_picker() -> dict | None:
+    accounts = _order_accounts()
+    if not accounts:
         return None
-    if selected < 0 or selected >= len(accounts):
-        return None
-    account = accounts[selected]
-    return account if isinstance(account, dict) else None
+
+    by_key = {
+        str(account.get("accountIdKey") or "").strip(): account
+        for account in accounts
+    }
+    options = list(by_key)
+    locked_order = (
+        st.session_state.get(_RISK_ENTRY_ORDER_KEY)
+        or st.session_state.get(_RISK_ENTRY_UNCERTAIN_KEY)
+        or st.session_state.get(_RISK_STOP_ORDER_KEY)
+        or st.session_state.get(_RISK_STOP_UNCERTAIN_KEY)
+    )
+    locked_key = (
+        str((st.session_state.get(_RISK_ENTRY_ORDER_KEY) or {}).get("account_key") or "").strip()
+        or str((st.session_state.get(_RISK_ENTRY_UNCERTAIN_KEY) or {}).get("account_key") or "").strip()
+        or str((st.session_state.get(_RISK_STOP_ORDER_KEY) or {}).get("account_key") or "").strip()
+        or str((st.session_state.get(_RISK_STOP_UNCERTAIN_KEY) or {}).get("account_key") or "").strip()
+    )
+    current = str(st.session_state.get(_RISK_ORDER_ACCOUNT_KEY) or "").strip()
+    desired = locked_key if locked_key in by_key else current
+    if desired not in by_key:
+        desired = _default_order_account_key(accounts)
+    if current != desired:
+        st.session_state[_RISK_ORDER_ACCOUNT_KEY] = desired
+
+    selected_key = st.selectbox(
+        "Order Account",
+        options,
+        key=_RISK_ORDER_ACCOUNT_KEY,
+        format_func=lambda key: _risk_account_label(by_key[key]),
+        on_change=_clear_order_review_state,
+        disabled=bool(locked_order),
+        help=(
+            "Choose the E*TRADE account that will receive the live order. "
+            "Raj's account ending 5474 is the default when available. "
+            "After a live entry is submitted, this account stays locked for the protective-stop workflow."
+        ),
+    )
+    return by_key.get(str(selected_key))
 
 
 def _risk_account_label(account: dict) -> str:
@@ -816,11 +916,10 @@ def _clear_risk_order_workflow() -> None:
         st.session_state.pop(key, None)
 
 
-def _current_stock_order_context(trade_kwargs: dict) -> dict | None:
+def _current_stock_order_context(trade_kwargs: dict, account: dict | None) -> dict | None:
     if str(st.session_state.get("risk_trade_structure") or "").upper() != "STOCK / ETF":
         return None
 
-    account = _selected_risk_account()
     if not account:
         return None
     account_key = str(account.get("accountIdKey") or "").strip()
@@ -915,10 +1014,7 @@ def _preview_live_order(client, account_key: str, preview_payload: dict, touch_s
 
 
 def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> None:
-    st.html('<div class="risk-v9-section">LIVE E*TRADE ORDER</div>')
-    st.caption(
-        "TWO-STEP PROTECTION // BUY LIMIT FIRST // AFTER A FULL FILL, REVIEW + SEND THE SEPARATE SELL STOP"
-    )
+    st.html('<div class="risk-v9-section">3. PICK E*TRADE ACCOUNT</div>')
 
     entry_order = st.session_state.get(_RISK_ENTRY_ORDER_KEY)
     entry_uncertain = st.session_state.get(_RISK_ENTRY_UNCERTAIN_KEY)
@@ -926,8 +1022,22 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
     stop_uncertain = st.session_state.get(_RISK_STOP_UNCERTAIN_KEY)
 
     if client is None:
-        st.warning("LIVE ORDERING BLOCKED // connect E*TRADE before reviewing or sending an order.")
+        st.warning("ACCOUNT PICKER BLOCKED // connect E*TRADE to load order accounts.")
+        st.html('<div class="risk-v9-section">4. REVIEW + SEND ORDER</div>')
+        st.info("LIVE ORDERING BLOCKED // connect E*TRADE before reviewing or sending an order.")
         return
+
+    order_account = _render_order_account_picker()
+    if order_account is None:
+        st.warning("ACCOUNT PICKER BLOCKED // no E*TRADE accounts are currently available.")
+        st.html('<div class="risk-v9-section">4. REVIEW + SEND ORDER</div>')
+        st.info("LIVE ORDERING BLOCKED // refresh or reconnect E*TRADE account data.")
+        return
+
+    st.html('<div class="risk-v9-section">4. REVIEW + SEND ORDER</div>')
+    st.caption(
+        "TWO-STEP PROTECTION // BUY LIMIT FIRST // AFTER A FULL FILL, REVIEW + SEND THE SEPARATE SELL STOP"
+    )
 
     if entry_uncertain and not entry_order:
         st.error(
@@ -949,7 +1059,7 @@ def _render_live_order_workflow(client, touch_session, trade_kwargs: dict) -> No
         return
 
     if not entry_order:
-        context = _current_stock_order_context(trade_kwargs)
+        context = _current_stock_order_context(trade_kwargs, order_account)
         if context is None:
             st.info("LIVE ORDER BLOCKED // valid STOCK / ETF sizing with at least 1 MAX SHARE is required.")
             return
@@ -1288,17 +1398,15 @@ def render_risk_sizing(*args, **kwargs):
     previous_css = _v9._render_css
     previous_ticker = _v9._auto_quote_ticker_input
     previous_columns = _v9._full_width_ticker_columns
-    previous_next_trade = _v9._v2._render_next_trade
     previous_subheader = st.subheader
     previous_caption = st.caption
 
     client = args[0] if args else kwargs.get("client")
     touch_session = kwargs.get("touch_session") or (lambda: None)
 
-    def order_enabled_next_trade(*trade_args, **trade_kwargs):
-        result = previous_next_trade(*trade_args, **trade_kwargs)
-        _render_live_order_workflow(client, touch_session, trade_kwargs)
-        return result
+    def render_live_order_sections(trade_context):
+        with st.container(key="risk_live_order_panel"):
+            _render_live_order_workflow(client, touch_session, trade_context)
 
     def filtered_subheader(body, *sub_args, **sub_kwargs):
         if str(body).strip().upper() == "RISK SIZING":
@@ -1313,21 +1421,21 @@ def render_risk_sizing(*args, **kwargs):
     _v9._render_css = _render_css_v10
     _v9._auto_quote_ticker_input = _safe_auto_quote_ticker_input
     _v9._full_width_ticker_columns = _safe_full_width_ticker_columns
-    _v9._v2._render_next_trade = order_enabled_next_trade
     st.subheader = filtered_subheader
     st.caption = filtered_caption
 
     try:
         if client is None and _v9._v2._load_persisted_risk_book_snapshot() is None:
             return _render_disconnected_ticker_fallback()
-        return _v9.render_risk_sizing(*args, **kwargs)
+        render_kwargs = dict(kwargs)
+        render_kwargs["after_next_trade"] = render_live_order_sections
+        return _v9.render_risk_sizing(*args, **render_kwargs)
     finally:
         # REQUIRED: always restore the underlying module hooks so a Risk Sizing
         # fragment rerun cannot leak behavior into another terminal feature.
         _v9._render_css = previous_css
         _v9._auto_quote_ticker_input = previous_ticker
         _v9._full_width_ticker_columns = previous_columns
-        _v9._v2._render_next_trade = previous_next_trade
         st.subheader = previous_subheader
         st.caption = previous_caption
 
