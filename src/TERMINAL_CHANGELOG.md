@@ -1606,3 +1606,11 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated implementation head:** `89208a8328d7ef486022031760a639ee12eb068c` before removal of the temporary validation workflow.
 - **Lesson:** Keep terminal-wide input color in `src/theme.py`; keep Risk cancellation explicit and account-scoped; treat E*TRADE cancellation as asynchronous until the broker order status confirms it.
+
+
+## 2026-09-27 — Production deployment confirmation for #444444 + Risk pending orders
+
+- **Production commit SHA:** `1492d96ac3ebff8d7f25668145735408ca50926a` (PR #82 squash merge).
+- **Production state verified:** `main` contains the terminal-wide `#444444` editable-field fill, Risk Part 5 `PENDING / OPEN E*TRADE ORDERS`, the account-scoped two-step cancel UI, and `ETradeClient.cancel_order()` using the documented CancelOrderRequest payload. Option Book remains unable to place or cancel live orders.
+- **Post-push verification:** production run `36297644508` completed successfully. Architecture validation, Risk live-order helper simulation, workflow validation, deployed Streamlit health, and the real deployed-browser `Oh no` guard all passed.
+- **Important behavior that must remain:** cancellation is never reported as final until refreshed broker status confirms it; protective SELL STOP cancellation requires explicit second confirmation; broker-saved draft orders are not represented as API-cancellable orders because E*TRADE does not expose them through the public Order API.
