@@ -55,14 +55,17 @@ class DteTests(unittest.TestCase):
              patch.object(core,'_call_api',return_value=payload([today+timedelta(days=23)])), \
              patch.object(core,'_save_state',side_effect=save), \
              patch.object(core,'_results',return_value=results), \
+             patch.object(ui,'_publish_current_etrade_master_a6') as publish_txt, \
              patch.object(core,'_build_gex',side_effect=RuntimeError('API unavailable')) as build:
             with self.assertRaises(RuntimeError):
                 ui._save_ticker_dte(object(),'test','SPY',22,None)
             self.assertFalse(saved)
             self.assertIs(results['SPY'],old)
+            publish_txt.assert_not_called()
             build.side_effect = None
             build.return_value = {'maxDte':23}
             self.assertEqual(ui._save_ticker_dte(object(),'test','SPY',22,None)[0],23)
+            publish_txt.assert_called_once()
             self.assertEqual(saved[-1]['dte_overrides'], {'SPY':23,'QQQ':60})
             self.assertEqual(results['QQQ'],{'maxDte':60})
             with patch.object(ui._proven,'_background_job',return_value={'status':'RUNNING'}):
