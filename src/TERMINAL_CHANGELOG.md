@@ -1822,3 +1822,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Production verification:** Terminal Architecture Guard run `36374663384` completed PASS on the merge SHA, including architecture validation, Risk live-order helper safety, Performance read-only safety, workflow YAML validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
 - **Final behavior:** After saved Risk settings hydrate on boot, typing a different ticker remains authoritative for the rest of that Streamlit session; subsequent autosave revisions no longer snap the field back to the prior saved ticker. The production regression changes a memory-restored SPY field to NVDA and confirms NVDA remains the ticker/quote symbol through another rerun.
 - **Production scope preserved:** No Risk quote-loading code, company-display code, sizing formulas, order workflow, OAuth/client transport, Rebalance, Holdings, GEX, Performance, navigation, global theme, `streamlit_app.py`, or `src/terminal_core.py` was changed.
+
+## 2026-09-28 — Rebalance loss-review default changed to -5%
+
+- **Feature changed:** Rebalance Portfolio loss-review threshold default/persistence only.
+- **Exact production file(s) changed:** `src/rebalance_portfolio_ui.py`. Focused regression coverage updated in `scripts/test_rebalance_portfolio.py`.
+- **What was requested:** Change the default P&L loss-review trigger from -10% to -5%.
+- **Root cause / prior state:** Rebalance initialized `Loss Review Trigger %` at -10%, and reboot-safe browser persistence could retain that old auto-saved default after the code default changed.
+- **What changed:** The default is now -5%. Added a one-time state-version migration that converts previously auto-saved legacy -10% default state to -5% on the next hydrated render. After migration, an intentional future manual -10% choice remains -10% and is not remigrated. Rebalance plan math now marks incoming live settings as current-version so an explicit -10% setting is respected.
+- **Important behavior that must remain:** Underweight positions at or below the configured loss-review threshold remain `REVIEW LOSS` with no automatic ADD proposal. The threshold stays editable and account-persisted. Targets, per-ticker lower/target/upper bands, LONG-TERM/CUSIP protection, cash-first funding, minimum-trade rules, and read-only/no-order behavior remain unchanged.
+- **Files/features intentionally NOT changed:** `streamlit_app.py`, Risk Sizing, E*TRADE OAuth/client/session behavior, Holdings, GEX, Performance, navigation, shared theme, `src/terminal_core.py`, and all order workflows.
+- **Tests performed:** Focused migration assertions verify: fresh state defaults to -5%; legacy unversioned -10% state migrates once to -5%; current-version explicit -10% remains -10%. Terminal Architecture Guard run `36376028765` completed PASS on head `4ab2a09bf644397388924547a939ff9e6edb30e9`, including `python scripts/validate_architecture.py`, broker-safety regressions, workflow validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification. Exact committed diffs and the production source were inspected after push.
+- **Architecture guard result:** PASS.
+- **Implementation commits:** default + migration `026c7dc5312adaaded8870c3711148c2c1680dfc`; explicit-threshold preservation `fae051ce1336bb2571cdec4e23d5b4b06850ffba`; regression coverage `4ab2a09bf644397388924547a939ff9e6edb30e9`.
+- **Lesson:** Persisted defaults require a versioned one-time migration; do not make the migration unconditional or it will overwrite a later intentional user override.
+
