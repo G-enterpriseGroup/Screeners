@@ -196,18 +196,21 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
 
 
 def _restore_risk_book_settings(snapshot: dict[str, Any] | None) -> None:
-    """Restore browser-saved Risk controls once per saved snapshot revision."""
+    """Restore browser-saved Risk controls once per Streamlit session boot.
+
+    The persisted Risk snapshot is updated during normal widget reruns. Restoring
+    again on every newer snapshot would overwrite the live widget value the user
+    just typed (most visibly the ticker field). A real app reboot creates a new
+    Streamlit session, so this one-shot marker naturally clears and memory is
+    restored again after the browser hydration handshake.
+    """
     if not snapshot:
         return
-    settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
     marker_key = "_risk_book_settings_restored_v1"
-    fingerprint = (
-        int(snapshot.get("revision", 0) or 0),
-        float(snapshot.get("saved_at", 0.0) or 0.0),
-    )
-    if st.session_state.get(marker_key) == fingerprint:
+    if bool(st.session_state.get(marker_key, False)):
         return
 
+    settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
     for key in (*_RISK_BOOK_NUMERIC_SETTINGS, *_RISK_BOOK_TEXT_SETTINGS):
         if key in settings:
             st.session_state[key] = settings[key]
@@ -217,7 +220,7 @@ def _restore_risk_book_settings(snapshot: dict[str, Any] | None) -> None:
             str(settings["risk_capital_source"]).strip().upper()
             == _CAPITAL_SOURCE_TACTICAL
         )
-    st.session_state[marker_key] = fingerprint
+    st.session_state[marker_key] = True
 
 
 def _risk_book_snapshot_frame(snapshot: dict[str, Any] | None) -> pd.DataFrame:
