@@ -112,6 +112,7 @@ from src.session_persistence import (
 )
 from src.tab_bar_v4 import render_terminal_tab_bar
 from src.theme import install_typing_caret_theme
+from src.vertical_options_ui import render_vertical_options
 
 
 # Shared appearance is emitted after terminal_core has completed set_page_config
@@ -503,6 +504,10 @@ _TERMINAL_PAGE_HEADERS = {
         "E*TRADE RISK SIZING",
         "CROWN MACRO RISK ENGINE // E*TRADE HOLDINGS + QUOTES // PORTFOLIO SLEEVE CONTROL // STOP-BASED POSITION SIZING // RAJ CLASSIFICATION RULE",
     ),
+    "VERTICAL OPTIONS": (
+        "VERTICAL OPTIONS",
+        "E*TRADE LIVE VERTICALS // CALL + PUT DEBIT SPREADS // NET DEBIT LIMIT // MULTI-ACCOUNT REVIEW + EXPLICIT SEND",
+    ),
     "SCHWAB RISK SIZING": (
         "SCHWAB RISK SIZING",
         "CROWN MACRO RISK ENGINE // SCHWAB API-READY ROUTE // SEPARATE HOLDINGS + QUOTES // SAME RISK FORMULAS",
@@ -693,6 +698,9 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
                 touch_session=_touch_etrade_session,
             ),
         )
+
+    elif active_tab == "VERTICAL OPTIONS":
+        render_vertical_options(_etrade_client(), _touch_etrade_session)
 
     elif active_tab == "SCHWAB RISK SIZING":
         _render_without_legacy_page_header(
