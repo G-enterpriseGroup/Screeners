@@ -255,6 +255,14 @@ _CBOE_BRIDGE_URL = (
 _CBOE_MASTER_A6_STATIC_PATH = (
     Path(__file__).resolve().parents[1] / "static" / "latest_gex_cboe.txt"
 )
+
+
+def _cache_busted_txt_url(url: str) -> str:
+    """Open the CBOE raw bridge with a fresh URL so stale CDN/browser data cannot linger."""
+    separator = "&" if "?" in str(url) else "?"
+    nonce = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return f"{url}{separator}v={nonce}"
+
 def _publish_cboe_master_a6(
     vault_key: str,
     state: dict[str, Any],
@@ -1226,7 +1234,10 @@ def render_gex(
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
     _proven._base._render_etrade_txt_control = lambda: _render_txt_control("E*TRADE", _ETRADE_BRIDGE_URL)
-    _proven._base._render_cboe_txt_control = lambda: _render_txt_control("CBOE", _CBOE_BRIDGE_URL)
+    _proven._base._render_cboe_txt_control = lambda: _render_txt_control(
+        "CBOE",
+        _cache_busted_txt_url(_CBOE_BRIDGE_URL),
+    )
     _proven._base._render_cboe_refresh_all_control = _render_cboe_refresh_all_control
     _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
