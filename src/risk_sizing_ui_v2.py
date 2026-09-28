@@ -596,9 +596,13 @@ def _sort_risk_book_view(
         ).reset_index(drop=True)
 
     if sort_by == "LONG-TERM":
-        result["_risk_manual_long_term_sort"] = (
-            result["Intent"].astype(str).str.upper().eq(RISK_INTENT_LONG_TERM)
-        )
+        result["_risk_manual_long_term_sort"] = [
+            (
+                str(row.get("Intent") or "").upper() == RISK_INTENT_LONG_TERM
+                or is_protected_long_term_holding(row)
+            )
+            for _, row in result.iterrows()
+        ]
         result = result.sort_values(
             ["_risk_manual_long_term_sort", "Symbol"],
             ascending=[ascending, True],
@@ -647,8 +651,15 @@ def _risk_book_export_frame(view: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "LONG-TERM": [
-                "YES" if str(value or "").upper() == RISK_INTENT_LONG_TERM else ""
-                for value in view["Intent"].tolist()
+                (
+                    "YES"
+                    if (
+                        str(row.get("Intent") or "").upper() == RISK_INTENT_LONG_TERM
+                        or is_protected_long_term_holding(row)
+                    )
+                    else ""
+                )
+                for _, row in view.iterrows()
             ],
             "SLEEVE / %": sleeve_display,
             "SYMBOL": view["Symbol"].astype(str).tolist(),
