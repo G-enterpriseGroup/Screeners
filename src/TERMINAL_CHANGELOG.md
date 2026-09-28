@@ -1772,3 +1772,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated implementation head before workflow cleanup:** `6894b6a209ff6b8c5f68e86001ef38804789917f`; temporary validation workflow removed in cleanup commit `2d2d2ed9b42166ea3273d44a279916406035287d`. Final production merge/deployment SHA is recorded after post-push verification.
 - **Lesson:** Structural identifiers must be classified from the actual holding identifier, not only from optional broker metadata. Protected fixed-income/CUSIP positions are permanent LONG-TERM and must never be used as Rebalance trim/sell funding.
+
+## 2026-09-27 — CUSIP LONG-TERM production verification addendum
+
+- **Production merge SHA:** `311107a4db9a605791827cc89f1d6faa051a59c0` from PR #90.
+- **Production verification:** Terminal Architecture Guard run `36372121795` completed PASS on the merge SHA, including production architecture validation, Risk live-order helper safety, Performance read-only safety, active workflow YAML validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Final protected behavior:** CUSIP/fixed-income identifiers—including a CUSIP delivered only in the Symbol field such as `337158EJ4`—are code-level permanent LONG-TERM holdings. Their Risk Book LONG-TERM control is checked/locked, and Rebalance cannot generate a trim/sell amount or use them as funding under any band/hard-max breach.
+- **Production scope preserved:** Global theme, app routing, Holdings presentation, OAuth/session/client transport, GEX, Performance, navigation, Bull Debit, Muni, Option Book, Orders, `src/terminal_core.py`, and live Risk order submission/watcher behavior were not changed.
