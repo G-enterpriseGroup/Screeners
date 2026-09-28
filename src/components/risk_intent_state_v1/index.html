@@ -10,6 +10,8 @@
 <script>
 (function(){
   let lastEvent = "";
+  const BACKUPS = 4;
+
   function post(type,data){
     window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},data),"*");
   }
@@ -17,16 +19,16 @@
   function height(){post("streamlit:setFrameHeight",{height:0});}
   function send(value){post("streamlit:setComponentValue",{value:value,dataType:"json"});}
   function clean(obj){
-    if(!obj || typeof obj!=="object") return null;
+    if(!obj || typeof obj!=="object" || Array.isArray(obj)) return null;
     return obj;
   }
-  function read(key){
+  function readOne(key){
     try{
       const raw = localStorage.getItem(key);
       return raw ? clean(JSON.parse(raw)) : null;
     }catch(_){return null;}
   }
-  function write(key,state){
+  function writeRaw(key,state){
     try{localStorage.setItem(key,JSON.stringify(state));return true}catch(_){return false}
   }
   function rev(state){
@@ -34,23 +36,77 @@
     return Number.isFinite(n) ? n : 0;
   }
   function tickers(state){
-    return Array.isArray(state && state.tickers) ? state.tickers.join(",") : "";
+    return Array.isArray(state && state.tickers) ? state.tickers : [];
+  }
+  function score(state,slot){
+    return [rev(state), tickers(state).length>0 ? 1 : 0, -slot];
+  }
+  function better(a,b){
+    for(let i=0;i<a.length;i++){
+      if(a[i]!==b[i]) return a[i]>b[i];
+    }
+    return false;
+  }
+  function readBest(key){
+    let best=null, bestScore=null;
+    for(let slot=0;slot<=BACKUPS;slot++){
+      const candidate=readOne(slot===0 ? key : key+"::backup:"+slot);
+      if(!candidate) continue;
+      const candidateScore=score(candidate,slot);
+      if(!best || better(candidateScore,bestScore)){
+        best=candidate;
+        bestScore=candidateScore;
+      }
+    }
+    return best;
+  }
+  function sameState(a,b){
+    try{return JSON.stringify(a||null)===JSON.stringify(b||null)}catch(_){return false}
+  }
+  function writeWithBackups(key,state){
+    const current=readOne(key);
+    if(sameState(current,state)) return true;
+    try{
+      for(let slot=BACKUPS;slot>=2;slot--){
+        const previous=localStorage.getItem(key+"::backup:"+(slot-1));
+        if(previous===null) localStorage.removeItem(key+"::backup:"+slot);
+        else localStorage.setItem(key+"::backup:"+slot,previous);
+      }
+      if(current){
+        localStorage.setItem(key+"::backup:1",JSON.stringify(current));
+      }
+      return writeRaw(key,state);
+    }catch(_){return false}
   }
   function apply(args){
     const key = String(args.storage_key || "raj-terminal-risk-intent-v1");
+    const mode=String(args.mode || "write").toLowerCase();
     const server = clean(args.server_state) || {};
-    const browser = read(key);
-    const sr = rev(server), br = rev(browser);
-    const event = key+"|"+sr+"|"+br+"|"+tickers(server)+"|"+tickers(browser);
+    const browser = readBest(key);
+    const event=[
+      key,mode,rev(server),rev(browser),
+      tickers(server).join(","),tickers(browser).join(","),
+      Boolean(args.hydrated)
+    ].join("|");
     if(event===lastEvent){height();return}
-    lastEvent = event;
+    lastEvent=event;
 
-    if(browser && (br > sr || (sr===0 && !tickers(server) && tickers(browser)))){
-      send({state:browser,source:"browser"});
+    if(mode==="read"){
+      send({
+        state: browser,
+        source: browser ? "browser" : "empty",
+        backup_count: BACKUPS
+      });
       height();
       return;
     }
-    write(key,server);
+
+    if(!Boolean(args.hydrated)){
+      height();
+      return;
+    }
+
+    writeWithBackups(key,server);
     height();
   }
   window.addEventListener("message",e=>{
