@@ -164,6 +164,7 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
     hydrated = bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False))
     provisional = bool(st.session_state.get(_RISK_BOOK_PREHYDRATION_KEY, False))
     if session_value["rows"] and not provisional:
+        st.session_state[_RISK_BOOK_BROWSER_HYDRATED_KEY] = True
         return session_value
     if hydrated:
         st.session_state.pop(_RISK_BOOK_PREHYDRATION_KEY, None)
