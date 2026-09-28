@@ -295,7 +295,9 @@ def _build_rebalance_plan(
     """
     account_value = max(0.0, _finite(account_value, 0.0))
     cash_available = max(0.0, _finite(cash_available, 0.0))
-    clean_settings = _clean_state({"settings": settings})["settings"]
+    clean_settings = _clean_state(
+        {"state_version": _REBALANCE_STATE_VERSION, "settings": settings}
+    )["settings"]
     mode = clean_settings["mode"]
     min_trade = clean_settings["min_trade"]
     loss_trigger = clean_settings["loss_review_trigger"]
