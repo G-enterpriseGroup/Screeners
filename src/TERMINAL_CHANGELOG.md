@@ -1851,3 +1851,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Implementation commits:** CBOE stale-link cache bypass `90b9fdbb28abacca027acd7630ab9c99599ef311`; all-refresh E*TRADE TXT publication `4a9dbb070f91c69b10fbd035bd4393e4b5412252`; regression coverage `2416128815d0615e748ee57fba8cca53de37c439` and `9f0a23cc419cf2f7342c55376b9e721e2247e8ef`.
 - **Lesson:** A successful market-data refresh and a fresh raw-link view are separate concerns. Republish the appropriate source bridge whenever its result map changes, and use a cache-busted raw link so the browser/CDN cannot make a newly published file look stale.
 
+
+
+## 2026-09-28 — Vertical Options live multi-account order ticket
+
+- **Feature changed:** New Vertical Options top-level workspace for fast E*TRADE call/put debit-vertical order entry.
+- **Exact production file(s) changed:** `src/vertical_options_ui.py`, `src/vertical_options.py`, `streamlit_app.py`, `src/tab_bar_v4.py`, `src/ARCHITECTURE.md`; focused regression coverage in `tests/test_vertical_options.py` and `.github/workflows/architecture-guard.yml`.
+- **What was broken / missing:** Raj's Terminal did not have a dedicated live vertical-options ticket that could build a two-leg call/put vertical, set a NET DEBIT limit, select multiple E*TRADE accounts, broker-preview every selected account, and explicitly submit those reviewed orders.
+- **Root cause:** Vertical option functionality existed only in preview/analysis-oriented surfaces; there was no isolated production owner for live multi-account vertical spread placement.
+- **What changed:** Added a compact E*TRADE Risk Sizing-style Vertical Options workspace. It loads live ticker quotes, expirations, strikes, bid/ask data, seeds a debit limit from the live spread midpoint, enforces canonical debit structures (CALL = buy lower/sell higher; PUT = buy higher/sell lower), supports DAY/GTC, supports one or many selected accounts, requires every selected account to pass E*TRADE Preview, then uses one explicit live SEND action to place the exact reviewed spread once per selected account. Ticket widgets run inside an `st.fragment` so value changes rerun only the ticket instead of the whole terminal.
+- **Important behavior that must remain:** Exactly two legs with the same expiration/type/quantity; NET_DEBIT limit order; every selected account must preview successfully before SEND; any input/account change invalidates the prior preview; preview IDs expire after 150 seconds; live submission must always require Raj's discrete contemporaneous SEND click; no background or automatic option-order placement.
+- **Files/features intentionally NOT changed:** Risk Sizing UI/math/order watcher, Option Book UI/behavior, `src/etrade_client.py` transport, OAuth/session UI, Holdings, GEX, Performance, Rebalance, shared theme, and `src/terminal_core.py`.
+- **Tests performed:** `python -m py_compile src/vertical_options.py src/vertical_options_ui.py streamlit_app.py src/tab_bar_v4.py`; `python -m unittest tests.test_vertical_options`; existing Risk live-order helper tests; Performance boundary tests; workflow YAML validation; deployed Streamlit health check; Selenium frontend check confirming the production app did not render the Streamlit "Oh no" error page.
+- **Architecture guard result:** PASS — GitHub Actions `Terminal Architecture Guard` run `36482845865`.
+- **Commit SHA:** `f66da03`, `a36e930`, `d6ea7a1`, `9b0cbee`, `7d88e316`, `54ca5ba`, `ff3206f`.
+- **Lesson:** Keep live vertical order entry isolated from Risk Sizing and Option Book. Reuse the existing authenticated Preview/Place transport, but keep the two-leg spread validation, multi-account review fingerprint, and fragment-scoped UI inside the Vertical Options owner files.
