@@ -84,12 +84,12 @@ _VERTICAL_OPTIONS_CSS = """
     font-family:"Courier New",monospace!important;
     font-weight:900!important;
 }
-.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-baseweb="tag"],
-.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-baseweb="tag"] *{
+.st-key-vertical_options_workspace [data-baseweb="tag"],
+.st-key-vertical_options_workspace [data-baseweb="tag"] *{
     color:#000!important;
     -webkit-text-fill-color:#000!important;
 }
-.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-baseweb="tag"] svg{
+.st-key-vertical_options_workspace [data-baseweb="tag"] svg{
     color:#000!important;
     fill:#000!important;
 }
