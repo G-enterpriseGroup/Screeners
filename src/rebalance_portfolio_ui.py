@@ -29,7 +29,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError
-from src.risk_sizing import classify_holdings
+from src.risk_sizing import classify_holdings, is_protected_long_term_holding
 from src.risk_sizing_ui import _normalized_holdings
 from src.risk_sizing_ui_v2 import (
     RISK_INTENT_LONG_TERM,
@@ -250,7 +250,8 @@ def _build_rebalance_plan(
     - positions inside their target band do not trade;
     - TO BAND moves only just inside the breached band, TO TARGET restores target;
     - underweights at/below the loss-review trigger are never automatically added;
-    - LONG-TERM overweights are flagged for review rather than treated as routine trims;
+    - protected CUSIP/fixed-income identifiers are never trimmed;
+    - other LONG-TERM overweights are flagged for review rather than treated as routine trims;
     - trades below the minimum-dollar threshold are suppressed;
     - excess cash is used first, then proceeds from required trims;
     - buys are prorated when funding is insufficient.
@@ -292,6 +293,7 @@ def _build_rebalance_plan(
         market_value = _finite(source.get("Market Value"), 0.0)
         pnl_pct = _finite(source.get("Gain/Loss %"), 0.0)
         sleeve = str(source.get("Sleeve") or "TACTICAL").strip().upper()
+        protected_long_term = is_protected_long_term_holding(source)
         current_pct = (market_value / account_value * 100.0) if account_value > 0 else 0.0
         lower_band = max(0.0, target - lower)
         upper_band = max(0.0, upper - target)
@@ -316,26 +318,31 @@ def _build_rebalance_plan(
             underweight = current_pct < lower - 1e-9
 
             if overweight:
-                if mode == "TO TARGET":
-                    goal_pct = target
+                if protected_long_term:
+                    action = "PROTECTED LONG-TERM // HOLD"
+                    reason = "CUSIP / FIXED INCOME // NEVER TRIM"
+                    raw_trade = 0.0
                 else:
-                    goal_pct = _inside_band_goal(target, upper_band, "UPPER")
-                if hard_breach:
-                    goal_pct = min(
-                        goal_pct,
-                        max(0.0, hard_max - min(_BAND_REENTRY_BUFFER, hard_max / 2.0)),
-                    )
-                goal_value = account_value * goal_pct / 100.0
-                raw_trade = goal_value - market_value
-                if sleeve == "LONG-TERM" and not hard_breach:
-                    action = "LONG-TERM TRIM REVIEW"
-                    reason = "ABOVE BAND // LONG-TERM FLAG"
-                elif hard_breach:
-                    action = "HARD LIMIT REVIEW"
-                    reason = f"ABOVE {hard_max:.2f}% HARD MAX"
-                else:
-                    action = "TRIM"
-                    reason = "ABOVE UPPER BAND"
+                    if mode == "TO TARGET":
+                        goal_pct = target
+                    else:
+                        goal_pct = _inside_band_goal(target, upper_band, "UPPER")
+                    if hard_breach:
+                        goal_pct = min(
+                            goal_pct,
+                            max(0.0, hard_max - min(_BAND_REENTRY_BUFFER, hard_max / 2.0)),
+                        )
+                    goal_value = account_value * goal_pct / 100.0
+                    raw_trade = goal_value - market_value
+                    if sleeve == "LONG-TERM" and not hard_breach:
+                        action = "LONG-TERM TRIM REVIEW"
+                        reason = "ABOVE BAND // LONG-TERM FLAG"
+                    elif hard_breach:
+                        action = "HARD LIMIT REVIEW"
+                        reason = f"ABOVE {hard_max:.2f}% HARD MAX"
+                    else:
+                        action = "TRIM"
+                        reason = "ABOVE UPPER BAND"
 
             elif underweight:
                 if pnl_pct <= loss_trigger:
