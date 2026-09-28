@@ -1794,3 +1794,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated implementation head before cleanup:** `df8ad461c9f53238cfe2030c4177a302435a2b54`; temporary workflow removed in cleanup commit `777ad11201dfcdd41dc3310806762f9c94d83598`. Final production merge/deployment SHA is recorded after post-push verification.
 - **Lesson:** Never let a newly restarted Streamlit session write defaults into browser persistence until the browser has first completed an explicit restore handshake. Keep rolling browser backups for user-edited portfolio policy state.
+
+## 2026-09-27 — Reboot-safe memory production verification addendum
+
+- **Production merge SHA:** `4871b19a36bcddb385d36f4e2942b28ac60cfb2d` from PR #91.
+- **Production verification:** Terminal Architecture Guard run `36373806303` completed PASS on the merge SHA, including architecture validation, Risk live-order helper safety, Performance read-only safety, workflow YAML validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Final persistence behavior:** E*TRADE Risk editable state / LONG-TERM intent and Rebalance targets/bands/settings hydrate browser memory before a fresh process is permitted to write. Each browser store keeps the current state plus four rolling backups.
+- **Security boundary:** E*TRADE OAuth tokens remain server-memory only and are intentionally excluded from browser persistence.
