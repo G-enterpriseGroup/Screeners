@@ -1815,3 +1815,10 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Validated implementation head before cleanup:** `13d118db70c15d8e8f73a6342dab1f260a91b50d`. Final merge/deployment SHA recorded after production verification.
 - **Lesson:** Browser persistence should hydrate editable controls once per session boot; normal autosave revisions must never be treated as instructions to re-seed live widgets.
+
+## 2026-09-27 — Risk ticker edit production verification addendum
+
+- **Production merge SHA:** `dbc1f428b8ddefa8c2e35563b51064bd913d762b` from PR #92.
+- **Production verification:** Terminal Architecture Guard run `36374663384` completed PASS on the merge SHA, including architecture validation, Risk live-order helper safety, Performance read-only safety, workflow YAML validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Final behavior:** After saved Risk settings hydrate on boot, typing a different ticker remains authoritative for the rest of that Streamlit session; subsequent autosave revisions no longer snap the field back to the prior saved ticker. The production regression changes a memory-restored SPY field to NVDA and confirms NVDA remains the ticker/quote symbol through another rerun.
+- **Production scope preserved:** No Risk quote-loading code, company-display code, sizing formulas, order workflow, OAuth/client transport, Rebalance, Holdings, GEX, Performance, navigation, global theme, `streamlit_app.py`, or `src/terminal_core.py` was changed.
