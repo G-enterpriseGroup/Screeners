@@ -47,6 +47,7 @@ These are durable terminal preferences and should be checked on every UI change:
 |---|---|---|---|
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
 | E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
+| Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
@@ -84,6 +85,21 @@ Use this decision tree:
 - Change **Schwab Risk Sizing setup/readiness UI or future Schwab data binding** → `src/schwab_risk_sizing_ui.py` and future Schwab-specific API modules only.
 - Keep Schwab holdings/session state separate from E*TRADE holdings/session state; never point the Schwab tab at E*TRADE data as a temporary shortcut.
 - Do **not** edit GEX/OAuth/navigation to fix Risk Sizing content. Navigation may be edited only for the top-tab label/order itself.
+
+## Vertical Options edit map
+
+Production path:
+
+`streamlit_app.py` → `src/vertical_options_ui.py` → `src/vertical_options.py` + existing `src/etrade_client.py` broker transport
+
+- Change **ticker/type/expiration/strike/quantity/limit/account controls, compact layout, quote presentation, multi-account review/send interaction** → `src/vertical_options_ui.py`.
+- Change **canonical call/put debit-vertical validation or E*TRADE spread Preview/Place payload construction** → `src/vertical_options.py`.
+- Vertical Options is exactly two legs, same expiration/type/quantity: CALL debit = BUY lower strike + SELL higher strike; PUT debit = BUY higher strike + SELL lower strike.
+- Multi-account placement must use the same reviewed fingerprint for every selected account. Every account must preview successfully before the live SEND control is enabled.
+- The live order action must remain a discrete, contemporaneous user click. Do not add background or automatic option-order submission.
+- Preserve fragment-scoped reruns for ticket edits; do not globally patch Streamlit or edit Risk Sizing to achieve live updates.
+- Reuse existing E*TRADE OAuth/session and `ETradeClient.preview_order/place_order` transport without changing OAuth UI.
+- Do not modify Option Book behavior; its existing UI remains disabled/preview-only unless separately requested.
 
 ## GEX edit map
 
