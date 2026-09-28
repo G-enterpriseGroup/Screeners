@@ -99,6 +99,7 @@ def _save_ticker_dte(client: Any, key: str, ticker: str, requested: int, touch: 
     state["dte_overrides"][ticker] = snapped
     _core._save_state(key, state)
     _core._results(key)[ticker] = result
+    _publish_current_etrade_master_a6(key, state)
     if callable(touch):
         try:
             touch()
@@ -186,6 +187,45 @@ def _write_master_a6_static(
     temp_path = path.with_name(path.name + ".tmp")
     temp_path.write_text(text, encoding="utf-8")
     temp_path.replace(path)
+
+
+def _publish_current_etrade_master_a6(
+    vault_key: str,
+    state: dict[str, Any],
+    failures: dict[str, str] | None = None,
+) -> bool:
+    """Republish the E*TRADE raw TXT from the current saved GEX result map."""
+    tickers = [
+        ticker
+        for ticker in (_core._normalize_ticker(value) for value in state.get("tickers", []))
+        if ticker
+    ]
+    result_map = _core._results(str(vault_key or "default"))
+    if not tickers or not result_map:
+        return False
+
+    try:
+        _write_master_a6_static(result_map, tickers, failures)
+    except Exception:
+        pass
+
+    parser_text = _proven._google_sheets_master_text(
+        result_map,
+        tickers,
+        failures,
+    ).strip()
+    if not parser_text or not _GEX_GITHUB_TOKEN:
+        return False
+
+    try:
+        return bool(
+            publish_latest_gex(
+                _GEX_GITHUB_TOKEN,
+                f'"{parser_text}"',
+            )
+        )
+    except Exception:
+        return False
 
 
 def _run_background_refresh_with_master_export(
@@ -1100,6 +1140,7 @@ def render_gex(
     original_overview = _proven._base._overview_html
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
+    original_refresh_symbol = _proven._base._refresh_symbol
     original_etrade_txt_control = _proven._base._render_etrade_txt_control
     original_cboe_txt_control = _proven._base._render_cboe_txt_control
     original_cboe_refresh_control = _proven._base._render_cboe_refresh_all_control
@@ -1154,6 +1195,24 @@ def render_gex(
             state,
             result_map,
         )
+
+    def refresh_symbol_with_txt_publish(
+        refresh_client: Any,
+        key: str,
+        state: dict[str, Any],
+        ticker: str,
+        refresh_touch: Any,
+    ):
+        """Foreground E*TRADE refreshes immediately republish latest_gex.txt."""
+        result = original_refresh_symbol(
+            refresh_client,
+            key,
+            state,
+            ticker,
+            refresh_touch,
+        )
+        _publish_current_etrade_master_a6(key, state)
+        return result
 
     def render_settings_with_auto_refresh(
         key: str,
@@ -1233,7 +1292,11 @@ def render_gex(
     _proven._base._overview_html = overview_with_iv_rank
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
-    _proven._base._render_etrade_txt_control = lambda: _render_txt_control("E*TRADE", _ETRADE_BRIDGE_URL)
+    _proven._base._refresh_symbol = refresh_symbol_with_txt_publish
+    _proven._base._render_etrade_txt_control = lambda: _render_txt_control(
+        "E*TRADE",
+        _cache_busted_txt_url(_ETRADE_BRIDGE_URL),
+    )
     _proven._base._render_cboe_txt_control = lambda: _render_txt_control(
         "CBOE",
         _cache_busted_txt_url(_CBOE_BRIDGE_URL),
@@ -1264,6 +1327,7 @@ def render_gex(
         _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
         _proven._base._render_cboe_txt_control = original_cboe_txt_control
         _proven._base._render_etrade_txt_control = original_etrade_txt_control
+        _proven._base._refresh_symbol = original_refresh_symbol
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
