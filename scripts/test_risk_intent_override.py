@@ -186,6 +186,7 @@ def main() -> None:
                 "risk_entry_price": 411.25,
                 "risk_stop_price": 390.0,
                 "risk_liquid_balance": 24500.0,
+                "risk_ticker": "SPY",
                 "risk_capital_source": "USE TACTICAL ROOM",
             },
         }
@@ -194,12 +195,21 @@ def main() -> None:
         assert risk_ui.st.session_state["risk_entry_price"] == 411.25
         assert risk_ui.st.session_state["risk_stop_price"] == 390.0
         assert risk_ui.st.session_state["risk_liquid_balance"] == 24500.0
+        assert risk_ui.st.session_state["risk_ticker"] == "SPY"
         assert risk_ui.st.session_state["risk_capital_source_tactical"] is True
 
-        # Same saved revision must not repeatedly overwrite an edit made after restore.
+        # A newer autosaved Risk snapshot in the same live session must never
+        # overwrite a ticker/value the user just edited.
         risk_ui.st.session_state["risk_gain_threshold"] = 9.0
-        risk_ui._restore_risk_book_settings(snapshot)
+        risk_ui.st.session_state["risk_ticker"] = "NVDA"
+        newer_snapshot = {
+            **snapshot,
+            "revision": 13,
+            "saved_at": 12346.0,
+        }
+        risk_ui._restore_risk_book_settings(newer_snapshot)
         assert risk_ui.st.session_state["risk_gain_threshold"] == 9.0
+        assert risk_ui.st.session_state["risk_ticker"] == "NVDA"
     finally:
         risk_ui.st.session_state = original_session_state
 
