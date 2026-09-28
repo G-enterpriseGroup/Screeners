@@ -913,6 +913,14 @@ def main():
     assert remembered.number_input(key="risk_full_position_pct").value == 2.0
     assert remembered.session_state["_risk_book_snapshot_v1"]["account_key"] == "cached-risk-account"
     assert remembered.session_state["risk_quote_source"] == "YAHOO FINANCE"
+    assert remembered.text_input(key="risk_ticker").value == "SPY"
+    remembered.text_input(key="risk_ticker").set_value("nvda").run()
+    assert not remembered.exception, [e.message for e in remembered.exception]
+    assert remembered.text_input(key="risk_ticker").value == "NVDA"
+    assert remembered.session_state["risk_quote_symbol"] == "NVDA"
+    remembered.run()
+    assert remembered.text_input(key="risk_ticker").value == "NVDA"
+    assert remembered.session_state["risk_quote_symbol"] == "NVDA"
     memory_caption = [str(item.value) for item in remembered.caption]
     assert any("RISK BOOK MEMORY" in value for value in memory_caption)
 
