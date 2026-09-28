@@ -1881,3 +1881,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS — GitHub Actions `Terminal Architecture Guard` run `36483524405`.
 - **Commit SHA:** `ff68ddd`, `12677a7` plus this changelog commit.
 - **Lesson:** When a feature uses orange filled BaseWeb multiselect tags, explicitly set the tag label and remove icon to black inside the feature scope so the global/input orange text rule cannot erase the selection text.
+
+
+## 2026-09-28 — Vertical Options direct ticker entry matching Risk Sizing
+
+- **Feature changed:** Vertical Options ticker/company input interaction.
+- **Exact production file(s) changed:** `src/vertical_options_ui.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Vertical Options used the combined ticker/company autocomplete selector, showing values such as `SPY — State Street SPDR S&P 500 ETF Trust` inside the editable control. Raj wanted the Risk Sizing interaction where only the ticker is typed.
+- **Root cause:** The initial Vertical Options ticket reused `smart_ticker_selector` instead of the production E*TRADE Risk Sizing direct text-entry pattern.
+- **What changed:** Replaced the combined selector with a plain editable `Ticker` text input, automatically normalizes input to uppercase, and added a separate read-only `Company / ETF` display box beside it. The name resolves from the live E*TRADE quote first with the existing ticker directory fallback.
+- **Important behavior that must remain:** Only the ticker symbol is editable. Company / ETF stays display-only. Ticker edits remain fragment-scoped so the full terminal page does not refresh. Existing quote, expiration, strike, account, preview, and live-send behavior must remain unchanged.
+- **Files/features intentionally NOT changed:** E*TRADE Risk Sizing, ticker directory logic, Option Book, OAuth/session, GEX, Holdings, Performance, Rebalance, navigation, shared theme, order math, and broker transport.
+- **Tests performed:** Production route re-traced; Vertical Options syntax/payload regression test passed; architecture validator passed; deployed Streamlit health passed; deployed frontend Selenium check confirmed no Streamlit “Oh no” page.
+- **Architecture guard result:** PASS — GitHub Actions `Terminal Architecture Guard` run `36483823690`.
+- **Commit SHA:** `061dad3` plus this changelog commit.
+- **Lesson:** Vertical Options ticker entry should mirror the production E*TRADE Risk Sizing pattern: direct ticker text input plus separate display-only company/ETF name, not the combined smart selector.
