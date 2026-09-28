@@ -68,6 +68,7 @@ _risk_book_state_component = components.declare_component(
     path=str(_RISK_BOOK_COMPONENT_PATH),
 )
 _RISK_BOOK_SNAPSHOT_SESSION_KEY = "_risk_book_snapshot_v1"
+_RISK_BOOK_BROWSER_HYDRATED_KEY = "_risk_book_browser_hydrated_v1"
 _RISK_BOOK_STORAGE_KEY = "raj-terminal-risk-book-v1"
 _RISK_BOOK_NUMERIC_SETTINGS = (
     "risk_gain_threshold",
@@ -155,33 +156,36 @@ def _clean_risk_book_snapshot(raw: Any) -> dict[str, Any]:
 
 
 def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
-    """Load the last Risk Book from this browser across sessions/redeploys."""
+    """Hydrate browser memory before this process is allowed to write defaults."""
     session_value = _clean_risk_book_snapshot(
         st.session_state.get(_RISK_BOOK_SNAPSHOT_SESSION_KEY)
     )
-    if session_value["rows"]:
-        return session_value
+    hydrated = bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False))
+    if hydrated:
+        return session_value if session_value["rows"] else None
 
     with st.container(key="risk_book_state_reader_shell", gap=None):
         browser = _risk_book_state_component(
             storage_key=_RISK_BOOK_STORAGE_KEY,
             server_state=session_value,
+            mode="read",
+            hydrated=False,
             key="raj_risk_book_state_reader_v1",
             default=None,
         )
-    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
-        browser_state = _clean_risk_book_snapshot(browser["state"])
-        if browser_state["rows"] and (
-            browser_state["revision"] > session_value["revision"]
-            or not session_value["rows"]
-        ):
-            session_value = browser_state
 
-    if not session_value["rows"]:
+    if isinstance(browser, dict) and browser.get("source") in {"browser", "empty"}:
+        st.session_state[_RISK_BOOK_BROWSER_HYDRATED_KEY] = True
+        if isinstance(browser.get("state"), dict):
+            browser_state = _clean_risk_book_snapshot(browser["state"])
+            if browser_state["rows"] or browser_state["settings"]:
+                session_value = browser_state
+                st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = session_value
+        hydrated = True
+
+    if not hydrated:
         return None
-
-    st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = session_value
-    return session_value
+    return session_value if session_value["rows"] else None
 
 
 def _restore_risk_book_settings(snapshot: dict[str, Any] | None) -> None:
@@ -285,10 +289,15 @@ def _persist_risk_book_snapshot(
         }
         st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = state
 
+    if not bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False)):
+        return existing if existing["rows"] else _clean_risk_book_snapshot(candidate)
+
     with st.container(key="risk_book_state_writer_shell", gap=None):
         _risk_book_state_component(
             storage_key=_RISK_BOOK_STORAGE_KEY,
             server_state=state,
+            mode="write",
+            hydrated=True,
             key="raj_risk_book_state_writer_v1",
             default=None,
         )
@@ -328,6 +337,10 @@ def _risk_intent_session_key(account_key: str) -> str:
 
 def _risk_intent_storage_key(account_key: str) -> str:
     return "raj-terminal-risk-intent-v1:" + _risk_intent_account_token(account_key)
+
+
+def _risk_intent_hydrated_key(account_key: str) -> str:
+    return "_risk_intent_browser_hydrated::" + _risk_intent_account_token(account_key)
 
 
 def _clean_risk_intent_state(raw: Any) -> dict[str, Any]:
@@ -438,23 +451,29 @@ def _load_persisted_intent_overrides(
     account_key: str,
     active_symbols: list[str],
 ) -> tuple[dict[str, str], dict[str, Any]]:
-    """Load browser-backed LONG-TERM choices and prune sold positions."""
+    """Hydrate browser-backed LONG-TERM choices before pruning or writing."""
     state = _current_risk_intent_state(account_key)
-    with st.container(key="risk_intent_state_reader_shell", gap=None):
-        browser = _risk_intent_state_component(
-            storage_key=_risk_intent_storage_key(account_key),
-            server_state=state,
-            key="raj_risk_intent_state_reader_" + _risk_intent_account_token(account_key),
-            default=None,
-        )
-    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
-        browser_state = _clean_risk_intent_state(browser["state"])
-        if browser_state["revision"] > state["revision"] or (
-            state["revision"] == 0
-            and not state["tickers"]
-            and browser_state["tickers"]
-        ):
-            state = browser_state
+    hydrated_key = _risk_intent_hydrated_key(account_key)
+    hydrated = bool(st.session_state.get(hydrated_key, False))
+
+    if not hydrated:
+        with st.container(key="risk_intent_state_reader_shell", gap=None):
+            browser = _risk_intent_state_component(
+                storage_key=_risk_intent_storage_key(account_key),
+                server_state=state,
+                mode="read",
+                hydrated=False,
+                key="raj_risk_intent_state_reader_" + _risk_intent_account_token(account_key),
+                default=None,
+            )
+        if isinstance(browser, dict) and browser.get("source") in {"browser", "empty"}:
+            st.session_state[hydrated_key] = True
+            if isinstance(browser.get("state"), dict):
+                state = _clean_risk_intent_state(browser["state"])
+            hydrated = True
+
+    if not hydrated:
+        return _account_intent_overrides(account_key), state
 
     state, _ = _reconcile_risk_intent_state(state, active_symbols)
     state = _store_risk_intent_state(account_key, state)
@@ -465,11 +484,15 @@ def _sync_risk_intent_browser(
     account_key: str,
     state: dict[str, Any],
 ) -> None:
-    """Write checked tickers to this browser without exposing brokerage data."""
+    """Write checked tickers only after browser memory has been hydrated."""
+    if not bool(st.session_state.get(_risk_intent_hydrated_key(account_key), False)):
+        return
     with st.container(key="risk_intent_state_writer_shell", gap=None):
         _risk_intent_state_component(
             storage_key=_risk_intent_storage_key(account_key),
             server_state=_clean_risk_intent_state(state),
+            mode="write",
+            hydrated=True,
             key="raj_risk_intent_state_writer_" + _risk_intent_account_token(account_key),
             default=None,
         )
