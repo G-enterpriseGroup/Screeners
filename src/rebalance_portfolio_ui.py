@@ -46,9 +46,10 @@ from src.risk_sizing_ui_v2 import (
 _DEFAULT_TACTICAL_BAND = 2.0
 _DEFAULT_LONG_TERM_BAND = 4.0
 _DEFAULT_MIN_TRADE = 500.0
-_DEFAULT_LOSS_REVIEW_TRIGGER = -10.0
+_DEFAULT_LOSS_REVIEW_TRIGGER = -5.0
 _DEFAULT_HARD_MAX = 25.0
 _BAND_REENTRY_BUFFER = 0.10
+_REBALANCE_STATE_VERSION = 2
 
 _REBALANCE_COMPONENT_PATH = Path(__file__).parent / "components" / "risk_book_state_v1"
 _rebalance_state_component = components.declare_component(
@@ -91,6 +92,11 @@ def _clean_state(raw: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         revision = 0
 
+    try:
+        state_version = max(0, int(raw.get("state_version", 0) or 0))
+    except (TypeError, ValueError):
+        state_version = 0
+
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in raw.get("rows", []) or []:
@@ -130,6 +136,25 @@ def _clean_state(raw: Any) -> dict[str, Any]:
     if mode not in {"TO BAND", "TO TARGET"}:
         mode = "TO BAND"
 
+    loss_review_trigger = min(
+        0.0,
+        max(
+            -100.0,
+            _finite(
+                source_settings.get("loss_review_trigger"),
+                _DEFAULT_LOSS_REVIEW_TRIGGER,
+            ),
+        ),
+    )
+    # One-time migration for accounts that auto-saved the old -10% default.
+    # Once state_version=2 is written, an intentional future -10% choice stays -10%.
+    if state_version < _REBALANCE_STATE_VERSION and math.isclose(
+        loss_review_trigger,
+        -10.0,
+        abs_tol=1e-9,
+    ):
+        loss_review_trigger = _DEFAULT_LOSS_REVIEW_TRIGGER
+
     settings = {
         "mode": mode,
         "tactical_band": min(
@@ -141,10 +166,7 @@ def _clean_state(raw: Any) -> dict[str, Any]:
             max(0.0, _finite(source_settings.get("long_term_band"), _DEFAULT_LONG_TERM_BAND)),
         ),
         "min_trade": max(0.0, _finite(source_settings.get("min_trade"), _DEFAULT_MIN_TRADE)),
-        "loss_review_trigger": min(
-            0.0,
-            max(-100.0, _finite(source_settings.get("loss_review_trigger"), _DEFAULT_LOSS_REVIEW_TRIGGER)),
-        ),
+        "loss_review_trigger": loss_review_trigger,
         "hard_max_pct": min(
             100.0,
             max(0.0, _finite(source_settings.get("hard_max_pct"), _DEFAULT_HARD_MAX)),
@@ -153,6 +175,7 @@ def _clean_state(raw: Any) -> dict[str, Any]:
 
     saved_at = max(0.0, _finite(raw.get("saved_at"), 0.0))
     return {
+        "state_version": _REBALANCE_STATE_VERSION,
         "revision": revision,
         "saved_at": saved_at,
         # The shared zero-height browser component uses this timestamp only as
