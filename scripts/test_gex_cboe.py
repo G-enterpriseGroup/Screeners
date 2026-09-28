@@ -289,6 +289,9 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn('CBOE_PATH = "bridge/latest_gex_cboe.txt"', bridge)
         self.assertIn('"MASTER A6 SOURCE"', ui)
         self.assertIn("publish_latest_gex_cboe", ui)
+        self.assertIn("def _cache_busted_txt_url", ui)
+        self.assertIn("_cache_busted_txt_url(_CBOE_BRIDGE_URL)", ui)
+        self.assertNotIn("_cache_busted_txt_url(_ETRADE_BRIDGE_URL)", ui)
 
 
 def live_source_smoke() -> None:
