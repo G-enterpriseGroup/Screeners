@@ -69,6 +69,7 @@ _risk_book_state_component = components.declare_component(
 )
 _RISK_BOOK_SNAPSHOT_SESSION_KEY = "_risk_book_snapshot_v1"
 _RISK_BOOK_BROWSER_HYDRATED_KEY = "_risk_book_browser_hydrated_v1"
+_RISK_BOOK_PREHYDRATION_KEY = "_risk_book_prehydration_candidate_v1"
 _RISK_BOOK_STORAGE_KEY = "raj-terminal-risk-book-v1"
 _RISK_BOOK_NUMERIC_SETTINGS = (
     "risk_gain_threshold",
@@ -161,10 +162,12 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
         st.session_state.get(_RISK_BOOK_SNAPSHOT_SESSION_KEY)
     )
     hydrated = bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False))
-    if session_value["rows"]:
+    provisional = bool(st.session_state.get(_RISK_BOOK_PREHYDRATION_KEY, False))
+    if session_value["rows"] and not provisional:
         return session_value
     if hydrated:
-        return None
+        st.session_state.pop(_RISK_BOOK_PREHYDRATION_KEY, None)
+        return session_value if session_value["rows"] else None
 
     with st.container(key="risk_book_state_reader_shell", gap=None):
         browser = _risk_book_state_component(
@@ -178,6 +181,7 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
 
     if isinstance(browser, dict) and browser.get("source") in {"browser", "empty"}:
         st.session_state[_RISK_BOOK_BROWSER_HYDRATED_KEY] = True
+        st.session_state.pop(_RISK_BOOK_PREHYDRATION_KEY, None)
         if isinstance(browser.get("state"), dict):
             browser_state = _clean_risk_book_snapshot(browser["state"])
             if browser_state["rows"] or browser_state["settings"]:
@@ -284,11 +288,6 @@ def _persist_risk_book_snapshot(
         "rows": rows,
         "settings": _risk_book_snapshot_settings(),
     }
-    if not bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False)):
-        # A fresh process must not manufacture revision 1 defaults in session
-        # before the browser has had a chance to return its saved snapshot.
-        return existing if existing["rows"] else _clean_risk_book_snapshot(candidate)
-
     same_payload = all(
         existing.get(key) == candidate.get(key)
         for key in (
@@ -311,6 +310,13 @@ def _persist_risk_book_snapshot(
         }
         st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = state
 
+    if not bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False)):
+        # Keep current-session behavior working, but mark this snapshot as
+        # provisional so the next rerun still asks browser memory first.
+        st.session_state[_RISK_BOOK_PREHYDRATION_KEY] = True
+        return state
+
+    st.session_state.pop(_RISK_BOOK_PREHYDRATION_KEY, None)
     with st.container(key="risk_book_state_writer_shell", gap=None):
         _risk_book_state_component(
             storage_key=_RISK_BOOK_STORAGE_KEY,
