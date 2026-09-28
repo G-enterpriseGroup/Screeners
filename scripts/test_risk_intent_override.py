@@ -89,6 +89,17 @@ def main() -> None:
         {"Symbol": "NVDA", "CUSIP": "", "Type": "EQ"}
     )
 
+    protected_view = classify_holdings(protected, 5.0)
+    protected_view["Intent"] = RISK_INTENT_AUTO
+    protected_view["% Tactical Sleeve"] = float("nan")
+    protected_view["% Account"] = [10.0, 10.0]
+    protected_view["_risk_sort_rank"] = [0, 0]
+    protected_view["_risk_row_uid"] = ["p0", "p1"]
+    protected_export = _risk_book_export_frame(protected_view)
+    assert protected_export["LONG-TERM"].tolist() == ["YES", "YES"]
+    protected_sorted = _sort_risk_book_view(protected_view, "LONG-TERM", "DESC")
+    assert protected_sorted["Symbol"].tolist() == ["337158EJ4", "MUNIROW"]
+
     overrides = {"GLD": RISK_INTENT_LONG_TERM}
     adjusted = _apply_intent_overrides(classified, overrides)
     adjusted_by_symbol = adjusted.set_index("Symbol")
