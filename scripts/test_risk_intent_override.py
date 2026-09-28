@@ -12,7 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.risk_sizing import classify_holdings, sleeve_summary
+from src.risk_sizing import (
+    classify_holdings,
+    is_protected_long_term_holding,
+    sleeve_summary,
+)
 import src.risk_sizing_ui_v2 as risk_ui
 from src.risk_sizing_ui_v2 import (
     RISK_INTENT_AUTO,
@@ -54,6 +58,36 @@ def main() -> None:
     by_symbol = classified.set_index("Symbol")
     assert by_symbol.loc["GLD", "Sleeve"] == "TACTICAL"
     assert by_symbol.loc["SPY", "Sleeve"] == "LONG-TERM"
+
+    protected = pd.DataFrame(
+        [
+            {
+                "Symbol": "337158EJ4",
+                "CUSIP": "",
+                "Type": "EQ",
+                "Gain/Loss %": -25.0,
+                "Gain/Loss": -2500.0,
+                "Market Value": 10_000.0,
+            },
+            {
+                "Symbol": "MUNIROW",
+                "CUSIP": "107431KW7",
+                "Type": "",
+                "Gain/Loss %": -50.0,
+                "Gain/Loss": -5000.0,
+                "Market Value": 10_000.0,
+            },
+        ]
+    )
+    protected_classified = classify_holdings(protected, 5.0).set_index("Symbol")
+    assert protected_classified.loc["337158EJ4", "Sleeve"] == "LONG-TERM"
+    assert protected_classified.loc["337158EJ4", "Sleeve Rule"] == "CUSIP / FIXED INCOME // PROTECTED"
+    assert protected_classified.loc["MUNIROW", "Sleeve"] == "LONG-TERM"
+    assert is_protected_long_term_holding(protected.iloc[0])
+    assert is_protected_long_term_holding(protected.iloc[1])
+    assert not is_protected_long_term_holding(
+        {"Symbol": "NVDA", "CUSIP": "", "Type": "EQ"}
+    )
 
     overrides = {"GLD": RISK_INTENT_LONG_TERM}
     adjusted = _apply_intent_overrides(classified, overrides)
@@ -184,6 +218,8 @@ with st.container(key="risk_book_native_grid"):
     source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
     assert 'key="risk_book_native_grid"' in source
     assert 'st.checkbox(' in source
+    assert 'protected_long_term = is_protected_long_term_holding(source_row)' in source
+    assert 'disabled=protected_long_term or not bool(symbol)' in source
     assert 'border:2px solid #fb8b1e!important' in source
     assert 'label:has(input:checked)' in source
     assert 'st.data_editor(' not in source
