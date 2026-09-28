@@ -18,7 +18,7 @@ def _settings(**overrides):
         "tactical_band": 2.0,
         "long_term_band": 4.0,
         "min_trade": 500.0,
-        "loss_review_trigger": -10.0,
+        "loss_review_trigger": -5.0,
         "hard_max_pct": 25.0,
     }
     base.update(overrides)
@@ -26,6 +26,22 @@ def _settings(**overrides):
 
 
 def main() -> None:
+    default_state = _clean_state({})
+    assert default_state["settings"]["loss_review_trigger"] == -5.0
+
+    legacy_default_state = _clean_state(
+        {"settings": {"loss_review_trigger": -10.0}}
+    )
+    assert legacy_default_state["settings"]["loss_review_trigger"] == -5.0
+
+    explicit_minus_ten_state = _clean_state(
+        {
+            "state_version": 2,
+            "settings": {"loss_review_trigger": -10.0},
+        }
+    )
+    assert explicit_minus_ten_state["settings"]["loss_review_trigger"] == -10.0
+
     holdings = pd.DataFrame(
         [
             {"Symbol": "NVDA", "Sleeve": "TACTICAL", "Market Value": 150_000.0, "Gain/Loss %": 35.0},
