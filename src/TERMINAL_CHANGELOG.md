@@ -1866,3 +1866,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS — GitHub Actions `Terminal Architecture Guard` run `36482845865`.
 - **Commit SHA:** `f66da03`, `a36e930`, `d6ea7a1`, `9b0cbee`, `7d88e316`, `54ca5ba`, `ff3206f`.
 - **Lesson:** Keep live vertical order entry isolated from Risk Sizing and Option Book. Reuse the existing authenticated Preview/Place transport, but keep the two-leg spread validation, multi-account review fingerprint, and fragment-scoped UI inside the Vertical Options owner files.
+
+
+## 2026-09-28 — Vertical Options account-chip text contrast
+
+- **Feature changed:** Vertical Options multi-account selector readability.
+- **Exact production file(s) changed:** `src/vertical_options_ui.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Selected account names in the Vertical Options Accounts multiselect were unreadable because the selected chip background was Bloomberg orange while the inherited text/icon color was also orange.
+- **Root cause:** The feature-local generic select/input styling forced orange text, and the BaseWeb multiselect tag inherited that color on an orange selected-chip surface.
+- **What changed:** Added a Vertical Options-only BaseWeb tag override that forces selected-account chip text and the remove icon to black while preserving orange text on dark unselected/input surfaces.
+- **Important behavior that must remain:** Selected account chips must remain readable as black text/icons on orange; do not change the global theme or Risk Sizing styling to solve this local Vertical Options issue.
+- **Files/features intentionally NOT changed:** Risk Sizing, Option Book, OAuth/session, GEX, Holdings, Performance, Rebalance, navigation, `src/theme.py`, `src/terminal_core.py`, order logic, and option calculations.
+- **Tests performed:** Production route re-traced; exact committed CSS re-fetched; Vertical Options syntax/payload regression tests passed in CI; architecture validator passed; production Streamlit health check passed; deployed frontend Selenium check confirmed no Streamlit “Oh no” page.
+- **Architecture guard result:** PASS — GitHub Actions `Terminal Architecture Guard` run `36483524405`.
+- **Commit SHA:** `ff68ddd`, `12677a7` plus this changelog commit.
+- **Lesson:** When a feature uses orange filled BaseWeb multiselect tags, explicitly set the tag label and remove icon to black inside the feature scope so the global/input orange text rule cannot erase the selection text.
