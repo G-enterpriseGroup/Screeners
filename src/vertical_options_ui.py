@@ -32,7 +32,7 @@ import streamlit as st
 
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
 from src.option_book import contract_quote, extract_option_rows, net_price_snapshot, strikes_for
-from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_selector
+from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
     build_place_payload,
     build_vertical_preview_payload,
@@ -92,6 +92,45 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace [data-baseweb="tag"] svg{
     color:#000!important;
     fill:#000!important;
+}
+
+.vo-company-field{
+    width:100%;
+    min-width:0;
+    font-family:"Courier New",monospace;
+}
+.vo-company-label{
+    display:flex;
+    align-items:center;
+    min-height:20px;
+    margin:0 0 3px 0;
+    color:var(--vo-orange)!important;
+    -webkit-text-fill-color:var(--vo-orange)!important;
+    font-family:"Courier New",monospace;
+    font-size:.66rem;
+    font-weight:900;
+    line-height:1.25;
+    text-transform:uppercase;
+}
+.vo-company-box{
+    display:flex;
+    align-items:center;
+    width:100%;
+    height:38px;
+    min-height:38px;
+    box-sizing:border-box;
+    padding:0 10px;
+    border:1px solid var(--vo-orange);
+    background:#050505;
+    color:var(--vo-orange)!important;
+    -webkit-text-fill-color:var(--vo-orange)!important;
+    font-family:"Courier New",monospace;
+    font-size:.80rem;
+    font-weight:900;
+    line-height:1.15;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
 }
 
 .st-key-vertical_options_workspace [data-testid="stButton"] button{
@@ -199,6 +238,23 @@ def _money(value: Any) -> str:
 
 def _date_label(value: date) -> str:
     return value.strftime("%b-%d-%y")
+
+
+def _normalize_vertical_ticker() -> None:
+    """Normalize the Vertical Options ticker after direct text entry."""
+    value = str(st.session_state.get("vo_symbol_value") or "").strip().upper()
+    st.session_state["vo_symbol_value"] = value or "SPY"
+
+
+def _company_display_markup(symbol: str, resolved_name: str = "") -> str:
+    name = str(resolved_name or company_name(symbol) or "").strip() or "—"
+    safe = html.escape(name)
+    return (
+        '<div class="vo-company-field">'
+        '<div class="vo-company-label">Company / ETF</div>'
+        f'<div class="vo-company-box" title="{safe}">{safe}</div>'
+        '</div>'
+    )
 
 
 def _account_key(account: dict[str, Any]) -> str:
@@ -341,25 +397,28 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 return
         by_account = {_account_key(account): account for account in accounts}
 
-        top = st.columns([2.1, 1.0, .72, 1.15], gap="small")
+        top = st.columns([1.0, 2.1, 1.0, .72, 1.15], gap="small")
         with top[0]:
-            current = str(st.session_state.get("vo_symbol_value", "SPY") or "SPY").upper()
-            symbol = smart_ticker_selector(
-                st.selectbox,
-                label="Ticker / Company",
-                current=current,
-                key="vo_symbol_selector",
-                help_text="Type ticker or company name.",
-            ).upper()
-            st.session_state["vo_symbol_value"] = symbol
-        with top[1]:
+            current = str(st.session_state.get("vo_symbol_value", "SPY") or "SPY").strip().upper() or "SPY"
+            if "vo_symbol_value" not in st.session_state:
+                st.session_state["vo_symbol_value"] = current
+            raw_symbol = st.text_input(
+                "Ticker",
+                key="vo_symbol_value",
+                placeholder="SPY",
+                help="Enter the ticker symbol only. Company / ETF name appears automatically.",
+                on_change=_normalize_vertical_ticker,
+            )
+            symbol = str(raw_symbol or current).strip().upper() or current
+
+        with top[2]:
             call_put = st.selectbox(
                 "Vertical",
                 ["CALL", "PUT"],
                 key="vo_call_put",
                 format_func=lambda value: "Call Debit" if value == "CALL" else "Put Debit",
             )
-        with top[2]:
+        with top[3]:
             quantity = int(
                 st.number_input(
                     "Qty",
@@ -378,8 +437,14 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             name = str(quote.get("description") or company_name(symbol) or "").strip()
             record_lookup(symbol, name)
         except Exception as exc:
+            name = str(company_name(symbol) or "").strip()
+            with top[1]:
+                st.html(_company_display_markup(symbol, name))
             st.error(f"Quote unavailable for {symbol}: {exc}")
             return
+
+        with top[1]:
+            st.html(_company_display_markup(symbol, name))
 
         try:
             expirations = _expirations(client, symbol, touch_session)
@@ -397,7 +462,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 (item for item in expirations if (item - today).days >= 14),
                 expirations[0],
             )
-        with top[3]:
+        with top[4]:
             expiry = st.selectbox(
                 "Expiration",
                 expirations,
