@@ -161,6 +161,9 @@ def main() -> None:
         "IN TOLERANCE",
         "OUT OF TOLERANCE",
         "MEMORY ACTIVE",
+        '_browser_hydrated_key',
+        'mode="read"',
+        'mode="write"',
         "_render_ticker_band_editor",
         "reb-grid-cell",
         "REVIEW LOSS",
@@ -170,6 +173,14 @@ def main() -> None:
         "ANALYSIS ONLY",
     ):
         assert required in source, required
+
+    persistence_component = (
+        ROOT / "src" / "components" / "risk_book_state_v1" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert "const BACKUPS = 4" in persistence_component
+    assert 'mode==="read"' in persistence_component
+    assert 'if(!Boolean(args.hydrated))' in persistence_component
+    assert '::backup:' in persistence_component
 
     print("REBALANCE PORTFOLIO TESTS: PASS")
 

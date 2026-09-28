@@ -70,6 +70,10 @@ def _browser_storage_key(account_key: str) -> str:
     return "raj-terminal-rebalance-v1:" + _account_token(account_key)
 
 
+def _browser_hydrated_key(account_key: str) -> str:
+    return "_rebalance_browser_hydrated::" + _account_token(account_key)
+
+
 def _finite(value: Any, default: float = 0.0) -> float:
     try:
         number = float(value)
@@ -170,33 +174,38 @@ def _state_payload(state: dict[str, Any]) -> tuple[Any, Any]:
 def _load_rebalance_state(account_key: str) -> dict[str, Any]:
     session_key = _session_state_key(account_key)
     session_state = _clean_state(st.session_state.get(session_key))
+    hydrated_key = _browser_hydrated_key(account_key)
+
+    if bool(st.session_state.get(hydrated_key, False)):
+        return session_state
 
     with st.container(key="rebalance_state_reader_shell", gap=None):
         browser = _rebalance_state_component(
             storage_key=_browser_storage_key(account_key),
             server_state=session_state,
+            mode="read",
+            hydrated=False,
             key="raj_rebalance_state_reader_" + _account_token(account_key),
             default=None,
         )
 
-    if isinstance(browser, dict) and isinstance(browser.get("state"), dict):
-        browser_state = _clean_state(browser["state"])
-        if browser_state["revision"] > session_state["revision"] or (
-            session_state["revision"] == 0
-            and not session_state["rows"]
-            and browser_state["rows"]
-        ):
-            session_state = browser_state
+    if isinstance(browser, dict) and browser.get("source") in {"browser", "empty"}:
+        st.session_state[hydrated_key] = True
+        if isinstance(browser.get("state"), dict):
+            session_state = _clean_state(browser["state"])
 
     st.session_state[session_key] = session_state
     return session_state
 
 
 def _persist_rebalance_state(account_key: str, candidate: dict[str, Any]) -> dict[str, Any]:
-    """Update the server copy; browser sync happens once at the end of render."""
+    """Update state only after browser memory has completed its reboot handshake."""
     session_key = _session_state_key(account_key)
     current = _clean_state(st.session_state.get(session_key))
     cleaned = _clean_state(candidate)
+
+    if not bool(st.session_state.get(_browser_hydrated_key(account_key), False)):
+        return current
 
     if _state_payload(current) == _state_payload(cleaned):
         state = current
@@ -213,11 +222,16 @@ def _persist_rebalance_state(account_key: str, candidate: dict[str, Any]) -> dic
 
 
 def _sync_rebalance_state_browser(account_key: str, state: dict[str, Any]) -> None:
-    """Write the final per-rerun state exactly once to avoid duplicate component keys."""
+    """Write only after browser memory has been read after this app/session boot."""
+    hydrated = bool(st.session_state.get(_browser_hydrated_key(account_key), False))
+    if not hydrated:
+        return
     with st.container(key="rebalance_state_writer_shell", gap=None):
         _rebalance_state_component(
             storage_key=_browser_storage_key(account_key),
             server_state=_clean_state(state),
+            mode="write",
+            hydrated=True,
             key="raj_rebalance_state_writer_" + _account_token(account_key),
             default=None,
         )
@@ -800,10 +814,11 @@ def _settings_widget_keys(account_key: str) -> dict[str, str]:
 def _hydrate_setting_widgets(account_key: str, state: dict[str, Any]) -> dict[str, str]:
     keys = _settings_widget_keys(account_key)
     marker = "_rebalance_loaded_revision::" + _account_token(account_key)
-    if st.session_state.get(marker) != state["revision"]:
+    fingerprint = (int(state["revision"]), float(state.get("saved_at", 0.0) or 0.0))
+    if st.session_state.get(marker) != fingerprint:
         for field, key in keys.items():
             st.session_state[key] = state["settings"][field]
-        st.session_state[marker] = state["revision"]
+        st.session_state[marker] = fingerprint
     return keys
 
 

@@ -173,6 +173,36 @@ def main() -> None:
         risk_ui._risk_intent_vault().clear()
         risk_ui.st.session_state = original_session_state
 
+    # Risk editable values must be re-applied after the browser hydration
+    # handshake, even if Streamlit rendered widget defaults on the first boot pass.
+    original_session_state = risk_ui.st.session_state
+    try:
+        risk_ui.st.session_state = {}
+        snapshot = {
+            "revision": 12,
+            "saved_at": 12345.0,
+            "settings": {
+                "risk_gain_threshold": 7.5,
+                "risk_entry_price": 411.25,
+                "risk_stop_price": 390.0,
+                "risk_liquid_balance": 24500.0,
+                "risk_capital_source": "USE TACTICAL ROOM",
+            },
+        }
+        risk_ui._restore_risk_book_settings(snapshot)
+        assert risk_ui.st.session_state["risk_gain_threshold"] == 7.5
+        assert risk_ui.st.session_state["risk_entry_price"] == 411.25
+        assert risk_ui.st.session_state["risk_stop_price"] == 390.0
+        assert risk_ui.st.session_state["risk_liquid_balance"] == 24500.0
+        assert risk_ui.st.session_state["risk_capital_source_tactical"] is True
+
+        # Same saved revision must not repeatedly overwrite an edit made after restore.
+        risk_ui.st.session_state["risk_gain_threshold"] = 9.0
+        risk_ui._restore_risk_book_settings(snapshot)
+        assert risk_ui.st.session_state["risk_gain_threshold"] == 9.0
+    finally:
+        risk_ui.st.session_state = original_session_state
+
     # Exercise Streamlit's actual checkbox registry with duplicate SGOL lots.
     smoke_path = ROOT / "scripts" / "_tmp_risk_visible_checkbox_app.py"
     smoke_path.write_text(
@@ -238,6 +268,10 @@ with st.container(key="risk_book_native_grid"):
     assert 'classified["_risk_row_uid"]' in source
     assert '_load_persisted_intent_overrides(' in source
     assert '_sync_risk_intent_browser(' in source
+    assert 'mode="read"' in source
+    assert 'mode="write"' in source
+    assert '_RISK_BOOK_BROWSER_HYDRATED_KEY' in source
+    assert '_risk_intent_hydrated_key' in source
     assert 'key="risk_book_sort"' in source
     assert 'key="risk_book_sort_direction"' in source
     assert 'key="risk_book_export_csv"' in source
@@ -248,6 +282,18 @@ with st.container(key="risk_book_native_grid"):
     ).read_text(encoding="utf-8")
     assert "localStorage.getItem" in persistence_component
     assert "localStorage.setItem" in persistence_component
+    assert "const BACKUPS = 4" in persistence_component
+    assert 'mode==="read"' in persistence_component
+    assert 'if(!Boolean(args.hydrated))' in persistence_component
+    assert '::backup:' in persistence_component
+
+    risk_book_component = (
+        ROOT / "src" / "components" / "risk_book_state_v1" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert "const BACKUPS = 4" in risk_book_component
+    assert 'mode==="read"' in risk_book_component
+    assert 'if(!Boolean(args.hydrated))' in risk_book_component
+    assert '::backup:' in risk_book_component
 
     # Risk Book visual contract: use the same compact typography/rhythm tokens
     # as the production v9 Risk interface instead of ad-hoc tiny table text.
