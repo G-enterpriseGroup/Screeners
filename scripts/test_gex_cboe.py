@@ -291,7 +291,9 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("publish_latest_gex_cboe", ui)
         self.assertIn("def _cache_busted_txt_url", ui)
         self.assertIn("_cache_busted_txt_url(_CBOE_BRIDGE_URL)", ui)
-        self.assertNotIn("_cache_busted_txt_url(_ETRADE_BRIDGE_URL)", ui)
+        self.assertIn("_cache_busted_txt_url(_ETRADE_BRIDGE_URL)", ui)
+        self.assertIn("def _publish_current_etrade_master_a6", ui)
+        self.assertIn("_proven._base._refresh_symbol = refresh_symbol_with_txt_publish", ui)
 
 
 def live_source_smoke() -> None:
