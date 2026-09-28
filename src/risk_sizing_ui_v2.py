@@ -33,6 +33,7 @@ from src.risk_sizing import (
     classify_holdings,
     crown_risk_budget,
     defined_risk_contracts,
+    is_protected_long_term_holding,
     sleeve_summary,
     stock_position_size,
 )
@@ -2155,7 +2156,8 @@ def render_risk_sizing(
 
                 cells = st.columns(grid_spec, gap=None, vertical_alignment="center")
                 widget_key = _risk_override_widget_key(account_key, symbol, row_uid)
-                selected = (
+                protected_long_term = is_protected_long_term_holding(source_row)
+                selected = protected_long_term or (
                     str(account_overrides.get(symbol) or "").upper()
                     == RISK_INTENT_LONG_TERM
                 )
@@ -2167,12 +2169,19 @@ def render_risk_sizing(
                         key=widget_key,
                         label_visibility="collapsed",
                         width="stretch",
-                        disabled=not bool(symbol),
+                        disabled=protected_long_term or not bool(symbol),
                         on_change=_set_long_term_override,
                         args=(account_key, symbol, widget_key),
                         help=(
-                            f"Check to treat {symbol or 'this position'} as a one-off LONG-TERM holding. "
-                            "Unchecked uses the normal classification rule."
+                            (
+                                f"{symbol or 'This position'} is a CUSIP / fixed-income identifier "
+                                "and is permanently LONG-TERM."
+                            )
+                            if protected_long_term
+                            else (
+                                f"Check to treat {symbol or 'this position'} as a one-off LONG-TERM holding. "
+                                "Unchecked uses the normal classification rule."
+                            )
                         ),
                     )
 
