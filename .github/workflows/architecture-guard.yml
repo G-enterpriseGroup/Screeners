@@ -32,6 +32,11 @@ jobs:
       - name: Test Risk live-order helpers without broker submission
         run: python scripts/test_risk_live_order_helpers.py
 
+      - name: Test Vertical Options payloads and syntax
+        run: |
+          python -m py_compile src/vertical_options.py src/vertical_options_ui.py streamlit_app.py src/tab_bar_v4.py
+          python -m unittest tests.test_vertical_options
+
       - name: Test Performance analytics and read-only boundary
         run: python scripts/test_performance_ui.py
 
