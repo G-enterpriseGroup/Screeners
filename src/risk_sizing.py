@@ -43,6 +43,45 @@ def _number(value: Any, default: float = 0.0) -> float:
     return number
 
 
+_FIXED_INCOME_SECURITY_TYPES = {
+    "BOND",
+    "BONDS",
+    "MUNI",
+    "MUNICIPAL",
+    "FIXEDINCOME",
+    "FIXED INCOME",
+}
+
+
+def _looks_like_cusip(value: Any) -> bool:
+    """Recognize a CUSIP-shaped identifier even when E*TRADE puts it in Symbol."""
+    text = str(value or "").strip().upper()
+    if len(text) != 9:
+        return False
+    if not all(char.isalnum() or char in "*@#" for char in text):
+        return False
+    # Normal ticker symbols should not be captured by this fallback. CUSIPs
+    # contain numeric/special identifier characters, as in 337158EJ4.
+    return any(char.isdigit() or char in "*@#" for char in text)
+
+
+def is_protected_long_term_holding(row: Any) -> bool:
+    """Return True for fixed-income/CUSIP holdings that must remain LONG-TERM."""
+    getter = getattr(row, "get", None)
+    if not callable(getter):
+        return False
+
+    security_type = str(getter("Type") or "").strip().upper()
+    cusip = str(getter("CUSIP") or "").strip().upper()
+    symbol = str(getter("Symbol") or "").strip().upper()
+
+    return (
+        security_type in _FIXED_INCOME_SECURITY_TYPES
+        or bool(cusip)
+        or _looks_like_cusip(symbol)
+    )
+
+
 def classify_holdings(frame: pd.DataFrame, gain_threshold_pct: float = 5.0) -> pd.DataFrame:
     """Apply the user's long-term/tactical classification rule to holdings."""
     result = frame.copy()
@@ -63,17 +102,12 @@ def classify_holdings(frame: pd.DataFrame, gain_threshold_pct: float = 5.0) -> p
     classifications = []
     reasons = []
     for _, row in result.iterrows():
-        security_type = str(row.get("Type") or "").strip().upper()
-        cusip = str(row.get("CUSIP") or "").strip().upper()
         gain_pct = _number(row.get("Gain/Loss %"), 0.0)
 
-        is_fixed_income = (
-            security_type in {"BOND", "BONDS", "MUNI", "MUNICIPAL", "FIXEDINCOME", "FIXED INCOME"}
-            or bool(cusip)
-        )
-        if is_fixed_income:
+        protected_long_term = is_protected_long_term_holding(row)
+        if protected_long_term:
             classifications.append("LONG-TERM")
-            reasons.append("BOND / CUSIP")
+            reasons.append("CUSIP / FIXED INCOME // PROTECTED")
         elif gain_pct >= threshold:
             classifications.append("LONG-TERM")
             reasons.append(f"GAIN >= {threshold:.2f}%")

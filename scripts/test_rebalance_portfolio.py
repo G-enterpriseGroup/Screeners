@@ -73,6 +73,39 @@ def main() -> None:
     )
     assert review.iloc[0]["Action"] == "LONG-TERM TRIM REVIEW"
 
+    protected_cusip = pd.DataFrame(
+        [
+            {
+                "Symbol": "337158EJ4",
+                "CUSIP": "",
+                "Type": "EQ",
+                "Sleeve": "LONG-TERM",
+                "Market Value": 350_000.0,
+                "Gain/Loss %": 20.0,
+            }
+        ]
+    )
+    protected_plan, protected_summary = _build_rebalance_plan(
+        protected_cusip,
+        account_value=1_000_000.0,
+        cash_available=0.0,
+        config_rows=[
+            {
+                "symbol": "337158EJ4",
+                "target_pct": 10.0,
+                "lower_pct": 8.0,
+                "upper_pct": 12.0,
+            }
+        ],
+        settings=_settings(hard_max_pct=25.0),
+    )
+    protected_row = protected_plan.iloc[0]
+    assert protected_row["Action"] == "PROTECTED LONG-TERM // HOLD"
+    assert protected_row["Reason"] == "CUSIP / FIXED INCOME // NEVER TRIM"
+    assert float(protected_row["Raw Gap $"]) == 0.0
+    assert float(protected_row["Proposed $"]) == 0.0
+    assert protected_summary["trim_proceeds"] == 0.0
+
     tiny = pd.DataFrame(
         [{"Symbol": "SPY", "Sleeve": "TACTICAL", "Market Value": 100_300.0, "Gain/Loss %": 5.0}]
     )
@@ -132,6 +165,8 @@ def main() -> None:
         "reb-grid-cell",
         "REVIEW LOSS",
         "LONG-TERM TRIM REVIEW",
+        "PROTECTED LONG-TERM // HOLD",
+        "CUSIP / FIXED INCOME // NEVER TRIM",
         "ANALYSIS ONLY",
     ):
         assert required in source, required
