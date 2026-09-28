@@ -189,13 +189,28 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
 
 
 def _restore_risk_book_settings(snapshot: dict[str, Any] | None) -> None:
-    """Restore prior Risk controls only when this Streamlit session has no value."""
+    """Restore browser-saved Risk controls once per saved snapshot revision."""
     if not snapshot:
         return
     settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
+    marker_key = "_risk_book_settings_restored_v1"
+    fingerprint = (
+        int(snapshot.get("revision", 0) or 0),
+        float(snapshot.get("saved_at", 0.0) or 0.0),
+    )
+    if st.session_state.get(marker_key) == fingerprint:
+        return
+
     for key in (*_RISK_BOOK_NUMERIC_SETTINGS, *_RISK_BOOK_TEXT_SETTINGS):
-        if key not in st.session_state and key in settings:
+        if key in settings:
             st.session_state[key] = settings[key]
+
+    if "risk_capital_source" in settings:
+        st.session_state["risk_capital_source_tactical"] = (
+            str(settings["risk_capital_source"]).strip().upper()
+            == _CAPITAL_SOURCE_TACTICAL
+        )
+    st.session_state[marker_key] = fingerprint
 
 
 def _risk_book_snapshot_frame(snapshot: dict[str, Any] | None) -> pd.DataFrame:
