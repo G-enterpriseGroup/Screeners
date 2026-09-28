@@ -161,8 +161,10 @@ def _load_persisted_risk_book_snapshot() -> dict[str, Any] | None:
         st.session_state.get(_RISK_BOOK_SNAPSHOT_SESSION_KEY)
     )
     hydrated = bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False))
+    if session_value["rows"]:
+        return session_value
     if hydrated:
-        return session_value if session_value["rows"] else None
+        return None
 
     with st.container(key="risk_book_state_reader_shell", gap=None):
         browser = _risk_book_state_component(
@@ -282,6 +284,11 @@ def _persist_risk_book_snapshot(
         "rows": rows,
         "settings": _risk_book_snapshot_settings(),
     }
+    if not bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False)):
+        # A fresh process must not manufacture revision 1 defaults in session
+        # before the browser has had a chance to return its saved snapshot.
+        return existing if existing["rows"] else _clean_risk_book_snapshot(candidate)
+
     same_payload = all(
         existing.get(key) == candidate.get(key)
         for key in (
@@ -303,9 +310,6 @@ def _persist_risk_book_snapshot(
             "saved_at": time.time(),
         }
         st.session_state[_RISK_BOOK_SNAPSHOT_SESSION_KEY] = state
-
-    if not bool(st.session_state.get(_RISK_BOOK_BROWSER_HYDRATED_KEY, False)):
-        return existing if existing["rows"] else _clean_risk_book_snapshot(candidate)
 
     with st.container(key="risk_book_state_writer_shell", gap=None):
         _risk_book_state_component(
