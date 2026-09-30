@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import yfinance as yf
 
 import src.gex_ui as core
 
@@ -130,6 +131,106 @@ def _normalize_many(raw: str) -> list[str]:
         if ticker and ticker not in out:
             out.append(ticker)
     return out
+
+
+_YFINANCE_GEX_QUOTE_TYPES = {"EQUITY", "ETF"}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _yfinance_search_quotes(query: str) -> tuple[dict[str, str], ...]:
+    """Return compact stock/ETF matches for one Yahoo Finance search query."""
+    query = str(query or "").strip()
+    if not query:
+        return ()
+
+    try:
+        quotes = yf.Search(
+            query,
+            max_results=8,
+            news_count=0,
+            enable_fuzzy_query=True,
+            timeout=6,
+            raise_errors=False,
+        ).quotes
+    except Exception:
+        return ()
+
+    matches: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for quote in quotes or []:
+        if not isinstance(quote, dict):
+            continue
+        quote_type = str(quote.get("quoteType") or "").upper().strip()
+        if quote_type not in _YFINANCE_GEX_QUOTE_TYPES:
+            continue
+        symbol = core._normalize_ticker(quote.get("symbol"))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        matches.append(
+            {
+                "symbol": symbol,
+                "name": str(
+                    quote.get("longname")
+                    or quote.get("shortname")
+                    or quote.get("displayName")
+                    or ""
+                ).strip(),
+                "exchange": str(
+                    quote.get("exchDisp")
+                    or quote.get("exchange")
+                    or ""
+                ).strip(),
+            }
+        )
+    return tuple(matches)
+
+
+def _yfinance_match(query: str, *, exact_only: bool = False) -> dict[str, str] | None:
+    matches = _yfinance_search_quotes(query)
+    if not matches:
+        return None
+
+    wanted = core._normalize_ticker(query)
+    for match in matches:
+        if match["symbol"] == wanted:
+            return match
+    return None if exact_only else matches[0]
+
+
+def _resolve_yfinance_additions(raw: str) -> tuple[list[str], list[str]]:
+    """Resolve ticker/company input through Yahoo Finance before saving GEX symbols."""
+    text = str(raw or "").strip()
+    if not text:
+        return [], []
+
+    # Explicit delimiters always mean a batch. Preserve the previous convenient
+    # space-separated batch behavior when every token independently resolves to
+    # an exact Yahoo symbol; otherwise treat the full text as a company search.
+    if re.search(r"[,;|]", text):
+        queries = [value.strip() for value in re.split(r"[,;|]+", text) if value.strip()]
+    else:
+        tokens = [value for value in text.split() if value]
+        exact_tokens = [
+            _yfinance_match(token, exact_only=True)
+            for token in tokens
+        ] if len(tokens) > 1 else []
+        if exact_tokens and all(exact_tokens):
+            symbols = [match["symbol"] for match in exact_tokens if match]
+            return list(dict.fromkeys(symbols)), []
+        queries = [text]
+
+    resolved: list[str] = []
+    failures: list[str] = []
+    for query in queries:
+        match = _yfinance_match(query)
+        if match is None:
+            failures.append(query)
+            continue
+        symbol = match["symbol"]
+        if symbol not in resolved:
+            resolved.append(symbol)
+    return resolved, failures
 
 
 def _save_state(vault_key: str, state: dict[str, Any]) -> dict[str, Any]:
@@ -870,8 +971,8 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         batch = st.text_input(
             "ADD TICKERS",
             key="gexv3_add_batch",
-            placeholder="SPY, QQQ, NVDA, MSFT",
-            help="Add one or many tickers separated by commas or spaces.",
+            placeholder="AAPL or Apple // multiple: SPY, QQQ",
+            help="Ticker or company-name lookup uses yfinance. Separate multiple tickers with commas or spaces.",
         )
     with etrade_refresh_col:
         refresh_all = st.button(
@@ -890,7 +991,7 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         vertical_alignment="bottom",
     )
     with add_button_col:
-        add_clicked = st.button("ADD TICKER(S)", width="stretch", key="gexv3_add_many")
+        add_clicked = st.button("LOOKUP + ADD", width="stretch", key="gexv3_add_many")
     with etrade_txt_col:
         _render_etrade_txt_control()
     with cboe_txt_col:
@@ -919,9 +1020,16 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         st.rerun()
 
     if add_clicked:
-        incoming = _normalize_many(batch)
+        incoming, lookup_failures = _resolve_yfinance_additions(batch)
+        if lookup_failures:
+            st.warning(
+                "YFINANCE LOOKUP FAILED // "
+                + " | ".join(lookup_failures[:6])
+                + " // ticker was not added"
+            )
         if not incoming:
-            st.warning("ENTER AT LEAST ONE TICKER")
+            if not lookup_failures:
+                st.warning("ENTER A TICKER OR COMPANY NAME")
         else:
             changed = False
             for ticker in incoming:
