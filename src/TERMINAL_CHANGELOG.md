@@ -1896,3 +1896,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS — GitHub Actions `Terminal Architecture Guard` run `36483823690`.
 - **Commit SHA:** `061dad3` plus this changelog commit.
 - **Lesson:** Vertical Options ticker entry should mirror the production E*TRADE Risk Sizing pattern: direct ticker text input plus separate display-only company/ETF name, not the combined smart selector.
+
+
+## 2026-09-30 — GEX yfinance ticker lookup before add
+
+- **Feature changed:** GEX watchlist ticker add / lookup.
+- **Exact production file(s) changed:** `src/gex_ui_v3_base.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** The GEX ADD TICKERS control accepted normalized text directly with no market-symbol lookup, so adding or correcting a ticker could feel glitchy and invalid text could be persisted.
+- **Root cause:** The production GEX watchlist add handler only called the local text normalizer and appended the result; it did not resolve ticker/company input against a symbol source.
+- **What was changed:** The existing compact add flow now resolves stock/ETF input through `yfinance.Search` before saving. Exact ticker symbols are preferred, company names can resolve to their Yahoo Finance ticker, comma-delimited batches remain supported, and space-delimited batches are preserved when every token resolves as an exact symbol. Failed lookups are not added. Search results are cached for 15 minutes to avoid repeated Yahoo requests.
+- **Important behavior that must remain:** Keep GEX watchlist changes isolated to GEX; preserve the existing 50-ticker cap, saved watchlist persistence, E*TRADE/CBOE refresh controls, DTE settings, and compact layout.
+- **Files/features intentionally NOT changed:** Risk Sizing, E*TRADE OAuth/session plumbing, Holdings, navigation, shared theme/CSS, GEX formulas, CBOE calculations, and `requirements.txt` (yfinance was already installed).
+- **Tests performed:** Production route re-traced as `streamlit_app.py -> src/gex_workspace_v2.py -> src/gex_ui_v3.py -> src/gex_ui_v3_base.py`; exact commit diff inspected; GitHub Actions `Terminal Architecture Guard` run 36735597918 completed successfully on the production code commit.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `163d3ad5f3f9637df62acf01a3d002c5de9dfbae`.
+- **Lesson:** GEX ticker additions should resolve against a real symbol source before persistence; keep lookup failures out of saved state and cache search results rather than repeatedly hitting the provider.
