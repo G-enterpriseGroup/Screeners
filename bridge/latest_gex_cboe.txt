@@ -5,7 +5,7 @@ Max DTE Used: 60
 Contracts Used: 3884
 Net Current GEX: -1,120,018,761.52
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:49-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:10-04:00
 CBOE GEX Input Fingerprint: CBOE1:195a2a6994fe8ec083c900b681087b0b522ba2868d76eca6765f4e13238dc1e3
 CBOE Snapshot Option Rows: 13280
 
@@ -34,7 +34,7 @@ Max DTE Used: 60
 Contracts Used: 3968
 Net Current GEX: 2,886,227,614.72
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:49-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:08-04:00
 CBOE GEX Input Fingerprint: CBOE1:8695c5633a1425d19d5bd5c3abe94bc1fd316d30041fdb784281cdf12fa883d8
 CBOE Snapshot Option Rows: 11432
 
@@ -63,7 +63,7 @@ Max DTE Used: 60
 Contracts Used: 725
 Net Current GEX: 12,551,839.32
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TQQQ.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:48-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:09-04:00
 CBOE GEX Input Fingerprint: CBOE1:24afbe7ea4f5700fa67ac5e0e4a9db556c9dabdede971f34828a6cce83f05119
 CBOE Snapshot Option Rows: 1770
 
@@ -92,7 +92,7 @@ Max DTE Used: 60
 Contracts Used: 182
 Net Current GEX: 556,671.48
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLC.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:48-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:09-04:00
 CBOE GEX Input Fingerprint: CBOE1:62ae72d85df744152aa583e9f0bc286ab760c470b21afc1936f471a5f43f9f56
 CBOE Snapshot Option Rows: 1160
 
@@ -121,7 +121,7 @@ Max DTE Used: 60
 Contracts Used: 232
 Net Current GEX: -2,646,514.21
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLY.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:48-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:09-04:00
 CBOE GEX Input Fingerprint: CBOE1:64d866bd0a42bea36980e402fc5cd5c5b1d29d8ddada17e39df4b718eb09d5a9
 CBOE Snapshot Option Rows: 1462
 
@@ -150,7 +150,7 @@ Max DTE Used: 60
 Contracts Used: 491
 Net Current GEX: 20,676,789.25
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLK.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:48-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:09-04:00
 CBOE GEX Input Fingerprint: CBOE1:73a9ed76828a256a21fb100754ca38fb9d623f4e3de854df2d9b9c1bea83e8d0
 CBOE Snapshot Option Rows: 2506
 
@@ -179,7 +179,7 @@ Max DTE Used: 60
 Contracts Used: 46
 Net Current GEX: -348,928.54
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLRE.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:48-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:08-04:00
 CBOE GEX Input Fingerprint: CBOE1:2dd6ec4cf93f95ed2512bf9cf02e8dfd6a2c64fcf8cf6580adeef22431390305
 CBOE Snapshot Option Rows: 220
 
@@ -208,7 +208,7 @@ Max DTE Used: 60
 Contracts Used: 539
 Net Current GEX: -258,495,793.04
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLF.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:48-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:09-04:00
 CBOE GEX Input Fingerprint: CBOE1:92380d3086d0bd1da3935fca41a4070135dfccb4c5fa66bc7199b548a1894cc1
 CBOE Snapshot Option Rows: 2376
 
@@ -237,7 +237,7 @@ Max DTE Used: 60
 Contracts Used: 175
 Net Current GEX: -1,190,451.30
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLB.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:49-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:10-04:00
 CBOE GEX Input Fingerprint: CBOE1:103acf63b2397a9ae6054b3021ac14465511aafbf2f0373de69addaca1e4fd29
 CBOE Snapshot Option Rows: 1046
 
@@ -266,7 +266,7 @@ Max DTE Used: 60
 Contracts Used: 353
 Net Current GEX: -37,591,237.92
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLV.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:50-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:11-04:00
 CBOE GEX Input Fingerprint: CBOE1:ccc83388f152df7787bda5532b22b698eac52e572ef6bba287c65733fbbcc25e
 CBOE Snapshot Option Rows: 1680
 
@@ -295,7 +295,7 @@ Max DTE Used: 60
 Contracts Used: 220
 Net Current GEX: 127,850,422.92
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLU.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:50-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:11-04:00
 CBOE GEX Input Fingerprint: CBOE1:3ae9474d82c798914002f887c9f16426be32f396b69b59e5b858fef5082356b9
 CBOE Snapshot Option Rows: 1134
 
@@ -324,7 +324,7 @@ Max DTE Used: 60
 Contracts Used: 465
 Net Current GEX: -49,816,747.56
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLE.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:50-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:11-04:00
 CBOE GEX Input Fingerprint: CBOE1:976941e63d1a153d3506583620f979e44e87bf42a954a20f6be3b5e8a8c71b66
 CBOE Snapshot Option Rows: 1976
 
@@ -353,7 +353,7 @@ Max DTE Used: 60
 Contracts Used: 271
 Net Current GEX: -14,919,718.42
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLP.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:51-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:11-04:00
 CBOE GEX Input Fingerprint: CBOE1:cc1822e845f84c8cd36eef4d22580e63da88241095a5cc2a344368847985b3b0
 CBOE Snapshot Option Rows: 1198
 
@@ -382,7 +382,7 @@ Max DTE Used: 60
 Contracts Used: 499
 Net Current GEX: -69,082,603.83
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLI.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:51-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:11-04:00
 CBOE GEX Input Fingerprint: CBOE1:5c39c120093df4c2b6df42006cfe0ded0389aaf74894820d5651d468d063876b
 CBOE Snapshot Option Rows: 2090
 
@@ -411,7 +411,7 @@ Max DTE Used: 60
 Contracts Used: 1204
 Net Current GEX: 1,058,147,664.99
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MSFT.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:51-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:12-04:00
 CBOE GEX Input Fingerprint: CBOE1:5c8b99be83d14cc689dcf9ec32d5ae903423b67055e17159c4525a0aa554cf45
 CBOE Snapshot Option Rows: 3710
 
@@ -440,7 +440,7 @@ Max DTE Used: 60
 Contracts Used: 38
 Net Current GEX: -362,748.18
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SGOL.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:51-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:12-04:00
 CBOE GEX Input Fingerprint: CBOE1:e3c1cbeedea918cb5e22429b75ea545e7b9894c5cc7dbc323476393ddcfead0a
 CBOE Snapshot Option Rows: 180
 
@@ -469,7 +469,7 @@ Max DTE Used: 60
 Contracts Used: 169
 Net Current GEX: 4,871,063.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:51-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:13-04:00
 CBOE GEX Input Fingerprint: CBOE1:f9a9f385e1f8f13eae0d4eecff1604a50ec20661214a462ba8ac8139f5351436
 CBOE Snapshot Option Rows: 724
 
@@ -498,7 +498,7 @@ Max DTE Used: 60
 Contracts Used: 302
 Net Current GEX: -65,519,790.72
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:52-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:13-04:00
 CBOE GEX Input Fingerprint: CBOE1:e9ae0db3ea80f5704530a7a8ec0acd68454c64cc4aabed1d6edb21f2390d396f
 CBOE Snapshot Option Rows: 1714
 
@@ -527,7 +527,7 @@ Max DTE Used: 60
 Contracts Used: 117
 Net Current GEX: 9,835,421.47
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:52-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:13-04:00
 CBOE GEX Input Fingerprint: CBOE1:6db26c929a34f6940bff598e2e5881124864c125a2c00a0f23ac639a8031e301
 CBOE Snapshot Option Rows: 624
 
@@ -556,7 +556,7 @@ Max DTE Used: 60
 Contracts Used: 955
 Net Current GEX: 47,587,500.69
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SOXX.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:52-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:13-04:00
 CBOE GEX Input Fingerprint: CBOE1:7bf7932364e70c1ce7a51b5f85b7cdb05f11d733e145cb0997085701e03055b2
 CBOE Snapshot Option Rows: 5578
 
@@ -585,7 +585,7 @@ Max DTE Used: 60
 Contracts Used: 1788
 Net Current GEX: 333,289,913.59
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SMH.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:52-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:14-04:00
 CBOE GEX Input Fingerprint: CBOE1:e30e0b67ac05adb8d9ebad1be4d6bdcfbf03f5be50c11fe78c24c3554106a360
 CBOE Snapshot Option Rows: 7520
 
@@ -614,7 +614,7 @@ Max DTE Used: 60
 Contracts Used: 549
 Net Current GEX: -12,195,664.03
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LMT.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:14-04:00
 CBOE GEX Input Fingerprint: CBOE1:8f47ef34979b279308f5c54d53a8d7d8c20da9b014b3d69a0d337c145a627ac3
 CBOE Snapshot Option Rows: 2666
 
@@ -643,7 +643,7 @@ Max DTE Used: 60
 Contracts Used: 294
 Net Current GEX: 10,977,148.57
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MAGS.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:15-04:00
 CBOE GEX Input Fingerprint: CBOE1:baf676c7dbf1ba7a7a9860cafecb08e5b9b7b962a4b09c5af4ab310c62f55ee6
 CBOE Snapshot Option Rows: 1008
 
@@ -672,7 +672,7 @@ Max DTE Used: 60
 Contracts Used: 158
 Net Current GEX: 11,978,649.66
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/ET.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:15-04:00
 CBOE GEX Input Fingerprint: CBOE1:3c076e66107fb45e542d9a393fea226735e4ac808a207345d0d8ab5ad0aa1e99
 CBOE Snapshot Option Rows: 724
 
@@ -701,7 +701,7 @@ Max DTE Used: 60
 Contracts Used: 49
 Net Current GEX: -1,493,559.13
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/HESM.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:14-04:00
 CBOE GEX Input Fingerprint: CBOE1:def1a5ab82e10a59de4d864f12c3dac0756348f88972ead6ab390d0a8ab73357
 CBOE Snapshot Option Rows: 222
 
@@ -730,7 +730,7 @@ Max DTE Used: 60
 Contracts Used: 50
 Net Current GEX: 548,248.56
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FLNG.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:15-04:00
 CBOE GEX Input Fingerprint: CBOE1:5cb3783f4751b74350c01c6c6bb91a047f371acc5bb3114c16f3786a030bf989
 CBOE Snapshot Option Rows: 154
 
@@ -759,7 +759,7 @@ Max DTE Used: 60
 Contracts Used: 54
 Net Current GEX: 161,229.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WES.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:17-04:00
 CBOE GEX Input Fingerprint: CBOE1:463c9f836af666e18e723f71052d84fdff5a9480c1d2ecb45a46aa694f9339af
 CBOE Snapshot Option Rows: 262
 
@@ -788,7 +788,7 @@ Max DTE Used: 60
 Contracts Used: 127
 Net Current GEX: 4,710,411.94
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PAA.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:17-04:00
 CBOE GEX Input Fingerprint: CBOE1:0891df8fd44ec48be9c01fe5c1d35a27887a64f9fa1c71bf62bdecc99ac397d7
 CBOE Snapshot Option Rows: 656
 
@@ -817,7 +817,7 @@ Max DTE Used: 60
 Contracts Used: 737
 Net Current GEX: 192,923,949.56
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TSM.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:53-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:18-04:00
 CBOE GEX Input Fingerprint: CBOE1:af0404f6fd86c4578b4fc0303edbf07862474f8ac89326045174c9492df452a2
 CBOE Snapshot Option Rows: 2560
 
@@ -846,7 +846,7 @@ Max DTE Used: 60
 Contracts Used: 50
 Net Current GEX: -589,142.07
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CRAK.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:18-04:00
 CBOE GEX Input Fingerprint: CBOE1:078f0559c98bab5047458db5d258eea87a9ab8b9d963619d6738193d6b0df289
 CBOE Snapshot Option Rows: 294
 
@@ -875,7 +875,7 @@ Max DTE Used: 60
 Contracts Used: 221
 Net Current GEX: 13,862,588.76
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SHEL.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:19-04:00
 CBOE GEX Input Fingerprint: CBOE1:7876bf7f1615358d2636d2cd0d925ccc86b1cbf847487dfabe8a351251356836
 CBOE Snapshot Option Rows: 1070
 
@@ -904,7 +904,7 @@ Max DTE Used: 60
 Contracts Used: 243
 Net Current GEX: 2,257,254.60
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APA.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
+CBOE Snapshot Fetched: 2026-10-03T11:25:18-04:00
 CBOE GEX Input Fingerprint: CBOE1:a6d32654f2e50b9e3359bc524604d072e41eeefb63913fae0f6c69fcb8b6abf3
 CBOE Snapshot Option Rows: 740
 
@@ -927,580 +927,61 @@ GEXPOS8,49,49314.01
 
 
 Ticker: BP
-Mode: BARCHART_STYLE
-Spot: 44.79
-Max DTE Used: 60
-Contracts Used: 219
-Net Current GEX: 7,353,807.88
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/BP.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:e4afd16c0877ff0445323f7bf34301db9edacef2982088440f372eba6e36e880
-CBOE Snapshot Option Rows: 872
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,44.79,0
-GFLIP,37.8008,0
-CALLWALL,45,944815.63
-PUTWALL,42,-253610.92
-MAXCALLOI,45,21112
-MAXPUTOI,45,9932
-GEXPOS1,44,2575486.79
-GEXPOS2,46,1474985.75
-GEXPOS3,45,944815.63
-GEXPOS4,48,640641.46
-GEXPOS5,47,591559.13
-GEXPOS6,50,452822.43
-GEXPOS7,49,285778.24
-GEXNEG8,42,-253610.92
-
+ERROR: Could not fetch CBOE delayed options for BP. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: XOM
-Mode: BARCHART_STYLE
-Spot: 164.29
-Max DTE Used: 60
-Contracts Used: 323
-Net Current GEX: 54,433,439.27
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XOM.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:6b49848c84329f6e4d67b2adf444f4f7571fe24758811ab77f0ca52d5574abca
-CBOE Snapshot Option Rows: 1274
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,164.29,0
-GFLIP,154.8831,0
-CALLWALL,170,28250465.23
-PUTWALL,150,-5449489.02
-MAXCALLOI,170,37576
-MAXPUTOI,150,19195
-GEXPOS1,170,28250465.23
-GEXPOS2,165,12692413.99
-GEXPOS3,175,10038684.69
-GEXPOS4,180,5903003.33
-GEXNEG5,150,-5449489.02
-GEXPOS6,167.5,2631599.21
-GEXPOS7,155,2424511.9
-GEXNEG8,157.5,-2058651.53
-
+ERROR: Could not fetch CBOE delayed options for XOM. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: FANG
-Mode: BARCHART_STYLE
-Spot: 184.71
-Max DTE Used: 60
-Contracts Used: 56
-Net Current GEX: 1,319,065.91
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FANG.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:9e07dce64afe65c2b6fe2713d1dc7d16a0e54bfa99ecf301eae9a1c353b8edc5
-CBOE Snapshot Option Rows: 732
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,184.71,0
-GFLIP,178.84,0
-CALLWALL,210,497822.82
-PUTWALL,180,-814500.68
-MAXCALLOI,210,2067
-MAXPUTOI,180,939
-GEXPOS1,195,1342691.75
-GEXNEG2,180,-814500.68
-GEXPOS3,210,497822.82
-GEXNEG4,175,-374118.56
-GEXPOS5,185,275050.75
-GEXPOS6,200,237255.07
-GEXPOS7,190,226497.73
-GEXPOS8,220,106669.25
-
+ERROR: Could not fetch CBOE delayed options for FANG. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: MPLX
-Mode: BARCHART_STYLE
-Spot: 56.3986
-Max DTE Used: 60
-Contracts Used: 23
-Net Current GEX: -778,181.96
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPLX.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:421d777916a4ebc637a429f806f6d3b3a0940c882bf86d67e2da940526a2b2c4
-CBOE Snapshot Option Rows: 178
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,56.3986,0
-GFLIP,58.3152,0
-CALLWALL,65,161628
-PUTWALL,55,-995090.39
-MAXCALLOI,65,3740
-MAXPUTOI,55,2692
-GEXNEG1,55,-995090.39
-GEXPOS2,65,161628
-GEXPOS3,60,67568.82
-GEXNEG4,50,-13094.73
-GEXPOS5,35,726.5
-GEXPOS6,40,232.83
-GEXNEG7,45,-227.43
-GEXPOS8,30,74.43
-
+ERROR: Could not fetch CBOE delayed options for MPLX. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: COP
-Mode: BARCHART_STYLE
-Spot: 126.73
-Max DTE Used: 60
-Contracts Used: 337
-Net Current GEX: 11,863,206.60
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/COP.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:00069fdf832c56d80e7962d97651eb91d6b1686fca85ced730c0b653faa9e528
-CBOE Snapshot Option Rows: 1506
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,126.73,0
-GFLIP,113.4029,0
-CALLWALL,150,2264182.59
-PUTWALL,124,-337182.02
-MAXCALLOI,150,13757
-MAXPUTOI,115,4084
-GEXPOS1,135,2793640.83
-GEXPOS2,150,2264182.59
-GEXPOS3,125,1572877.95
-GEXPOS4,140,1347679.32
-GEXPOS5,120,1016942.38
-GEXPOS6,129,844642.2
-GEXPOS7,145,469449.81
-GEXPOS8,131,432417.53
-
+ERROR: Could not fetch CBOE delayed options for COP. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: MPC
-Mode: BARCHART_STYLE
-Spot: 422.33
-Max DTE Used: 60
-Contracts Used: 159
-Net Current GEX: 1,267,938.79
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPC.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:5b2e87c2a04e59765c82c1c92211b407b157d7c13931837cae999ef3138bc417
-CBOE Snapshot Option Rows: 1138
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,422.33,0
-GFLIP,415.9755,0
-CALLWALL,440,1467460.69
-PUTWALL,390,-998224.29
-MAXCALLOI,440,1081
-MAXPUTOI,340,2952
-GEXPOS1,440,1467460.69
-GEXPOS2,450,1144570.83
-GEXPOS3,420,1120527.54
-GEXNEG4,390,-998224.29
-GEXNEG5,380,-909292.68
-GEXNEG6,360,-663562.49
-GEXNEG7,340,-485734.95
-GEXNEG8,370,-457749.85
-
+ERROR: Could not fetch CBOE delayed options for MPC. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: PR
-Mode: BARCHART_STYLE
-Spot: 22.12
-Max DTE Used: 60
-Contracts Used: 53
-Net Current GEX: 2,172,204.85
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PR.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:54-04:00
-CBOE GEX Input Fingerprint: CBOE1:9b6541e5cd7d03e5b99890b2355ac2ab94f4474ce408b61aa3ef7c9ddf895520
-CBOE Snapshot Option Rows: 334
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,22.12,0
-GFLIP,18.8153,0
-CALLWALL,25,1366059.76
-PUTWALL,21,-41556.85
-MAXCALLOI,25,34195
-MAXPUTOI,23,2676
-GEXPOS1,25,1366059.76
-GEXPOS2,23,585398.82
-GEXPOS3,24,141837.25
-GEXPOS4,22,72242.8
-GEXNEG5,21,-41556.85
-GEXPOS6,26,37739.28
-GEXPOS7,20,13744.18
-GEXNEG8,19,-6417.88
-
+ERROR: Could not fetch CBOE delayed options for PR. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: LNG
-Mode: BARCHART_STYLE
-Spot: 269.95
-Max DTE Used: 60
-Contracts Used: 243
-Net Current GEX: 9,622,715.19
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LNG.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:55-04:00
-CBOE GEX Input Fingerprint: CBOE1:626d4fb27325dbb653bb4cbef27a7133756b99860c8ef2de45d20e60caf0e26d
-CBOE Snapshot Option Rows: 1286
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,269.95,0
-GFLIP,256.4002,0
-CALLWALL,290,3403169.22
-PUTWALL,260,-1762098.35
-MAXCALLOI,290,4271
-MAXPUTOI,260,1720
-GEXPOS1,290,3403169.22
-GEXPOS2,280,2864491.98
-GEXNEG3,260,-1762098.35
-GEXPOS4,270,1621052.65
-GEXPOS5,300,1110242.05
-GEXPOS6,285,902094.9
-GEXPOS7,275,836137.54
-GEXPOS8,310,706554.77
-
+ERROR: Could not fetch CBOE delayed options for LNG. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: NVDA
-Mode: BARCHART_STYLE
-Spot: 234.22
-Max DTE Used: 60
-Contracts Used: 1008
-Net Current GEX: 1,095,560,453.06
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/NVDA.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:55-04:00
-CBOE GEX Input Fingerprint: CBOE1:2152a36787d7d06b85e5e2287f9b458b8330fb23869c9cb1a0e3e3d0381e0e31
-CBOE Snapshot Option Rows: 3908
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,234.22,0
-GFLIP,215.1848,0
-CALLWALL,245,163930127.77
-PUTWALL,200,-18772269.92
-MAXCALLOI,245,181894
-MAXPUTOI,200,120389
-GEXPOS1,235,259095859.99
-GEXPOS2,240,207821887.79
-GEXPOS3,245,163930127.77
-GEXPOS4,250,120156621.83
-GEXPOS5,230,109053975.93
-GEXPOS6,260,46345652.84
-GEXPOS7,237.5,41494750.5
-GEXPOS8,242.5,39732157.99
-
+ERROR: Could not fetch CBOE delayed options for NVDA. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: AMD
-Mode: BARCHART_STYLE
-Spot: 633.25
-Max DTE Used: 60
-Contracts Used: 2095
-Net Current GEX: 253,157,664.71
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/AMD.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:55-04:00
-CBOE GEX Input Fingerprint: CBOE1:acb5edbc3a625a807144482317dc9bd4bf9d919640d7451c849f8d5ef71adf54
-CBOE Snapshot Option Rows: 6442
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,633.25,0
-GFLIP,591.5993,0
-CALLWALL,700,24092895.4
-PUTWALL,560,-8164513.35
-MAXCALLOI,700,17612
-MAXPUTOI,400,16690
-GEXPOS1,630,30052800.47
-GEXPOS2,650,24401870.19
-GEXPOS3,700,24092895.4
-GEXPOS4,640,20311132.24
-GEXPOS5,660,15007232.17
-GEXPOS6,627.5,13487781.99
-GEXPOS7,680,12687575.39
-GEXPOS8,645,11578193.51
-
+ERROR: Could not fetch CBOE delayed options for AMD. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: MU
-Mode: BARCHART_STYLE
-Spot: 1069.1801
-Max DTE Used: 60
-Contracts Used: 3314
-Net Current GEX: 382,144,054.57
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MU.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:55-04:00
-CBOE GEX Input Fingerprint: CBOE1:95ce0fea66283b51afb885b99431a7b29f79733068b4acc1c9c06c556d533e60
-CBOE Snapshot Option Rows: 11384
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,1069.1801,0
-GFLIP,1020.162,0
-CALLWALL,1300,30624655.02
-PUTWALL,980,-6653110.22
-MAXCALLOI,1300,32062
-MAXPUTOI,650,20358
-GEXPOS1,1100,77470553.01
-GEXPOS2,1150,49809504.21
-GEXPOS3,1200,38910292.17
-GEXPOS4,1300,30624655.02
-GEXPOS5,1080,30019702.11
-GEXPOS6,1050,19039326.7
-GEXPOS7,1090,17301973.27
-GEXPOS8,1120,15555589
-
+ERROR: Could not fetch CBOE delayed options for MU. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: SNDK
-Mode: BARCHART_STYLE
-Spot: 1717.66
-Max DTE Used: 60
-Contracts Used: 2495
-Net Current GEX: -13,425,003.10
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SNDK.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:57-04:00
-CBOE GEX Input Fingerprint: CBOE1:dd2b6a5b54e5976d6f95491a73ec091ae10ec8d03d85672a080cc70d06009c21
-CBOE Snapshot Option Rows: 11210
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,1717.66,0
-GFLIP,1733.7906,0
-CALLWALL,2000,10132407.18
-PUTWALL,1500,-6726811.4
-MAXCALLOI,2000,4302
-MAXPUTOI,1000,4522
-GEXPOS1,2000,10132407.18
-GEXPOS2,1900,9821439.67
-GEXNEG3,1500,-6726811.4
-GEXNEG4,1600,-6510255.28
-GEXNEG5,1700,-5623378.3
-GEXNEG6,1650,-5260779.56
-GEXNEG7,1400,-4591343.81
-GEXPOS8,1840,4022810.24
-
+ERROR: Could not fetch CBOE delayed options for SNDK. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: WDC
-Mode: BARCHART_STYLE
-Spot: 415.35
-Max DTE Used: 60
-Contracts Used: 944
-Net Current GEX: -22,137,911.14
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WDC.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:56-04:00
-CBOE GEX Input Fingerprint: CBOE1:b51de5516d8f8455131e267753e46e8eae96100a3b67861e38163d994bdb4e81
-CBOE Snapshot Option Rows: 3612
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,415.35,0
-GFLIP,465.2787,0
-CALLWALL,500,1020412.66
-PUTWALL,400,-3180963.81
-MAXCALLOI,500,2606
-MAXPUTOI,420,3452
-GEXNEG1,400,-3180963.81
-GEXNEG2,380,-2586216.2
-GEXNEG3,390,-2404660.76
-GEXNEG4,420,-2209511.09
-GEXNEG5,405,-1733592.24
-GEXNEG6,360,-1312619.62
-GEXNEG7,350,-1257086.84
-GEXNEG8,370,-1064680.16
-
+ERROR: Could not fetch CBOE delayed options for WDC. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: WEAT
-Mode: BARCHART_STYLE
-Spot: 24.75
-Max DTE Used: 60
-Contracts Used: 52
-Net Current GEX: 2,016,927.03
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WEAT.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:56-04:00
-CBOE GEX Input Fingerprint: CBOE1:027701fe8da663bedf9deba4e75eaeaee3f3f56f2603923e34f73de27997e1a7
-CBOE Snapshot Option Rows: 388
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,24.75,0
-GFLIP,13.5412,0
-CALLWALL,30,46437.02
-PUTWALL,21,-310.94
-MAXCALLOI,30,11595
-MAXPUTOI,26,834
-GEXPOS1,25,959485.13
-GEXPOS2,26,409575.34
-GEXPOS3,27,356495.02
-GEXPOS4,28,93026.8
-GEXPOS5,24,75190.76
-GEXPOS6,23,48503.56
-GEXPOS7,30,46437.02
-GEXPOS8,22,17132.76
-
+ERROR: Could not fetch CBOE delayed options for WEAT. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: GS
-Mode: BARCHART_STYLE
-Spot: 903.01
-Max DTE Used: 60
-Contracts Used: 1216
-Net Current GEX: -59,827,073.04
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GS.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:56-04:00
-CBOE GEX Input Fingerprint: CBOE1:77ba45444fa75b1c035ed850c154655ed4502f0022708255b2d3d6759af63987
-CBOE Snapshot Option Rows: 6932
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,903.01,0
-GFLIP,939.285,0
-CALLWALL,1000,4913192.67
-PUTWALL,890,-8941728.51
-MAXCALLOI,1000,3550
-MAXPUTOI,880,2240
-GEXNEG1,890,-8941728.51
-GEXNEG2,895,-7346345.47
-GEXNEG3,880,-6282702.41
-GEXNEG4,900,-6069631.32
-GEXNEG5,870,-5303863.77
-GEXPOS6,1000,4913192.67
-GEXNEG7,875,-4838418
-GEXNEG8,885,-4802783.84
-
+ERROR: Could not fetch CBOE delayed options for GS. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: DRAM
-Mode: BARCHART_STYLE
-Spot: 61.5548
-Max DTE Used: 60
-Contracts Used: 687
-Net Current GEX: 28,098,583.67
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/DRAM.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:56-04:00
-CBOE GEX Input Fingerprint: CBOE1:8987c167e7433868d51f85977f826bb8fdd889b3b8a9a91f41e32d0344f966ef
-CBOE Snapshot Option Rows: 2468
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,61.5548,0
-GFLIP,58.7826,0
-CALLWALL,122,184264.47
-PUTWALL,55,-6065316.44
-MAXCALLOI,122,96562
-MAXPUTOI,55,74255
-GEXPOS1,70,9502408.98
-GEXPOS2,65,6600836.86
-GEXNEG3,55,-6065316.44
-GEXPOS4,60,5644020.92
-GEXPOS5,63,3600126.1
-GEXPOS6,64,3585797.26
-GEXPOS7,62,3423458.22
-GEXPOS8,75,2469330.2
-
+ERROR: Could not fetch CBOE delayed options for DRAM. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: IWM
-Mode: BARCHART_STYLE
-Spot: 281.52
-Max DTE Used: 60
-Contracts Used: 1631
-Net Current GEX: -2,584,079,796.29
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/IWM.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:58-04:00
-CBOE GEX Input Fingerprint: CBOE1:cda0a8b211095542c2ebdb945c6e147394098d46e1b2ba7878f4709f3ac1498e
-CBOE Snapshot Option Rows: 5842
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,281.52,0
-GFLIP,290.0713,0
-CALLWALL,290,47155553.38
-PUTWALL,275,-439730303.91
-MAXCALLOI,290,83188
-MAXPUTOI,275,209287
-GEXNEG1,275,-439730303.91
-GEXNEG2,280,-298873832.41
-GEXNEG3,277,-287629162.07
-GEXNEG4,279,-275011424.67
-GEXNEG5,272,-249174550.44
-GEXNEG6,270,-246143190.85
-GEXNEG7,278,-183166267.11
-GEXNEG8,271,-153820689.4
-
+ERROR: Could not fetch CBOE delayed options for IWM. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: GLD
-Mode: BARCHART_STYLE
-Spot: 380.14
-Max DTE Used: 60
-Contracts Used: 2170
-Net Current GEX: -343,657,293.66
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GLD.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:58-04:00
-CBOE GEX Input Fingerprint: CBOE1:af022a9f4d8186bc9f4febf488ea1e5e89689a497a9ae2fc20cd5405fb2dfb27
-CBOE Snapshot Option Rows: 8194
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,380.14,0
-GFLIP,386.9837,0
-CALLWALL,460,34912376.37
-PUTWALL,345,-64718384.97
-MAXCALLOI,460,119537
-MAXPUTOI,345,78645
-GEXNEG1,345,-64718384.97
-GEXNEG2,390,-62515659.17
-GEXNEG3,380,-47319465.24
-GEXNEG4,375,-41583860.93
-GEXNEG5,340,-38123423.51
-GEXNEG6,370,-35870741.83
-GEXNEG7,365,-35493695.68
-GEXPOS8,460,34912376.37
-
+ERROR: Could not fetch CBOE delayed options for GLD. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: SCHW
-Mode: BARCHART_STYLE
-Spot: 96.8712
-Max DTE Used: 60
-Contracts Used: 330
-Net Current GEX: -8,295,190.47
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SCHW.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:58-04:00
-CBOE GEX Input Fingerprint: CBOE1:5a81dd0df2d1b45256cc884d4fbc68c59d6f1dd1467e1042e7f5ea7e8f5df08b
-CBOE Snapshot Option Rows: 1238
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,96.8712,0
-GFLIP,100.9816,0
-CALLWALL,115,752893.82
-PUTWALL,95,-2971775.72
-MAXCALLOI,115,15644
-MAXPUTOI,100,7767
-GEXNEG1,95,-2971775.72
-GEXNEG2,100,-1878033.31
-GEXPOS3,110,1243851.22
-GEXNEG4,96,-1116909.7
-GEXNEG5,97,-862056.35
-GEXNEG6,97.5,-858803.85
-GEXNEG7,90,-806471.93
-GEXPOS8,115,752893.82
-
+ERROR: Could not fetch CBOE delayed options for SCHW. Last error: HTTP Error 429: Too Many Requests
 
 Ticker: CVX
-Mode: BARCHART_STYLE
-Spot: 206.69
-Max DTE Used: 60
-Contracts Used: 269
-Net Current GEX: 53,398,685.53
-Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CVX.json
-CBOE Snapshot Fetched: 2026-10-03T11:24:58-04:00
-CBOE GEX Input Fingerprint: CBOE1:4e879f6c4074776fcf01ac15cf0b4faa14d06dd85985e4ef77e3a2a6f39a389a
-CBOE Snapshot Option Rows: 1278
-
-PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,206.69,0
-GFLIP,196.5641,0
-CALLWALL,220,17721526.58
-PUTWALL,200,-4997025.48
-MAXCALLOI,220,24540
-MAXPUTOI,200,8356
-GEXPOS1,210,24967381.2
-GEXPOS2,220,17721526.58
-GEXPOS3,230,10852541.64
-GEXPOS4,215,5227803.01
-GEXNEG5,200,-4997025.48
-GEXNEG6,195,-4277078.21
-GEXPOS7,240,3699237.26
-GEXNEG8,190,-2588237.01"
+ERROR: Could not fetch CBOE delayed options for CVX. Last error: HTTP Error 429: Too Many Requests"
