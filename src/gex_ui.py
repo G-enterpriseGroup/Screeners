@@ -58,6 +58,7 @@ DEFAULT_STATE["iv_history"] = {}
 DEFAULT_STATE["iv_history_method"] = IV_RANK_HISTORY_METHOD
 DEFAULT_STATE["auto_refresh_on_login"] = True
 DEFAULT_STATE["master_a6_source"] = "CBOE"
+GEX_TICKER_LIMIT = 200
 
 
 # ==============================
@@ -70,6 +71,17 @@ def _normalize_ticker(value: Any) -> str:
 def _clean_state(raw: Any) -> dict[str, Any]:
     """Preserve legacy state plus production GEX-only settings and IV history."""
     state = _legacy._clean_state(raw)
+    # Production GEX supports a larger watchlist than the historical 50-symbol
+    # legacy cap. Restore the complete normalized list from raw state before
+    # applying per-ticker overrides/history so new symbols are not silently
+    # discarded on the very next rerun/save.
+    if isinstance(raw, dict):
+        tickers: list[str] = []
+        for value in raw.get("tickers", []) or []:
+            ticker = _normalize_ticker(value)
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+        state["tickers"] = tickers[:GEX_TICKER_LIMIT]
     # E*TRADE expirations are not limited to the legacy preset menu (e.g. 23D).
     # Preserve exact per-ticker snapped integers across vault/browser reloads.
     if isinstance(raw, dict) and isinstance(raw.get("dte_overrides"), dict):
