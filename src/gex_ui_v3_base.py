@@ -248,10 +248,9 @@ def _seed_default_tickers(vault_key: str, state: dict[str, Any]) -> dict[str, An
         if normalized and normalized not in merged:
             merged.append(normalized)
 
-    # Core currently persists at most 50 tickers. Raj's supplied set is 49
-    # unique symbols (FLNG was listed twice), leaving one slot for an existing
-    # custom ticker without dropping any requested default.
-    state["tickers"] = merged[:50]
+    # Keep the complete seeded/default universe plus saved custom symbols up to
+    # the production GEX watchlist limit.
+    state["tickers"] = merged[:core.GEX_TICKER_LIMIT]
     state["revision"] = _DEFAULT_TICKER_SEED_REVISION - 1
     return _save_state(vault_key, state)
 
@@ -945,6 +944,9 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
 
     if st.session_state.pop("_gexv3_clear_add", False):
         st.session_state["gexv3_add_batch"] = ""
+    add_notice = str(st.session_state.pop("_gexv3_add_notice", "") or "").strip()
+    if add_notice:
+        st.success(add_notice)
     if st.session_state.pop("_gexv3_clear_note", False):
         st.session_state["gexv3_note_text"] = ""
 
@@ -991,7 +993,12 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         vertical_alignment="bottom",
     )
     with add_button_col:
-        add_clicked = st.button("LOOKUP + ADD", width="stretch", key="gexv3_add_many")
+        add_clicked = st.button(
+            "LOOKUP + ADD",
+            width="stretch",
+            key="gexv3_add_many",
+            shortcut="Enter",
+        )
     with etrade_txt_col:
         _render_etrade_txt_control()
     with cboe_txt_col:
@@ -1031,15 +1038,30 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
             if not lookup_failures:
                 st.warning("ENTER A TICKER OR COMPANY NAME")
         else:
-            changed = False
+            added: list[str] = []
+            already_saved: list[str] = []
             for ticker in incoming:
-                if ticker not in state["tickers"] and len(state["tickers"]) < 50:
-                    state["tickers"].append(ticker)
-                    changed = True
-            if changed:
+                if ticker in state["tickers"]:
+                    already_saved.append(ticker)
+                    continue
+                if len(state["tickers"]) >= core.GEX_TICKER_LIMIT:
+                    break
+                state["tickers"].append(ticker)
+                added.append(ticker)
+
+            if added:
                 state = _save_state(vault_key, state)
-            st.session_state["_gexv3_clear_add"] = True
-            st.rerun()
+                st.session_state["_gexv3_add_notice"] = (
+                    "ADDED // " + ", ".join(added)
+                )
+                st.session_state["_gexv3_clear_add"] = True
+                st.rerun()
+            elif already_saved:
+                st.info("ALREADY SAVED // " + ", ".join(already_saved))
+            else:
+                st.warning(
+                    f"GEX WATCHLIST LIMIT REACHED // {core.GEX_TICKER_LIMIT} TICKERS"
+                )
 
     if refresh_all:
         failures: list[str] = []
