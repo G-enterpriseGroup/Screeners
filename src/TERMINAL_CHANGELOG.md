@@ -1911,3 +1911,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `163d3ad5f3f9637df62acf01a3d002c5de9dfbae`.
 - **Lesson:** GEX ticker additions should resolve against a real symbol source before persistence; keep lookup failures out of saved state and cache search results rather than repeatedly hitting the provider.
+
+
+## 2026-10-02 — GEX ticker add actually persists beyond 50 + Enter submit
+
+- **Feature changed:** GEX watchlist ticker add / interaction.
+- **Exact production file(s) changed:** `src/gex_ui.py`, `src/gex_ui_v3_base.py`, `src/TERMINAL_CHANGELOG.md`.
+- **What was broken:** Typing a ticker and clicking LOOKUP + ADD could appear to do nothing, and pressing Enter did not perform the add action. Raj's seeded GEX universe already uses 49 symbols, while the historical GEX state cleaner silently truncated the saved list to 50 and the UI silently refused additions once 50 was reached.
+- **Root cause:** Two separate issues overlapped: the production state path inherited the legacy `tickers[:50]` truncation, while the add control was a normal text input plus separate button, so Enter only committed/reran the text input rather than submitting the add action.
+- **What was changed:** Production GEX now preserves up to 200 normalized saved symbols instead of inheriting the historical 50-symbol truncation; the watchlist UI uses that same production limit; the add button is bound to the Enter shortcut; successful additions display an `ADDED // ...` confirmation after rerun; duplicates explicitly report `ALREADY SAVED`; and a real limit condition now reports a warning instead of silently discarding the ticker. Existing yfinance stock/ETF lookup remains the validation/resolution source.
+- **Important behavior that must remain:** Ticker/company lookup must continue through yfinance before persistence; GEX state must not silently truncate newly added symbols on the next rerun; click and Enter must both trigger the same add path; preserve saved watchlist persistence, source refresh controls, DTE behavior, GEX calculations, and compact layout.
+- **Files/features intentionally NOT changed:** Risk Sizing, OAuth/session plumbing, Holdings, navigation, shared theme/CSS, GEX formula math, CBOE calculation logic, E*TRADE client transport, and `terminal_core.py`.
+- **Tests performed:** Production route re-traced; current yfinance `Search` signature verified against yfinance documentation; Streamlit Enter/button shortcut behavior verified against current Streamlit documentation; exact committed diffs inspected; GitHub Actions `Terminal Architecture Guard` run 37090175876 passed, including architecture validation, deployed Streamlit health, and deployed frontend no-`Oh no` browser check.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** state-limit fix `579a569e9deb66711b6b2999ec319582c3e296bf`; click/Enter UI fix `e634905dcf76688b80fab522c191277511fd8fdb`.
+- **Lesson:** Never let the GEX watchlist silently inherit the legacy 50-symbol state cap. Any UI add limit must match the production state cleaner, and an add field intended to support Enter must explicitly bind Enter to the add action.
