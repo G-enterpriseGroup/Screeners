@@ -1221,27 +1221,44 @@ def render_gex(
         added: list[str],
     ) -> str:
         """Immediately add newly saved tickers to the CBOE snapshot and TXT bridge."""
-        tickers = [
+        added_tickers = [
             ticker
             for ticker in (_core._normalize_ticker(value) for value in added)
             if ticker
         ]
-        if not tickers:
+        if not added_tickers:
             return ""
+
+        saved_tickers: list[str] = []
+        for value in state.get("tickers", []):
+            ticker = _core._normalize_ticker(value)
+            if ticker and ticker not in saved_tickers:
+                saved_tickers.append(ticker)
+
+        current_results = cboe_results(key)
+        existing_tickers = [
+            ticker for ticker in saved_tickers if ticker not in added_tickers
+        ]
+        full_existing_snapshot = all(
+            ticker in current_results for ticker in existing_tickers
+        )
+        refresh_tickers = added_tickers if full_existing_snapshot else saved_tickers
+        replace_all = not full_existing_snapshot
+
         try:
             _, failures = _refresh_cboe_batch(
                 key,
                 copy.deepcopy(state),
-                tickers,
-                replace_all=False,
+                refresh_tickers,
+                replace_all=replace_all,
             )
         except Exception as exc:
             message = " ".join(str(exc).split())[:180]
             return "CBOE TXT UPDATE FAILED" + (f" // {message}" if message else "")
-        updated = len(tickers) - len(failures)
+        updated = len(refresh_tickers) - len(failures)
         if failures:
-            return f"CBOE TXT {updated}/{len(tickers)} UPDATED // {len(failures)} ERROR"
-        return f"CBOE TXT UPDATED // {updated}/{len(tickers)}"
+            return f"CBOE TXT {updated}/{len(refresh_tickers)} UPDATED // {len(failures)} ERROR"
+        return f"CBOE TXT UPDATED // {updated}/{len(refresh_tickers)}"
 
     def render_settings_with_auto_refresh(
         key: str,
