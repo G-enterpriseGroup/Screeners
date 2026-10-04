@@ -23,6 +23,7 @@ from src.risk_sizing_ui_v2 import (
     RISK_INTENT_LONG_TERM,
     _apply_intent_overrides,
     _reconcile_risk_intent_state,
+    _reconcile_visible_long_term_widget_state,
     _risk_intent_session_key,
     _risk_intent_storage_key,
     _risk_override_widget_key,
@@ -169,6 +170,110 @@ def main() -> None:
         persisted = risk_ui.st.session_state[_risk_intent_session_key("acct")]
         assert persisted["tickers"] == []
         assert persisted["revision"] > checked_revision
+    finally:
+        risk_ui._risk_intent_vault().clear()
+        risk_ui.st.session_state = original_session_state
+
+    # A visible checked native checkbox is the final UI source of truth for the
+    # current rerun. If callback/browser timing ever leaves account_overrides
+    # stale, reconciliation must repair the override before classification and
+    # sleeve-summary math are rendered.
+    original_session_state = risk_ui.st.session_state
+    try:
+        risk_ui.st.session_state = {}
+        risk_ui._risk_intent_vault().clear()
+
+        glt_key = _risk_override_widget_key("acct", "GLD", "0")
+        risk_ui.st.session_state[glt_key] = True
+        live_overrides = risk_ui._account_intent_overrides("acct")
+        intent_state = {"revision": 0, "tickers": []}
+        live_overrides, intent_state = _reconcile_visible_long_term_widget_state(
+            "acct",
+            holdings,
+            live_overrides,
+            intent_state,
+        )
+        assert live_overrides["GLD"] == RISK_INTENT_LONG_TERM
+        assert intent_state["tickers"] == ["GLD"]
+
+        repaired = _apply_intent_overrides(
+            classify_holdings(holdings, 5.0),
+            live_overrides,
+        )
+        repaired_summary = sleeve_summary(
+            repaired,
+            investable_assets=100_000.0,
+            tactical_sleeve_pct=15.0,
+        )
+        repaired_by_symbol = repaired.set_index("Symbol")
+        assert repaired_by_symbol.loc["GLD", "Sleeve"] == "LONG-TERM"
+        assert repaired_summary["tactical_value"] == 0.0
+        assert repaired_summary["long_term_value"] == 30_000.0
+
+        # The reverse mismatch must self-heal too: an unchecked visible widget
+        # removes a stale manual override and restores the normal classifier.
+        risk_ui.st.session_state[glt_key] = False
+        live_overrides, intent_state = _reconcile_visible_long_term_widget_state(
+            "acct",
+            holdings,
+            live_overrides,
+            intent_state,
+        )
+        assert "GLD" not in live_overrides
+        assert intent_state["tickers"] == []
+        restored = _apply_intent_overrides(
+            classify_holdings(holdings, 5.0),
+            live_overrides,
+        ).set_index("Symbol")
+        assert restored.loc["GLD", "Sleeve"] == "TACTICAL"
+
+        # Duplicate-lot widgets can briefly disagree on the click rerun. Never
+        # let an older sibling widget reverse the callback's ticker-level choice.
+        dup = pd.DataFrame(
+            [
+                {
+                    "Symbol": "SGOL",
+                    "CUSIP": "",
+                    "Type": "ETF",
+                    "Gain/Loss %": -1.0,
+                    "Gain/Loss": -10.0,
+                    "Market Value": 1_000.0,
+                },
+                {
+                    "Symbol": "SGOL",
+                    "CUSIP": "",
+                    "Type": "ETF",
+                    "Gain/Loss %": -2.0,
+                    "Gain/Loss": -20.0,
+                    "Market Value": 2_000.0,
+                },
+            ]
+        )
+        dup_overrides = {"SGOL": RISK_INTENT_LONG_TERM}
+        risk_ui.st.session_state[_risk_override_widget_key("acct", "SGOL", "0")] = True
+        risk_ui.st.session_state[_risk_override_widget_key("acct", "SGOL", "1")] = False
+        dup_overrides, _ = _reconcile_visible_long_term_widget_state(
+            "acct",
+            dup,
+            dup_overrides,
+            {"revision": 5, "tickers": ["SGOL"]},
+        )
+        assert dup_overrides["SGOL"] == RISK_INTENT_LONG_TERM
+
+        # Protected CUSIP/fixed-income rows stay code-level LONG-TERM and must
+        # not be converted into a manual browser intent just because their
+        # disabled checkbox is visibly checked.
+        protected_key = _risk_override_widget_key("acct", "337158EJ4", "0")
+        risk_ui.st.session_state[protected_key] = True
+        protected_overrides: dict[str, str] = {}
+        protected_overrides, protected_state = _reconcile_visible_long_term_widget_state(
+            "acct",
+            protected.iloc[[0]].reset_index(drop=True),
+            protected_overrides,
+            {"revision": 0, "tickers": []},
+        )
+        assert protected_overrides == {}
+        assert protected_state == {"revision": 0, "tickers": []}
     finally:
         risk_ui._risk_intent_vault().clear()
         risk_ui.st.session_state = original_session_state
