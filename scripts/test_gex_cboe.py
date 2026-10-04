@@ -297,6 +297,9 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("_after_tickers_added(vault_key, state, added)", base)
         self.assertIn("_proven._base._after_tickers_added = refresh_added_cboe_tickers", ui)
         self.assertIn("_proven._base._after_tickers_added = original_after_tickers_added", ui)
+        self.assertIn("full_existing_snapshot", ui)
+        self.assertIn("refresh_tickers = added_tickers if full_existing_snapshot else saved_tickers", ui)
+        self.assertIn("replace_all = not full_existing_snapshot", ui)
         self.assertIn("def _publish_current_etrade_master_a6", ui)
         self.assertIn("_proven._base._refresh_symbol = refresh_symbol_with_txt_publish", ui)
 
