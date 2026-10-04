@@ -5,7 +5,7 @@ Max DTE Used: 60
 Contracts Used: 3884
 Net Current GEX: -1,120,268,271.43
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:20-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:58-04:00
 CBOE GEX Input Fingerprint: CBOE1:e25e87489ff01fb8cc05da8177d5f5368bc8a8f91c7f18ab6789876478dc2e7a
 CBOE Snapshot Option Rows: 12938
 
@@ -34,7 +34,7 @@ Max DTE Used: 60
 Contracts Used: 3968
 Net Current GEX: 2,886,501,492.31
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:20-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:298e565a369d8ee61ae54d91c8a55bf6b4b7d0e0c033afb6fa9e13e9cd444706
 CBOE Snapshot Option Rows: 11076
 
@@ -63,7 +63,7 @@ Max DTE Used: 60
 Contracts Used: 725
 Net Current GEX: 12,487,359.35
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TQQQ.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:2f61ca2409fe7d042ee4af82caba243b6e9512bbb788853f9ba494d08448054e
 CBOE Snapshot Option Rows: 1636
 
@@ -92,7 +92,7 @@ Max DTE Used: 60
 Contracts Used: 182
 Net Current GEX: 556,671.48
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLC.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:62ae72d85df744152aa583e9f0bc286ab760c470b21afc1936f471a5f43f9f56
 CBOE Snapshot Option Rows: 1160
 
@@ -121,7 +121,7 @@ Max DTE Used: 60
 Contracts Used: 232
 Net Current GEX: -2,646,514.21
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLY.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:64d866bd0a42bea36980e402fc5cd5c5b1d29d8ddada17e39df4b718eb09d5a9
 CBOE Snapshot Option Rows: 1462
 
@@ -150,7 +150,7 @@ Max DTE Used: 60
 Contracts Used: 491
 Net Current GEX: 20,676,786.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLK.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:73a9ed76828a256a21fb100754ca38fb9d623f4e3de854df2d9b9c1bea83e8d0
 CBOE Snapshot Option Rows: 2506
 
@@ -179,7 +179,7 @@ Max DTE Used: 60
 Contracts Used: 46
 Net Current GEX: -348,928.54
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLRE.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:20-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:2dd6ec4cf93f95ed2512bf9cf02e8dfd6a2c64fcf8cf6580adeef22431390305
 CBOE Snapshot Option Rows: 220
 
@@ -208,7 +208,7 @@ Max DTE Used: 60
 Contracts Used: 539
 Net Current GEX: -258,495,790.19
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLF.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:20-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
 CBOE GEX Input Fingerprint: CBOE1:92380d3086d0bd1da3935fca41a4070135dfccb4c5fa66bc7199b548a1894cc1
 CBOE Snapshot Option Rows: 2376
 
@@ -237,7 +237,7 @@ Max DTE Used: 60
 Contracts Used: 175
 Net Current GEX: -1,190,451.30
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLB.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:103acf63b2397a9ae6054b3021ac14465511aafbf2f0373de69addaca1e4fd29
 CBOE Snapshot Option Rows: 1046
 
@@ -266,7 +266,7 @@ Max DTE Used: 60
 Contracts Used: 353
 Net Current GEX: -37,589,669.30
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLV.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:ccc83388f152df7787bda5532b22b698eac52e572ef6bba287c65733fbbcc25e
 CBOE Snapshot Option Rows: 1680
 
@@ -295,7 +295,7 @@ Max DTE Used: 60
 Contracts Used: 220
 Net Current GEX: 128,141,206.14
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLU.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:e54d262a641214e63224ed6c2933ee27140714138f14f77eafabc7fd39665b6e
 CBOE Snapshot Option Rows: 1062
 
@@ -324,7 +324,7 @@ Max DTE Used: 60
 Contracts Used: 465
 Net Current GEX: -49,816,742.99
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLE.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:976941e63d1a153d3506583620f979e44e87bf42a954a20f6be3b5e8a8c71b66
 CBOE Snapshot Option Rows: 1976
 
@@ -353,7 +353,7 @@ Max DTE Used: 60
 Contracts Used: 271
 Net Current GEX: -14,919,718.42
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLP.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:cc1822e845f84c8cd36eef4d22580e63da88241095a5cc2a344368847985b3b0
 CBOE Snapshot Option Rows: 1198
 
@@ -382,7 +382,7 @@ Max DTE Used: 60
 Contracts Used: 499
 Net Current GEX: -69,081,751.62
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLI.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:5c39c120093df4c2b6df42006cfe0ded0389aaf74894820d5651d468d063876b
 CBOE Snapshot Option Rows: 2090
 
@@ -411,7 +411,7 @@ Max DTE Used: 60
 Contracts Used: 1204
 Net Current GEX: 1,059,484,204.81
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MSFT.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:4e12930a83fd9fca4a3bd8c5404fb297dcb7e21d0ed3f2e9f03d4390434aab67
 CBOE Snapshot Option Rows: 3522
 
@@ -440,7 +440,7 @@ Max DTE Used: 60
 Contracts Used: 38
 Net Current GEX: -362,748.16
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SGOL.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:21-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:e3c1cbeedea918cb5e22429b75ea545e7b9894c5cc7dbc323476393ddcfead0a
 CBOE Snapshot Option Rows: 180
 
@@ -469,7 +469,7 @@ Max DTE Used: 60
 Contracts Used: 169
 Net Current GEX: 4,871,338.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:f9a9f385e1f8f13eae0d4eecff1604a50ec20661214a462ba8ac8139f5351436
 CBOE Snapshot Option Rows: 724
 
@@ -498,7 +498,7 @@ Max DTE Used: 60
 Contracts Used: 302
 Net Current GEX: -65,667,289.00
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:93e91dc0dec22ac3c57574c405c7c1c5e2b22c94e125ab494c8b36bc2f4a723e
 CBOE Snapshot Option Rows: 1608
 
@@ -527,7 +527,7 @@ Max DTE Used: 60
 Contracts Used: 117
 Net Current GEX: 9,951,868.02
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
 CBOE GEX Input Fingerprint: CBOE1:71e4e373ab664b3586dcc25d2e810dae9070ca37a32bcad35d8abf11c0044ea7
 CBOE Snapshot Option Rows: 624
 
@@ -556,7 +556,7 @@ Max DTE Used: 60
 Contracts Used: 955
 Net Current GEX: 47,490,265.14
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SOXX.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:ca331fe5f4087dae0c12582a6c0fe8878196cd0b0bcbc0fc1d6fc7ec7e988052
 CBOE Snapshot Option Rows: 5302
 
@@ -585,7 +585,7 @@ Max DTE Used: 60
 Contracts Used: 1788
 Net Current GEX: 333,373,023.26
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SMH.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:f02b5fb5ce0d4a603e6f21fcf1fe18a26651ff0e6fa740bbaf7bdad2c2c58bcb
 CBOE Snapshot Option Rows: 7232
 
@@ -614,7 +614,7 @@ Max DTE Used: 60
 Contracts Used: 549
 Net Current GEX: -12,218,616.49
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LMT.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:ed33352fb2ff9212f29d53a1bff1a17b4de79390687b5c90b8f1406bcfe2a9b6
 CBOE Snapshot Option Rows: 2410
 
@@ -643,7 +643,7 @@ Max DTE Used: 60
 Contracts Used: 294
 Net Current GEX: 10,976,211.02
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MAGS.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:cdda0faf397a2f09b848a0a2b9399d9a701ccd81ebb14acb20fd7d4a06779a96
 CBOE Snapshot Option Rows: 926
 
@@ -672,7 +672,7 @@ Max DTE Used: 60
 Contracts Used: 158
 Net Current GEX: 11,920,666.47
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/ET.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:5d202d06b5ce8f178daf2deac97fcafb98f3429dda08e2a4590d72586819b9d8
 CBOE Snapshot Option Rows: 668
 
@@ -701,7 +701,7 @@ Max DTE Used: 60
 Contracts Used: 49
 Net Current GEX: -1,493,559.13
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/HESM.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:def1a5ab82e10a59de4d864f12c3dac0756348f88972ead6ab390d0a8ab73357
 CBOE Snapshot Option Rows: 222
 
@@ -730,7 +730,7 @@ Max DTE Used: 60
 Contracts Used: 50
 Net Current GEX: 548,248.56
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FLNG.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:5cb3783f4751b74350c01c6c6bb91a047f371acc5bb3114c16f3786a030bf989
 CBOE Snapshot Option Rows: 154
 
@@ -759,7 +759,7 @@ Max DTE Used: 60
 Contracts Used: 54
 Net Current GEX: 161,229.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WES.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:463c9f836af666e18e723f71052d84fdff5a9480c1d2ecb45a46aa694f9339af
 CBOE Snapshot Option Rows: 262
 
@@ -788,7 +788,7 @@ Max DTE Used: 60
 Contracts Used: 127
 Net Current GEX: 4,710,411.94
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PAA.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
 CBOE GEX Input Fingerprint: CBOE1:75067742347ad5460f4c2f191b01ff632af00e7b779ad5727c12e19a21f2fc90
 CBOE Snapshot Option Rows: 596
 
@@ -817,7 +817,7 @@ Max DTE Used: 60
 Contracts Used: 737
 Net Current GEX: 193,490,037.74
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TSM.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:22-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:95a65f90b1d7c119546d4b98a114814b8391c908b9b59e5b755a0b154656ea76
 CBOE Snapshot Option Rows: 2370
 
@@ -846,7 +846,7 @@ Max DTE Used: 60
 Contracts Used: 50
 Net Current GEX: -589,142.07
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CRAK.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:078f0559c98bab5047458db5d258eea87a9ab8b9d963619d6738193d6b0df289
 CBOE Snapshot Option Rows: 294
 
@@ -875,7 +875,7 @@ Max DTE Used: 60
 Contracts Used: 221
 Net Current GEX: 14,462,776.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SHEL.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:d8b4b120a45769616001ded5c5b16d4437b962edd04675482a74679241a75568
 CBOE Snapshot Option Rows: 988
 
@@ -904,7 +904,7 @@ Max DTE Used: 60
 Contracts Used: 243
 Net Current GEX: 2,259,322.16
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APA.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:a6ce755d23e1d8274b89fa14ded65eea0d5f10fdf1594933eccda11e81aa93bd
 CBOE Snapshot Option Rows: 664
 
@@ -933,7 +933,7 @@ Max DTE Used: 60
 Contracts Used: 219
 Net Current GEX: 7,353,807.88
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/BP.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:231267e53d453daffd3862879144a483a31f3958fb396eb58319bd51a8cff790
 CBOE Snapshot Option Rows: 796
 
@@ -962,7 +962,7 @@ Max DTE Used: 60
 Contracts Used: 323
 Net Current GEX: 54,406,425.61
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XOM.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:06c500e399dff5b6525cdecf2b9598f370449d0feaa5b27a314da0210b9cc127
 CBOE Snapshot Option Rows: 1186
 
@@ -991,7 +991,7 @@ Max DTE Used: 60
 Contracts Used: 56
 Net Current GEX: 1,316,074.27
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FANG.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:9e07dce64afe65c2b6fe2713d1dc7d16a0e54bfa99ecf301eae9a1c353b8edc5
 CBOE Snapshot Option Rows: 732
 
@@ -1020,7 +1020,7 @@ Max DTE Used: 60
 Contracts Used: 23
 Net Current GEX: -784,303.66
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPLX.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:23aa4fdd5b99cca7330d7bdf1bebed6a73686a36eefcff60e2f88c963a1367ea
 CBOE Snapshot Option Rows: 178
 
@@ -1049,7 +1049,7 @@ Max DTE Used: 60
 Contracts Used: 337
 Net Current GEX: 11,865,043.00
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/COP.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:f6bd83212d926bb43dde9517d1a26abe92a7c551856a3754e3bdeb31c4127722
 CBOE Snapshot Option Rows: 1404
 
@@ -1078,7 +1078,7 @@ Max DTE Used: 60
 Contracts Used: 159
 Net Current GEX: 1,282,697.26
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPC.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:5b2e87c2a04e59765c82c1c92211b407b157d7c13931837cae999ef3138bc417
 CBOE Snapshot Option Rows: 1138
 
@@ -1107,7 +1107,7 @@ Max DTE Used: 60
 Contracts Used: 53
 Net Current GEX: 2,184,809.23
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PR.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:5d60c8f525c6ffb3046a7ee57084f7b000b85d5f6bff6622a72fe4174e9ba224
 CBOE Snapshot Option Rows: 334
 
@@ -1136,7 +1136,7 @@ Max DTE Used: 60
 Contracts Used: 243
 Net Current GEX: 9,577,961.59
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LNG.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:bcf2f9910f30606c37e02dad290b28024bf44f3f93c5dca104709f225a5cde3c
 CBOE Snapshot Option Rows: 1164
 
@@ -1165,7 +1165,7 @@ Max DTE Used: 60
 Contracts Used: 1008
 Net Current GEX: 1,093,009,679.61
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/NVDA.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:972a43de84a7e4fc2cd69f288e9f8476ec2fd933cee81219ce5418ad2197d9da
 CBOE Snapshot Option Rows: 3748
 
@@ -1194,7 +1194,7 @@ Max DTE Used: 60
 Contracts Used: 2095
 Net Current GEX: 252,554,184.64
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/AMD.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:23-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
 CBOE GEX Input Fingerprint: CBOE1:183a7b5b7a4663dac4cf3ff68b50de6ec43cd15d21fb88a33bbfc6faf2e6d0a7
 CBOE Snapshot Option Rows: 5978
 
@@ -1223,7 +1223,7 @@ Max DTE Used: 60
 Contracts Used: 3314
 Net Current GEX: 381,013,328.55
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MU.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:24-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
 CBOE GEX Input Fingerprint: CBOE1:d1d2597dd88b0480b3479e435595f30ac8fb00a825e0e4d45dd6019bee9e7d52
 CBOE Snapshot Option Rows: 10714
 
@@ -1252,7 +1252,7 @@ Max DTE Used: 60
 Contracts Used: 2495
 Net Current GEX: -13,600,914.46
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SNDK.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:24-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
 CBOE GEX Input Fingerprint: CBOE1:7829bcd2f5e2b2e9454a775194a0043e609347e883acaf2ff7ca9e0fb4d30922
 CBOE Snapshot Option Rows: 10572
 
@@ -1281,7 +1281,7 @@ Max DTE Used: 60
 Contracts Used: 944
 Net Current GEX: -22,157,753.12
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WDC.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:24-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
 CBOE GEX Input Fingerprint: CBOE1:9998f4bc7711eea31a51825f1b7b180d8d85a99c3548ce754b77712f41be2e2a
 CBOE Snapshot Option Rows: 3322
 
@@ -1310,7 +1310,7 @@ Max DTE Used: 60
 Contracts Used: 52
 Net Current GEX: 2,016,920.09
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WEAT.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
 CBOE GEX Input Fingerprint: CBOE1:027701fe8da663bedf9deba4e75eaeaee3f3f56f2603923e34f73de27997e1a7
 CBOE Snapshot Option Rows: 388
 
@@ -1339,7 +1339,7 @@ Max DTE Used: 60
 Contracts Used: 1216
 Net Current GEX: -60,139,071.19
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GS.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
 CBOE GEX Input Fingerprint: CBOE1:6f1a43406b2faab503db38827ed3a16dcb2988c21135fd45140907937ada296a
 CBOE Snapshot Option Rows: 6618
 
@@ -1368,7 +1368,7 @@ Max DTE Used: 60
 Contracts Used: 687
 Net Current GEX: 28,054,759.37
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/DRAM.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
 CBOE GEX Input Fingerprint: CBOE1:45826863b927ae895084c20a684866f5f7fce555a31c944b685b6309abad0ebf
 CBOE Snapshot Option Rows: 2344
 
@@ -1397,7 +1397,7 @@ Max DTE Used: 60
 Contracts Used: 1631
 Net Current GEX: -2,584,831,727.41
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/IWM.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
 CBOE GEX Input Fingerprint: CBOE1:4e03d516e6c25903ab9155168784ae3cc448c491a96c62c34771eea7dc4c1e04
 CBOE Snapshot Option Rows: 5590
 
@@ -1426,7 +1426,7 @@ Max DTE Used: 60
 Contracts Used: 2170
 Net Current GEX: -343,926,716.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GLD.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:24-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
 CBOE GEX Input Fingerprint: CBOE1:666da2337de06f41f0f63b63feaf0fc59389d237a957694b2637298266780715
 CBOE Snapshot Option Rows: 7870
 
@@ -1455,7 +1455,7 @@ Max DTE Used: 60
 Contracts Used: 330
 Net Current GEX: -8,297,266.28
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SCHW.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
 CBOE GEX Input Fingerprint: CBOE1:84d9367d9fee290851d16cb06c0d4519742c19bbc4e9a4a5c32fd3d369300970
 CBOE Snapshot Option Rows: 1146
 
@@ -1484,7 +1484,7 @@ Max DTE Used: 60
 Contracts Used: 269
 Net Current GEX: 53,559,110.26
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CVX.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
 CBOE GEX Input Fingerprint: CBOE1:101ea77543c502583b2b32355cd3eb1376d6bd8f406c3c28ca0b4ef1fff9c569
 CBOE Snapshot Option Rows: 1178
 
@@ -1513,7 +1513,7 @@ Max DTE Used: 60
 Contracts Used: 23
 Net Current GEX: 291,787.23
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SUN.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:25-04:00
+CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
 CBOE GEX Input Fingerprint: CBOE1:41f534f9f59d93e5be4e4a84970d5c59f1e7786f1eb707eea7aad48595d7040b
 CBOE Snapshot Option Rows: 168
 
