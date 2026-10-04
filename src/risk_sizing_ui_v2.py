@@ -603,6 +603,63 @@ def _set_long_term_override(
     _save_risk_intent_overrides(account_key, account_overrides)
 
 
+def _reconcile_visible_long_term_widget_state(
+    account_key: str,
+    normalized: pd.DataFrame,
+    account_overrides: dict[str, str],
+    intent_state: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Keep the visible native checkboxes and ticker-level intent in lockstep.
+
+    The checkbox callback remains the normal write path. This reconciliation is
+    a defensive repair for Streamlit/browser-state timing: if a visible native
+    checkbox is already checked but the account override is stale, the checked
+    UI must never continue to render the holding as TACTICAL.
+
+    Duplicate lots intentionally use ticker-level intent. If duplicate widget
+    states temporarily disagree during a click rerun, preserve the callback's
+    account override and let the normal render synchronize those widget keys.
+    """
+    if normalized.empty or "Symbol" not in normalized.columns:
+        return account_overrides, intent_state
+
+    visible_states: dict[str, list[bool]] = {}
+    for row_pos, (_, row) in enumerate(normalized.iterrows()):
+        symbol = _normalize_intent_symbol(row.get("Symbol"))
+        if not symbol or is_protected_long_term_holding(row):
+            continue
+
+        widget_key = _risk_override_widget_key(account_key, symbol, str(row_pos))
+        if widget_key not in st.session_state:
+            continue
+        visible_states.setdefault(symbol, []).append(
+            bool(st.session_state.get(widget_key, False))
+        )
+
+    changed = False
+    for symbol, states in visible_states.items():
+        if not states:
+            continue
+
+        current_is_long_term = (
+            _normalize_intent_symbol(account_overrides.get(symbol))
+            == RISK_INTENT_LONG_TERM
+        )
+        if all(states) and not current_is_long_term:
+            account_overrides[symbol] = RISK_INTENT_LONG_TERM
+            changed = True
+        elif not any(states) and current_is_long_term:
+            account_overrides.pop(symbol, None)
+            changed = True
+        # A mixed duplicate-lot state is transient. The callback is authoritative
+        # for that rerun; do not let an older sibling widget reverse its choice.
+
+    if changed:
+        intent_state = _save_risk_intent_overrides(account_key, account_overrides)
+
+    return account_overrides, intent_state
+
+
 # ==============================
 # DISPLAY HELPERS
 # ==============================
@@ -1777,6 +1834,12 @@ def render_risk_sizing(
     account_overrides, risk_intent_state = _load_persisted_intent_overrides(
         account_key,
         active_symbols,
+    )
+    account_overrides, risk_intent_state = _reconcile_visible_long_term_widget_state(
+        account_key,
+        normalized,
+        account_overrides,
+        risk_intent_state,
     )
     _sync_risk_intent_browser(account_key, risk_intent_state)
 
