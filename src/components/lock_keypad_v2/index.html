@@ -10,7 +10,23 @@
     .shell{display:grid;grid-template-columns:minmax(0,2.05fr) minmax(360px,1fr);gap:26px;align-items:center;width:100%;padding:8px 2px 4px}
     .panel{border:1px solid var(--o);background:#020202;box-shadow:0 0 0 1px rgba(251,139,30,.20) inset,0 0 28px rgba(251,139,30,.08)}
     .head{background:var(--o);color:#000;padding:17px 20px;font-size:21px;font-weight:900;letter-spacing:.08em}
-    .body{padding:26px 28px 27px}.icon{width:58px;height:58px;border:2px solid var(--o);display:flex;align-items:center;justify-content:center;font-size:25px;font-weight:900;margin-bottom:24px}
+    .body{padding:26px 28px 27px}
+    .biounit{width:188px;border:1px solid var(--o);background:#010101;margin-bottom:20px;box-shadow:0 0 18px rgba(251,139,30,.10)}
+    .bio-screen{position:relative;height:92px;overflow:hidden;background:
+      radial-gradient(circle at 50% 50%,rgba(251,139,30,.09),transparent 52%),
+      repeating-linear-gradient(0deg,rgba(251,139,30,.035) 0 1px,transparent 1px 9px),
+      repeating-linear-gradient(90deg,rgba(251,139,30,.035) 0 1px,transparent 1px 9px)}
+    .bio-rings,.bio-rings:before,.bio-rings:after{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid rgba(251,139,30,.72);border-radius:50%!important}
+    .bio-rings{width:58px;height:58px}.bio-rings:before{content:"";width:38px;height:38px}.bio-rings:after{content:"";width:18px;height:18px;background:rgba(251,139,30,.08)}
+    .bio-cross:before,.bio-cross:after{content:"";position:absolute;background:rgba(251,139,30,.48)}
+    .bio-cross:before{width:92px;height:1px;left:48px;top:46px}.bio-cross:after{width:1px;height:74px;left:93px;top:9px}
+    .bio-sweep{position:absolute;left:17px;right:17px;top:8px;height:2px;background:var(--o);box-shadow:0 0 10px rgba(251,139,30,.75);animation:bioSweep 2.1s linear infinite}
+    .bio-corner{position:absolute;width:12px;height:12px;border-color:var(--o);border-style:solid}.bio-c1{left:8px;top:8px;border-width:1px 0 0 1px}.bio-c2{right:8px;top:8px;border-width:1px 1px 0 0}.bio-c3{left:8px;bottom:8px;border-width:0 0 1px 1px}.bio-c4{right:8px;bottom:8px;border-width:0 1px 1px 0}
+    .bio-readout{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #6f3c10;padding:6px 8px;font-size:9px;letter-spacing:.06em;font-weight:900}.bio-dot{width:7px;height:7px;border:1px solid var(--o);background:#261304;display:inline-block;margin-right:6px;box-shadow:0 0 0 rgba(74,246,195,0)}
+    .biounit.ready .bio-dot{background:var(--g);border-color:var(--g);box-shadow:0 0 8px rgba(74,246,195,.75)}.biounit.ready .bio-state{color:var(--g)}
+    .biounit.active{border-color:var(--g);box-shadow:0 0 20px rgba(74,246,195,.16)}.biounit.active .bio-sweep{background:var(--g);box-shadow:0 0 12px rgba(74,246,195,.85);animation-duration:.68s}.biounit.active .bio-rings,.biounit.active .bio-rings:before,.biounit.active .bio-rings:after{border-color:var(--g)}
+    @keyframes bioSweep{0%{transform:translateY(0);opacity:.35}10%{opacity:1}50%{opacity:.9}90%{opacity:1}100%{transform:translateY(74px);opacity:.35}}
+    @media(prefers-reduced-motion:reduce){.bio-sweep{animation:none;top:45px}}
     .title{font-size:18px;font-weight:900;letter-spacing:.05em;margin-bottom:15px}.copy{font-size:14px;line-height:1.55;max-width:720px}
     .status{border-top:1px solid var(--o);margin-top:20px;padding-top:16px;font-size:12px;line-height:1.45;letter-spacing:.04em}
     .keycard{border:1px solid var(--o);background:#020202;padding:14px;width:100%;max-width:520px;justify-self:center}
@@ -23,6 +39,7 @@
     button:hover:not(:disabled){background:#141414;color:#fff}button:active:not(:disabled){transform:translateY(1px);background:var(--o);color:#000}button:disabled{opacity:.48;cursor:not-allowed}.action{font-size:11px}
     .actionbar{width:208px;max-width:100%;margin:9px auto 0;display:grid;gap:8px}
     .unlock,.touch{width:100%;height:46px;font-size:12px;letter-spacing:.04em}
+    .reenroll{width:100%;height:30px;font-size:9px;letter-spacing:.04em;border-color:#6f3c10;color:#b86a1b}
     .unlock{background:var(--blue);border-color:#66adff;color:#fff;box-shadow:0 3px 0 #003579,0 0 10px rgba(0,104,255,.25)}
     .unlock:hover:not(:disabled){background:#0876ff;color:#fff}.touch{background:#050505;border-color:var(--g);color:var(--g)}.touch:hover:not(:disabled){background:#082219;color:#fff}
     .touch.ready{box-shadow:0 0 12px rgba(74,246,195,.20)}
@@ -41,7 +58,14 @@
     <div class="panel">
       <div class="head">RAJ'S TERMINAL // SECURE ACCESS</div>
       <div class="body">
-        <div class="icon">▣</div><div class="title">FRAMEWORK LOCKED</div>
+        <div class="biounit" id="biounit" aria-label="Biometric authentication scanner">
+          <div class="bio-screen">
+            <div class="bio-rings"></div><div class="bio-cross"></div><div class="bio-sweep"></div>
+            <span class="bio-corner bio-c1"></span><span class="bio-corner bio-c2"></span><span class="bio-corner bio-c3"></span><span class="bio-corner bio-c4"></span>
+          </div>
+          <div class="bio-readout"><span><span class="bio-dot"></span>BIO UNIT // AUTH SCAN</span><span class="bio-state" id="bioState">STANDBY</span></div>
+        </div>
+        <div class="title">FRAMEWORK LOCKED</div>
         <div class="copy">Authentication is required before the terminal, E*TRADE connection, holdings, orders, municipal screeners, or account data are rendered.</div>
         <div class="status">SESSION SECURITY // API CREDENTIALS REMAIN SERVER-SIDE // TERMINAL ACCESS DISABLED</div>
       </div>
@@ -53,6 +77,7 @@
       <div class="actionbar">
         <button class="unlock" id="unlock" disabled>UNLOCK TERMINAL</button>
         <button class="touch" id="touch">TOUCH ID</button>
+        <button class="reenroll" id="reenroll" hidden>RE-ENROLL TOUCH ID ON THIS MAC</button>
       </div>
       <div class="feedback" id="feedback">INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE</div>
       <div class="ffhelp" id="ffhelp" hidden>
@@ -63,7 +88,7 @@
         <div class="ffbuttons"><button id="copyff">COPY FIREFOX PREF</button><button id="retestff">RETEST TOUCH ID</button></div>
       </div>
       <div class="hint">NUMBER KEYS ALSO WORK // KEYPAD STAYS LOCAL UNTIL UNLOCK</div>
-      <div class="biohint" id="biohint">TOUCH ID USES A MAC PLATFORM PASSKEY // NO FINGERPRINT DATA LEAVES macOS</div>
+      <div class="biohint" id="biohint">EACH MAC / BROWSER ENROLLS ITS OWN PLATFORM PASSKEY // NO FINGERPRINT DATA LEAVES macOS</div>
     </div>
   </div>
 <script>
@@ -79,14 +104,15 @@
   function credentialJSON(cred){const r=cred.response;const out={id:cred.id,rawId:bytesToB64url(cred.rawId),type:cred.type,authenticatorAttachment:cred.authenticatorAttachment||null,clientExtensionResults:cred.getClientExtensionResults?cred.getClientExtensionResults():{},response:{clientDataJSON:bytesToB64url(r.clientDataJSON)}};if(r.attestationObject){out.response.attestationObject=bytesToB64url(r.attestationObject);out.response.transports=r.getTransports?r.getTransports():[]}if(r.authenticatorData){out.response.authenticatorData=bytesToB64url(r.authenticatorData);out.response.signature=bytesToB64url(r.signature);out.response.userHandle=r.userHandle?bytesToB64url(r.userHandle):null}return out}
 
   let buffer="",remaining=0,tickHandle=null,registrationOptions=null,authenticationOptions=null,touchRegistered=false,touchSupported=false,touchPlatformReported=false,touchChecked=false,touchMemoryChecking=false,firefoxMac=false,firefoxNeedsSetup=false,autoTouchAttempted=false,touchBusy=false;
-  const dots=document.getElementById("dots"),meta=document.getElementById("meta"),feedback=document.getElementById("feedback"),unlock=document.getElementById("unlock"),touch=document.getElementById("touch"),grid=document.getElementById("grid"),biohint=document.getElementById("biohint"),ffhelp=document.getElementById("ffhelp"),fftitle=document.getElementById("fftitle"),ffsteps=document.getElementById("ffsteps"),copyff=document.getElementById("copyff"),retestff=document.getElementById("retestff");
+  const dots=document.getElementById("dots"),meta=document.getElementById("meta"),feedback=document.getElementById("feedback"),unlock=document.getElementById("unlock"),touch=document.getElementById("touch"),reenroll=document.getElementById("reenroll"),grid=document.getElementById("grid"),biohint=document.getElementById("biohint"),biounit=document.getElementById("biounit"),bioState=document.getElementById("bioState"),ffhelp=document.getElementById("ffhelp"),fftitle=document.getElementById("fftitle"),ffsteps=document.getElementById("ffsteps"),copyff=document.getElementById("copyff"),retestff=document.getElementById("retestff");
 
   function uaInfo(){const host=credentialHost();const ua=String((host.navigator&&host.navigator.userAgent)||navigator.userAgent||"");const fx=ua.match(/Firefox\/(\d+)/i);return{isMac:/Macintosh|Mac OS X/i.test(ua),firefoxVersion:fx?Number(fx[1]):0,ua:ua}}
   function setFeedback(text,tone=""){feedback.className="feedback"+(tone?" "+tone:"");feedback.textContent=text}
   function showFirefoxHelp(info){firefoxNeedsSetup=true;ffhelp.hidden=false;fftitle.textContent="FIREFOX "+(info.firefoxVersion||"")+" // ENABLE MAC TOUCH ID";ffsteps.textContent="Raj's Terminal supports Firefox Touch ID. This Firefox profile is currently reporting that the macOS platform authenticator is unavailable. Enable the Firefox macOS passkey preference once, fully restart Firefox, then stay in Firefox.";height()}
   function hideFirefoxHelp(){firefoxNeedsSetup=false;ffhelp.hidden=true;height()}
   function renderBuffer(){dots.textContent=buffer.length?"●".repeat(buffer.length):"—";meta.textContent=buffer.length+" DIGITS ENTERED";unlock.disabled=!buffer.length||remaining>0;renderTouch()}
-  function renderTouch(){touch.classList.remove("ready");if(remaining>0){touch.disabled=true;touch.textContent="TOUCH ID LOCKED";return}if(!touchChecked){touch.disabled=true;touch.textContent="CHECKING TOUCH ID...";return}if(!touchSupported){touch.disabled=true;touch.textContent="TOUCH ID UNAVAILABLE";return}if(touchMemoryChecking){touch.disabled=true;touch.textContent="CHECKING SAVED TOUCH ID...";return}if(firefoxNeedsSetup){touch.disabled=false;touch.textContent="ENABLE FIREFOX TOUCH ID";return}touch.disabled=touchBusy;touch.classList.add("ready");if(touchBusy){touch.textContent="TOUCH ID // WAITING...";return}if(registrationOptions){touch.textContent="CONFIRM TOUCH ID SETUP"}else if(touchRegistered){touch.textContent="TOUCH ID"}else{touch.textContent="SET UP TOUCH ID";touch.disabled=!buffer.length}}
+  function renderBioUnit(){biounit.classList.toggle("active",touchBusy);biounit.classList.toggle("ready",Boolean(touchSupported&&(touchRegistered||registrationOptions)));let state="STANDBY";if(remaining>0)state="LOCKED";else if(touchMemoryChecking)state="CHECK MAC";else if(firefoxNeedsSetup)state="SETUP";else if(touchBusy)state=registrationOptions?"ENROLLING":"VERIFYING";else if(registrationOptions)state="ENROLL";else if(touchRegistered&&touchSupported)state="TOUCH READY";else if(touchSupported)state="NEW MAC";else if(touchChecked)state="OFFLINE";bioState.textContent=state}
+  function renderTouch(){touch.classList.remove("ready");reenroll.hidden=true;renderBioUnit();if(remaining>0){touch.disabled=true;touch.textContent="TOUCH ID LOCKED";return}if(!touchChecked){touch.disabled=true;touch.textContent="CHECKING TOUCH ID...";return}if(!touchSupported){touch.disabled=true;touch.textContent="TOUCH ID UNAVAILABLE";return}if(touchMemoryChecking){touch.disabled=true;touch.textContent="CHECKING THIS MAC...";return}if(firefoxNeedsSetup){touch.disabled=false;touch.textContent="ENABLE FIREFOX TOUCH ID";return}touch.disabled=touchBusy;touch.classList.add("ready");if(touchBusy){touch.textContent="TOUCH ID // WAITING...";return}if(registrationOptions){touch.textContent="CONFIRM TOUCH ID SETUP"}else if(touchRegistered){touch.textContent="TOUCH ID";reenroll.hidden=false;reenroll.disabled=!buffer.length}else{touch.textContent="SET UP TOUCH ID ON THIS MAC";touch.disabled=!buffer.length}}
   function addDigit(d){if(remaining>0||buffer.length>=32)return;buffer+=d;renderBuffer()}
   function clearBuffer(){buffer="";renderBuffer()}function backspace(){buffer=buffer.slice(0,-1);renderBuffer()}
   function button(label,cls,handler){const b=document.createElement("button");b.textContent=label;b.className=cls||"";b.onclick=handler;grid.appendChild(b);return b}
@@ -99,7 +125,9 @@
   async function runRegistration(){if(touchBusy)return;touchBusy=true;renderTouch();try{const host=credentialHost();setFeedback("TOUCH ID SETUP // USE THE MAC TOUCH ID PROMPT");const cred=await host.navigator.credentials.create({publicKey:creationOptions(registrationOptions)});if(!cred)throw new Error("No credential returned");send({action:"finish_registration",credential:credentialJSON(cred),nonce:Date.now()})}catch(err){touchBusy=false;renderTouch();setFeedback("TOUCH ID SETUP CANCELED OR UNAVAILABLE // "+(err&&err.message?err.message:String(err)),"error")}}
   async function runAuthentication(auto=false){if(touchBusy||!authenticationOptions||firefoxNeedsSetup)return;touchBusy=true;renderTouch();try{const host=credentialHost();setFeedback((auto?"TOUCH ID AUTO // ":"TOUCH ID // ")+"USE THE MAC TOUCH ID PROMPT");const cred=await host.navigator.credentials.get({publicKey:requestOptions(authenticationOptions),mediation:"required"});if(!cred)throw new Error("No credential returned");send({action:"authenticate",credential:credentialJSON(cred),nonce:Date.now()})}catch(err){touchBusy=false;renderTouch();const name=String((err&&err.name)||"");const msg=(name==="NotAllowedError"?"TOUCH ID CANCELED // TAP TOUCH ID TO TRY AGAIN":"TOUCH ID UNAVAILABLE // "+(err&&err.message?err.message:String(err)));setFeedback(msg,name==="NotAllowedError"?"":"error")}}
   function maybeAutoTouch(){if(autoTouchAttempted||firefoxNeedsSetup||!touchChecked||!touchSupported||!touchPlatformReported||!touchRegistered||!authenticationOptions||registrationOptions||remaining>0)return;autoTouchAttempted=true;setTimeout(()=>runAuthentication(true),450)}
-  touch.onclick=async()=>{if(remaining>0)return;if(firefoxNeedsSetup){ffhelp.hidden=false;setFeedback("FIREFOX TOUCH ID NEEDS ONE PROFILE SETTING // FOLLOW THE STEPS BELOW, RESTART FIREFOX, THEN RETURN HERE","error");height();return}if(!touchSupported)return;if(registrationOptions){await runRegistration();return}if(touchRegistered&&authenticationOptions){await runAuthentication(false);return}if(!buffer){setFeedback("ENTER YOUR ACCESS CODE ONCE TO ENROLL TOUCH ID","error");return}const code=buffer;buffer="";renderBuffer();setFeedback("VERIFYING CODE // PREPARING MAC TOUCH ID SETUP");send({action:"begin_registration",code:code,nonce:Date.now()})};
+  function beginMacEnrollment(){if(!buffer){setFeedback("ENTER YOUR ACCESS CODE ONCE TO ENROLL TOUCH ID ON THIS MAC","error");return}const code=buffer;buffer="";renderBuffer();setFeedback("VERIFYING CODE // PREPARING THIS MAC TOUCH ID SETUP");send({action:"begin_registration",code:code,nonce:Date.now()})}
+  touch.onclick=async()=>{if(remaining>0)return;if(firefoxNeedsSetup){ffhelp.hidden=false;setFeedback("FIREFOX TOUCH ID NEEDS ONE PROFILE SETTING // FOLLOW THE STEPS BELOW, RESTART FIREFOX, THEN RETURN HERE","error");height();return}if(!touchSupported)return;if(registrationOptions){await runRegistration();return}if(touchRegistered&&authenticationOptions){await runAuthentication(false);return}beginMacEnrollment()};
+  reenroll.onclick=()=>{if(remaining>0||touchBusy||firefoxNeedsSetup)return;beginMacEnrollment()};
 
   document.addEventListener("keydown",e=>{if(remaining>0)return;if(/^\d$/.test(e.key)){addDigit(e.key);e.preventDefault()}else if(e.key==="Backspace"){backspace();e.preventDefault()}else if(e.key==="Escape"){clearBuffer();e.preventDefault()}else if(e.key==="Enter"&&!unlock.disabled){unlock.click();e.preventDefault()}});
 
@@ -114,6 +142,7 @@
     authenticationOptions=args.authentication_options||null;
     touchRegistered=Boolean(args.touch_id_registered);
     touchMemoryChecking=Boolean(args.touch_memory_checking);
+    if(touchChecked&&touchSupported&&touchPlatformReported&&!touchRegistered&&!touchMemoryChecking&&!firefoxNeedsSetup){biohint.textContent="THIS MAC IS TOUCH ID READY // ENTER ACCESS CODE ONCE TO ENROLL THIS BROWSER"}
     const message=String(args.feedback||""),tone=String(args.feedback_tone||"");
     setFeedback(message||"INPUT METHOD // CLIENT-SIDE KEYPAD // DIGITS DO NOT REFRESH THE PAGE",tone);
     if(tickHandle)clearInterval(tickHandle);
