@@ -292,6 +292,11 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("def _cache_busted_txt_url", ui)
         self.assertIn("_cache_busted_txt_url(_CBOE_BRIDGE_URL)", ui)
         self.assertIn("_cache_busted_txt_url(_ETRADE_BRIDGE_URL)", ui)
+        self.assertIn('"blob/gex-bridge-data/bridge/latest_gex_cboe.txt?plain=1"', ui)
+        self.assertIn("def _after_tickers_added", base)
+        self.assertIn("_after_tickers_added(vault_key, state, added)", base)
+        self.assertIn("_proven._base._after_tickers_added = refresh_added_cboe_tickers", ui)
+        self.assertIn("_proven._base._after_tickers_added = original_after_tickers_added", ui)
         self.assertIn("def _publish_current_etrade_master_a6", ui)
         self.assertIn("_proven._base._refresh_symbol = refresh_symbol_with_txt_publish", ui)
 
