@@ -289,8 +289,8 @@ _ETRADE_BRIDGE_URL = (
     "gex-bridge-data/bridge/latest_gex.txt"
 )
 _CBOE_BRIDGE_URL = (
-    "https://raw.githubusercontent.com/G-enterpriseGroup/Screeners/"
-    "gex-bridge-data/bridge/latest_gex_cboe.txt"
+    "https://github.com/G-enterpriseGroup/Screeners/"
+    "blob/gex-bridge-data/bridge/latest_gex_cboe.txt?plain=1"
 )
 _CBOE_MASTER_A6_STATIC_PATH = (
     Path(__file__).resolve().parents[1] / "static" / "latest_gex_cboe.txt"
@@ -298,7 +298,7 @@ _CBOE_MASTER_A6_STATIC_PATH = (
 
 
 def _cache_busted_txt_url(url: str) -> str:
-    """Open the CBOE raw bridge with a fresh URL so stale CDN/browser data cannot linger."""
+    """Open a bridge viewer with a fresh URL so stale browser data cannot linger."""
     separator = "&" if "?" in str(url) else "?"
     nonce = datetime.now().strftime("%Y%m%d%H%M%S%f")
     return f"{url}{separator}v={nonce}"
@@ -1141,6 +1141,7 @@ def render_gex(
     original_remove = _proven._base._remove_ticker
     original_render_overview = _proven._base._render_overview
     original_refresh_symbol = _proven._base._refresh_symbol
+    original_after_tickers_added = _proven._base._after_tickers_added
     original_etrade_txt_control = _proven._base._render_etrade_txt_control
     original_cboe_txt_control = _proven._base._render_cboe_txt_control
     original_cboe_refresh_control = _proven._base._render_cboe_refresh_all_control
@@ -1213,6 +1214,34 @@ def render_gex(
         )
         _publish_current_etrade_master_a6(key, state)
         return result
+
+    def refresh_added_cboe_tickers(
+        key: str,
+        state: dict[str, Any],
+        added: list[str],
+    ) -> str:
+        """Immediately add newly saved tickers to the CBOE snapshot and TXT bridge."""
+        tickers = [
+            ticker
+            for ticker in (_core._normalize_ticker(value) for value in added)
+            if ticker
+        ]
+        if not tickers:
+            return ""
+        try:
+            _, failures = _refresh_cboe_batch(
+                key,
+                copy.deepcopy(state),
+                tickers,
+                replace_all=False,
+            )
+        except Exception as exc:
+            message = " ".join(str(exc).split())[:180]
+            return "CBOE TXT UPDATE FAILED" + (f" // {message}" if message else "")
+        updated = len(tickers) - len(failures)
+        if failures:
+            return f"CBOE TXT {updated}/{len(tickers)} UPDATED // {len(failures)} ERROR"
+        return f"CBOE TXT UPDATED // {updated}/{len(tickers)}"
 
     def render_settings_with_auto_refresh(
         key: str,
@@ -1293,6 +1322,7 @@ def render_gex(
     _proven._base._remove_ticker = remove_with_iv_rank
     _proven._base._render_overview = render_overview_with_login_refresh
     _proven._base._refresh_symbol = refresh_symbol_with_txt_publish
+    _proven._base._after_tickers_added = refresh_added_cboe_tickers
     _proven._base._render_etrade_txt_control = lambda: _render_txt_control(
         "E*TRADE",
         _cache_busted_txt_url(_ETRADE_BRIDGE_URL),
@@ -1327,6 +1357,7 @@ def render_gex(
         _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
         _proven._base._render_cboe_txt_control = original_cboe_txt_control
         _proven._base._render_etrade_txt_control = original_etrade_txt_control
+        _proven._base._after_tickers_added = original_after_tickers_added
         _proven._base._refresh_symbol = original_refresh_symbol
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove

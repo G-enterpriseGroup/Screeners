@@ -899,6 +899,16 @@ def _render_notes(vault_key: str, state: dict[str, Any]) -> dict[str, Any]:
 # ==============================
 # SOURCE-SPECIFIC REFRESH / OVERVIEW HOOKS
 # ==============================
+def _after_tickers_added(
+    vault_key: str,
+    state: dict[str, Any],
+    added: list[str],
+) -> str:
+    """Production adapter may refresh source-specific exports for newly saved tickers."""
+    del vault_key, state, added
+    return ""
+
+
 def _render_etrade_txt_control() -> None:
     """Production adapter replaces this with the E*TRADE raw TXT link."""
     return None
@@ -1051,9 +1061,11 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
 
             if added:
                 state = _save_state(vault_key, state)
-                st.session_state["_gexv3_add_notice"] = (
-                    "ADDED // " + ", ".join(added)
-                )
+                followup = str(_after_tickers_added(vault_key, state, added) or "").strip()
+                notice = "ADDED // " + ", ".join(added)
+                if followup:
+                    notice += " // " + followup
+                st.session_state["_gexv3_add_notice"] = notice
                 st.session_state["_gexv3_clear_add"] = True
                 st.rerun()
             elif already_saved:
