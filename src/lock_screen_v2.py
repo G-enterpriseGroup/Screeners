@@ -19,7 +19,6 @@ from src.passkey_auth import (
     build_registration_options,
     complete_authentication,
     complete_registration,
-    load_touch_id_record,
     restore_touch_id_record,
     seal_touch_id_record,
     webauthn_error,
@@ -34,6 +33,7 @@ _lock_keypad = components.declare_component(
 )
 
 _TOUCH_ID_BROWSER_STORAGE_KEY = "raj-terminal-touch-id-memory-v1"
+_TOUCH_ID_SESSION_RECORD_KEY = "_touchid_browser_record_v3"
 
 # Streamlit V2 components execute directly in the app page instead of the
 # legacy iframe path. Keep browser persistence here so a server/container reboot
@@ -215,17 +215,17 @@ def _touch_memory_bridge_event(
     if clear_browser_touch_memory:
         command = "clear"
         command_id = _new_touch_memory_command("clear")
-    elif touch_memory:
+    elif persist_then_unlock and touch_memory:
+        # Only save a credential after this browser has just enrolled or
+        # successfully authenticated with it. Never copy the process-global
+        # runtime cache into a browser that has not proved it owns the passkey.
         command = "save"
         memory = touch_memory
-        if persist_then_unlock:
-            command_id = str(
-                st.session_state.get("_touchid_memory_save_command_id")
-                or _new_touch_memory_command("save")
-            )
-            st.session_state["_touchid_memory_save_command_id"] = command_id
-        else:
-            command_id = f"sync:{str(touch_memory.get('mac') or '')}"
+        command_id = str(
+            st.session_state.get("_touchid_memory_save_command_id")
+            or _new_touch_memory_command("save")
+        )
+        st.session_state["_touchid_memory_save_command_id"] = command_id
     elif not touch_record and not restore_checked:
         command = "restore"
         command_id = str(
@@ -290,7 +290,13 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
     app_url = _current_app_url()
     identity_seed = _credential_identity_seed(namespace)
     memory_secret = _credential_memory_secret(namespace)
-    touch_record = load_touch_id_record(app_url) if app_url and webauthn_ready() else None
+
+    # Touch ID ownership is browser/Mac scoped. A server runtime record may
+    # belong to a different Mac, so it must never make a fresh browser appear
+    # enrolled. This session only trusts a record restored from this browser's
+    # HMAC-sealed localStorage envelope or freshly enrolled/authenticated here.
+    session_record = st.session_state.get(_TOUCH_ID_SESSION_RECORD_KEY)
+    touch_record = session_record if isinstance(session_record, dict) else None
     persist_then_unlock = bool(st.session_state.get("_touchid_persist_then_unlock", False))
     registration_options = st.session_state.get("_touchid_registration_options")
     authentication_options = (
@@ -299,7 +305,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
         else _ensure_authentication_options(app_url, touch_record)
     )
     touch_memory = None
-    if touch_record and app_url:
+    if persist_then_unlock and touch_record and app_url:
         try:
             touch_memory = seal_touch_id_record(app_url, touch_record, memory_secret)
         except Exception:
@@ -330,24 +336,27 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
                     memory_secret,
                 )
                 if restored:
-                    st.session_state.pop("_touchid_memory_restore_checked", None)
+                    st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = restored
+                    st.session_state["_touchid_memory_restore_checked"] = True
                     st.session_state.pop("_touchid_memory_restore_command_id", None)
                     _clear_touch_id_session()
-                    _set_feedback("ok", "TOUCH ID MEMORY RESTORED // VERIFYING MAC TOUCH ID")
+                    _set_feedback("ok", "THIS MAC TOUCH ID MEMORY RESTORED // VERIFYING BIOMETRIC")
                 else:
+                    st.session_state.pop(_TOUCH_ID_SESSION_RECORD_KEY, None)
                     st.session_state["_touchid_memory_restore_checked"] = True
                     st.session_state["_touchid_clear_browser_memory"] = True
                     _set_feedback(
                         "error",
-                        "SAVED TOUCH ID MEMORY FAILED VERIFICATION // SET UP TOUCH ID ONCE",
+                        "SAVED TOUCH ID MEMORY FAILED VERIFICATION // SET UP TOUCH ID ON THIS MAC ONCE",
                     )
                 st.rerun()
 
             if memory_action == "missing":
+                st.session_state.pop(_TOUCH_ID_SESSION_RECORD_KEY, None)
                 st.session_state["_touchid_memory_restore_checked"] = True
                 _set_feedback(
-                    "error",
-                    "NO SAVED TOUCH ID MEMORY FOUND IN THIS BROWSER // SET UP TOUCH ID ONCE",
+                    "",
+                    "NEW MAC / BROWSER // ENTER ACCESS CODE ONCE, THEN SET UP TOUCH ID ON THIS MAC",
                 )
                 st.rerun()
 
@@ -357,6 +366,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
                     _unlock(namespace)
 
             if memory_action == "error":
+                st.session_state.pop(_TOUCH_ID_SESSION_RECORD_KEY, None)
                 st.session_state["_touchid_memory_restore_checked"] = True
                 _set_feedback(
                     "error",
@@ -435,7 +445,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
                 st.session_state["_touchid_registration_challenge"] = challenge
                 st.session_state.pop("_touchid_authentication_options", None)
                 st.session_state.pop("_touchid_authentication_challenge", None)
-                _set_feedback("ok", "ACCESS CODE VERIFIED // CLICK CONFIRM TOUCH ID SETUP")
+                _set_feedback("ok", "ACCESS CODE VERIFIED // CONFIRM TOUCH ID SETUP ON THIS MAC")
                 clear_fn()
             except Exception as exc:
                 _set_feedback("error", f"TOUCH ID SETUP FAILED // {exc}")
@@ -448,14 +458,16 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             _set_feedback("error", "TOUCH ID SETUP EXPIRED // ENTER THE ACCESS CODE AND TRY AGAIN")
             st.rerun()
         try:
-            complete_registration(app_url, bytes(challenge), credential)
+            enrolled_record = complete_registration(app_url, bytes(challenge), credential)
+            st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = enrolled_record
+            st.session_state["_touchid_memory_restore_checked"] = True
         except Exception as exc:
             _clear_touch_id_session()
             _set_feedback("error", f"TOUCH ID VERIFICATION FAILED // {exc}")
             st.rerun()
         _clear_touch_id_session()
         _request_touch_memory_save()
-        _set_feedback("ok", "TOUCH ID ENROLLED // SAVING REBOOT-SAFE PASSKEY MEMORY")
+        _set_feedback("ok", "THIS MAC TOUCH ID ENROLLED // SAVING REBOOT-SAFE PASSKEY MEMORY")
         clear_fn()
         st.rerun()
 
@@ -471,7 +483,14 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
             _set_feedback("error", "TOUCH ID REQUEST EXPIRED // TRY AGAIN")
             st.rerun()
         try:
-            complete_authentication(app_url, bytes(challenge), credential, touch_record)
+            updated_record = complete_authentication(
+                app_url,
+                bytes(challenge),
+                credential,
+                touch_record,
+            )
+            st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = updated_record
+            st.session_state["_touchid_memory_restore_checked"] = True
         except Exception as exc:
             st.session_state.pop("_touchid_authentication_options", None)
             st.session_state.pop("_touchid_authentication_challenge", None)
@@ -480,7 +499,7 @@ def render_seamless_lock_screen(namespace: dict[str, Any]) -> None:
         st.session_state.pop("_touchid_authentication_options", None)
         st.session_state.pop("_touchid_authentication_challenge", None)
         _request_touch_memory_save()
-        _set_feedback("ok", "TOUCH ID VERIFIED // SAVING UPDATED PASSKEY MEMORY")
+        _set_feedback("ok", "THIS MAC TOUCH ID VERIFIED // SAVING UPDATED PASSKEY MEMORY")
         clear_fn()
         st.rerun()
 
