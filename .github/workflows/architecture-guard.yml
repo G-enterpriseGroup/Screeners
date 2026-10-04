@@ -32,6 +32,18 @@ jobs:
       - name: Validate production architecture
         run: python scripts/validate_architecture.py
 
+      - name: Test Touch ID multi-Mac persistence and keypad script
+        run: |
+          python -m py_compile src/passkey_auth.py src/lock_screen_v2.py scripts/test_touch_id_persistence.py
+          python scripts/test_touch_id_persistence.py
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("src/components/lock_keypad_v2/index.html").read_text(encoding="utf-8")
+          script = source.split("<script>", 1)[1].split("</script>", 1)[0]
+          Path("/tmp/raj_lock_keypad.js").write_text(script, encoding="utf-8")
+          PY
+          node --check /tmp/raj_lock_keypad.js
+
       - name: Test Risk LONG-TERM intent and top-level tabs
         run: |
           python -m py_compile src/risk_sizing_ui_v2.py scripts/test_risk_intent_override.py
