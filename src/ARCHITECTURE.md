@@ -143,6 +143,8 @@ Production lock path:
 - Change **WebAuthn verification or reboot-safe credential-record persistence** → `src/passkey_auth.py`.
 - The app must never store or receive a raw fingerprint/biometric template or passkey private key. Only the public WebAuthn verification record may be persisted.
 - The reboot-safe browser record must remain integrity-protected by the server-derived HMAC before it is trusted after a process/container restart.
+- Touch ID enrollment is **browser/Mac scoped**. Never treat the process-global server credential cache as proof that a fresh browser owns another Mac's passkey. A browser must restore its own sealed record or enroll a new platform passkey after the access-code check.
+- Multiple Macs/browsers may each enroll their own platform credential for the same terminal identity. Re-enrolling one Mac must not make another Mac's browser appear enrolled or force it into a cross-device/security-key chooser.
 - Do not use the old lock module's OAuth/title wrappers when changing Touch ID; production OAuth remains owned by `src/etrade_connection_ui_v2.py`.
 
 ## Production reboot edit map
