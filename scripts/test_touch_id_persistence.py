@@ -84,7 +84,30 @@ def main() -> None:
     assert "localStorage.getItem" not in component_source
     assert "localStorage.setItem" not in component_source
     assert "touch_memory_checking" in component_source
-    assert "CHECKING SAVED TOUCH ID" in component_source
+    assert "CHECKING THIS MAC" in component_source
+
+    # Multi-Mac safety: the live lock may only consider a credential enrolled
+    # after this browser restores its own sealed memory or creates/verifies a
+    # credential in this session. A process-global server cache must never make
+    # a brand-new Mac/browser inherit another Mac's passkey identity.
+    assert "_TOUCH_ID_SESSION_RECORD_KEY" in lock_source
+    assert "load_touch_id_record" not in lock_source
+    assert "elif persist_then_unlock and touch_memory:" in lock_source
+    assert "NEW MAC / BROWSER // ENTER ACCESS CODE ONCE" in lock_source
+    assert "st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = enrolled_record" in lock_source
+    assert "st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = updated_record" in lock_source
+    assert "st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = restored" in lock_source
+
+    # The keypad should clearly support first-time enrollment/re-enrollment on
+    # another Mac and keep the Bloomberg-terminal-inspired biometric animation
+    # isolated inside the lock component.
+    assert "SET UP TOUCH ID ON THIS MAC" in component_source
+    assert "RE-ENROLL TOUCH ID ON THIS MAC" in component_source
+    assert "EACH MAC / BROWSER ENROLLS ITS OWN PLATFORM PASSKEY" in component_source
+    assert 'class="biounit"' in component_source
+    assert "BIO UNIT // AUTH SCAN" in component_source
+    assert "@keyframes bioSweep" in component_source
+    assert "prefers-reduced-motion" in component_source
 
     app_source = (root / "streamlit_app.py").read_text(encoding="utf-8")
     assert "from src.lock_screen_v2 import render_seamless_lock_screen" in app_source
