@@ -173,7 +173,7 @@ def _write_master_a6_static(
     if not result_map:
         return
 
-    parser_text = _proven._google_sheets_master_text(
+    parser_text = _cboe_tradingview_master(
         result_map,
         tickers,
         failures,
@@ -302,6 +302,100 @@ def _cache_busted_txt_url(url: str) -> str:
     separator = "&" if "?" in str(url) else "?"
     nonce = datetime.now().strftime("%Y%m%d%H%M%S%f")
     return f"{url}{separator}v={nonce}"
+
+
+_CBOE_PINE_REQUIRED_TYPES = {"CALLWALL", "PUTWALL", "MAXCALLOI", "MAXPUTOI"}
+
+
+def _cboe_tradingview_block(result: dict[str, Any]) -> str:
+    """Emit Raj's compact CBOE ticker block for TradingView.
+
+    TradingView supplies the live spot price, so the CBOE bridge deliberately
+    omits both the human-readable Spot line and the packed SPOT row.
+    """
+    symbol = _core._normalize_ticker(result.get("symbol"))
+    if not symbol:
+        return ""
+
+    packed_rows = [
+        row
+        for row in _proven._base._packed_gamma_lines(result)
+        if not row.startswith("SPOT,")
+    ]
+    source_url = str(result.get("sourceUrl") or "").strip()
+    lines = [f"Ticker: {symbol}"]
+    if source_url:
+        lines.append(f"Source URL: {source_url}")
+    lines.extend(
+        [
+            "",
+            "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels",
+            *packed_rows,
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def _cboe_tradingview_master(
+    result_map: dict[str, Any],
+    tickers: list[str],
+    failures: dict[str, str] | None = None,
+) -> str:
+    """Build the compact multi-ticker CBOE TradingView payload."""
+    failed = {
+        _core._normalize_ticker(key)
+        for key in (failures or {})
+        if _core._normalize_ticker(key)
+    }
+    blocks: list[str] = []
+    for raw_ticker in tickers:
+        ticker = _core._normalize_ticker(raw_ticker)
+        if not ticker or ticker in failed:
+            continue
+        result = result_map.get(ticker)
+        if not result:
+            continue
+        block = _cboe_tradingview_block(result)
+        if block:
+            blocks.append(block)
+    return "\n\n".join(blocks).strip()
+
+
+def _cboe_pine_ticker_issues(text: str, ticker: str) -> tuple[list[str], int]:
+    """Validate CBOE packed rows without requiring a SPOT row."""
+    target = _core._normalize_ticker(ticker)
+    block = _proven._pine_ticker_block(text, target)
+    if not block:
+        return [f"{target}:NO_HEADER"], 0
+    parsed = _proven._pine_parsed_types(block)
+    parsed_set = set(parsed)
+    issues = [
+        f"{target}:NO_{typ}"
+        for typ in sorted(_CBOE_PINE_REQUIRED_TYPES - parsed_set)
+    ]
+    if not any(typ.startswith("GEXPOS") or typ.startswith("GEXNEG") for typ in parsed):
+        issues.append(f"{target}:NO_GEX")
+    return issues, len(parsed)
+
+
+def _cboe_pine_master_issues(
+    text: str,
+    expected: list[str],
+) -> tuple[list[str], dict[str, int]]:
+    """Run the CBOE no-SPOT TradingView validation contract."""
+    issues: list[str] = []
+    counts: dict[str, int] = {}
+    headers = _proven._pine_router_headers(text)
+    duplicate_headers = sorted(
+        {ticker for ticker in headers if headers.count(ticker) > 1}
+    )
+    issues.extend(f"{ticker}:DUPLICATE_HEADER" for ticker in duplicate_headers)
+    for ticker in expected:
+        ticker_issues, parsed_count = _cboe_pine_ticker_issues(text, ticker)
+        counts[ticker] = parsed_count
+        issues.extend(ticker_issues)
+    return issues, counts
+
 
 def _publish_cboe_master_a6(
     vault_key: str,
@@ -748,7 +842,7 @@ def _render_tradingview_pine_compatible(
             )
         return
 
-    master_label = "MASTER A6 // FULL TICKER BLOCKS — COPY THIS"
+    master_label = "MASTER A6 // COPY THIS"
     compact_label = "COMPACT PINE // OPTIONAL DIAGNOSTIC"
     choice = st.selectbox(
         "PACKED GAMMA BLOCK",
@@ -758,7 +852,17 @@ def _render_tradingview_pine_compatible(
     is_master = choice == master_label
     is_compact = choice == compact_label
 
-    if is_master:
+    if is_master and source_key == "CBOE":
+        parser_text = _cboe_tradingview_master(
+            active_results,
+            saved,
+            normalized_failures,
+        ).strip()
+        filename = "raj_terminal_MASTER_A6_CBOE.txt"
+        expected_headers = available
+        parser_expected = available
+        mode_text = "CBOE // TICKER + SOURCE URL + GAMMA ROWS // TRADINGVIEW SPOT"
+    elif is_master:
         parser_text = _proven._google_sheets_master_text(
             active_results,
             saved,
@@ -777,6 +881,12 @@ def _render_tradingview_pine_compatible(
         expected_headers = available
         parser_expected = available
         mode_text = f"{source_display} // COMPACT TICKER + PACKED ROWS // OPTIONAL"
+    elif source_key == "CBOE":
+        parser_text = _cboe_tradingview_block(active_results[choice]).strip()
+        filename = f"{choice}_gex_cboe_tradingview.txt"
+        expected_headers = [choice]
+        parser_expected = [choice]
+        mode_text = f"CBOE // {choice} // TICKER + SOURCE URL + GAMMA ROWS"
     else:
         parser_text = _proven._base._google_sheets_summary_text(
             active_results[choice]
@@ -792,10 +902,16 @@ def _render_tradingview_pine_compatible(
     byte_count = len(text.encode("utf-8"))
     headers = _proven._pine_router_headers(parser_text)
     missing_headers = [ticker for ticker in expected_headers if ticker not in headers]
-    pine_issues, parsed_counts = _proven._pine_master_issues(
-        parser_text,
-        parser_expected,
-    )
+    if source_key == "CBOE" and not is_compact:
+        pine_issues, parsed_counts = _cboe_pine_master_issues(
+            parser_text,
+            parser_expected,
+        )
+    else:
+        pine_issues, parsed_counts = _proven._pine_master_issues(
+            parser_text,
+            parser_expected,
+        )
     too_large = byte_count > _proven._PINE_TEXT_LIMIT
     quoted_ok = text.startswith('"') and text.endswith('"')
     transport_ok = not missing_headers and not pine_issues and not too_large and quoted_ok
@@ -849,10 +965,16 @@ def _render_tradingview_pine_compatible(
             "This validates the selected source's exact full block."
         ),
     )
-    target_issues, target_count = _proven._pine_ticker_issues(
-        parser_text,
-        verify_ticker,
-    )
+    if source_key == "CBOE" and not is_compact:
+        target_issues, target_count = _cboe_pine_ticker_issues(
+            parser_text,
+            verify_ticker,
+        )
+    else:
+        target_issues, target_count = _proven._pine_ticker_issues(
+            parser_text,
+            verify_ticker,
+        )
     if target_issues:
         st.error(
             f"{verify_ticker} // PINE TARGET FAIL // " + ", ".join(target_issues)
