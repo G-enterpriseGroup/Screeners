@@ -844,9 +844,14 @@ def _render_tradingview_pine_compatible(
 
     master_label = "MASTER A6 // COPY THIS"
     compact_label = "COMPACT PINE // OPTIONAL DIAGNOSTIC"
+    bridge_options = (
+        [master_label] + available
+        if source_key == "CBOE"
+        else [master_label, compact_label] + available
+    )
     choice = st.selectbox(
         "PACKED GAMMA BLOCK",
-        [master_label, compact_label] + available,
+        bridge_options,
         key=f"gexv3_bridge_choice_full_ticker_v6_{source_slug}",
     )
     is_master = choice == master_label
@@ -929,9 +934,10 @@ def _render_tradingview_pine_compatible(
         min_rows = min(parsed_counts.values()) if parsed_counts else 0
         max_rows = max(parsed_counts.values()) if parsed_counts else 0
         if is_master and normalized_failures:
+            failure_word = "SKIPPED" if source_key == "CBOE" else "ERROR BLOCKS"
             st.warning(
                 f"{source_display} MASTER READY // {len(available)} DATA BLOCKS // "
-                f"{len(normalized_failures)} ERROR BLOCKS // "
+                f"{len(normalized_failures)} {failure_word} // "
                 f"{min_rows}-{max_rows} DRAWABLE ROWS PER SUCCESSFUL TICKER"
             )
         elif is_master:
@@ -984,7 +990,14 @@ def _render_tradingview_pine_compatible(
             f"{verify_ticker} // PINE TARGET PASS // {target_count} DRAWABLE PACKED ROWS"
         )
 
-    if is_master:
+    if is_master and source_key == "CBOE":
+        st.markdown(
+            '**COPY FOR TRADINGVIEW // CBOE. Each ticker keeps only `Ticker`, '
+            '`Source URL`, the Pine-input label, and gamma rows. `SPOT` is omitted '
+            'because TradingView supplies the live chart price. One opening and '
+            'one closing `"` wrap the entire payload.**'
+        )
+    elif is_master:
         st.markdown(
             f'**COPY FOR TRADINGVIEW // SOURCE: {source_display}. Includes for EVERY '
             'successful ticker: `Ticker`, `Mode`, `Spot`, `Max DTE Used`, '
