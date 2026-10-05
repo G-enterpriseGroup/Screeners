@@ -173,7 +173,7 @@ def _write_master_a6_static(
     if not result_map:
         return
 
-    parser_text = _cboe_tradingview_master(
+    parser_text = _proven._google_sheets_master_text(
         result_map,
         tickers,
         failures,
@@ -209,7 +209,7 @@ def _publish_current_etrade_master_a6(
     except Exception:
         pass
 
-    parser_text = _cboe_tradingview_master(
+    parser_text = _proven._google_sheets_master_text(
         result_map,
         tickers,
         failures,
@@ -413,7 +413,7 @@ def _publish_cboe_master_a6(
     if not result_map or not tickers:
         return
 
-    parser_text = _proven._google_sheets_master_text(
+    parser_text = _cboe_tradingview_master(
         result_map,
         tickers,
         failures,
