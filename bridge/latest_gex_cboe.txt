@@ -1,17 +1,7 @@
 "Ticker: SPY
-Mode: BARCHART_STYLE
-Spot: 769.64
-Max DTE Used: 60
-Contracts Used: 3884
-Net Current GEX: -1,120,268,271.43
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:58-04:00
-CBOE GEX Input Fingerprint: CBOE1:e25e87489ff01fb8cc05da8177d5f5368bc8a8f91c7f18ab6789876478dc2e7a
-CBOE Snapshot Option Rows: 12938
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,769.64,0
 GFLIP,770.5464,0
 CALLWALL,785,1566419068.64
 PUTWALL,745,-1134293203.66
@@ -26,21 +16,10 @@ GEXNEG6,760,-702984775.79
 GEXNEG7,725,-649969892.22
 GEXNEG8,767,-641266674.89
 
-
 Ticker: QQQ
-Mode: BARCHART_STYLE
-Spot: 749.55
-Max DTE Used: 60
-Contracts Used: 3968
-Net Current GEX: 2,886,501,492.31
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/QQQ.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:298e565a369d8ee61ae54d91c8a55bf6b4b7d0e0c033afb6fa9e13e9cd444706
-CBOE Snapshot Option Rows: 11076
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,749.55,0
 GFLIP,742.2198,0
 CALLWALL,760,1198499230.51
 PUTWALL,725,-385931552.5
@@ -55,21 +34,10 @@ GEXPOS6,770,371927553.68
 GEXPOS7,754,317012623.45
 GEXNEG8,700,-292070393.59
 
-
 Ticker: TQQQ
-Mode: BARCHART_STYLE
-Spot: 81.07
-Max DTE Used: 60
-Contracts Used: 725
-Net Current GEX: 12,487,359.35
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TQQQ.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:2f61ca2409fe7d042ee4af82caba243b6e9512bbb788853f9ba494d08448054e
-CBOE Snapshot Option Rows: 1636
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,81.07,0
 GFLIP,78.0181,0
 CALLWALL,85,7911341.87
 PUTWALL,72,-1998274.15
@@ -84,21 +52,10 @@ GEXPOS6,87,1794699.71
 GEXNEG7,68,-1674365.99
 GEXNEG8,60,-1657578.25
 
-
 Ticker: XLC
-Mode: BARCHART_STYLE
-Spot: 110.32
-Max DTE Used: 60
-Contracts Used: 182
-Net Current GEX: 556,671.48
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLC.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:62ae72d85df744152aa583e9f0bc286ab760c470b21afc1936f471a5f43f9f56
-CBOE Snapshot Option Rows: 1160
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,110.32,0
 GFLIP,109.4883,0
 CALLWALL,118,481244.79
 PUTWALL,107,-422244.63
@@ -113,21 +70,10 @@ GEXNEG6,106,-256127.01
 GEXPOS7,117,245224.67
 GEXNEG8,105,-221943.72
 
-
 Ticker: XLY
-Mode: BARCHART_STYLE
-Spot: 110.04
-Max DTE Used: 60
-Contracts Used: 232
-Net Current GEX: -2,646,514.21
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLY.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:64d866bd0a42bea36980e402fc5cd5c5b1d29d8ddada17e39df4b718eb09d5a9
-CBOE Snapshot Option Rows: 1462
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,110.04,0
 GFLIP,111.8188,0
 CALLWALL,115,-312794.56
 PUTWALL,117,-1521600.49
@@ -142,21 +88,10 @@ GEXNEG6,108,-901684.33
 GEXNEG7,107,-849934.95
 GEXPOS8,119,796724.03
 
-
 Ticker: XLK
-Mode: BARCHART_STYLE
-Spot: 199.8
-Max DTE Used: 60
-Contracts Used: 491
-Net Current GEX: 20,676,786.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLK.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:73a9ed76828a256a21fb100754ca38fb9d623f4e3de854df2d9b9c1bea83e8d0
-CBOE Snapshot Option Rows: 2506
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,199.8,0
 GFLIP,192.7374,0
 CALLWALL,195,9551636.03
 PUTWALL,192,-2555473.38
@@ -171,21 +106,10 @@ GEXNEG6,192,-2555473.38
 GEXNEG7,190,-1840629.21
 GEXPOS8,197.5,1828832.84
 
-
 Ticker: XLRE
-Mode: BARCHART_STYLE
-Spot: 40.81
-Max DTE Used: 60
-Contracts Used: 46
-Net Current GEX: -348,928.54
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLRE.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:2dd6ec4cf93f95ed2512bf9cf02e8dfd6a2c64fcf8cf6580adeef22431390305
-CBOE Snapshot Option Rows: 220
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,40.81,0
 GFLIP,42.085,0
 CALLWALL,44,62161.98
 PUTWALL,42,-373959.85
@@ -200,21 +124,10 @@ GEXPOS6,43,31525.59
 GEXPOS7,47,10121.98
 GEXPOS8,46,9134.86
 
-
 Ticker: XLF
-Mode: BARCHART_STYLE
-Spot: 53.49
-Max DTE Used: 60
-Contracts Used: 539
-Net Current GEX: -258,495,790.19
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLF.json
-CBOE Snapshot Fetched: 2026-10-04T16:54:59-04:00
-CBOE GEX Input Fingerprint: CBOE1:92380d3086d0bd1da3935fca41a4070135dfccb4c5fa66bc7199b548a1894cc1
-CBOE Snapshot Option Rows: 2376
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,53.49,0
 GFLIP,57.3942,0
 CALLWALL,70,1229642.51
 PUTWALL,54.5,-66416616.29
@@ -229,21 +142,10 @@ GEXNEG6,55,-18733861.96
 GEXNEG7,50,-9042081.03
 GEXPOS8,58,8172491.15
 
-
 Ticker: XLB
-Mode: BARCHART_STYLE
-Spot: 48.86
-Max DTE Used: 60
-Contracts Used: 175
-Net Current GEX: -1,190,451.30
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLB.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:103acf63b2397a9ae6054b3021ac14465511aafbf2f0373de69addaca1e4fd29
-CBOE Snapshot Option Rows: 1046
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,48.86,0
 GFLIP,49.9314,0
 CALLWALL,51,718028.58
 PUTWALL,49,-986560.87
@@ -258,21 +160,10 @@ GEXNEG6,46.5,-191099.75
 GEXPOS7,53,154409.58
 GEXPOS8,51.5,66066.61
 
-
 Ticker: XLV
-Mode: BARCHART_STYLE
-Spot: 166.05
-Max DTE Used: 60
-Contracts Used: 353
-Net Current GEX: -37,589,669.30
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLV.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:ccc83388f152df7787bda5532b22b698eac52e572ef6bba287c65733fbbcc25e
-CBOE Snapshot Option Rows: 1680
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,166.05,0
 GFLIP,172.0005,0
 CALLWALL,170,-1062413.73
 PUTWALL,162,-14739370.31
@@ -287,21 +178,10 @@ GEXNEG6,171,-2099187.7
 GEXNEG7,162.5,-1999846.37
 GEXNEG8,166,-1648687.22
 
-
 Ticker: XLU
-Mode: BARCHART_STYLE
-Spot: 39.83
-Max DTE Used: 60
-Contracts Used: 220
-Net Current GEX: 128,141,206.14
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLU.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:e54d262a641214e63224ed6c2933ee27140714138f14f77eafabc7fd39665b6e
-CBOE Snapshot Option Rows: 1062
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,39.83,0
 GFLIP,35.8104,0
 CALLWALL,41,41578656.98
 PUTWALL,39,-3012367.83
@@ -316,21 +196,10 @@ GEXPOS6,43,5222436.69
 GEXPOS7,39.5,3763155.78
 GEXNEG8,39,-3012367.83
 
-
 Ticker: XLE
-Mode: BARCHART_STYLE
-Spot: 62.82
-Max DTE Used: 60
-Contracts Used: 465
-Net Current GEX: -49,816,742.99
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLE.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:976941e63d1a153d3506583620f979e44e87bf42a954a20f6be3b5e8a8c71b66
-CBOE Snapshot Option Rows: 1976
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,62.82,0
 GFLIP,64.3798,0
 CALLWALL,65,14669585.17
 PUTWALL,60,-35427939.84
@@ -345,21 +214,10 @@ GEXPOS6,67,6674354.53
 GEXNEG7,62,-6337962.71
 GEXNEG8,57,-5714105.96
 
-
 Ticker: XLP
-Mode: BARCHART_STYLE
-Spot: 80.525
-Max DTE Used: 60
-Contracts Used: 271
-Net Current GEX: -14,919,718.42
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLP.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:cc1822e845f84c8cd36eef4d22580e63da88241095a5cc2a344368847985b3b0
-CBOE Snapshot Option Rows: 1198
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,80.525,0
 GFLIP,81.9303,0
 CALLWALL,86,1089491.88
 PUTWALL,81,-5858559.24
@@ -374,21 +232,10 @@ GEXNEG6,82,-1312119.11
 GEXPOS7,86,1089491.88
 GEXNEG8,79,-1058373.19
 
-
 Ticker: XLI
-Mode: BARCHART_STYLE
-Spot: 169.99
-Max DTE Used: 60
-Contracts Used: 499
-Net Current GEX: -69,081,751.62
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XLI.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:5c39c120093df4c2b6df42006cfe0ded0389aaf74894820d5651d468d063876b
-CBOE Snapshot Option Rows: 2090
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,169.99,0
 GFLIP,178.217,0
 CALLWALL,195,2772258.9
 PUTWALL,170,-40815340.9
@@ -403,21 +250,10 @@ GEXNEG6,164,-5192285.59
 GEXNEG7,155,-3846019
 GEXPOS8,173,3724503.01
 
-
 Ticker: MSFT
-Mode: BARCHART_STYLE
-Spot: 517.19
-Max DTE Used: 60
-Contracts Used: 1204
-Net Current GEX: 1,059,484,204.81
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MSFT.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:4e12930a83fd9fca4a3bd8c5404fb297dcb7e21d0ed3f2e9f03d4390434aab67
-CBOE Snapshot Option Rows: 3522
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,517.19,0
 GFLIP,471.0408,0
 CALLWALL,550,149193432.52
 PUTWALL,485,-12103237.22
@@ -432,21 +268,10 @@ GEXPOS6,545,69241616.5
 GEXPOS7,535,63836002.11
 GEXPOS8,540,60328652.04
 
-
 Ticker: SGOL
-Mode: BARCHART_STYLE
-Spot: 39.46
-Max DTE Used: 60
-Contracts Used: 38
-Net Current GEX: -362,748.16
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SGOL.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:e3c1cbeedea918cb5e22429b75ea545e7b9894c5cc7dbc323476393ddcfead0a
-CBOE Snapshot Option Rows: 180
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,39.46,0
 GFLIP,42.8185,0
 CALLWALL,41,27374.76
 PUTWALL,40,-415581.21
@@ -461,21 +286,10 @@ GEXPOS6,38,3536.16
 GEXPOS7,45,3111.22
 GEXPOS8,39,1136.68
 
-
 Ticker: SPMO
-Mode: BARCHART_STYLE
-Spot: 153.23
-Max DTE Used: 60
-Contracts Used: 169
-Net Current GEX: 4,871,338.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SPMO.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:f9a9f385e1f8f13eae0d4eecff1604a50ec20661214a462ba8ac8139f5351436
-CBOE Snapshot Option Rows: 724
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,153.23,0
 GFLIP,146.0956,0
 CALLWALL,155,3594076.62
 PUTWALL,140,-364109.65
@@ -490,21 +304,10 @@ GEXNEG6,146,-158058.85
 GEXPOS7,156,149157.79
 GEXNEG8,150,-115990.75
 
-
 Ticker: KRE
-Mode: BARCHART_STYLE
-Spot: 70.78
-Max DTE Used: 60
-Contracts Used: 302
-Net Current GEX: -65,667,289.00
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/KRE.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:93e91dc0dec22ac3c57574c405c7c1c5e2b22c94e125ab494c8b36bc2f4a723e
-CBOE Snapshot Option Rows: 1608
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,70.78,0
 GFLIP,72.772,0
 CALLWALL,80,8263888.37
 PUTWALL,71,-39059013.77
@@ -519,21 +322,10 @@ GEXNEG6,68,-9337917.14
 GEXPOS7,80,8263888.37
 GEXPOS8,76,5048579.31
 
-
 Ticker: APH
-Mode: BARCHART_STYLE
-Spot: 87.372
-Max DTE Used: 60
-Contracts Used: 117
-Net Current GEX: 9,951,868.02
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APH.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:00-04:00
-CBOE GEX Input Fingerprint: CBOE1:71e4e373ab664b3586dcc25d2e810dae9070ca37a32bcad35d8abf11c0044ea7
-CBOE Snapshot Option Rows: 624
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,87.372,0
 GFLIP,80.7892,0
 CALLWALL,90,4420920.12
 PUTWALL,65,-1928642.9
@@ -548,21 +340,10 @@ GEXPOS6,80,1195824.56
 GEXNEG7,67.5,-1031032.28
 GEXPOS8,82.5,866772.85
 
-
 Ticker: SOXX
-Mode: BARCHART_STYLE
-Spot: 589.01
-Max DTE Used: 60
-Contracts Used: 955
-Net Current GEX: 47,490,265.14
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SOXX.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:ca331fe5f4087dae0c12582a6c0fe8878196cd0b0bcbc0fc1d6fc7ec7e988052
-CBOE Snapshot Option Rows: 5302
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,589.01,0
 GFLIP,567.2352,0
 CALLWALL,600,35484180.67
 PUTWALL,500,-9269592.87
@@ -577,21 +358,10 @@ GEXNEG6,510,-5565009.95
 GEXPOS7,590,4733654.93
 GEXPOS8,630,3987645.37
 
-
 Ticker: SMH
-Mode: BARCHART_STYLE
-Spot: 630.75
-Max DTE Used: 60
-Contracts Used: 1788
-Net Current GEX: 333,373,023.26
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SMH.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:f02b5fb5ce0d4a603e6f21fcf1fe18a26651ff0e6fa740bbaf7bdad2c2c58bcb
-CBOE Snapshot Option Rows: 7232
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,630.75,0
 GFLIP,598.0045,0
 CALLWALL,700,22967107.12
 PUTWALL,555,-12749080.4
@@ -606,21 +376,10 @@ GEXPOS6,645,25053409.25
 GEXPOS7,700,22967107.12
 GEXPOS8,635,19652934.23
 
-
 Ticker: LMT
-Mode: BARCHART_STYLE
-Spot: 506.98
-Max DTE Used: 60
-Contracts Used: 549
-Net Current GEX: -12,218,616.49
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LMT.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:ed33352fb2ff9212f29d53a1bff1a17b4de79390687b5c90b8f1406bcfe2a9b6
-CBOE Snapshot Option Rows: 2410
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,506.98,0
 GFLIP,521.8831,0
 CALLWALL,700,112270.15
 PUTWALL,475,-3440278.02
@@ -635,21 +394,10 @@ GEXNEG6,520,-1050476.38
 GEXNEG7,505,-950260.88
 GEXNEG8,495,-855365.88
 
-
 Ticker: MAGS
-Mode: BARCHART_STYLE
-Spot: 72.5869
-Max DTE Used: 60
-Contracts Used: 294
-Net Current GEX: 10,976,211.02
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MAGS.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:cdda0faf397a2f09b848a0a2b9399d9a701ccd81ebb14acb20fd7d4a06779a96
-CBOE Snapshot Option Rows: 926
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,72.5869,0
 GFLIP,67.7807,0
 CALLWALL,75,4273131.87
 PUTWALL,73.5,-1653559.44
@@ -664,21 +412,10 @@ GEXPOS6,78,457139.3
 GEXNEG7,69,-350461.25
 GEXPOS8,72.5,295165.64
 
-
 Ticker: ET
-Mode: BARCHART_STYLE
-Spot: 20.4603
-Max DTE Used: 60
-Contracts Used: 158
-Net Current GEX: 11,920,666.47
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/ET.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:5d202d06b5ce8f178daf2deac97fcafb98f3429dda08e2a4590d72586819b9d8
-CBOE Snapshot Option Rows: 668
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,20.4603,0
 GFLIP,19.5387,0
 CALLWALL,22,3341326.09
 PUTWALL,19,-804228.5
@@ -693,21 +430,10 @@ GEXPOS6,23,441466.42
 GEXPOS7,21.5,405112.92
 GEXNEG8,19.5,-270803.77
 
-
 Ticker: HESM
-Mode: BARCHART_STYLE
-Spot: 37.75
-Max DTE Used: 60
-Contracts Used: 49
-Net Current GEX: -1,493,559.13
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/HESM.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:def1a5ab82e10a59de4d864f12c3dac0756348f88972ead6ab390d0a8ab73357
-CBOE Snapshot Option Rows: 222
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,37.75,0
 GFLIP,40.2647,0
 CALLWALL,42,79364.01
 PUTWALL,36,-1660566.76
@@ -722,21 +448,10 @@ GEXPOS6,43,43824.66
 GEXNEG7,39,-41201.12
 GEXNEG8,37,-29537.41
 
-
 Ticker: FLNG
-Mode: BARCHART_STYLE
-Spot: 31.24
-Max DTE Used: 60
-Contracts Used: 50
-Net Current GEX: 548,248.56
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FLNG.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:5cb3783f4751b74350c01c6c6bb91a047f371acc5bb3114c16f3786a030bf989
-CBOE Snapshot Option Rows: 154
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,31.24,0
 GFLIP,25.9859,0
 CALLWALL,33,340532.83
 PUTWALL,31,-31789.61
@@ -751,21 +466,10 @@ GEXPOS6,37,29385.09
 GEXPOS7,38,22528.25
 GEXNEG8,30,-18021.08
 
-
 Ticker: WES
-Mode: BARCHART_STYLE
-Spot: 44.76
-Max DTE Used: 60
-Contracts Used: 54
-Net Current GEX: 161,229.85
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WES.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:463c9f836af666e18e723f71052d84fdff5a9480c1d2ecb45a46aa694f9339af
-CBOE Snapshot Option Rows: 262
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,44.76,0
 GFLIP,44.7345,0
 CALLWALL,50,161282.14
 PUTWALL,44,-354207.5
@@ -780,21 +484,10 @@ GEXPOS6,48,132963.67
 GEXPOS7,49,103691.35
 GEXNEG8,43,-53697.87
 
-
 Ticker: PAA
-Mode: BARCHART_STYLE
-Spot: 23.81
-Max DTE Used: 60
-Contracts Used: 127
-Net Current GEX: 4,710,411.94
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PAA.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:01-04:00
-CBOE GEX Input Fingerprint: CBOE1:75067742347ad5460f4c2f191b01ff632af00e7b779ad5727c12e19a21f2fc90
-CBOE Snapshot Option Rows: 596
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,23.81,0
 GFLIP,18.2946,0
 CALLWALL,23,2605600.99
 PUTWALL,25,-391509.76
@@ -809,21 +502,10 @@ GEXPOS6,27,174409.53
 GEXPOS7,25.5,56690.99
 GEXPOS8,24.5,31195.35
 
-
 Ticker: TSM
-Mode: BARCHART_STYLE
-Spot: 473.06
-Max DTE Used: 60
-Contracts Used: 737
-Net Current GEX: 193,490,037.74
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/TSM.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:95a65f90b1d7c119546d4b98a114814b8391c908b9b59e5b755a0b154656ea76
-CBOE Snapshot Option Rows: 2370
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,473.06,0
 GFLIP,434.9108,0
 CALLWALL,460,37310166.73
 PUTWALL,420,-9690348.76
@@ -838,21 +520,10 @@ GEXPOS6,475,11980012.8
 GEXPOS7,520,11718742.92
 GEXNEG8,420,-9690348.76
 
-
 Ticker: CRAK
-Mode: BARCHART_STYLE
-Spot: 64.24
-Max DTE Used: 60
-Contracts Used: 50
-Net Current GEX: -589,142.07
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CRAK.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:078f0559c98bab5047458db5d258eea87a9ab8b9d963619d6738193d6b0df289
-CBOE Snapshot Option Rows: 294
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,64.24,0
 GFLIP,67.6583,0
 CALLWALL,63,99523.43
 PUTWALL,60,-487165.68
@@ -867,21 +538,10 @@ GEXPOS6,65,49249.79
 GEXPOS7,70,29531.63
 GEXNEG8,59,-28932.43
 
-
 Ticker: SHEL
-Mode: BARCHART_STYLE
-Spot: 96.23
-Max DTE Used: 60
-Contracts Used: 221
-Net Current GEX: 14,462,776.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SHEL.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:d8b4b120a45769616001ded5c5b16d4437b962edd04675482a74679241a75568
-CBOE Snapshot Option Rows: 988
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,96.23,0
 GFLIP,73.2756,0
 CALLWALL,95,5221620.14
 PUTWALL,89,-219142.01
@@ -896,21 +556,10 @@ GEXPOS6,101,248588.56
 GEXNEG7,89,-219142.01
 GEXPOS8,97,218996.63
 
-
 Ticker: APA
-Mode: BARCHART_STYLE
-Spot: 43.7
-Max DTE Used: 60
-Contracts Used: 243
-Net Current GEX: 2,259,322.16
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/APA.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:a6ce755d23e1d8274b89fa14ded65eea0d5f10fdf1594933eccda11e81aa93bd
-CBOE Snapshot Option Rows: 664
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,43.7,0
 GFLIP,37.2373,0
 CALLWALL,45,1218693.31
 PUTWALL,44,-64694.19
@@ -925,21 +574,10 @@ GEXPOS6,55,78779.3
 GEXNEG7,44,-64694.19
 GEXPOS8,49,49359.18
 
-
 Ticker: BP
-Mode: BARCHART_STYLE
-Spot: 44.79
-Max DTE Used: 60
-Contracts Used: 219
-Net Current GEX: 7,353,807.88
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/BP.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:231267e53d453daffd3862879144a483a31f3958fb396eb58319bd51a8cff790
-CBOE Snapshot Option Rows: 796
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,44.79,0
 GFLIP,37.9402,0
 CALLWALL,45,944815.63
 PUTWALL,42,-253610.92
@@ -954,21 +592,10 @@ GEXPOS6,50,452822.43
 GEXPOS7,49,285778.24
 GEXNEG8,42,-253610.92
 
-
 Ticker: XOM
-Mode: BARCHART_STYLE
-Spot: 164.29
-Max DTE Used: 60
-Contracts Used: 323
-Net Current GEX: 54,406,425.61
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/XOM.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:06c500e399dff5b6525cdecf2b9598f370449d0feaa5b27a314da0210b9cc127
-CBOE Snapshot Option Rows: 1186
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,164.29,0
 GFLIP,155.1819,0
 CALLWALL,170,28292792.84
 PUTWALL,150,-5464801.13
@@ -983,21 +610,10 @@ GEXPOS6,167.5,2619647.51
 GEXPOS7,155,2438088.48
 GEXNEG8,157.5,-2065531.58
 
-
 Ticker: FANG
-Mode: BARCHART_STYLE
-Spot: 184.71
-Max DTE Used: 60
-Contracts Used: 56
-Net Current GEX: 1,316,074.27
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/FANG.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:9e07dce64afe65c2b6fe2713d1dc7d16a0e54bfa99ecf301eae9a1c353b8edc5
-CBOE Snapshot Option Rows: 732
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,184.71,0
 GFLIP,179.4216,0
 CALLWALL,210,497822.82
 PUTWALL,180,-814500.68
@@ -1012,21 +628,10 @@ GEXPOS6,200,237255.07
 GEXPOS7,190,226497.73
 GEXPOS8,220,106669.25
 
-
 Ticker: MPLX
-Mode: BARCHART_STYLE
-Spot: 56.62
-Max DTE Used: 60
-Contracts Used: 23
-Net Current GEX: -784,303.66
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPLX.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:23aa4fdd5b99cca7330d7bdf1bebed6a73686a36eefcff60e2f88c963a1367ea
-CBOE Snapshot Option Rows: 178
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,56.62,0
 GFLIP,58.2817,0
 CALLWALL,65,162899.48
 PUTWALL,55,-1002918.44
@@ -1041,21 +646,10 @@ GEXPOS6,40,234.67
 GEXNEG7,45,-229.22
 GEXPOS8,30,75.02
 
-
 Ticker: COP
-Mode: BARCHART_STYLE
-Spot: 126.75
-Max DTE Used: 60
-Contracts Used: 337
-Net Current GEX: 11,865,043.00
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/COP.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:f6bd83212d926bb43dde9517d1a26abe92a7c551856a3754e3bdeb31c4127722
-CBOE Snapshot Option Rows: 1404
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,126.75,0
 GFLIP,114.2127,0
 CALLWALL,150,2264897.3
 PUTWALL,124,-337288.45
@@ -1070,21 +664,10 @@ GEXPOS6,129,844908.82
 GEXPOS7,145,469598
 GEXPOS8,131,432554.02
 
-
 Ticker: MPC
-Mode: BARCHART_STYLE
-Spot: 422.33
-Max DTE Used: 60
-Contracts Used: 159
-Net Current GEX: 1,282,697.26
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MPC.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:5b2e87c2a04e59765c82c1c92211b407b157d7c13931837cae999ef3138bc417
-CBOE Snapshot Option Rows: 1138
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,422.33,0
 GFLIP,414.9957,0
 CALLWALL,440,1467460.69
 PUTWALL,390,-998224.29
@@ -1099,21 +682,10 @@ GEXNEG6,360,-663562.49
 GEXNEG7,340,-485734.95
 GEXNEG8,370,-457749.85
 
-
 Ticker: PR
-Mode: BARCHART_STYLE
-Spot: 22.184
-Max DTE Used: 60
-Contracts Used: 53
-Net Current GEX: 2,184,809.23
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/PR.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:5d60c8f525c6ffb3046a7ee57084f7b000b85d5f6bff6622a72fe4174e9ba224
-CBOE Snapshot Option Rows: 334
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,22.184,0
 GFLIP,18.905,0
 CALLWALL,25,1373976.07
 PUTWALL,21,-41797.67
@@ -1128,21 +700,10 @@ GEXPOS6,26,37957.98
 GEXPOS7,20,13823.83
 GEXNEG8,19,-6455.07
 
-
 Ticker: LNG
-Mode: BARCHART_STYLE
-Spot: 269.366
-Max DTE Used: 60
-Contracts Used: 243
-Net Current GEX: 9,577,961.59
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/LNG.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:bcf2f9910f30606c37e02dad290b28024bf44f3f93c5dca104709f225a5cde3c
-CBOE Snapshot Option Rows: 1164
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,269.366,0
 GFLIP,257.8165,0
 CALLWALL,290,3388460.56
 PUTWALL,260,-1754482.48
@@ -1157,21 +718,10 @@ GEXPOS6,285,898196
 GEXPOS7,275,832523.72
 GEXPOS8,310,703501.01
 
-
 Ticker: NVDA
-Mode: BARCHART_STYLE
-Spot: 234.22
-Max DTE Used: 60
-Contracts Used: 1008
-Net Current GEX: 1,093,009,679.61
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/NVDA.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:972a43de84a7e4fc2cd69f288e9f8476ec2fd933cee81219ce5418ad2197d9da
-CBOE Snapshot Option Rows: 3748
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,234.22,0
 GFLIP,215.6631,0
 CALLWALL,245,163586035.61
 PUTWALL,200,-18750852.96
@@ -1186,21 +736,10 @@ GEXPOS6,260,46821302.38
 GEXPOS7,237.5,41269702.39
 GEXPOS8,242.5,39490465.66
 
-
 Ticker: AMD
-Mode: BARCHART_STYLE
-Spot: 633.25
-Max DTE Used: 60
-Contracts Used: 2095
-Net Current GEX: 252,554,184.64
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/AMD.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:02-04:00
-CBOE GEX Input Fingerprint: CBOE1:183a7b5b7a4663dac4cf3ff68b50de6ec43cd15d21fb88a33bbfc6faf2e6d0a7
-CBOE Snapshot Option Rows: 5978
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,633.25,0
 GFLIP,592.8715,0
 CALLWALL,700,24089085.85
 PUTWALL,560,-8183601.22
@@ -1215,21 +754,10 @@ GEXPOS6,627.5,13426588.55
 GEXPOS7,680,12705059.24
 GEXPOS8,645,11530313.44
 
-
 Ticker: MU
-Mode: BARCHART_STYLE
-Spot: 1069.1801
-Max DTE Used: 60
-Contracts Used: 3314
-Net Current GEX: 381,013,328.55
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/MU.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
-CBOE GEX Input Fingerprint: CBOE1:d1d2597dd88b0480b3479e435595f30ac8fb00a825e0e4d45dd6019bee9e7d52
-CBOE Snapshot Option Rows: 10714
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,1069.1801,0
 GFLIP,1023.2068,0
 CALLWALL,1300,30624312.08
 PUTWALL,980,-6667742.49
@@ -1244,21 +772,10 @@ GEXPOS6,1050,18901348.96
 GEXPOS7,1090,17351928.76
 GEXPOS8,1120,15505747.83
 
-
 Ticker: SNDK
-Mode: BARCHART_STYLE
-Spot: 1717.66
-Max DTE Used: 60
-Contracts Used: 2495
-Net Current GEX: -13,600,914.46
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SNDK.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
-CBOE GEX Input Fingerprint: CBOE1:7829bcd2f5e2b2e9454a775194a0043e609347e883acaf2ff7ca9e0fb4d30922
-CBOE Snapshot Option Rows: 10572
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,1717.66,0
 GFLIP,1734.0436,0
 CALLWALL,2000,10132407.18
 PUTWALL,1500,-6868723.51
@@ -1273,21 +790,10 @@ GEXNEG6,1650,-5213278.83
 GEXNEG7,1400,-4591343.81
 GEXPOS8,1840,4022810.24
 
-
 Ticker: WDC
-Mode: BARCHART_STYLE
-Spot: 415.35
-Max DTE Used: 60
-Contracts Used: 944
-Net Current GEX: -22,157,753.12
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WDC.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
-CBOE GEX Input Fingerprint: CBOE1:9998f4bc7711eea31a51825f1b7b180d8d85a99c3548ce754b77712f41be2e2a
-CBOE Snapshot Option Rows: 3322
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,415.35,0
 GFLIP,464.4238,0
 CALLWALL,500,1020412.66
 PUTWALL,400,-3180963.81
@@ -1302,21 +808,10 @@ GEXNEG6,360,-1312619.62
 GEXNEG7,350,-1257086.84
 GEXNEG8,370,-1064680.16
 
-
 Ticker: WEAT
-Mode: BARCHART_STYLE
-Spot: 24.75
-Max DTE Used: 60
-Contracts Used: 52
-Net Current GEX: 2,016,920.09
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/WEAT.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
-CBOE GEX Input Fingerprint: CBOE1:027701fe8da663bedf9deba4e75eaeaee3f3f56f2603923e34f73de27997e1a7
-CBOE Snapshot Option Rows: 388
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,24.75,0
 GFLIP,13.6756,0
 CALLWALL,30,46437.02
 PUTWALL,21,-310.94
@@ -1331,21 +826,10 @@ GEXPOS6,23,48503.56
 GEXPOS7,30,46437.02
 GEXPOS8,22,17132.76
 
-
 Ticker: GS
-Mode: BARCHART_STYLE
-Spot: 903.98
-Max DTE Used: 60
-Contracts Used: 1216
-Net Current GEX: -60,139,071.19
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GS.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
-CBOE GEX Input Fingerprint: CBOE1:6f1a43406b2faab503db38827ed3a16dcb2988c21135fd45140907937ada296a
-CBOE Snapshot Option Rows: 6618
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,903.98,0
 GFLIP,938.8926,0
 CALLWALL,1000,4923753.69
 PUTWALL,890,-8960948.98
@@ -1360,21 +844,10 @@ GEXPOS6,1000,4923753.69
 GEXNEG7,875,-4848818.3
 GEXNEG8,885,-4813107.54
 
-
 Ticker: DRAM
-Mode: BARCHART_STYLE
-Spot: 61.5548
-Max DTE Used: 60
-Contracts Used: 687
-Net Current GEX: 28,054,759.37
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/DRAM.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
-CBOE GEX Input Fingerprint: CBOE1:45826863b927ae895084c20a684866f5f7fce555a31c944b685b6309abad0ebf
-CBOE Snapshot Option Rows: 2344
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,61.5548,0
 GFLIP,58.9441,0
 CALLWALL,122,169286.54
 PUTWALL,55,-6083667.3
@@ -1389,21 +862,10 @@ GEXPOS6,64,3591834.65
 GEXPOS7,62,3423080.08
 GEXPOS8,75,2472396.63
 
-
 Ticker: IWM
-Mode: BARCHART_STYLE
-Spot: 281.52
-Max DTE Used: 60
-Contracts Used: 1631
-Net Current GEX: -2,584,831,727.41
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/IWM.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
-CBOE GEX Input Fingerprint: CBOE1:4e03d516e6c25903ab9155168784ae3cc448c491a96c62c34771eea7dc4c1e04
-CBOE Snapshot Option Rows: 5590
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,281.52,0
 GFLIP,289.7131,0
 CALLWALL,290,47352474.57
 PUTWALL,275,-441043304.74
@@ -1418,21 +880,10 @@ GEXNEG6,270,-246069247.32
 GEXNEG7,278,-183366081.06
 GEXNEG8,271,-153810632.13
 
-
 Ticker: GLD
-Mode: BARCHART_STYLE
-Spot: 380.14
-Max DTE Used: 60
-Contracts Used: 2170
-Net Current GEX: -343,926,716.78
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/GLD.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:03-04:00
-CBOE GEX Input Fingerprint: CBOE1:666da2337de06f41f0f63b63feaf0fc59389d237a957694b2637298266780715
-CBOE Snapshot Option Rows: 7870
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,380.14,0
 GFLIP,387.1845,0
 CALLWALL,460,34912276
 PUTWALL,345,-64717922.55
@@ -1447,21 +898,10 @@ GEXNEG6,370,-35871652.22
 GEXNEG7,365,-35482207.42
 GEXPOS8,460,34912276
 
-
 Ticker: SCHW
-Mode: BARCHART_STYLE
-Spot: 96.88
-Max DTE Used: 60
-Contracts Used: 330
-Net Current GEX: -8,297,266.28
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SCHW.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
-CBOE GEX Input Fingerprint: CBOE1:84d9367d9fee290851d16cb06c0d4519742c19bbc4e9a4a5c32fd3d369300970
-CBOE Snapshot Option Rows: 1146
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,96.88,0
 GFLIP,101.0468,0
 CALLWALL,115,753030.61
 PUTWALL,95,-2972315.67
@@ -1476,21 +916,10 @@ GEXNEG6,97.5,-858959.89
 GEXNEG7,90,-806618.46
 GEXPOS8,115,753030.61
 
-
 Ticker: CVX
-Mode: BARCHART_STYLE
-Spot: 207.0
-Max DTE Used: 60
-Contracts Used: 269
-Net Current GEX: 53,559,110.26
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/CVX.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
-CBOE GEX Input Fingerprint: CBOE1:101ea77543c502583b2b32355cd3eb1376d6bd8f406c3c28ca0b4ef1fff9c569
-CBOE Snapshot Option Rows: 1178
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,207,0
 GFLIP,197.0029,0
 CALLWALL,220,17774725.02
 PUTWALL,200,-5012026.11
@@ -1505,21 +934,10 @@ GEXNEG6,195,-4289917.62
 GEXPOS7,240,3710342.04
 GEXNEG8,190,-2596006.66
 
-
 Ticker: SUN
-Mode: BARCHART_STYLE
-Spot: 74.73
-Max DTE Used: 60
-Contracts Used: 23
-Net Current GEX: 291,787.23
 Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SUN.json
-CBOE Snapshot Fetched: 2026-10-04T16:55:04-04:00
-CBOE GEX Input Fingerprint: CBOE1:41f534f9f59d93e5be4e4a84970d5c59f1e7786f1eb707eea7aad48595d7040b
-CBOE Snapshot Option Rows: 168
 
 PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels
-------------------------------------------------------------
-SPOT,74.73,0
 GFLIP,70.0913,0
 CALLWALL,80,124472.87
 PUTWALL,72.5,-29353.63
