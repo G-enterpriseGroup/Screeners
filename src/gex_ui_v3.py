@@ -319,10 +319,19 @@ def _publish_cboe_master_a6(
     if not result_map or not tickers:
         return
 
-    parser_text = _proven._google_sheets_master_text(
+    normalized_failures = {
+        _core._normalize_ticker(key)
+        for key in failures
+        if _core._normalize_ticker(key)
+    }
+    pine_tickers = [
+        ticker
+        for ticker in tickers
+        if ticker in result_map and ticker not in normalized_failures
+    ]
+    parser_text = _proven._pine_master_bridge_text(
         result_map,
-        tickers,
-        failures,
+        pine_tickers,
     ).strip()
     if not parser_text:
         return
@@ -748,17 +757,31 @@ def _render_tradingview_pine_compatible(
             )
         return
 
-    master_label = "MASTER A6 // FULL TICKER BLOCKS — COPY THIS"
-    compact_label = "COMPACT PINE // OPTIONAL DIAGNOSTIC"
+    if source_key == "CBOE":
+        master_label = "MASTER A6 // PINE TICKER GAMMA — COPY THIS"
+        secondary_label = "FULL TICKER BLOCKS // OPTIONAL AUDIT"
+    else:
+        master_label = "MASTER A6 // FULL TICKER BLOCKS — COPY THIS"
+        secondary_label = "COMPACT PINE // OPTIONAL DIAGNOSTIC"
+
     choice = st.selectbox(
         "PACKED GAMMA BLOCK",
-        [master_label, compact_label] + available,
+        [master_label, secondary_label] + available,
         key=f"gexv3_bridge_choice_full_ticker_v6_{source_slug}",
     )
     is_master = choice == master_label
-    is_compact = choice == compact_label
+    is_secondary = choice == secondary_label
 
-    if is_master:
+    if is_master and source_key == "CBOE":
+        parser_text = _proven._pine_master_bridge_text(
+            active_results,
+            available,
+        ).strip()
+        filename = "raj_terminal_MASTER_A6_CBOE_PINE.txt"
+        expected_headers = available
+        parser_expected = available
+        mode_text = "CBOE // PINE ROUTER-SAFE // Ticker: + packed gamma rows only"
+    elif is_master:
         parser_text = _proven._google_sheets_master_text(
             active_results,
             saved,
@@ -768,7 +791,17 @@ def _render_tradingview_pine_compatible(
         expected_headers = saved
         parser_expected = available
         mode_text = f"{source_display} // FULL TICKER METADATA + PACKED GAMMA LEVELS"
-    elif is_compact:
+    elif is_secondary and source_key == "CBOE":
+        parser_text = _proven._google_sheets_master_text(
+            active_results,
+            saved,
+            normalized_failures,
+        ).strip()
+        filename = "raj_terminal_MASTER_A6_CBOE_FULL_AUDIT.txt"
+        expected_headers = saved
+        parser_expected = available
+        mode_text = "CBOE // FULL TICKER METADATA // OPTIONAL AUDIT"
+    elif is_secondary:
         parser_text = _proven._pine_master_bridge_text(
             active_results,
             available,
@@ -777,6 +810,14 @@ def _render_tradingview_pine_compatible(
         expected_headers = available
         parser_expected = available
         mode_text = f"{source_display} // COMPACT TICKER + PACKED ROWS // OPTIONAL"
+    elif source_key == "CBOE":
+        parser_text = _proven._pine_router_block(
+            active_results[choice]
+        ).strip()
+        filename = f"{choice}_gex_cboe_tradingview_pine.txt"
+        expected_headers = [choice]
+        parser_expected = [choice]
+        mode_text = f"CBOE // {choice} // PINE ROUTER-SAFE TICKER GAMMA"
     else:
         parser_text = _proven._base._google_sheets_summary_text(
             active_results[choice]
@@ -862,7 +903,13 @@ def _render_tradingview_pine_compatible(
             f"{verify_ticker} // PINE TARGET PASS // {target_count} DRAWABLE PACKED ROWS"
         )
 
-    if is_master:
+    if is_master and source_key == "CBOE":
+        st.markdown(
+            '**COPY FOR TRADINGVIEW // CBOE PINE FORMAT. Every ticker is only '
+            '`Ticker:` + the packed gamma rows TradingView reads. One opening and '
+            'one closing `"` are already included around the entire payload.**'
+        )
+    elif is_master:
         st.markdown(
             f'**COPY FOR TRADINGVIEW // SOURCE: {source_display}. Includes for EVERY '
             'successful ticker: `Ticker`, `Mode`, `Spot`, `Max DTE Used`, '
@@ -870,9 +917,14 @@ def _render_tradingview_pine_compatible(
             'levels. One opening and one closing `"` are already included around '
             'the entire payload.**'
         )
-    elif is_compact:
+    elif is_secondary:
         st.markdown(
-            f'**{source_display} OPTIONAL DIAGNOSTIC ONLY // outer `"` characters are included.**'
+            f'**{source_display} OPTIONAL FORMAT // outer `"` characters are included.**'
+        )
+    elif source_key == "CBOE":
+        st.markdown(
+            f'**CBOE // {choice} // PINE FORMAT // `Ticker:` + packed gamma rows only. '
+            'Outer `"` characters are included.**'
         )
     else:
         st.markdown(
