@@ -864,9 +864,9 @@ def _render_tradingview_pine_compatible(
                 f"{source_display} MASTER CHECK PASS // {len(available)}/{len(saved)} TICKERS // "
                 f"{min_rows}-{max_rows} DRAWABLE PACKED ROWS EACH"
             )
-        elif is_compact:
+        elif is_secondary:
             st.success(
-                f"{source_display} COMPACT DIAGNOSTIC CHECK PASS // {len(available)} TICKERS"
+                f"{source_display} OPTIONAL FORMAT CHECK PASS // {len(available)} TICKERS"
             )
         else:
             st.success(
