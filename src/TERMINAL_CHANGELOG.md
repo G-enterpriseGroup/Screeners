@@ -1987,3 +1987,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS — PR run `37236800456`.
 - **Commit SHAs:** production safeguard `817d7ae186d251f9e7b301835ebbc31d0224fdc0`; focused regression coverage `74359d4dea4a27bf3647a1a7e666cbfb9197a16b`.
 - **Lesson:** Any bridge publisher that serializes an in-memory result map must account for process restarts. Do not republish a persistent multi-ticker file from a partial fresh-process cache unless the missing prior universe has first been rebuilt.
+
+
+## 2026-10-04 — Restore compact CBOE TradingView gamma text and use chart spot
+
+- **Feature changed:** GEX CBOE TradingView / raw TXT serialization only.
+- **Exact production file changed:** `src/gex_ui_v3.py`; focused regression coverage updated in `scripts/test_gex_cboe.py`.
+- **What was broken:** The CBOE raw TXT / TradingView payload had grown into a verbose audit block with per-ticker metadata and a packed `SPOT` row. Raj's TradingView workflow uses the chart's live market price, so that extra spot value and the surrounding metadata were unnecessary and made the gamma input harder to parse/use.
+- **What changed:** CBOE now serializes each successful ticker as only `Ticker:`, `Source URL:`, the existing `PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels` label, and the gamma rows beginning with `GFLIP`, `CALLWALL`, `PUTWALL`, `MAXCALLOI`, `MAXPUTOI`, and ranked `GEXPOS/GEXNEG` rows. Removed `Mode`, the human-readable `Spot`, `Max DTE Used`, `Contracts Used`, `Net Current GEX`, CBOE snapshot timestamp/fingerprint/option-row metadata, the dashed separator, and the packed `SPOT,...` row. The complete multi-ticker payload still keeps exactly one outer opening and closing double quote.
+- **TradingView validation:** Added a CBOE-specific Pine validator that does not require a `SPOT` row, because the live TradingView chart price is now the spot source. The CBOE MASTER and single-ticker views use the same compact contract, and the old CBOE compact option that could reintroduce `SPOT` is no longer shown.
+- **Important behavior that must remain:** Keep `Ticker:` boundaries exact; keep `Source URL:`; keep the Pine-input label and gamma rows; do not reintroduce the CBOE `SPOT` row unless Raj explicitly asks. CBOE refreshes must continue publishing only `bridge/latest_gex_cboe.txt`. E*TRADE MASTER A6/raw TXT serialization must remain unchanged.
+- **Files/features intentionally NOT changed:** `src/gex_cboe.py` calculations, `src/gex_ui_v3_base.py`, `src/gex_github_bridge.py` transport, E*TRADE GEX serialization/calculations, `src/gex_workspace_v2.py`, OAuth/session code, Risk Sizing, Holdings, Performance, Rebalance, Vertical Options, navigation, shared theme, `streamlit_app.py`, and `src/terminal_core.py`.
+- **Tests performed:** Focused temporary validation run `37259172676` passed `python -m py_compile src/gex_ui_v3.py scripts/test_gex_cboe.py`, `python scripts/test_gex_cboe.py`, `python scripts/validate_architecture.py`, and `python scripts/test_tab_layout.py`. Standard Terminal Architecture Guard run `37259114758` also passed on the isolated implementation head.
+- **Architecture guard result:** PASS.
+- **Implementation head:** `5e2766994ed82f120b67aab02b643ba67ac730e1`.
+- **Lesson:** The CBOE bridge is a TradingView transport, not an audit report. Keep only the fields Raj's workflow actually uses, and let TradingView's chart supply live spot instead of shipping a second spot value in the text payload.

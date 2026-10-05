@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import gex_cboe
 from src import gex_ui as core
+from src import gex_ui_v3 as ui
 from src import gex_ui_v3_base as base
 
 
@@ -269,6 +270,52 @@ class CboeGexTests(unittest.TestCase):
         self.assertNotEqual(component["callWall"]["value"], net["callWall"]["value"])
         self.assertNotEqual(component["putWall"]["value"], net["putWall"]["value"])
 
+    def test_cboe_tradingview_format_uses_chart_spot_and_removes_garbage(self):
+        result = {
+            "symbol": "SUN",
+            "mode": "BARCHART_STYLE",
+            "spot": 74.73,
+            "maxDte": 60,
+            "contractsUsed": 23,
+            "netCurrent": 291787.23,
+            "sourceUrl": "https://cdn.cboe.com/api/global/delayed_quotes/options/SUN.json",
+            "snapshotFetchedAt": "2026-10-04T16:55:04-04:00",
+            "snapshotFingerprint": "abc123",
+            "snapshotFingerprintVersion": "CBOE1",
+            "snapshotOptionCount": 168,
+            "gammaFlip": 70.0913,
+            "callWall": {"strike": 80, "value": 124472.87},
+            "putWall": {"strike": 72.5, "value": -29353.63},
+            "maxCallOi": {"strike": 80, "call_oi": 468},
+            "maxPutOi": {"strike": 72.5, "put_oi": 106},
+            "topGex": [
+                {"strike": 77.5, "net_gex": 154798.78},
+                {"strike": 80, "net_gex": 124472.87},
+                {"strike": 72.5, "net_gex": -29353.63},
+            ],
+        }
+        block = ui._cboe_tradingview_block(result)
+        self.assertIn("Ticker: SUN", block)
+        self.assertIn("Source URL: https://cdn.cboe.com/api/global/delayed_quotes/options/SUN.json", block)
+        self.assertIn("PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels", block)
+        self.assertIn("GFLIP,70.0913,0", block)
+        self.assertIn("CALLWALL,80,124472.87", block)
+        self.assertIn("PUTWALL,72.5,-29353.63", block)
+        self.assertNotIn("\nMode:", block)
+        self.assertNotIn("\nSpot:", block)
+        self.assertNotIn("\nMax DTE Used:", block)
+        self.assertNotIn("\nContracts Used:", block)
+        self.assertNotIn("\nNet Current GEX:", block)
+        self.assertNotIn("\nCBOE Snapshot Fetched:", block)
+        self.assertNotIn("\nCBOE GEX Input Fingerprint:", block)
+        self.assertNotIn("\nCBOE Snapshot Option Rows:", block)
+        self.assertNotIn("\n------------------------------------------------------------", block)
+        self.assertNotIn("\nSPOT,", block)
+
+        issues, count = ui._cboe_pine_ticker_issues(block, "SUN")
+        self.assertEqual(issues, [])
+        self.assertGreaterEqual(count, 7)
+
     def test_master_source_defaults_to_cboe_and_round_trips(self):
         state = copy.deepcopy(core.DEFAULT_STATE)
         self.assertEqual(core._clean_state(state)["master_a6_source"], "CBOE")
@@ -289,6 +336,10 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn('CBOE_PATH = "bridge/latest_gex_cboe.txt"', bridge)
         self.assertIn('"MASTER A6 SOURCE"', ui)
         self.assertIn("publish_latest_gex_cboe", ui)
+        self.assertIn("def _cboe_tradingview_block", ui)
+        self.assertIn("def _cboe_tradingview_master", ui)
+        self.assertIn("if not row.startswith(\"SPOT,\")", ui)
+        self.assertIn("parser_text = _cboe_tradingview_master(", ui)
         self.assertIn("def _cache_busted_txt_url", ui)
         self.assertIn("_cache_busted_txt_url(_CBOE_BRIDGE_URL)", ui)
         self.assertIn("_cache_busted_txt_url(_ETRADE_BRIDGE_URL)", ui)
