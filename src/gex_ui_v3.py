@@ -209,7 +209,7 @@ def _publish_current_etrade_master_a6(
     except Exception:
         pass
 
-    parser_text = _proven._google_sheets_master_text(
+    parser_text = _cboe_tradingview_master(
         result_map,
         tickers,
         failures,
