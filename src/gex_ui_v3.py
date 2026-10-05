@@ -842,7 +842,11 @@ def _render_tradingview_pine_compatible(
             )
         return
 
-    master_label = "MASTER A6 // COPY THIS"
+    master_label = (
+        "MASTER A6 // COPY THIS"
+        if source_key == "CBOE"
+        else "MASTER A6 // FULL TICKER BLOCKS — COPY THIS"
+    )
     compact_label = "COMPACT PINE // OPTIONAL DIAGNOSTIC"
     bridge_options = (
         [master_label] + available
