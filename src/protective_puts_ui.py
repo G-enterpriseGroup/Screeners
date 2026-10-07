@@ -86,6 +86,9 @@ _PROTECTIVE_PUTS_CSS = """
 .pp-note{min-height:20px;margin:0 0 4px 0;color:var(--pp-orange)!important;
     -webkit-text-fill-color:var(--pp-orange)!important;font:800 .62rem/1.2 "Courier New",monospace;}
 .pp-note .muted{color:var(--pp-muted)!important;-webkit-text-fill-color:var(--pp-muted)!important;}
+.pp-inline-note{display:flex;align-items:center;height:38px;box-sizing:border-box;margin-top:20px;
+    color:var(--pp-orange)!important;-webkit-text-fill-color:var(--pp-orange)!important;
+    font:800 .62rem/1.2 "Courier New",monospace;white-space:normal;overflow:hidden;}
 .pp-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 4px 0;}
 .pp-card{min-width:0;height:52px;box-sizing:border-box;padding:6px 8px;border:1px solid var(--pp-orange);
     background:#000;overflow:hidden;}
@@ -307,7 +310,8 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 "yfinance first, then Yahoo Finance HTML scraping if yfinance fails."
             )
 
-        top = st.columns([1.0, 2.0, .9, 1.0, .9, 1.15], gap="small")
+        top_ratios = [0.95, 1.85, 0.80, 0.90, 0.80, 1.15]
+        top = st.columns(top_ratios, gap="small")
         with top[0]:
             if "pp_symbol" not in st.session_state:
                 st.session_state["pp_symbol"] = "SPY"
@@ -343,7 +347,13 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             st.html(_company_markup(resolved_name))
         with top[2]:
             st.text_input("Last", value=_money(last), disabled=True, key="pp_last_display")
-        st.caption(f"QUOTE SOURCE // {quote_source}")
+
+        source_row = st.columns(top_ratios, gap="small")
+        with source_row[2]:
+            st.markdown(
+                f'<div class="pp-note">QUOTE SOURCE // {html.escape(quote_source)}</div>',
+                unsafe_allow_html=True,
+            )
 
         if st.session_state.get("_pp_price_seed_symbol") != symbol:
             st.session_state["pp_purchase_price"] = round(last, 2)
@@ -389,7 +399,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
         if scope == "ONE EXPIRATION":
             if st.session_state.get("pp_expiry") not in expirations:
                 st.session_state["pp_expiry"] = _default_expiry(expirations)
-            expiry_row = st.columns([1.15, 1.0, 3.85], gap="small")
+            expiry_row = st.columns([0.95, 0.72, 4.78], gap="small")
             chosen_expiry = expiry_row[0].selectbox(
                 "Expiration", expirations, key="pp_expiry",
                 format_func=lambda value: value.strftime("%m-%d-%y"),
@@ -398,9 +408,13 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 "DTE", value=str(max(0, (chosen_expiry - _market_today()).days)),
                 disabled=True, key="pp_dte_display",
             )
-            expiry_row[2].caption(
-                "ONE EXPIRATION is faster. ALL EXPIRATIONS reproduces the legacy married-put scan "
-                f"across every listed expiry. EXPIRATION SOURCE // {expiration_source}"
+            expiry_note = (
+                "ONE EXPIRATION IS FASTER // ALL EXPIRATIONS SCANS EVERY LISTED EXPIRY // "
+                f"EXPIRATION SOURCE // {expiration_source}"
+            )
+            expiry_row[2].markdown(
+                f'<div class="pp-inline-note">{html.escape(expiry_note)}</div>',
+                unsafe_allow_html=True,
             )
         else:
             st.caption(
