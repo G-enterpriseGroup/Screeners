@@ -2045,3 +2045,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** fallback feature `e3013f4eeda1af710f6e232c3e7123af26a38c01`; CI coverage `24c925b8e5d641ec4632646e40956d262c320fad`; test-path correction `6a7abf88a6b23bf242b59c742fa23a316d1efed8`.
 - **Lesson:** Protective Puts may degrade gracefully to public options data, but public-source parsing must remain isolated from broker plumbing and the UI must identify the active source.
+
+## 2026-10-07 — Protective Puts control-row alignment cleanup
+
+- **Feature changed:** Protective Puts compact control layout.
+- **Exact production file(s) changed:** `src/protective_puts_ui.py`.
+- **What was broken:** The primary input row and the expiration/DTE row did not read as one clean grid on wide screens. Quote-source text was left-floating under the entire row, and the expiration guidance sat too far away from the controls.
+- **Root cause:** Protective Puts used mismatched column ratios between the first and second rows, plus unanchored captions outside the control grid.
+- **What changed:** Tightened and rebalanced the six primary control columns, aligned Quote Source directly beneath the Last field using the same column ratios, made Expiration match the Ticker column width, kept DTE compact, and vertically aligned the expiration-source guidance with the Expiration/DTE controls.
+- **Important behavior that must remain:** E*TRADE -> yfinance -> Yahoo HTML source priority, all Protective Puts calculations, 100-share coverage rule, read-only behavior, existing button behavior, and local Bloomberg-style theme remain unchanged.
+- **Files/features intentionally NOT changed:** Risk Sizing, OAuth/session plumbing, E*TRADE client, Protective Puts math/data-source logic, Vertical Options, GEX, Holdings, Performance, Rebalance, navigation, shared theme, requirements, and `src/terminal_core.py`.
+- **Tests performed:** Terminal Architecture Guard run `37637756273` passed architecture validation, all top-level tab smoke tests, Risk/Vertical/Performance regressions, Protective Puts fallback tests, workflow validation, Streamlit production health, and deployed-browser no-`Oh no` verification.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `38429560102c05a8f1d5e50434e6b9a5995a82e1`.
+- **Lesson:** Keep Protective Puts related controls on shared ratio grids so source/status text stays visually attached to the control it describes.
