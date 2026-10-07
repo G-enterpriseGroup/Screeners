@@ -48,6 +48,8 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "option_book_ui.py",
     SRC / "holdings_snapshot_mode.py",
     SRC / "performance_ui.py",
+    SRC / "protective_puts.py",
+    SRC / "protective_puts_ui.py",
     SRC / "rebalance_portfolio_ui.py",
     SRC / "tab_bar_v4.py",
     SRC / "bull_debit_ui.py",
@@ -60,6 +62,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
     "from src.option_book_ui import render_option_book",
     "from src.performance_ui import render_performance",
+    "from src.protective_puts_ui import render_protective_puts",
     "from src.rebalance_portfolio_ui import render_rebalance_portfolio",
     "from src.risk_sizing_ui_v7 import render_risk_sizing",
     "from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries",
@@ -217,6 +220,8 @@ def main() -> int:
             errors.append("APP ROUTE MISSING: OPTION BOOK dispatch")
         if 'elif active_tab == "PERFORMANCE":' not in app_text:
             errors.append("APP ROUTE MISSING: PERFORMANCE dispatch")
+        if 'elif active_tab == "PROTECTIVE PUTS":' not in app_text:
+            errors.append("APP ROUTE MISSING: PROTECTIVE PUTS dispatch")
         if 'elif active_tab == "REBALANCE PORTFOLIO":' not in app_text:
             errors.append("APP ROUTE MISSING: REBALANCE PORTFOLIO dispatch")
         if "maybe_auto_watch_risk_entries(_live_etrade_client())" not in app_text:
@@ -233,6 +238,8 @@ def main() -> int:
             errors.append("NAV ROUTE MISSING: OPTION BOOK tab")
         if '"PERFORMANCE"' not in nav_text:
             errors.append("NAV ROUTE MISSING: PERFORMANCE tab")
+        if '"PROTECTIVE PUTS"' not in nav_text:
+            errors.append("NAV ROUTE MISSING: PROTECTIVE PUTS tab")
 
     risk_route = SRC / "risk_sizing_ui_v7.py"
     if risk_route.exists():
@@ -267,6 +274,13 @@ def main() -> int:
             errors.append("PERFORMANCE DATA ROUTE MISSING: ETradeClient.get_transactions")
         if '"CancelOrderRequest": {"orderId": order_number}' not in client_text:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient CancelOrderRequest payload")
+
+    protective_ui = SRC / "protective_puts_ui.py"
+    if protective_ui.exists():
+        protective_text = protective_ui.read_text(encoding="utf-8")
+        for forbidden in ("preview_order(", "place_order(", "cancel_order("):
+            if forbidden in protective_text:
+                errors.append("PROTECTIVE PUTS SAFETY: read-only analytics may not call " + forbidden)
 
     performance_ui = SRC / "performance_ui.py"
     if performance_ui.exists():

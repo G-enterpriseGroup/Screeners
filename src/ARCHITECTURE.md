@@ -48,6 +48,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
 | E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
 | Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
+| Protective Puts read-only analytics | `src/protective_puts_ui.py` | `src/protective_puts.py`, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` quote/chain transport | Risk Sizing, Vertical Options ordering, OAuth, GEX, Holdings |
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
@@ -100,6 +101,20 @@ Production path:
 - Preserve fragment-scoped reruns for ticket edits; do not globally patch Streamlit or edit Risk Sizing to achieve live updates.
 - Reuse existing E*TRADE OAuth/session and `ETradeClient.preview_order/place_order` transport without changing OAuth UI.
 - Do not modify Option Book behavior; its existing UI remains disabled/preview-only unless separately requested.
+
+## Protective Puts edit map
+
+Production path:
+
+`streamlit_app.py` → `src/protective_puts_ui.py` → `src/protective_puts.py` + read-only E*TRADE quote/chain transport
+
+- Change **ticker/purchase price/shares/expiration scope, compact layout, scan progress, table, or CSV export** → `src/protective_puts_ui.py`.
+- Change **protective-put premium cost, breakeven, strike floor, max-loss math, or normalized analysis columns** → `src/protective_puts.py`.
+- Reuse `src/option_book.py::extract_option_rows` for read-only E*TRADE option-chain normalization; do not duplicate broker payload parsing.
+- Protective Puts is analytics-only. It must not preview, place, change, or cancel orders.
+- Preserve full coverage as one put contract per 100 shares; the production UI accepts only 100-share lots.
+- ASK is the conservative put-purchase reference. LAST is retained only to match the legacy Married Put analysis as a historical trade reference.
+- Keep Protective Puts styling local to `src/protective_puts_ui.py`; do not edit Risk Sizing or the shared theme to imitate its appearance.
 
 ## GEX edit map
 
