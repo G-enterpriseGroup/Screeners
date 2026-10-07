@@ -2017,3 +2017,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** Pending GitHub Actions validation at the time of this changelog entry.
 - **Commit SHA:** feature commit `5ca55bc5a76fa0bca96723e56573d190254553ee`.
 - **Lesson:** Reuse legacy strategy math/UX concepts, but adapt them to the terminal's existing broker transport and correct ambiguous sign conventions instead of copying old standalone code verbatim.
+
+## 2026-10-06 — Protective Puts market-date DTE accuracy follow-up
+
+- **Feature changed:** Protective Puts DTE/default-expiration date handling.
+- **Exact production file(s) changed:** `src/protective_puts_ui.py`.
+- **What was broken:** Bare `date.today()` could use a UTC server date and move DTE/default-expiration selection one calendar day early during U.S. evening hours.
+- **Root cause:** Streamlit Cloud server-local date is not guaranteed to match the U.S. options-market calendar date.
+- **What changed:** Protective Puts now resolves the current date with `America/New_York` before calculating DTE, choosing the default expiration, and building scan rows.
+- **Important behavior that must remain:** This is a Protective Puts-only accuracy rule; E*TRADE data sourcing, Risk Sizing, other tabs, and shared time/session behavior remain unchanged.
+- **Files/features intentionally NOT changed:** Risk Sizing, E*TRADE OAuth/client transport, Vertical Options, Option Book, GEX, Holdings, Performance, Rebalance, navigation, shared theme, and `src/terminal_core.py`.
+- **Tests performed:** Terminal Architecture Guard run `37557518134` passed architecture validation, top-level tab smoke tests, existing safety/regression suites, workflow validation, deployed Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `0b373e8a04efecfe7d4347d1a06d1fc79c7d5cfa`.
+- **Lesson:** Options DTE logic must use the U.S. market calendar date rather than the hosting server's local/UTC date.
