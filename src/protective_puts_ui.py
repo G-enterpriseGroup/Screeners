@@ -32,6 +32,7 @@ import streamlit as st
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
 from src.option_book import extract_option_rows
 from src.protective_puts import build_put_analysis, validate_share_quantity
+from src.protective_puts_sources import public_expirations, public_put_chain, public_quote
 from src.ticker_autocomplete import company_name, record_lookup
 
 
@@ -130,42 +131,67 @@ def _metric_markup(items: list[tuple[str, str, str]]) -> str:
     return '<div class="pp-grid">' + cells + "</div>"
 
 
-def _expirations(client, symbol: str, touch_session) -> list[date]:
+def _live_etrade(client) -> bool:
+    return client is not None and not bool(getattr(client, "is_offline", False))
+
+
+def _expirations(client, symbol: str, touch_session) -> tuple[list[date], str]:
     now = time.time()
+    source_key = "ETRADE" if _live_etrade(client) else "PUBLIC"
     cache = st.session_state.setdefault("_pp_expiration_cache", {})
-    cached = cache.get(symbol)
+    cache_key = f"{source_key}:{symbol}"
+    cached = cache.get(cache_key)
     if cached and now - float(cached.get("loaded_at", 0.0)) < _EXPIRATION_CACHE_SECONDS:
-        return list(cached.get("dates") or [])
-    payload = client.get_option_expirations(symbol)
-    touch_session()
-    dates: list[date] = []
-    for year, month, day in option_expiration_dates(payload):
-        try:
-            dates.append(date(year, month, day))
-        except ValueError:
-            continue
-    dates = sorted(set(dates))
-    cache[symbol] = {"loaded_at": now, "dates": dates}
-    return dates
+        return list(cached.get("dates") or []), str(cached.get("source") or source_key)
+
+    if _live_etrade(client):
+        payload = client.get_option_expirations(symbol)
+        touch_session()
+        dates: list[date] = []
+        for year, month, day in option_expiration_dates(payload):
+            try:
+                dates.append(date(year, month, day))
+            except ValueError:
+                continue
+        dates = sorted(set(dates))
+        source = "E*TRADE"
+    else:
+        dates, source = public_expirations(symbol)
+
+    cache[cache_key] = {"loaded_at": now, "dates": dates, "source": source}
+    return dates, source
 
 
-def _put_chain(client, symbol: str, expiry: date, touch_session) -> tuple[list[dict[str, Any]], bool]:
+def _put_chain(
+    client, symbol: str, expiry: date, touch_session
+) -> tuple[list[dict[str, Any]], bool, str]:
+    source_key = "ETRADE" if _live_etrade(client) else "PUBLIC"
     cache = st.session_state.setdefault("_pp_chain_cache", {})
-    key = f"{symbol}:{expiry.isoformat()}"
+    key = f"{source_key}:{symbol}:{expiry.isoformat()}"
     now = time.time()
     cached = cache.get(key)
     if cached and now - float(cached.get("loaded_at", 0.0)) < _CHAIN_CACHE_SECONDS:
-        return list(cached.get("rows") or []), True
-    payload = client.get_option_chain(
-        symbol, expiry.year, expiry.month, expiry.day, no_of_strikes=None, chain_type="PUT"
-    )
-    touch_session()
-    rows = [
-        row for row in extract_option_rows(payload, expiry)
-        if str(row.get("call_put") or "").upper() == "PUT"
-    ]
-    cache[key] = {"loaded_at": now, "rows": rows}
-    return rows, False
+        return (
+            list(cached.get("rows") or []),
+            True,
+            str(cached.get("source") or source_key),
+        )
+
+    if _live_etrade(client):
+        payload = client.get_option_chain(
+            symbol, expiry.year, expiry.month, expiry.day, no_of_strikes=None, chain_type="PUT"
+        )
+        touch_session()
+        rows = [
+            row for row in extract_option_rows(payload, expiry)
+            if str(row.get("call_put") or "").upper() == "PUT"
+        ]
+        source = "E*TRADE"
+    else:
+        rows, source = public_put_chain(symbol, expiry)
+
+    cache[key] = {"loaded_at": now, "rows": rows, "source": source}
+    return rows, False, source
 
 
 def _market_today() -> date:
@@ -186,10 +212,13 @@ def _render_scan_result(result: dict[str, Any]) -> None:
     symbol = str(result.get("symbol") or "")
     shares = int(result.get("shares") or 0)
     stock_price = float(result.get("stock_price") or 0.0)
+    chain_sources = list(result.get("chain_sources") or [])
     best_ask = frame.dropna(subset=["Max Loss (Ask)"]).copy()
     best_row = None if best_ask.empty else best_ask.loc[best_ask["Max Loss (Ask)"].idxmin()]
 
     st.html('<div class="pp-section">PROTECTIVE PUT SUMMARY</div>')
+    if chain_sources:
+        st.caption("OPTION CHAIN SOURCE // " + " + ".join(chain_sources))
     st.html(
         _metric_markup(
             [
@@ -271,9 +300,12 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             '<span class="muted">LEGACY MARRIED-PUT ENGINE ADAPTED TO LIVE E*TRADE QUOTES + CHAINS</span></div>',
             unsafe_allow_html=True,
         )
-        if client is None:
-            st.info("Connect E*TRADE to load live stock quotes and protective-put chains.")
-            return
+        using_etrade = _live_etrade(client)
+        if not using_etrade:
+            st.caption(
+                "DATA FALLBACK ACTIVE // E*TRADE is not live // Protective Puts uses "
+                "yfinance first, then Yahoo Finance HTML scraping if yfinance fails."
+            )
 
         top = st.columns([1.0, 2.0, .9, 1.0, .9, 1.15], gap="small")
         with top[0]:
@@ -291,8 +323,13 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             ).strip().upper()
 
         try:
-            quote = quote_summary(client.get_quote(symbol))
-            touch_session()
+            if using_etrade:
+                quote = quote_summary(client.get_quote(symbol))
+                touch_session()
+                quote_source = "E*TRADE"
+            else:
+                quote = public_quote(symbol)
+                quote_source = str(quote.get("source") or "PUBLIC")
             last = float(quote.get("last") or 0.0)
             resolved_name = str(quote.get("description") or company_name(symbol) or "").strip()
             record_lookup(symbol, resolved_name)
@@ -306,6 +343,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             st.html(_company_markup(resolved_name))
         with top[2]:
             st.text_input("Last", value=_money(last), disabled=True, key="pp_last_display")
+        st.caption(f"QUOTE SOURCE // {quote_source}")
 
         if st.session_state.get("_pp_price_seed_symbol") != symbol:
             st.session_state["pp_purchase_price"] = round(last, 2)
@@ -334,7 +372,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             return
 
         try:
-            expirations = _expirations(client, symbol, touch_session)
+            expirations, expiration_source = _expirations(client, symbol, touch_session)
         except Exception as exc:
             st.error(f"Option expirations unavailable for {symbol}: {exc}")
             return
@@ -362,16 +400,16 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             )
             expiry_row[2].caption(
                 "ONE EXPIRATION is faster. ALL EXPIRATIONS reproduces the legacy married-put scan "
-                "across every listed E*TRADE expiry."
+                f"across every listed expiry. EXPIRATION SOURCE // {expiration_source}"
             )
         else:
             st.caption(
-                f"ALL EXPIRATIONS // {len(expirations):,} listed E*TRADE expirations scan only "
-                "when you press RUN PROTECTIVE PUT SCAN."
+                f"ALL EXPIRATIONS // {len(expirations):,} listed expirations // SOURCE {expiration_source} // "
+                "scan only when you press RUN PROTECTIVE PUT SCAN."
             )
 
         current_fingerprint = (
-            symbol, round(stock_price, 4), shares, scope,
+            symbol, round(stock_price, 4), shares, scope, expiration_source,
             "" if chosen_expiry is None else chosen_expiry.isoformat(),
         )
         if st.button("RUN PROTECTIVE PUT SCAN", type="primary", width="stretch", key="pp_scan"):
@@ -379,9 +417,11 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             progress = st.progress(0.0, text="Initializing protective-put scan...")
             frames: list[pd.DataFrame] = []
             errors: list[str] = []
+            chain_sources: set[str] = set()
             for index, expiry in enumerate(selected, start=1):
                 try:
-                    rows, _ = _put_chain(client, symbol, expiry, touch_session)
+                    rows, _, chain_source = _put_chain(client, symbol, expiry, touch_session)
+                    chain_sources.add(chain_source)
                     frame = build_put_analysis(
                         rows, expiry=expiry, stock_price=stock_price, shares=shares, today=_market_today()
                     )
@@ -403,6 +443,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 "shares": shares,
                 "frame": pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
                 "errors": errors,
+                "chain_sources": sorted(chain_sources),
             }
 
         result = st.session_state.get("pp_scan_result")
