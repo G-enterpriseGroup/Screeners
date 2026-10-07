@@ -67,6 +67,11 @@ jobs:
           PYTHONPATH=. python scripts/test_protective_puts.py
           PYTHONPATH=. python scripts/test_protective_puts_sources.py
 
+      - name: Test terminal-wide yfinance options fallback
+        run: |
+          python -m py_compile src/yfinance_options.py src/bull_debit_ui.py src/vertical_options_ui.py src/option_book_ui.py src/gex_workspace_v2.py src/gex_ui.py scripts/test_yfinance_options.py
+          PYTHONPATH=. python scripts/test_yfinance_options.py
+
       - name: Install workflow YAML validator dependency
         run: python -m pip install PyYAML==6.0.3
 

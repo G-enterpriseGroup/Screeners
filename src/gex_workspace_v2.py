@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from src.etrade_client import ETradeClient, option_expiration_dates, quote_summary, walk_dicts
+from src.yfinance_options import YFinanceOptionsClient, options_market_client
 from src.gex_realized_vol import configure_tiingo_token
 from src.gex_ui_v3 import (
     background_refresh_status,
@@ -943,6 +944,7 @@ def _discover_terminal_context() -> tuple[
             client = factory()
         except Exception:
             client = None
+        client = options_market_client(client)
         try:
             vault_key = str(hash_fn()) if callable(hash_fn) else "default"
         except Exception:
@@ -956,11 +958,16 @@ def _discover_terminal_context() -> tuple[
                 f"{oauth_token}|{issued_at}".encode("utf-8")
             ).hexdigest()[:24]
 
+        background_factory = (
+            YFinanceOptionsClient
+            if bool(getattr(client, "is_yfinance_options_fallback", False))
+            else _background_client_factory(scope)
+        )
         return (
             client,
             vault_key or "default",
             touch,
-            _background_client_factory(scope),
+            background_factory,
             login_marker,
             connect_etrade,
         )

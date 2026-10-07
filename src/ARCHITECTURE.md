@@ -47,13 +47,13 @@ These are durable terminal preferences and should be checked on every UI change:
 |---|---|---|---|
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
 | E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
-| Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
+| Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, `src/yfinance_options.py` public chain fallback, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
 | Protective Puts read-only analytics | `src/protective_puts_ui.py` | `src/protective_puts.py`, `src/protective_puts_sources.py`, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` quote/chain transport | Risk Sizing, Vertical Options ordering, OAuth, GEX, Holdings |
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
-| GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py` | Risk/OAuth/Holdings files |
+| GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py`, `src/yfinance_options.py` public chain fallback when E*TRADE is not live | Risk/OAuth/Holdings files |
 | GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` for E*TRADE GEX formulas/IV calculations; `src/gex_cboe.py` for isolated CBOE delayed-source GEX calculations; `src/gex_realized_vol.py` for GEX-only historical-volatility data/math | `streamlit_app.py` for ordinary GEX layout changes |
-| Option Book options ticket | `src/option_book_ui.py` | `src/option_book.py`, `src/etrade_client.py` preview transport, `src/ticker_autocomplete.py` | Risk/GEX/Holdings/OAuth UI/legacy Orders simulator |
+| Option Book options ticket | `src/option_book_ui.py` | `src/option_book.py`, `src/yfinance_options.py` public chain fallback, `src/etrade_client.py` preview transport, `src/ticker_autocomplete.py` | Risk/GEX/Holdings/OAuth UI/legacy Orders simulator |
 | E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
 | Terminal access / Touch ID lock | `src/lock_screen_v2.py` | `src/passkey_auth.py`, `src/components/lock_keypad_v2/` | Broker/Risk/GEX logic |
 | Commit-triggered fresh-process reboot | `src/reboot_guard.py` | `streamlit_app.py` invokes the guard before app routing | Feature renderers |
@@ -61,7 +61,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | E*TRADE Performance | `src/performance_ui.py` | `src/etrade_client.py` read-only transaction/portfolio/balance transport | Risk/GEX/OAuth/order files |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
 | Rebalance Portfolio | `src/rebalance_portfolio_ui.py` | `src/risk_sizing_ui.py`, `src/risk_sizing_ui_v2.py`, `src/risk_sizing.py` for shared read-only Risk book normalization/classification/intent memory | `streamlit_app.py`, Risk live-order workflow, OAuth/session UI, Holdings/GEX/Performance |
-| Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py` | Risk/GEX files |
+| Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py`, `src/yfinance_options.py` public chain fallback | Risk/GEX files |
 | Municipal tools | functions loaded from `src/terminal_core.py` + `src/muni_data.py` / `src/treasury_data.py` | muni/treasury data modules | Risk/GEX/OAuth files |
 | Theme / shared appearance | `src/theme.py`, `src/layout_guardrails.py` | shared CSS helpers | Change only when the requested change is truly global |
 
@@ -86,6 +86,16 @@ Use this decision tree:
 - Change **Schwab Risk Sizing setup/readiness UI or future Schwab data binding** → `src/schwab_risk_sizing_ui.py` and future Schwab-specific API modules only.
 - Keep Schwab holdings/session state separate from E*TRADE holdings/session state; never point the Schwab tab at E*TRADE data as a temporary shortcut.
 - Do **not** edit GEX/OAuth/navigation to fix Risk Sizing content. Navigation may be edited only for the top-tab label/order itself.
+
+## Shared option-chain fallback
+
+Production options-market rule:
+
+- **E*TRADE is primary whenever the connector is live.**
+- When E*TRADE is not live, Bull Debit Spread, Vertical Options, Option Book, and GEX use `src/yfinance_options.py` for public quote/expiration/option-chain data.
+- The adapter normalizes yfinance into the existing E*TRADE-style payload contract so feature math/parsers do not fork by source. For GEX, yfinance IV is retained and Black-Scholes gamma/vega are calculated in the adapter because public yfinance chains do not provide E*TRADE OptionGreeks.
+- Public fallback is **market-data only**. It must never enable E*TRADE preview/place/change/cancel actions; Vertical Options and Option Book keep broker actions disabled until the live connector returns.
+- Protective Puts already uses yfinance first when E*TRADE is not live and retains its isolated Yahoo HTML fallback if yfinance itself fails.
 
 ## Vertical Options edit map
 

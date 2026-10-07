@@ -32,6 +32,7 @@ import streamlit as st
 
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
 from src.option_book import contract_quote, extract_option_rows, net_price_snapshot, strikes_for
+from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
     build_place_payload,
@@ -372,19 +373,22 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             unsafe_allow_html=True,
         )
 
-        if client is None:
-            st.info("Connect E*TRADE to load live option chains and place vertical orders.")
-            return
-        if bool(getattr(client, "is_offline", False)):
-            st.warning("OFFLINE SNAPSHOT MODE // live option order preview and placement are disabled.")
-            return
+        broker_live = client is not None and not bool(getattr(client, "is_offline", False))
+        market_client = options_market_client(client)
+        if not broker_live:
+            st.warning(
+                "YFINANCE OPTIONS FALLBACK // public quote + option chains are available // "
+                "E*TRADE preview and live placement remain disabled until the broker reconnects."
+            )
 
         accounts = [
             account
             for account in (st.session_state.get("etrade_accounts") or [])
             if isinstance(account, dict) and _account_key(account)
         ]
-        if not accounts:
+        if not broker_live:
+            accounts = []
+        elif not accounts:
             try:
                 accounts = [
                     account
@@ -431,7 +435,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             )
 
         try:
-            quote = quote_summary(client.get_quote(symbol))
+            quote = quote_summary(market_client.get_quote(symbol))
             touch_session()
             spot = float(quote.get("last") or 0.0)
             name = str(quote.get("description") or company_name(symbol) or "").strip()
@@ -447,7 +451,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             st.html(_company_display_markup(symbol, name))
 
         try:
-            expirations = _expirations(client, symbol, touch_session)
+            expirations = _expirations(market_client, symbol, touch_session)
         except Exception as exc:
             st.error(f"Option expirations unavailable for {symbol}: {exc}")
             return
@@ -471,7 +475,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             )
 
         try:
-            rows = _chain(client, symbol, expiry, touch_session)
+            rows = _chain(market_client, symbol, expiry, touch_session)
         except Exception as exc:
             st.error(f"Option chain unavailable for {_date_label(expiry)}: {exc}")
             return

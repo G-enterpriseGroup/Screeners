@@ -41,6 +41,7 @@ from src.option_book import (
     strikes_for,
 )
 from src.ticker_autocomplete import company_name, record_lookup, smart_ticker_selector
+from src.yfinance_options import options_market_client
 
 
 # ==============================
@@ -605,15 +606,14 @@ def render_option_book(client, touch_session) -> None:
             unsafe_allow_html=True,
         )
 
-        if client is None:
-            st.info(
-                "Connect E*TRADE to load accounts, quotes, expirations, strikes, "
-                "and broker preview."
-            )
-            return
-
+        client = options_market_client(client)
         offline = bool(getattr(client, "is_offline", False))
-        if offline:
+        if bool(getattr(client, "is_yfinance_options_fallback", False)):
+            st.warning(
+                "YFINANCE OPTIONS FALLBACK // public quote + option chains are available // "
+                "E*TRADE broker preview remains disabled until the connector is live."
+            )
+        elif offline:
             st.warning(
                 "OFFLINE SNAPSHOT MODE // ticket data may be cached; broker preview is disabled."
             )

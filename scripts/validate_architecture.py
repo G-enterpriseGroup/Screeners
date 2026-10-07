@@ -51,6 +51,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "protective_puts.py",
     SRC / "protective_puts_sources.py",
     SRC / "protective_puts_ui.py",
+    SRC / "yfinance_options.py",
     SRC / "rebalance_portfolio_ui.py",
     SRC / "tab_bar_v4.py",
     SRC / "bull_debit_ui.py",
@@ -275,6 +276,23 @@ def main() -> int:
             errors.append("PERFORMANCE DATA ROUTE MISSING: ETradeClient.get_transactions")
         if '"CancelOrderRequest": {"orderId": order_number}' not in client_text:
             errors.append("RISK LIVE ORDER ROUTE MISSING: ETradeClient CancelOrderRequest payload")
+
+    yfinance_options = SRC / "yfinance_options.py"
+    if yfinance_options.exists():
+        fallback_text = yfinance_options.read_text(encoding="utf-8")
+        for required in (
+            "class YFinanceOptionsClient",
+            "def options_market_client(",
+            "def get_option_expirations(",
+            "def get_option_chain(",
+            "is_yfinance_options_fallback = True",
+        ):
+            if required not in fallback_text:
+                errors.append("OPTIONS FALLBACK ROUTE MISSING: " + required)
+    for owner_name in ("vertical_options_ui.py", "option_book_ui.py", "bull_debit_ui.py", "gex_workspace_v2.py"):
+        owner = SRC / owner_name
+        if owner.exists() and "options_market_client" not in owner.read_text(encoding="utf-8"):
+            errors.append(f"OPTIONS FALLBACK NOT WIRED: {owner_name}")
 
     protective_ui = SRC / "protective_puts_ui.py"
     if protective_ui.exists():

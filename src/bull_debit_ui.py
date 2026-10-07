@@ -11,6 +11,7 @@ import streamlit as st
 
 from src.bull_debit_spread import extract_call_rows, scan_bull_call_spreads
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
+from src.yfinance_options import options_market_client
 from src.theme import BB_BLACK, BB_BLUE, BB_GREEN, BB_ORANGE, BB_RED
 
 
@@ -291,9 +292,12 @@ def render_bull_debit_spread(client, touch_session, timezone_name: str = "Americ
         "READ-ONLY ANALYTICS // NATURAL PRICING = LONG ASK - SHORT BID"
     )
 
-    if not client:
-        st.info("Connect E*TRADE at the top of the terminal to scan live option chains.")
-        return
+    client = options_market_client(client)
+    if bool(getattr(client, "is_yfinance_options_fallback", False)):
+        st.warning(
+            "YFINANCE OPTIONS FALLBACK // E*TRADE is not live // "
+            "the optimizer is using public yfinance quotes and option chains."
+        )
 
     default_symbol = str(st.session_state.get("order_symbol", "NVDA") or "NVDA").upper()
 

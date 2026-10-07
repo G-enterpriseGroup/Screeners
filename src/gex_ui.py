@@ -675,7 +675,15 @@ def _build_gex(
     if not symbol:
         raise _legacy.ETradeError("Enter a ticker first.")
     if client is None:
-        raise _legacy.ETradeError("Connect E*TRADE first, or seed a cached option-chain snapshot.")
+        raise _legacy.ETradeError("No option-market client is available.")
+
+    yfinance_fallback = bool(getattr(client, "is_yfinance_options_fallback", False))
+    option_source_name = "YFINANCE" if yfinance_fallback else "E*TRADE"
+    option_source_url = (
+        "yfinance library / Yahoo Finance options"
+        if yfinance_fallback
+        else "E*TRADE API /v1/market/optionchains"
+    )
 
     quote = _legacy.quote_summary(_legacy._call_api(client, "get_quote", symbol, force_refresh=force_refresh))
     spot = float(quote["last"])
@@ -699,7 +707,7 @@ def _build_gex(
             eligible.append((year, month, day, dte))
     if not eligible:
         raise _legacy.ETradeError(
-            f"No E*TRADE option expirations were found at or below {max_dte} DTE for {symbol}."
+            f"No {option_source_name} option expirations were found at or below {max_dte} DTE for {symbol}."
         )
 
     contracts: list[dict[str, Any]] = []
@@ -757,7 +765,7 @@ def _build_gex(
     if not contracts:
         detail = f" Last chain error: {chain_errors[-1]}" if chain_errors else ""
         raise _legacy.ETradeError(
-            f"No usable E*TRADE option contracts with open interest were found for {symbol}.{detail}"
+            f"No usable {option_source_name} option contracts with open interest were found for {symbol}.{detail}"
         )
 
     # IV Rank / IV-HV must not change definition when Raj changes GEX max DTE.
@@ -834,7 +842,7 @@ def _build_gex(
                 thirty_plus = [value for value in observed_dtes if value >= IV_RANK_TARGET_DTE]
                 iv_dte = min(thirty_plus) if thirty_plus else max(observed_dtes)
             iv_expiry_type = "GEX_FALLBACK"
-            iv_method = "E*TRADE ATM FALLBACK"
+            iv_method = f"{option_source_name} ATM FALLBACK"
 
     hv_result = load_30d_historical_volatility(symbol)
     try:
@@ -943,7 +951,7 @@ def _build_gex(
         f"Max DTE Used: {max_dte}\n"
         f"Contracts Used: {len(contracts)}\n"
         f"Net Current GEX: {net_current:,.2f}\n"
-        f"Source URL: E*TRADE API /v1/market/optionchains\n\n"
+        f"Source URL: {option_source_url}\n\n"
         "PASTE EVERYTHING BELOW INTO PINE INPUT: Packed Gamma Levels\n"
         "------------------------------------------------------------\n"
         f"{packed}\n"
@@ -956,9 +964,13 @@ def _build_gex(
         "maxDte": int(max_dte),
         "contractsUsed": len(contracts),
         "netCurrent": net_current,
-        "sourceUrl": "E*TRADE API /v1/market/optionchains",
+        "sourceUrl": option_source_url,
         "representativeIv": representative_iv,
-        "ivSource": "E*TRADE OptionGreeks.iv + OptionGreeks.vega",
+        "ivSource": (
+            "YFINANCE impliedVolatility + calculated Black-Scholes vega"
+            if yfinance_fallback
+            else "E*TRADE OptionGreeks.iv + OptionGreeks.vega"
+        ),
         "ivMethod": iv_method,
         "ivExpiry": iv_expiry,
         "ivDte": iv_dte,
