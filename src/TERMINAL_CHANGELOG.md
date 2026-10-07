@@ -2031,3 +2031,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `0b373e8a04efecfe7d4347d1a06d1fc79c7d5cfa`.
 - **Lesson:** Options DTE logic must use the U.S. market calendar date rather than the hosting server's local/UTC date.
+
+## 2026-10-07 — Protective Puts public-data fallback when E*TRADE is not live
+
+- **Feature changed:** Protective Puts market-data sourcing.
+- **Exact production file(s) changed:** `src/protective_puts_ui.py`, new `src/protective_puts_sources.py`, `src/ARCHITECTURE.md`, `scripts/validate_architecture.py`, and `.github/workflows/architecture-guard.yml`; focused regression coverage added in `scripts/test_protective_puts_sources.py`.
+- **What was broken:** Protective Puts stopped at the connection boundary when E*TRADE was not live, even though the legacy married-put workflow could operate from public options data.
+- **Root cause:** The production Protective Puts UI originally assumed a live E*TRADE client for quote, expiration, and put-chain retrieval.
+- **What changed:** E*TRADE remains the primary source. When the E*TRADE client is absent or offline, Protective Puts now falls back to yfinance for quote/expirations/put chains. If yfinance fails, Protective Puts attempts direct Yahoo Finance HTML scraping for the same public data. Public rows are normalized into the same put-row shape used by the E*TRADE analytics, and the UI shows the quote/expiration/option-chain source so the active feed is visible.
+- **Important behavior that must remain:** The source priority is E*TRADE -> yfinance -> Yahoo HTML. The fallback is Protective-Puts-only, read-only, and must never preview/place/change/cancel orders or alter E*TRADE OAuth/session behavior. E*TRADE data must always win when the live connector is available.
+- **Files/features intentionally NOT changed:** Risk Sizing, E*TRADE OAuth UI/client transport, Vertical Options, Option Book, GEX, Holdings, Performance, Rebalance, top navigation, shared theme, requirements, and `src/terminal_core.py`.
+- **Tests performed:** Terminal Architecture Guard run `37632743968` passed architecture validation, every top-level tab smoke test, Risk/Vertical/Performance safety regressions, Protective Puts math tests, Protective Puts public-fallback tests including forced yfinance failure -> Yahoo HTML scraper success, workflow validation, production Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** fallback feature `e3013f4eeda1af710f6e232c3e7123af26a38c01`; CI coverage `24c925b8e5d641ec4632646e40956d262c320fad`; test-path correction `6a7abf88a6b23bf242b59c742fa23a316d1efed8`.
+- **Lesson:** Protective Puts may degrade gracefully to public options data, but public-source parsing must remain isolated from broker plumbing and the UI must identify the active source.
