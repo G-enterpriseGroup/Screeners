@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import html
 import time
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import pandas as pd
@@ -167,8 +168,12 @@ def _put_chain(client, symbol: str, expiry: date, touch_session) -> tuple[list[d
     return rows, False
 
 
+def _market_today() -> date:
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
 def _default_expiry(expirations: list[date]) -> date:
-    today = date.today()
+    today = _market_today()
     return next((item for item in expirations if (item - today).days >= 30), expirations[0])
 
 
@@ -352,7 +357,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 format_func=lambda value: value.strftime("%m-%d-%y"),
             )
             expiry_row[1].text_input(
-                "DTE", value=str(max(0, (chosen_expiry - date.today()).days)),
+                "DTE", value=str(max(0, (chosen_expiry - _market_today()).days)),
                 disabled=True, key="pp_dte_display",
             )
             expiry_row[2].caption(
@@ -378,7 +383,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 try:
                     rows, _ = _put_chain(client, symbol, expiry, touch_session)
                     frame = build_put_analysis(
-                        rows, expiry=expiry, stock_price=stock_price, shares=shares, today=date.today()
+                        rows, expiry=expiry, stock_price=stock_price, shares=shares, today=_market_today()
                     )
                     if not frame.empty:
                         frames.append(frame)
