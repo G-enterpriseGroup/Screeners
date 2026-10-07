@@ -2059,3 +2059,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Commit SHA:** `38429560102c05a8f1d5e50434e6b9a5995a82e1`.
 - **Lesson:** Keep Protective Puts related controls on shared ratio grids so source/status text stays visually attached to the control it describes.
+
+## 2026-10-07 — Terminal-wide yfinance option-chain fallback
+
+- **Feature changed:** Shared options-market fallback across the terminal.
+- **Exact production file(s) changed:** new `src/yfinance_options.py`; `src/bull_debit_ui.py`; `src/vertical_options_ui.py`; `src/option_book_ui.py`; `src/gex_workspace_v2.py`; `src/gex_ui.py`; `src/ARCHITECTURE.md`; `scripts/validate_architecture.py`; and `.github/workflows/architecture-guard.yml`. Focused regression coverage added in `scripts/test_yfinance_options.py`.
+- **What was broken:** Outside Protective Puts, option-chain features depended on a live E*TRADE connector or prior cached brokerage chain data and could not continue from a public chain source when E*TRADE was disconnected.
+- **Root cause:** Bull Debit Spread, Vertical Options, Option Book, and GEX each consumed the E*TRADE option-chain payload directly without a shared public compatibility layer.
+- **What changed:** Added one read-only yfinance adapter that exposes E*TRADE-compatible quote, expiration, and option-chain payloads. E*TRADE remains primary whenever live. If the connector is not live, Bull Debit Spread, Vertical Options, Option Book, and GEX automatically use yfinance market data. The adapter preserves strike, bid, ask, last, volume, open interest, contract symbol, and implied volatility; it calculates Black-Scholes gamma and vega from yfinance IV for GEX compatibility. GEX source metadata now identifies yfinance when fallback data is active. Protective Puts keeps its existing yfinance-first public path plus its secondary Yahoo HTML fallback.
+- **Important behavior that must remain:** Source priority is live E*TRADE first, yfinance only when E*TRADE is not live. Public fallback is market-data-only and must never enable E*TRADE Preview/Place/Change/Cancel. Vertical Options and Option Book must keep broker actions disabled until the live connector returns. GEX must label yfinance-derived IV/Greeks accurately rather than claiming E*TRADE.
+- **Files/features intentionally NOT changed:** E*TRADE OAuth/session implementation, `src/etrade_client.py`, Risk Sizing, Holdings, Performance, Rebalance, navigation, shared theme, requirements, and `src/terminal_core.py`.
+- **Tests performed:** Terminal Architecture Guard run `37640930000` passed architecture validation, all top-level tab smoke tests, existing Risk/Vertical/Performance/Protective Puts regressions, new terminal-wide yfinance option fallback regression, workflow validation, production Streamlit health, and deployed-browser no-`Oh no` verification.
+- **Architecture guard result:** PASS.
+- **Commit SHA:** `8da9d9b29cd950b39e2640dcfc0e24ecac841608`.
+- **Lesson:** Keep public options fallback centralized in one read-only compatibility adapter. Do not duplicate per-feature yfinance parsing, and never let a public-data fallback cross the broker-action safety boundary.
