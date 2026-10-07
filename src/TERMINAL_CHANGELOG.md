@@ -2002,3 +2002,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS.
 - **Implementation head:** `5e2766994ed82f120b67aab02b643ba67ac730e1`.
 - **Lesson:** The CBOE bridge is a TradingView transport, not an audit report. Keep only the fields Raj's workflow actually uses, and let TradingView's chart supply live spot instead of shipping a second spot value in the text payload.
+
+
+## 2026-10-06 — Protective Puts tab from legacy Married Put engine
+
+- **Feature changed:** Added a new top-level Protective Puts workspace using the legacy Married Put analytics from `G-enterpriseGroup/Praescientia-Auri`, adapted to Raj's Terminal.
+- **Exact production file(s) changed:** new `src/protective_puts_ui.py`, new `src/protective_puts.py`, `streamlit_app.py`, `src/tab_bar_v4.py`, `src/ARCHITECTURE.md`, `scripts/validate_architecture.py`; focused regression coverage added in `scripts/test_protective_puts.py`.
+- **What was missing:** Raj's Terminal had no Protective Puts tab even though the older Ghotra/Praescientia-Auri app contained Married Put, Married Put Mini, and Married Put Multi implementations.
+- **Root cause:** The married-put workflow existed only in the older standalone Streamlit app and had never been integrated into the current terminal production route or E*TRADE data path.
+- **What changed:** Added a compact Risk-Sizing-style Protective Puts tab. It uses live/current E*TRADE quote and option-chain transport, shows ticker/company/last price, editable purchase price, 100-share-lot protection sizing, one-expiration or all-expirations scanning, DTE, put bid/ask/last, volume, open interest, ASK/LAST put cost, ASK/LAST max loss, ASK breakeven, and CSV export. The legacy max-loss presentation was corrected to a positive loss amount: stock cost + put premium − strike floor value.
+- **Important behavior that must remain:** Protective Puts is read-only analytics; it must never preview, place, change, or cancel orders. Full coverage remains one put contract per 100 shares. ASK is the conservative purchase-side reference; LAST is historical reference only. Styling remains local and follows the E*TRADE Risk Sizing compact orange/black visual contract without changing shared theme files.
+- **Files/features intentionally NOT changed:** Risk Sizing production files, Risk formulas, E*TRADE OAuth/session UI, E*TRADE client transport, Vertical Options ordering logic, Option Book behavior, GEX, Holdings, Performance, Rebalance, shared theme, and `src/terminal_core.py`.
+- **Tests performed:** Focused Protective Puts math regression passed locally; Python syntax compile passed for the new feature/test files before push. GitHub architecture/tab/deploy checks are required after the production push.
+- **Architecture guard result:** Pending GitHub Actions validation at the time of this changelog entry.
+- **Commit SHA:** feature commit `5ca55bc5a76fa0bca96723e56573d190254553ee`.
+- **Lesson:** Reuse legacy strategy math/UX concepts, but adapt them to the terminal's existing broker transport and correct ambiguous sign conventions instead of copying old standalone code verbatim.
