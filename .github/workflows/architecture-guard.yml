@@ -64,8 +64,8 @@ jobs:
       - name: Test Protective Puts public fallback
         run: |
           python -m py_compile src/protective_puts.py src/protective_puts_sources.py src/protective_puts_ui.py scripts/test_protective_puts.py scripts/test_protective_puts_sources.py
-          python scripts/test_protective_puts.py
-          python scripts/test_protective_puts_sources.py
+          PYTHONPATH=. python scripts/test_protective_puts.py
+          PYTHONPATH=. python scripts/test_protective_puts_sources.py
 
       - name: Install workflow YAML validator dependency
         run: python -m pip install PyYAML==6.0.3
