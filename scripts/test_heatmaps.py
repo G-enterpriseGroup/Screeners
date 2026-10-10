@@ -12,15 +12,19 @@ import pandas as pd
 
 from src.heatmaps_ui import (
     DEFAULT_TICKERS,
+    SECTOR_NAMES,
+    VIEWS,
     _annual,
     _calendar_returns,
     _clean_state,
     _export_csv,
     _extract_close,
+    _heatmap_markup,
     _monthly,
     _overview,
     _period_return,
     _sector_month,
+    _sector_label,
     _shade,
     _symbol,
 )
@@ -40,6 +44,14 @@ def run() -> None:
     assert not _symbol("<script>")
     assert not _symbol("bad ticker")
     assert _clean_state({})["tickers"] == list(DEFAULT_TICKERS)
+    assert VIEWS[0] == "ANNUAL HISTORY"
+    assert _clean_state({})["view"] == "ANNUAL HISTORY"
+    assert _clean_state({"view": "SECTOR PERFORMANCE"})["view"] == "ANNUAL HISTORY"
+    assert _clean_state({"state_version": 2, "view": "SECTOR PERFORMANCE"})["view"] == "SECTOR PERFORMANCE"
+    assert _sector_label("XLK") == "Technology (XLK)"
+    assert _sector_label("XLY") == "Consumer Discretionary (XLY)"
+    assert _sector_label("QQQ") == "QQQ"
+    assert len(SECTOR_NAMES) == 11
     assert _clean_state({"tickers": []})["tickers"] == []
     assert _clean_state({"tickers": ["xlk", "XLK", "qqq"], "focus": "qqq"})["tickers"] == ["XLK", "QQQ"]
 
@@ -63,9 +75,25 @@ def run() -> None:
     prices = pd.DataFrame({"XLK": xlk, "XLRE": xlre})
     cols, rows = _annual(prices, ["XLK", "XLRE"])
     assert cols == ["XLK", "XLRE"]
-    assert rows[0][0] == "2025"
-    assert rows[1][0] == "2024"
-    assert rows[1][1][1] is None  # newer fund has no pre-inception history
+    assert rows[0][0] == "2024"
+    assert rows[1][0] == "2025"
+    assert rows[0][1][1] is None  # newer fund has no pre-inception history
+    annual_markup = _heatmap_markup("ANNUAL", cols, rows, annual=True)
+    assert "Technology" in annual_markup and "Real Estate" in annual_markup
+    assert 'hm-sector-name' in annual_markup and '<th>YEAR</th>' in annual_markup
+    assert "2024" in annual_markup and "2025" in annual_markup
+    csv_annual = _export_csv(cols, rows, annual=True).decode()
+    assert "Technology (XLK)" in csv_annual
+    assert "Real Estate (XLRE)" in csv_annual
+    assert "YEAR," in csv_annual
+    past = pd.Series(
+        [100.0, 105.0, 110.0, 115.0],
+        index=pd.to_datetime(["2000-12-29", "2001-06-01", "2001-12-31", "2002-01-02"]),
+    )
+    pcols, prows = _annual(pd.DataFrame({"XLK": past}), ["XLK"])
+    assert pcols == ["XLK"]
+    assert [label for label, _ in prows] == ["2000", "2001", "2002"]
+    assert "2001" in _heatmap_markup("BY YEAR", pcols, prows, annual=True)
     mcols, mrows = _monthly(prices, "XLRE")
     assert len(mcols) == 12
     assert [r[0] for r in mrows] == ["2025"]
@@ -74,6 +102,7 @@ def run() -> None:
     ocols, orows = _overview(prices, ["XLK", "XLRE"])
     assert ocols[-1] == "MAX"
     assert len(orows) == 2
+    assert "Technology (XLK)" in _heatmap_markup("OVERVIEW", ocols, orows)
     assert b"TICKER_OR_YEAR" in _export_csv(ocols, orows)
     assert _shade(-5, 10)[0] != _shade(5, 10)[0]
     assert _shade(np.nan, 10)[0] == "#181818"
