@@ -2151,3 +2151,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture result:** See final GitHub Actions run; do not assert pass before completion.
 - **Commit SHA:** `a914f57e` production logic, `01c4908c` and `8f258bae` regression updates.
 - **Lesson:** A green-year hit rate without a minimum sample length and shrinkage is misleading when fund launch dates differ.
+
+
+## 2026-10-10 — Compact red/green annual-year counts
+
+- **Feature and exact files:** Heatmaps annual matrix in `src/heatmaps_ui.py`, focused `scripts/test_heatmaps.py`, this append-only changelog.
+- **Problem/root cause:** Annual sector rows showed colored returns without compact counts of negative and positive years.
+- **Change:** Add one narrow rightmost sticky `R ## G ##` column for each annual sector/ticker row, counting strictly negative and strictly positive nonmissing annual return cells respectively; zero and unavailable years are excluded. Keep existing yearly cells, ranking and yellow winner unchanged.
+- **Preserve:** All historical data, custom tickers, memory, exports, gradients, compact styling and every other terminal tab.
+- **Intentionally NOT changed:** GEX, Risk, OAuth, Holdings, Orders, navigation, shared theme, `streamlit_app.py`, `src/terminal_core.py`.
+- **Tests:** Regression assertions for positive/negative, zero, missing and nonannual view; GitHub Actions checks include architecture, tab render and deployed health.
+- **Architecture guard result:** Pending final CI completion; consult workflow status.
+- **Commit SHA:** `a745bb7b` production, `c2d14268` / `fd5b22a9` tests; final changelog commit follows.
+- **Lesson:** Summarize only the same visible annual cells and keep summary column pinned to the right.
