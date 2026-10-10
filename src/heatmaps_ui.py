@@ -373,7 +373,8 @@ def _shade(value: float | None, scale: float) -> tuple[str, str]:
 
 def _best_positive_sector(prices: pd.DataFrame, columns: list[str],
                           rows: list[tuple[str, list[float | None]]]) -> str | None:
-    """Highest positive-year percentage over each sector's complete calendar years."""
+    """Rank mature sectors by positive-year consistency and return strength."""
+    min_years = 15  # New funds cannot outrank decades of evidence.
     scores = []
     for ticker, values in rows:
         if ticker not in SECTOR_NAMES or ticker not in prices:
@@ -385,14 +386,18 @@ def _best_positive_sector(prices: pd.DataFrame, columns: list[str],
         complete = [float(value) for year, value in zip(columns, values)
                     if history.index[0].year < int(year) < history.index[-1].year
                     and value is not None and math.isfinite(float(value))]
-        if not complete:
+        if len(complete) < min_years:
             continue
         positive = sum(value > 0 for value in complete)
-        scores.append((positive / len(complete), sum(complete) / len(complete),
-                       len(complete), ticker))
+        hit_rate = positive / len(complete)
+        average_return = sum(complete) / len(complete)
+        # Confidence-adjusted hit rate: 20 neutral prior years penalize
+        # short histories without counting unavailable years as losses.
+        adjusted_rate = (positive + 10.0) / (len(complete) + 20.0)
+        scores.append((adjusted_rate, average_return, len(complete), ticker))
     if not scores:
         return None
-    # Only highlight a sector with more positive than negative years.
+    # Require a genuinely positive record, not merely a high short-sample score.
     best = max(scores)
     return best[3] if best[0] > 0.5 else None
 
