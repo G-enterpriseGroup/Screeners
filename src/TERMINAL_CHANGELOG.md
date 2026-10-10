@@ -2087,3 +2087,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS (run `38091368508`).
 - **Commit SHAs:** `9b4dd2e` (feature), `8eba217` (route), `5950983` (navigation), `9eb52ff` (monthly return correction), `63f3ebb` (regression in CI), plus intermediate docs/tests commits recorded in GitHub history.
 - **Lesson:** Reuse the reboot-hydrated browser memory component for each new independent feature; compound daily returns by calendar year/month and verify group keys are valid pandas groupers; make incomplete/pre-inception coverage explicit.
+
+## 2026-10-10 — Heatmaps rolling-window baseline precision
+
+- **Feature changed:** Heatmaps period-return window anchor; no other feature changed.
+- **Exact production files changed:** `src/heatmaps_ui.py`, `scripts/test_heatmaps.py`, and this appended note.
+- **What was broken / root cause:** The initial 1W/1M/3M/6M/1Y/3Y/5Y baseline used the last close strictly before the target date, which unintentionally included an extra day's price move when the target date was a trading day.
+- **What changed:** Rolling horizons select the last close on OR before the target start date; YTD deliberately keeps the last close before January 1 to include the full calendar year's first trading day. Added an exact 1W boundary regression.
+- **Important behavior retained:** MAX uses first available close, calendars compound daily returns, no pre-inception values are invented, settings remain browser-persisted, all other tabs and broker workflows remain unchanged.
+- **Files/features NOT changed:** All GEX, Risk, OAuth, Holdings, trade-entry, shared theme/navigation and infrastructure files.
+- **Tests performed:** `scripts/test_heatmaps.py` exact-date baseline regression; automatic CI architecture guard, tab-layout, and deployed-health/frontend checks tracked by run `38091532705`.
+- **Architecture guard:** Latest CI run `38091532705` (verify conclusion before claiming PASS).
+- **Commit SHAs:** `ff2fb857` (production correction), `dd886f70` (regression coverage).
+- **Lesson:** A rolling return uses a closing price on its target anchor date when available; YTD is intentionally anchored to the previous year-end close.
