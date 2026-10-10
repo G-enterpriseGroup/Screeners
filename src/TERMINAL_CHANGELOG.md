@@ -2138,3 +2138,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Refer to final GitHub Actions run for result; not asserted before completion.
 - **Commits:** `e57146da` feature, `5a85b1ea` tests, final changelog commit.
 - **Lesson:** Compare the fraction of positive complete years, not raw green-cell counts, when sector inception dates differ.
+
+
+## 2026-10-10 — Long-history-adjusted annual sector winner
+
+- **Feature / files:** Heatmaps only; `src/heatmaps_ui.py`, `scripts/test_heatmaps.py`, and this appended changelog.
+- **Problem/root cause:** A sector launched in 2018 could win the yellow highlight based on a high green-year percentage over only a few years, beating decades-old sectors without comparable evidence.
+- **Fix:** Require at least 15 complete calendar years (excluding inception and current partial years) for highlight eligibility. Rank qualifying sectors using a confidence-adjusted positive-year rate with 20 neutral prior years, then mean annual return and sample length. Do not treat unavailable pre-inception years as negative. Preserve exactly one yellow/black sector-name highlight when a qualifying positive-year majority exists.
+- **Preserve:** Annual heatmap values, original row/year layout, gradients, ticker watchlist, exports, browser memory and other terminal features.
+- **Intentionally unchanged:** GEX, Risk, OAuth, Holdings, orders, navigation, shared styling, `streamlit_app.py`, `src/terminal_core.py`.
+- **Tests:** Synthetic 25-year vs recent-perfect-history regression; focused Heatmaps CI, architecture guard, other-tab and deployment checks on final commit.
+- **Architecture result:** See final GitHub Actions run; do not assert pass before completion.
+- **Commit SHA:** `a914f57e` production logic, `01c4908c` and `8f258bae` regression updates.
+- **Lesson:** A green-year hit rate without a minimum sample length and shrinkage is misleading when fund launch dates differ.
