@@ -52,6 +52,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py`, `src/yfinance_options.py` public chain fallback when E*TRADE is not live | Risk/OAuth/Holdings files |
+| Historical HEATMAPS | `streamlit_app.py` → `src/heatmaps_ui.py` | Existing `src/components/risk_book_state_v1/` browser-only state transport; yfinance historical adjusted-close data | GEX, Risk, OAuth, navigation appearance, shared theme |
 | GEX UI / subtabs / tables | `src/gex_ui_v3.py` | `src/gex_ui.py` for E*TRADE GEX formulas/IV calculations; `src/gex_cboe.py` for isolated CBOE delayed-source GEX calculations; `src/gex_realized_vol.py` for GEX-only historical-volatility data/math | `streamlit_app.py` for ordinary GEX layout changes |
 | Option Book options ticket | `src/option_book_ui.py` | `src/option_book.py`, `src/yfinance_options.py` public chain fallback, `src/etrade_client.py` preview transport, `src/ticker_autocomplete.py` | Risk/GEX/Holdings/OAuth UI/legacy Orders simulator |
 | E*TRADE OAuth connection UI | `src/etrade_connection_ui_v2.py` | `src/etrade_client.py`, `src/session_persistence.py` | Risk/GEX files |
@@ -228,6 +229,16 @@ Production path:
 - LONG-TERM overweights use the wider saved/default band and remain explicit review items; do not silently convert Risk LONG-TERM classifications into routine tactical trims.
 - Excess cash above the target cash allocation funds underweights first; required trim proceeds may fund remaining eligible buys. Trades below the configured minimum dollar threshold are suppressed.
 - Do not change OAuth/session UI, Risk live-order logic, Holdings, GEX, Performance, navigation, or shared theme files for Rebalance-only work.
+
+## Historical Heatmaps edit map
+
+Production path: `streamlit_app.py` → `src/heatmaps_ui.py`.
+
+- `src/heatmaps_ui.py` owns sector default symbols, custom watchlist editing, historical adjusted-close download, return math, heatmap styling, CSV exports, and browser-persisted settings.
+- Historical market-data pulls use Yahoo/yfinance `period="max"` and adjusted daily closing prices. A fund's *first available* observation is not assumed to equal its official inception date; no pre-inception cells are fabricated. Monthly and annual calendar returns compound the observed daily adjusted-close returns, including partial first/current periods.
+- Memory uses the existing zero-height browser state component with a feature-specific localStorage key and four rolling backups. Browser hydration must complete before a new Streamlit process writes anything, to prevent reboot defaults erasing saved selections. The watchlist is browser-profile-specific; do not assume cloud cross-device synchronization.
+- Navigation changes only add the stable `HEATMAPS` tab key, its shared header, and the render dispatch. Keep E*TRADE OAuth and order placement completely out of Heatmaps.
+- Do not edit `src/theme.py`, GEX, Risk Sizing, OAuth, Holdings, or `src/terminal_core.py` to change Heatmaps content.
 
 ## Top navigation edit map
 
