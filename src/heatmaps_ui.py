@@ -371,8 +371,34 @@ def _shade(value: float | None, scale: float) -> tuple[str, str]:
     return "#%02x%02x%02x" % rgb, color
 
 
+def _best_positive_sector(prices: pd.DataFrame, columns: list[str],
+                          rows: list[tuple[str, list[float | None]]]) -> str | None:
+    """Highest positive-year percentage over each sector's complete calendar years."""
+    scores = []
+    for ticker, values in rows:
+        if ticker not in SECTOR_NAMES or ticker not in prices:
+            continue
+        history = prices[ticker].dropna()
+        if history.empty:
+            continue
+        # Exclude inception and latest calendar years because they may be partial.
+        complete = [float(value) for year, value in zip(columns, values)
+                    if history.index[0].year < int(year) < history.index[-1].year
+                    and value is not None and math.isfinite(float(value))]
+        if not complete:
+            continue
+        positive = sum(value > 0 for value in complete)
+        scores.append((positive / len(complete), sum(complete) / len(complete),
+                       len(complete), ticker))
+    if not scores:
+        return None
+    # Only highlight a sector with more positive than negative years.
+    best = max(scores)
+    return best[3] if best[0] > 0.5 else None
+
+
 def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[float | None]]],
-                    subtitle: str = "", *, annual: bool = False) -> str:
+                    subtitle: str = "", *, annual: bool = False, best_sector: str | None = None) -> str:
     values = [
         abs(float(v)) for _, row in rows for v in row
         if v is not None and math.isfinite(float(v))
@@ -399,7 +425,8 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
     out.append("</tr></thead><tbody>")
     for label, data in rows:
         label_text = _sector_label(label) if named_rows else label
-        out.append('<tr><td title="' + html.escape(label_text, quote=True) + '">'
+        winner_style = ' style="background:#ffe100;color:#000000;font-weight:800"' if label == best_sector else ""
+        out.append('<tr><td title="' + html.escape(label_text, quote=True) + '"' + winner_style + '>'
                    + html.escape(label_text) + "</td>")
         for col, value in zip(columns, data):
             bg, fg = _shade(value, scale)
@@ -596,7 +623,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 "ANNUAL SECTOR RETURNS // INCEPTION TO PRESENT", cols, rows,
                 "Sectors are rows; calendar years are columns (including 2001 where available). "
                 "Fund history before inception is blank; first and current years may be partial.",
-                annual=True,
+                annual=True, best_sector=_best_positive_sector(prices, cols, rows),
             ))
         else:
             active = focus if focus in available else available[0]
