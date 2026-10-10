@@ -383,7 +383,7 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
         out.append('<div class="hm-notes">' + html.escape(subtitle) + '</div>')
     named_rows = not annual and any(label in SECTOR_NAMES for label, _ in rows)
     classes = "hm-grid" + (" hm-annual" if annual else " hm-named-rows" if named_rows else "")
-    min_width = f' style="min-width:{max(1200, 97 * len(columns) + 66)}px"' if annual else ""
+    min_width = f' style="min-width:{max(600, 100 * len(columns) + 66)}px"' if annual else ""
     leading = "YEAR" if annual else "SECTOR / TICKER" if named_rows else "SYMBOL / YEAR"
     out.append(f'<div class="hm-scroll"><table class="{classes}"{min_width}><thead><tr><th>{leading}</th>')
     for col in columns:
