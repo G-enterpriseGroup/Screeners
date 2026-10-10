@@ -85,7 +85,7 @@ def run() -> None:
     assert "<th>2024</th>" in annual_markup and "<th>2025</th>" in annual_markup
     assert "<th>R / G</th>" in annual_markup
     assert 'hm-year-counts' in annual_markup
-    assert 'R 0</span> <span class="hm-count-green">G 2' in annual_markup
+    assert 'R 1</span> <span class="hm-count-green">G 1' in annual_markup
     assert 'R 0</span> <span class="hm-count-green">G 1' in annual_markup
     mixed = _heatmap_markup("COUNT", ["2023", "2024", "2025", "2026"],
                             [("XLK", [-2.0, 0.0, 3.0, None])], annual=True)
