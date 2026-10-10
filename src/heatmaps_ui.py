@@ -435,7 +435,6 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
         return
 
     with st.container(key="heatmaps_workspace", gap=None):
-        state_before = state
         tickers = list(state["tickers"])
         with st.form("heatmaps_add_ticker", clear_on_submit=True, border=False):
             input_col, add_col, reset_col = st.columns([4.0, 1.35, 1.65], vertical_alignment="bottom")
@@ -496,7 +495,6 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 key="heatmaps_focus_picker",
             )
         state = _save_state(vault_key, state, {**state, "view": view, "focus": focus})
-        _write_browser(vault_key, state)
 
         with st.spinner("Loading maximum available adjusted-close history..."):
             try:
@@ -509,6 +507,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             st.warning("No usable historical prices for: " + ", ".join(missing)
                        + " // symbols remain saved; Yahoo may be temporarily unavailable.")
         if prices.empty:
+            _write_browser(vault_key, state)
             if st.button("REFRESH DATA", key="heatmaps_retry"):
                 _historical_prices.clear()
                 st.rerun(scope="fragment")
@@ -567,7 +566,6 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             )
             if selected_year != state["focus_year"]:
                 state = _save_state(vault_key, state, {**state, "focus_year": selected_year})
-                _write_browser(vault_key, state)
             comparison_cols, comparison_rows = _sector_month(prices, tickers, selected_year)
             st.html(_heatmap_markup(
                 f"ALL SAVED TICKERS // {selected_year} MONTHLY PERFORMANCE",
@@ -577,6 +575,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             rows = comparison_rows
             cols = comparison_cols
 
+        _write_browser(vault_key, state)
         actions_left, actions_mid, actions_right = st.columns([1.3, 1.3, 2.0], vertical_alignment="center")
         with actions_left:
             st.download_button(
