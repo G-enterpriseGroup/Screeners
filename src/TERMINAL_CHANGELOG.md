@@ -2114,3 +2114,14 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS at run `38095711153`.
 - **Commit SHAs:** `44ff407d` (feature display), `5607f946` (regression and 2001 test), `7f1fbff2` (responsive year-column sizing), with final change-log commit stored in GitHub.
 - **Lesson:** Year-by-year comparison needs readable sector names and visible calendar years, not just rolling-period codes. Migrate an older saved default once without resetting later explicit view selections.
+
+
+## 2026-10-10 — Heatmaps annual matrix matches original sector-row layout
+
+- **Feature:** Heatmaps. **Production file:** `src/heatmaps_ui.py`; focused tests `scripts/test_heatmaps.py`.
+- **Problem/root cause:** The prior annual display transposed the familiar sector heatmap, putting years on rows and sectors on columns; existing browsers also retained the older rolling-period selection.
+- **Fix:** Preserve sectors as rows and replace 1D/1W/1M/etc. columns with ascending calendar years in the annual matrix. Migrate old saved `SECTOR PERFORMANCE` view to `ANNUAL HISTORY`, retaining an explicitly selectable `ROLLING PERFORMANCE` view. Preserve all watchlists, existing adjusted-close math, exports, gradient, and sector names.
+- **Unchanged:** Risk Sizing, GEX, OAuth, Holdings, trading/order routing, navigation, shared theme, `streamlit_app.py`, `src/terminal_core.py`.
+- **Tests:** Expanded offline Heatmaps assertions for sector-row/year-column layout, 2001, CSV and old-view migration; GitHub Actions architecture and app checks tracked on final commit.
+- **Commits:** `7cabd030`, `189aea12`, `14028ec7`, `a7449e00`; final changelog commit follows.
+- **Lesson:** Keep the original matrix orientation when switching from rolling to annual returns; update persisted legacy views rather than assuming new defaults override browser state.
