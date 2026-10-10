@@ -33,6 +33,11 @@ FEATURE_ROUTES = {
         "owner": "src/schwab_risk_sizing_ui.py",
         "support": ["src/risk_sizing.py"],
     },
+    "heatmaps": {
+        "entry": "src/heatmaps_ui.py",
+        "owner": "src/heatmaps_ui.py",
+        "support": ["src/components/risk_book_state_v1/index.html"],
+    },
     "gex": {
         "entry": "src/gex_workspace_v2.py",
         "owner": "src/gex_ui_v3.py",
