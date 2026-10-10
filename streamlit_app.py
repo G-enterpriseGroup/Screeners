@@ -94,6 +94,7 @@ clear_session_cache = _etrade_data_cache.clear_session_cache
 offline_snapshot_available = _etrade_data_cache.offline_snapshot_available
 offline_snapshot_status = _etrade_data_cache.offline_snapshot_status
 from src.gex_workspace_v2 import render_gex as render_gex_workspace
+from src.heatmaps_ui import render_heatmaps
 from src.gex_workspace_v2 import (
     maybe_auto_refresh_on_login as maybe_auto_refresh_gex_on_login,
 )
@@ -537,6 +538,10 @@ _TERMINAL_PAGE_HEADERS = {
         "TRIGGERS — OCO ORDER SIMULATOR",
         "BUY LIMIT → WHEN FILLED, ACTIVATES A TAKE-PROFIT LIMIT AND STOP-MARKET EXIT // SIMULATION ONLY // NO ORDER CAN BE TRANSMITTED",
     ),
+    "HEATMAPS": (
+        "HEATMAPS // SECTORS + CUSTOM TICKERS",
+        "STATE STREET SELECT SECTOR SPDRs // MAXIMUM HISTORICAL RETURNS // GRADIENT YEAR + MONTH HEATMAPS // PERSISTENT WATCHLIST",
+    ),
     "GEX": (
         "GEX // MULTI-TICKER GAMMA WORKSPACE",
         "BARCHART_STYLE // CALLS +GEX // PUTS −GEX // GAMMA × OI × 100 × SPOT² × 1% // INDIVIDUAL DTE // PACKED A6 // NOTES HISTORY",
@@ -718,6 +723,9 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
 
     elif active_tab == "GEX":
         _render_without_legacy_page_header("GEX", render_gex_workspace)
+
+    elif active_tab == "HEATMAPS":
+        render_heatmaps(_trade_access_code_hash())
 
     elif active_tab == "OPTION BOOK":
         render_option_book(_etrade_client(), _touch_etrade_session)
