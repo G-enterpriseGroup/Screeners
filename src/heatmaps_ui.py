@@ -258,7 +258,9 @@ def _period_return(prices: pd.Series, period: str) -> float:
             start = pd.Timestamp(year=end.year, month=1, day=1)
         else:
             return float("nan")
-        eligible = prices.loc[prices.index < start]
+        # Rolling windows start at the close ON the target date if traded;
+        # YTD starts from the previous calendar year-end close instead.
+        eligible = prices.loc[prices.index < start] if period == "YTD" else prices.loc[prices.index <= start]
         if eligible.empty:
             # This ticker launched after the requested horizon. The actual
             # available return is shown, with explicit first-date coverage.
