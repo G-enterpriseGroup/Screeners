@@ -343,6 +343,13 @@ _HEATMAP_CSS = """
 .hm-grid td:first-child{position:sticky;left:0;z-index:1;text-align:left;
  padding:8px;background:#181818;color:#ff9d32;overflow:hidden;text-overflow:ellipsis}
 .hm-grid td[title]{cursor:default}
+.hm-grid.hm-year-counts th:last-child,.hm-grid.hm-year-counts td:last-child{
+ position:sticky;right:0;width:90px;min-width:90px;max-width:90px;
+ background:#151515;z-index:2;white-space:nowrap;padding:8px 2px;
+ box-shadow:-2px 0 0 #080808}
+.hm-grid.hm-year-counts th:last-child{z-index:4;color:#ff9d32}
+.hm-count-red{color:#ff6374}.hm-count-green{color:#29d4a6}
+
 .hm-grid.hm-annual th{white-space:normal;vertical-align:middle;line-height:1.18}
 .hm-grid.hm-annual th:first-child{width:66px;min-width:66px}
 .hm-sector-name{display:block;overflow-wrap:normal;hyphens:none;font-size:11px}
@@ -413,8 +420,8 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
     if subtitle:
         out.append('<div class="hm-notes">' + html.escape(subtitle) + '</div>')
     named_rows = any(label in SECTOR_NAMES for label, _ in rows)
-    classes = "hm-grid" + (" hm-named-rows" if named_rows else "")
-    min_width = f' style="min-width:{max(600, 75 * len(columns) + 225)}px"' if annual else ""
+    classes = "hm-grid" + (" hm-named-rows" if named_rows else "") + (" hm-year-counts" if annual else "")
+    min_width = f' style="min-width:{max(600, 75 * len(columns) + 315)}px"' if annual else ""
     leading = "SECTOR / TICKER" if named_rows else "SYMBOL / YEAR"
     out.append(f'<div class="hm-scroll"><table class="{classes}"{min_width}><thead><tr><th>{leading}</th>')
     for col in columns:
@@ -427,7 +434,7 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
             )
         else:
             out.append("<th>" + html.escape(str(col)) + "</th>")
-    out.append("</tr></thead><tbody>")
+    if annual:\n        out.append("<th>R / G</th>")\n    out.append("</tr></thead><tbody>")
     for label, data in rows:
         label_text = _sector_label(label) if named_rows else label
         winner_style = ' style="background:#ffe100;color:#000000;font-weight:800"' if label == best_sector else ""
@@ -442,6 +449,12 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
                 f'<td title="{tip}" style="background:{bg};color:{fg}">'
                 + html.escape(valstr) + "</td>"
             )
+        if annual:
+            red = sum(value is not None and math.isfinite(float(value)) and value < 0 for value in data)
+            green = sum(value is not None and math.isfinite(float(value)) and value > 0 for value in data)
+            out.append(f'<td title="Negative years: {red}; positive years: {green}">'
+                       f'<span class="hm-count-red">R {red}</span> '
+                       f'<span class="hm-count-green">G {green}</span></td>')
         out.append("</tr>")
     out.append('</tbody></table></div><div class="hm-legend"><span>LOSS</span>'
                '<span class="hm-gradient"></span><span>GAIN</span>'
