@@ -2164,3 +2164,13 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** Pending final CI completion; consult workflow status.
 - **Commit SHA:** `a745bb7b` production, `c2d14268` / `fd5b22a9` tests; final changelog commit follows.
 - **Lesson:** Summarize only the same visible annual cells and keep summary column pinned to the right.
+
+## 2026-10-10 — Heatmaps startup syntax repair
+
+- Feature: Heatmaps. Production file: src/heatmaps_ui.py.
+- Root cause: The R/G column header edit placed literal newline escape text in Python source, causing a SyntaxError at import and blocking the whole terminal.
+- Fix: Restored actual Python newlines. Preserved the counts, sector ranking, annual history, saved tickers and theme.
+- Other features untouched: GEX, Risk Sizing, OAuth, Holdings, navigation, orders, streamlit_app.py and terminal_core.py.
+- Tests and architecture guard: final GitHub Actions workflow pending.
+- Fix commit: 3ba99eae.
+- Lesson: Syntax-check edited production files before pushing.
