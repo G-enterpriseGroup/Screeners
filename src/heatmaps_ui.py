@@ -47,8 +47,8 @@ SECTOR_NAMES = {
 }
 DEFAULT_TICKERS = tuple(SECTOR_NAMES)
 MAX_TICKERS = 60
-VIEWS = ("ANNUAL HISTORY", "SECTOR PERFORMANCE", "MONTHLY HISTORY")
-_HEATMAP_STATE_VERSION = 2
+VIEWS = ("ANNUAL HISTORY", "ROLLING PERFORMANCE", "MONTHLY HISTORY")
+_HEATMAP_STATE_VERSION = 3
 _SYMBOL_RE = re.compile(r"^\^?[A-Z][A-Z0-9.\-]{0,11}$")
 
 _COMPONENT_PATH = Path(__file__).parent / "components" / "risk_book_state_v1"
@@ -99,7 +99,7 @@ def _clean_state(raw: Any) -> dict[str, Any]:
         state_version = int(raw.get("state_version") or 0)
     except (ValueError, TypeError):
         state_version = 0
-    if state_version < _HEATMAP_STATE_VERSION and view == "SECTOR PERFORMANCE":
+    if view == "SECTOR PERFORMANCE":
         view = "ANNUAL HISTORY"
     try:
         focus_year = int(raw.get("focus_year") or pd.Timestamp.now().year)
@@ -572,7 +572,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             + ' // POSITIVE = GAIN // NEGATIVE = LOSS</div>'
         )
 
-        if view == "SECTOR PERFORMANCE":
+        if view == "ROLLING PERFORMANCE":
             cols, rows = _overview(prices, tickers)
             st.html(_heatmap_markup(
                 "MULTI-TICKER // TOTAL RETURN HEATMAP", cols, rows,
