@@ -381,13 +381,13 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
     out = ['<div class="hm-section">' + html.escape(title) + '</div>']
     if subtitle:
         out.append('<div class="hm-notes">' + html.escape(subtitle) + '</div>')
-    named_rows = not annual and any(label in SECTOR_NAMES for label, _ in rows)
-    classes = "hm-grid" + (" hm-annual" if annual else " hm-named-rows" if named_rows else "")
-    min_width = f' style="min-width:{max(600, 100 * len(columns) + 66)}px"' if annual else ""
-    leading = "YEAR" if annual else "SECTOR / TICKER" if named_rows else "SYMBOL / YEAR"
+    named_rows = any(label in SECTOR_NAMES for label, _ in rows)
+    classes = "hm-grid" + (" hm-named-rows" if named_rows else "")
+    min_width = f' style="min-width:{max(600, 75 * len(columns) + 225)}px"' if annual else ""
+    leading = "SECTOR / TICKER" if named_rows else "SYMBOL / YEAR"
     out.append(f'<div class="hm-scroll"><table class="{classes}"{min_width}><thead><tr><th>{leading}</th>')
     for col in columns:
-        sector = SECTOR_NAMES.get(str(col)) if annual else None
+        sector = None
         if sector:
             out.append(
                 '<th title="' + html.escape(_sector_label(str(col)), quote=True) + '">'
@@ -404,7 +404,7 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
         for col, value in zip(columns, data):
             bg, fg = _shade(value, scale)
             valstr = f"{value:+.1f}%" if value is not None and math.isfinite(value) else "—"
-            col_label = _sector_label(str(col)) if annual else str(col)
+            col_label = str(col)
             tip = html.escape(f"{label_text} / {col_label}: {valstr}", quote=True)
             out.append(
                 f'<td title="{tip}" style="background:{bg};color:{fg}">'
@@ -434,8 +434,8 @@ def _annual(prices: pd.DataFrame, tickers: list[str]) -> tuple[list[str], list[t
         for symbol in tickers if symbol in prices
     }
     years = sorted({year for data in returns.values() for year in data})
-    return list(returns), [
-        (str(year), [returns[symbol].get(year) for symbol in returns]) for year in years
+    return [str(year) for year in years], [
+        (symbol, [returns[symbol].get(year) for year in years]) for symbol in returns
     ]
 
 
@@ -462,11 +462,11 @@ def _sector_month(prices: pd.DataFrame, tickers: list[str], year: int) -> tuple[
 
 def _export_csv(columns: list[str], rows: list[tuple[str, list[float | None]]],
                 *, annual: bool = False) -> bytes:
-    headings = [_sector_label(col) for col in columns] if annual else columns
-    names = [label if annual else _sector_label(label) for label, _ in rows]
+    headings = columns
+    names = [_sector_label(label) for label, _ in rows]
     return pd.DataFrame(
         [data for _, data in rows], index=names, columns=headings
-    ).rename_axis("YEAR" if annual else "TICKER_OR_YEAR").to_csv(
+    ).rename_axis("SECTOR_OR_TICKER" if annual else "TICKER_OR_YEAR").to_csv(
         float_format="%.5f"
     ).encode("utf-8")
 
@@ -594,7 +594,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             cols, rows = _annual(prices, tickers)
             st.html(_heatmap_markup(
                 "ANNUAL SECTOR RETURNS // INCEPTION TO PRESENT", cols, rows,
-                "Each calendar year is shown in chronological order (including 2001 where available). "
+                "Sectors are rows; calendar years are columns (including 2001 where available). "
                 "Fund history before inception is blank; first and current years may be partial.",
                 annual=True,
             ))
