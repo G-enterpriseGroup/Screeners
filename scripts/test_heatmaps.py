@@ -48,13 +48,13 @@ def run() -> None:
     xlre = pd.Series([100.0, 105.0], index=days[-2:])
     annual_xlk = _calendar_returns(xlk, "year")
     near(annual_xlk[2024], 10.0)
-    near(annual_xlk[2025], -10.0)
+    near(annual_xlk[2025], -1.0)
     month_xlk = _calendar_returns(xlk, "month")
     near(month_xlk[(2025, 1)], 10.0)
     near(month_xlk[(2025, 2)], -10.0)
     near(_period_return(xlk, "MAX"), 8.9)
     near(_period_return(xlk, "1D"), -10.0)
-    near(_period_return(xlk, "YTD"), -10.0)
+    near(_period_return(xlk, "YTD"), -1.0)
     near(_period_return(xlk, "5Y"), 8.9)  # available-history fallback
 
     prices = pd.DataFrame({"XLK": xlk, "XLRE": xlre})
