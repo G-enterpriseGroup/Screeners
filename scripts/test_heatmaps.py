@@ -95,19 +95,30 @@ def run() -> None:
     assert pcols == ["2000", "2001", "2002"]
     assert [label for label, _ in prows] == ["XLK"]
     assert "2001" in _heatmap_markup("BY YEAR", pcols, prows, annual=True)
-    years = pd.to_datetime(["2000-12-29", "2001-12-31", "2002-12-31",
-                            "2003-12-31", "2004-12-31", "2005-01-05"])
-    comparison = pd.DataFrame({"XLK": [100, 120, 140, 160, 170, 171],
-                               "XLE": [100, 110, 100, 110, 100, 105],
-                               "XLRE": [float("nan"), float("nan"), 100, 110, 120, 121]},
-                              index=years)
-    yc, yr = _annual(comparison, ["XLK", "XLE", "XLRE"])
+    # A recent fund with a perfect short record cannot beat mature sectors.
+    long_years = pd.to_datetime([f"{year}-12-30" for year in range(2000, 2026)])
+    mature_returns = [1.10 if i % 5 else 0.90 for i in range(25)]
+    mature_prices = [100.0]
+    for factor in mature_returns:
+        mature_prices.append(mature_prices[-1] * factor)
+    new_prices = [float("nan")] * 19 + [100.0]
+    for _ in range(6):
+        new_prices.append(new_prices[-1] * 1.20)
+    comparison = pd.DataFrame({
+        "XLK": mature_prices,
+        "XLC": new_prices,
+        "XLE": [100.0 * (1.01 ** i) for i in range(26)],
+    }, index=long_years)
+    yc, yr = _annual(comparison, ["XLK", "XLC", "XLE"])
     winner = _best_positive_sector(comparison, yc, yr)
-    assert winner == "XLK"
+    assert winner == "XLK", winner
     highlighted = _heatmap_markup("ANNUAL", yc, yr, annual=True, best_sector=winner)
     assert highlighted.count('background:#ffe100;color:#000000') == 1
     assert 'Technology (XLK)</td>' in highlighted
-    assert _best_positive_sector(comparison[["XLE"]], yc, [yr[1]]) is None
+    assert _best_positive_sector(comparison[["XLC"]], yc, [yr[1]]) is None
+    # Under 15 full years must never receive the highlight.
+    assert _best_positive_sector(comparison.loc["2015":, ["XLK"]],
+                                 *_annual(comparison.loc["2015":, ["XLK"]], ["XLK"])) is None
     mcols, mrows = _monthly(prices, "XLRE")
     assert len(mcols) == 12
     assert [r[0] for r in mrows] == ["2025"]
