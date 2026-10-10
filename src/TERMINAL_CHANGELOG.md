@@ -2125,3 +2125,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Tests:** Expanded offline Heatmaps assertions for sector-row/year-column layout, 2001, CSV and old-view migration; GitHub Actions architecture and app checks tracked on final commit.
 - **Commits:** `7cabd030`, `189aea12`, `14028ec7`, `a7449e00`; final changelog commit follows.
 - **Lesson:** Keep the original matrix orientation when switching from rolling to annual returns; update persisted legacy views rather than assuming new defaults override browser state.
+
+
+## 2026-10-10 — Single fair green-year sector highlight
+
+- **Feature/production files:** Heatmaps; `src/heatmaps_ui.py`, `scripts/test_heatmaps.py`, this append-only changelog.
+- **Request/root cause:** Annual heatmap lacked a clear single best sector; raw counts of green cells unfairly favor funds launched earlier.
+- **Change:** Compare each State Street sector's positive calendar-year rate using only its own available complete years; exclude first/inception and latest/ongoing years as potentially partial. Break ties by mean annual return, then available complete-year count, then symbol. Highlight only the winning sector's name cell bright yellow with black text. No highlight when no sector has a majority of positive years. Custom tickers remain unranked.
+- **Preserved:** Existing year-by-year data, gradient cells, original ordering, saved tickers, browser memory, CSV exports, compact Bloomberg theme.
+- **Intentionally untouched:** GEX, Risk, OAuth, Holdings, orders, navigation, shared CSS, `streamlit_app.py`, `src/terminal_core.py`.
+- **Tests:** Added synthetic differing-inception-year regression for one winner and no-majority case; CI validates syntax, architecture, neighboring tabs, feature test and deployment.
+- **Architecture guard:** Refer to final GitHub Actions run for result; not asserted before completion.
+- **Commits:** `e57146da` feature, `5a85b1ea` tests, final changelog commit.
+- **Lesson:** Compare the fraction of positive complete years, not raw green-cell counts, when sector inception dates differ.
