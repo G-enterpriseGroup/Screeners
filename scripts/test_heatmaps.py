@@ -56,6 +56,9 @@ def run() -> None:
     near(_period_return(xlk, "1D"), -10.0)
     near(_period_return(xlk, "YTD"), -1.0)
     near(_period_return(xlk, "5Y"), 8.9)  # available-history fallback
+    week = pd.Series([100.0, 108.0, 120.0], index=pd.to_datetime(
+        ["2025-01-01", "2025-01-02", "2025-01-09"]))
+    near(_period_return(week, "1W"), (120.0 / 108.0 - 1.0) * 100.0)
 
     prices = pd.DataFrame({"XLK": xlk, "XLRE": xlre})
     cols, rows = _annual(prices, ["XLK", "XLRE"])
