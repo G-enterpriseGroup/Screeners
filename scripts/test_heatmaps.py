@@ -107,7 +107,7 @@ def run() -> None:
     comparison = pd.DataFrame({
         "XLK": mature_prices,
         "XLC": new_prices,
-        "XLE": [100.0 * (1.01 ** i) for i in range(26)],
+        "XLE": [100.0 * (1.01 ** i) * (0.8 if i % 2 else 1.0) for i in range(26)],
     }, index=long_years)
     yc, yr = _annual(comparison, ["XLK", "XLC", "XLE"])
     winner = _best_positive_sector(comparison, yc, yr)
