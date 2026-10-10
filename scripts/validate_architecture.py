@@ -37,6 +37,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "risk_sizing_ui_v10.py",
     SRC / "schwab_risk_sizing_ui.py",
     SRC / "gex_workspace_v2.py",
+    SRC / "heatmaps_ui.py",
     SRC / "gex_ui.py",
     SRC / "gex_cboe.py",
     SRC / "gex_github_bridge.py",
@@ -61,6 +62,7 @@ PRODUCTION_PYTHON_FILES = [
 REQUIRED_APP_IMPORTS = [
     "from src.etrade_connection_ui_v2 import render_compact_etrade_connection",
     "from src.gex_workspace_v2 import render_gex as render_gex_workspace",
+    "from src.heatmaps_ui import render_heatmaps",
     "from src.holdings_snapshot_mode import build_manual_holdings_renderer",
     "from src.option_book_ui import render_option_book",
     "from src.performance_ui import render_performance",
