@@ -2100,3 +2100,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Latest CI run `38091532705` (verify conclusion before claiming PASS).
 - **Commit SHAs:** `ff2fb857` (production correction), `dd886f70` (regression coverage).
 - **Lesson:** A rolling return uses a closing price on its target anchor date when available; YTD is intentionally anchored to the previous year-end close.
+
+## 2026-10-10 — Full sector names and ascending annual Heatmaps history
+
+- **Feature changed:** Heatmaps sector labeling and per-calendar-year history display only.
+- **Exact production file(s) changed:** `src/heatmaps_ui.py`, `scripts/test_heatmaps.py`, and this append-only change log.
+- **What was broken:** Heatmaps initially opened to rolling-period returns (1D/1W/YTD/etc.) and showed ETF ticker codes instead of human-readable sector names. The annual matrix listed newest years first and its columns contained only symbols.
+- **Root cause:** The first Heatmaps release used `SECTOR PERFORMANCE` as the persisted default, mapped neither sector names nor annual headings into table HTML, and sorted calendar years in descending order.
+- **What changed:** Annual History now opens by default, with a versioned one-time migration of older default saved views; explicit view choices made after migration continue to persist. Annual rows run chronologically from each fund's first available calendar year through the present (including 2001 when data exists), with full State Street sector names and their symbols in header cells. The Overview and monthly comparison rows, focus/remove selectors, annual CSV headers, and coverage labels also show sector names. Annual column min-width scales with the actual ticker count to reduce wasted space.
+- **Important behavior that must remain:** Use actual per-ETF adjusted-close history, no pre-inception invented returns; preserve custom tickers, add/delete controls, browser-local watchlist and view memory with 4 backup generations, gradient coloring, all existing CSV downloads, and no broker data or order actions.
+- **Files/features intentionally NOT changed:** `streamlit_app.py`, top-navigation, shared theme, GEX, Risk Sizing, E*TRADE OAuth, Holdings, Performance, other features, and `src/terminal_core.py`.
+- **Tests performed:** Updated `scripts/test_heatmaps.py` asserts all 11 sector names, migration preserving explicit views, chronological 2000/2001/2002 calendar years, named HTML headers, CSV export, and existing historical math. GitHub Actions run `38095711153` passed syntax/architecture validation, existing top-tab smoke tests, Heatmaps math/regressions, broker-safety checks and production health; final frontend verification checked in same workflow.
+- **Architecture guard result:** PASS at run `38095711153`.
+- **Commit SHAs:** `44ff407d` (feature display), `5607f946` (regression and 2001 test), `7f1fbff2` (responsive year-column sizing), with final change-log commit stored in GitHub.
+- **Lesson:** Year-by-year comparison needs readable sector names and visible calendar years, not just rolling-period codes. Migrate an older saved default once without resetting later explicit view selections.
