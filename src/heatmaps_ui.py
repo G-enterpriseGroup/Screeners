@@ -47,7 +47,8 @@ SECTOR_NAMES = {
 }
 DEFAULT_TICKERS = tuple(SECTOR_NAMES)
 MAX_TICKERS = 60
-VIEWS = ("SECTOR PERFORMANCE", "ANNUAL HISTORY", "MONTHLY HISTORY")
+VIEWS = ("ANNUAL HISTORY", "SECTOR PERFORMANCE", "MONTHLY HISTORY")
+_HEATMAP_STATE_VERSION = 2
 _SYMBOL_RE = re.compile(r"^\^?[A-Z][A-Z0-9.\-]{0,11}$")
 
 _COMPONENT_PATH = Path(__file__).parent / "components" / "risk_book_state_v1"
@@ -64,6 +65,12 @@ def _symbol(value: Any) -> str:
             break
     ticker = ticker.replace(".", "-")
     return ticker if _SYMBOL_RE.fullmatch(ticker) else ""
+
+
+def _sector_label(ticker: str) -> str:
+    """Human-readable sector plus symbol; other custom tickers keep their symbol."""
+    name = SECTOR_NAMES.get(ticker)
+    return f"{name} ({ticker})" if name else ticker
 
 
 def _clean_state(raw: Any) -> dict[str, Any]:
@@ -85,12 +92,22 @@ def _clean_state(raw: Any) -> dict[str, Any]:
         revision = 0
     focus = _symbol(raw.get("focus"))
     view = str(raw.get("view") or VIEWS[0])
+    # One-time migration: existing browser watchlists originally defaulted
+    # to rolling periods. Open the requested year-by-year matrix instead,
+    # while preserving explicit new-version view changes and ticker memory.
+    try:
+        state_version = int(raw.get("state_version") or 0)
+    except (ValueError, TypeError):
+        state_version = 0
+    if state_version < _HEATMAP_STATE_VERSION and view == "SECTOR PERFORMANCE":
+        view = "ANNUAL HISTORY"
     try:
         focus_year = int(raw.get("focus_year") or pd.Timestamp.now().year)
     except (ValueError, TypeError):
         focus_year = pd.Timestamp.now().year
     return {
         "revision": revision,
+        "state_version": _HEATMAP_STATE_VERSION,
         "saved_at": float(raw.get("saved_at") or 0.0),
         "tickers": tickers,
         "focus": focus if focus in tickers else (tickers[0] if tickers else ""),
@@ -326,6 +343,14 @@ _HEATMAP_CSS = """
 .hm-grid td:first-child{position:sticky;left:0;z-index:1;text-align:left;
  padding:8px;background:#181818;color:#ff9d32;overflow:hidden;text-overflow:ellipsis}
 .hm-grid td[title]{cursor:default}
+.hm-grid.hm-annual th{white-space:normal;vertical-align:middle;line-height:1.18}
+.hm-grid.hm-annual th:first-child{width:66px;min-width:66px}
+.hm-sector-name{display:block;overflow-wrap:normal;hyphens:none;font-size:11px}
+.hm-sector-ticker{display:block;color:#a7acb2;font-size:10px;margin-top:3px}
+.hm-grid.hm-named-rows td:first-child,
+.hm-grid.hm-named-rows th:first-child{
+ width:225px;min-width:225px;max-width:225px;white-space:normal;line-height:1.25
+}
 .hm-legend{display:flex;align-items:center;gap:10px;margin:7px 0;color:#a7abb1;font-size:11px}
 .hm-gradient{display:inline-block;width:150px;height:9px;border:1px solid #555;
  background:linear-gradient(90deg,#dd3b4d,#242424,#20ca9c)}
@@ -347,7 +372,7 @@ def _shade(value: float | None, scale: float) -> tuple[str, str]:
 
 
 def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[float | None]]],
-                    subtitle: str = "") -> str:
+                    subtitle: str = "", *, annual: bool = False) -> str:
     values = [
         abs(float(v)) for _, row in rows for v in row
         if v is not None and math.isfinite(float(v))
@@ -356,15 +381,31 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
     out = ['<div class="hm-section">' + html.escape(title) + '</div>']
     if subtitle:
         out.append('<div class="hm-notes">' + html.escape(subtitle) + '</div>')
-    out.append('<div class="hm-scroll"><table class="hm-grid"><thead><tr><th>SYMBOL / YEAR</th>')
-    out.extend("<th>" + html.escape(str(col)) + "</th>" for col in columns)
+    named_rows = not annual and any(label in SECTOR_NAMES for label, _ in rows)
+    classes = "hm-grid" + (" hm-annual" if annual else " hm-named-rows" if named_rows else "")
+    min_width = f' style="min-width:{max(1200, 97 * len(columns) + 66)}px"' if annual else ""
+    leading = "YEAR" if annual else "SECTOR / TICKER" if named_rows else "SYMBOL / YEAR"
+    out.append(f'<div class="hm-scroll"><table class="{classes}"{min_width}><thead><tr><th>{leading}</th>')
+    for col in columns:
+        sector = SECTOR_NAMES.get(str(col)) if annual else None
+        if sector:
+            out.append(
+                '<th title="' + html.escape(_sector_label(str(col)), quote=True) + '">'
+                + '<span class="hm-sector-name">' + html.escape(sector) + '</span>'
+                + '<span class="hm-sector-ticker">' + html.escape(str(col)) + '</span></th>'
+            )
+        else:
+            out.append("<th>" + html.escape(str(col)) + "</th>")
     out.append("</tr></thead><tbody>")
     for label, data in rows:
-        out.append("<tr><td title='" + html.escape(label, quote=True) + "'>" + html.escape(label) + "</td>")
+        label_text = _sector_label(label) if named_rows else label
+        out.append('<tr><td title="' + html.escape(label_text, quote=True) + '">'
+                   + html.escape(label_text) + "</td>")
         for col, value in zip(columns, data):
             bg, fg = _shade(value, scale)
             valstr = f"{value:+.1f}%" if value is not None and math.isfinite(value) else "—"
-            tip = html.escape(f"{label} / {col}: {valstr}", quote=True)
+            col_label = _sector_label(str(col)) if annual else str(col)
+            tip = html.escape(f"{label_text} / {col_label}: {valstr}", quote=True)
             out.append(
                 f'<td title="{tip}" style="background:{bg};color:{fg}">'
                 + html.escape(valstr) + "</td>"
@@ -392,7 +433,7 @@ def _annual(prices: pd.DataFrame, tickers: list[str]) -> tuple[list[str], list[t
         symbol: _calendar_returns(prices[symbol], "year")
         for symbol in tickers if symbol in prices
     }
-    years = sorted({year for data in returns.values() for year in data}, reverse=True)
+    years = sorted({year for data in returns.values() for year in data})
     return list(returns), [
         (str(year), [returns[symbol].get(year) for symbol in returns]) for year in years
     ]
@@ -419,10 +460,15 @@ def _sector_month(prices: pd.DataFrame, tickers: list[str], year: int) -> tuple[
     return cols, rows
 
 
-def _export_csv(columns: list[str], rows: list[tuple[str, list[float | None]]]) -> bytes:
+def _export_csv(columns: list[str], rows: list[tuple[str, list[float | None]]],
+                *, annual: bool = False) -> bytes:
+    headings = [_sector_label(col) for col in columns] if annual else columns
+    names = [label if annual else _sector_label(label) for label, _ in rows]
     return pd.DataFrame(
-        [data for _, data in rows], index=[label for label, _ in rows], columns=columns
-    ).rename_axis("TICKER_OR_YEAR").to_csv(float_format="%.5f").encode("utf-8")
+        [data for _, data in rows], index=names, columns=headings
+    ).rename_axis("YEAR" if annual else "TICKER_OR_YEAR").to_csv(
+        float_format="%.5f"
+    ).encode("utf-8")
 
 
 # ==============================
@@ -470,7 +516,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             with delete_col:
                 to_remove = st.selectbox(
                     "REMOVE FROM WATCHLIST", tickers,
-                    index=0, key="heatmaps_delete_picker",
+                    index=0, key="heatmaps_delete_picker", format_func=_sector_label,
                 )
             with delete_btn:
                 delete = st.button("DELETE TICKER", key="heatmaps_delete_button", use_container_width=True)
@@ -493,7 +539,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             focus = st.selectbox(
                 "FOCUS TICKER", tickers,
                 index=tickers.index(state["focus"]) if state["focus"] in tickers else 0,
-                key="heatmaps_focus_picker",
+                key="heatmaps_focus_picker", format_func=_sector_label,
             )
         state = _save_state(vault_key, state, {**state, "view": view, "focus": focus})
 
@@ -534,28 +580,29 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 "A horizon shorter than the fund's history uses its available start date.",
             ))
             coverage = [
-                (ticker, first[ticker].strftime("%Y-%m-%d"),
+                (_sector_label(ticker), first[ticker].strftime("%Y-%m-%d"),
                  last[ticker].strftime("%Y-%m-%d"),
                  f"{_period_return(prices[ticker], 'MAX'):+.2f}%")
                 for ticker in available
             ]
             st.dataframe(
                 pd.DataFrame(coverage, columns=[
-                    "TICKER", "FIRST AVAILABLE", "LAST AVAILABLE", "SINCE FIRST CLOSE"
+                    "SECTOR / TICKER", "FIRST AVAILABLE", "LAST AVAILABLE", "SINCE FIRST CLOSE"
                 ]), hide_index=True, use_container_width=True,
             )
         elif view == "ANNUAL HISTORY":
             cols, rows = _annual(prices, tickers)
             st.html(_heatmap_markup(
-                "ANNUAL HEATMAP // ALL AVAILABLE YEARS", cols, rows,
-                "Calendar-year total returns by fund, newest year first. "
-                "First and current years may be partial; — means no available data.",
+                "ANNUAL SECTOR RETURNS // INCEPTION TO PRESENT", cols, rows,
+                "Each calendar year is shown in chronological order (including 2001 where available). "
+                "Fund history before inception is blank; first and current years may be partial.",
+                annual=True,
             ))
         else:
             active = focus if focus in available else available[0]
             cols, rows = _monthly(prices, active)
             st.html(_heatmap_markup(
-                active + " // ALL MONTHS SINCE FIRST AVAILABLE CLOSE", cols, rows,
+                _sector_label(active) + " // ALL MONTHS SINCE FIRST AVAILABLE CLOSE", cols, rows,
                 "Calendar-month compounded adjusted-close returns; "
                 "first and current months may be partial.",
             ))
@@ -580,7 +627,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
         actions_left, actions_mid, actions_right = st.columns([1.3, 1.3, 2.0], vertical_alignment="center")
         with actions_left:
             st.download_button(
-                "EXPORT HEATMAP CSV", _export_csv(cols, rows),
+                "EXPORT HEATMAP CSV", _export_csv(cols, rows, annual=(view == "ANNUAL HISTORY")),
                 file_name=f"heatmaps_{view.lower().replace(' ', '_')}.csv",
                 mime="text/csv", use_container_width=True,
                 key="heatmaps_export_view",
