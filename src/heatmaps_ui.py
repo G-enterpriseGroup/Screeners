@@ -280,8 +280,7 @@ def _calendar_returns(prices: pd.Series, frequency: str) -> dict[Any, float]:
     if frequency == "year":
         keys = daily.index.year
     elif frequency == "month":
-        keys = zip(daily.index.year, daily.index.month)
-        keys = list(keys)
+        keys = pd.MultiIndex.from_arrays([daily.index.year, daily.index.month])
     else:
         raise ValueError("frequency must be year or month")
     totals = (1.0 + daily).groupby(keys).prod()
