@@ -434,7 +434,9 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
             )
         else:
             out.append("<th>" + html.escape(str(col)) + "</th>")
-    if annual:\n        out.append("<th>R / G</th>")\n    out.append("</tr></thead><tbody>")
+    if annual:
+        out.append("<th>R / G</th>")
+    out.append("</tr></thead><tbody>")
     for label, data in rows:
         label_text = _sector_label(label) if named_rows else label
         winner_style = ' style="background:#ffe100;color:#000000;font-weight:800"' if label == best_sector else ""
