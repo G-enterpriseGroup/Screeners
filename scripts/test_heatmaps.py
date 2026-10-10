@@ -74,25 +74,24 @@ def run() -> None:
 
     prices = pd.DataFrame({"XLK": xlk, "XLRE": xlre})
     cols, rows = _annual(prices, ["XLK", "XLRE"])
-    assert cols == ["XLK", "XLRE"]
-    assert rows[0][0] == "2024"
-    assert rows[1][0] == "2025"
-    assert rows[0][1][1] is None  # newer fund has no pre-inception history
+    assert cols == ["2024", "2025"]
+    assert [label for label, _ in rows] == ["XLK", "XLRE"]
+    assert rows[1][1][0] is None  # no pre-inception returns
     annual_markup = _heatmap_markup("ANNUAL", cols, rows, annual=True)
-    assert "Technology" in annual_markup and "Real Estate" in annual_markup
-    assert 'hm-sector-name' in annual_markup and '<th>YEAR</th>' in annual_markup
-    assert "2024" in annual_markup and "2025" in annual_markup
+    assert "Technology (XLK)" in annual_markup
+    assert "Real Estate (XLRE)" in annual_markup
+    assert "<th>2024</th>" in annual_markup and "<th>2025</th>" in annual_markup
     csv_annual = _export_csv(cols, rows, annual=True).decode()
     assert "Technology (XLK)" in csv_annual
     assert "Real Estate (XLRE)" in csv_annual
-    assert "YEAR," in csv_annual
+    assert "SECTOR_OR_TICKER,2024,2025" in csv_annual
     past = pd.Series(
         [100.0, 105.0, 110.0, 115.0],
         index=pd.to_datetime(["2000-12-29", "2001-06-01", "2001-12-31", "2002-01-02"]),
     )
     pcols, prows = _annual(pd.DataFrame({"XLK": past}), ["XLK"])
-    assert pcols == ["XLK"]
-    assert [label for label, _ in prows] == ["2000", "2001", "2002"]
+    assert pcols == ["2000", "2001", "2002"]
+    assert [label for label, _ in prows] == ["XLK"]
     assert "2001" in _heatmap_markup("BY YEAR", pcols, prows, annual=True)
     mcols, mrows = _monthly(prices, "XLRE")
     assert len(mcols) == 12
