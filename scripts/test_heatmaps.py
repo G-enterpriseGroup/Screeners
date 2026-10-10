@@ -83,6 +83,16 @@ def run() -> None:
     assert "Technology (XLK)" in annual_markup
     assert "Real Estate (XLRE)" in annual_markup
     assert "<th>2024</th>" in annual_markup and "<th>2025</th>" in annual_markup
+    assert "<th>R / G</th>" in annual_markup
+    assert 'hm-year-counts' in annual_markup
+    assert 'R 0</span> <span class="hm-count-green">G 2' in annual_markup
+    assert 'R 0</span> <span class="hm-count-green">G 1' in annual_markup
+    mixed = _heatmap_markup("COUNT", ["2023", "2024", "2025", "2026"],
+                            [("XLK", [-2.0, 0.0, 3.0, None])], annual=True)
+    assert 'R 1</span> <span class="hm-count-green">G 1' in mixed
+    assert mixed.count('hm-count-red') == 1
+    assert "<th>R / G</th>" not in _heatmap_markup("ROLLING", ["1Y"], [("XLK", [5.0])])
+
     csv_annual = _export_csv(cols, rows, annual=True).decode()
     assert "Technology (XLK)" in csv_annual
     assert "Real Estate (XLRE)" in csv_annual
