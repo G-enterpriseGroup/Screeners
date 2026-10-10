@@ -15,6 +15,7 @@ from src.heatmaps_ui import (
     SECTOR_NAMES,
     VIEWS,
     _annual,
+    _best_positive_sector,
     _calendar_returns,
     _clean_state,
     _export_csv,
@@ -94,6 +95,19 @@ def run() -> None:
     assert pcols == ["2000", "2001", "2002"]
     assert [label for label, _ in prows] == ["XLK"]
     assert "2001" in _heatmap_markup("BY YEAR", pcols, prows, annual=True)
+    years = pd.to_datetime(["2000-12-29", "2001-12-31", "2002-12-31",
+                            "2003-12-31", "2004-12-31", "2005-01-05"])
+    comparison = pd.DataFrame({"XLK": [100, 120, 140, 160, 170, 171],
+                               "XLE": [100, 110, 100, 110, 100, 105],
+                               "XLRE": [float("nan"), float("nan"), 100, 110, 120, 121]},
+                              index=years)
+    yc, yr = _annual(comparison, ["XLK", "XLE", "XLRE"])
+    winner = _best_positive_sector(comparison, yc, yr)
+    assert winner == "XLK"
+    highlighted = _heatmap_markup("ANNUAL", yc, yr, annual=True, best_sector=winner)
+    assert highlighted.count('background:#ffe100;color:#000000') == 1
+    assert 'Technology (XLK)</td>' in highlighted
+    assert _best_positive_sector(comparison[["XLE"]], yc, [yr[1]]) is None
     mcols, mrows = _monthly(prices, "XLRE")
     assert len(mcols) == 12
     assert [r[0] for r in mrows] == ["2025"]
