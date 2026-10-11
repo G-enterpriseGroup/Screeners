@@ -53,6 +53,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "protective_puts_sources.py",
     SRC / "protective_puts_ui.py",
     SRC / "protective_puts_portfolio_ui.py",
+    SRC / "protective_puts_orders.py",
     SRC / "yfinance_options.py",
     SRC / "rebalance_portfolio_ui.py",
     SRC / "tab_bar_v4.py",
@@ -303,6 +304,27 @@ def main() -> int:
         for forbidden in ("preview_order(", "place_order(", "cancel_order("):
             if forbidden in protective_text:
                 errors.append("PROTECTIVE PUTS SAFETY: read-only analytics may not call " + forbidden)
+
+    # User-directed portfolio puts may place only a broker-previewed order.
+    # Direct matched-puts scanner stays read-only (checked above).
+    portfolio_orders = SRC / "protective_puts_orders.py"
+    portfolio_ui = SRC / "protective_puts_portfolio_ui.py"
+    if portfolio_orders.exists() and portfolio_ui.exists():
+        source = portfolio_ui.read_text(encoding="utf-8")
+        payloads = portfolio_orders.read_text(encoding="utf-8")
+        for required in (
+            "client.preview_order(", "client.place_order(",
+            'key="pp_hedge_order_review"',
+            'key="pp_hedge_live_confirm"',
+            'key="pp_hedge_order_send"',
+            "st.session_state.pop(\"pp_hedge_order_preview\", None)",
+        ):
+            if required not in source:
+                errors.append("PROTECTIVE PUT ORDER SAFETY MISSING: " + required)
+        for required in ('"orderType": "OPTN"', '"priceType": "LIMIT"',
+                         '"orderAction": "BUY_OPEN"', '"callPut": "PUT"'):
+            if required not in payloads:
+                errors.append("PROTECTIVE PUT PAYLOAD SAFETY MISSING: " + required)
 
     performance_ui = SRC / "performance_ui.py"
     if performance_ui.exists():
