@@ -140,7 +140,7 @@ def main() -> None:
             opts.add_argument("--no-sandbox")
             opts.add_argument("--disable-dev-shm-usage")
             opts.add_argument("--force-device-scale-factor=1")
-            opts.add_argument("--window-size=1600,1000")
+            opts.add_argument("--window-size=1450,1000")
             driver=webdriver.Chrome(options=opts)
             driver.get(BASE)
             wait=WebDriverWait(driver,60)
@@ -155,6 +155,18 @@ def main() -> None:
             wait.until(table_ready)
             assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataFrame"]')
             assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataEditor"]')
+            alignment = driver.execute_script("""
+                const grid=document.querySelector('.st-key-pp_chain_native_grid');
+                const ck=grid.querySelector('[data-testid="stCheckbox"]');
+                const row=grid.querySelector('.pp-chain-cells:not(.pp-chain-head)');
+                const calc=row.children[9];
+                const a=ck.getBoundingClientRect(), b=row.getBoundingClientRect();
+                return {topGap:Math.abs(a.top-b.top), heightGap:Math.abs(a.height-b.height),
+                        calcWidth:calc.clientWidth, calcContentWidth:calc.scrollWidth};
+            """)
+            assert alignment["topGap"] <= 4, alignment
+            assert alignment["heightGap"] <= 4, alignment
+            assert alignment["calcWidth"] >= 100, alignment
             assert "100×(" in driver.find_element(By.CSS_SELECTOR,
                 ".pp-chain-cells:not(.pp-chain-head)").text
             assert not driver.find_elements(By.XPATH,
