@@ -1074,7 +1074,7 @@ def _chain_cell_markup(row: dict[str, Any]) -> str:
     )
     if match:
         a, b, k = (f"{float(value.replace(',', '')):,.2f}" for value in match.groups())
-        compact_calc = f"100×max(0,{a}+{b}−{k})"
+        compact_calc = f"100×({a}+{b}−{k})⁺"
     else:
         compact_calc = expression
 
@@ -1151,8 +1151,8 @@ def _results(
             '// NOT A GUARANTEED PORTFOLIO LOSS CAP.'
         )
     st.caption(
-        "100-SHARE MAX LOSS = SAME-TICKER MARRIED PUT EXAMPLE, NOT THE BASKET. "
-        "ASK = PURCHASE REFERENCE; LAST = HISTORICAL. ORANGE = TOP ROW; GREEN = BEST/EXP."
+        "MAX LOSS (100 SHARES) = max(0, (ETF SPOT + PUT ASK - STRIKE) × 100). "
+        "NOT A GUARANTEED FLOOR FOR YOUR BASKET. HOVER CALC FOR FULL NUMBERS."
     )
     # Sort the complete loaded chain; render just 25 native checkboxes/page.
     scope = (result["scan_id"], result["fingerprint"])
