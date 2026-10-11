@@ -2355,3 +2355,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS in GitHub Actions run 38161243463; the changelog-only follow-up commit triggers a final run.
 - **Commit SHAs:** 2320662a72e5b2690bcb85e09380086088bf6d55 (CSS); 5c5cffc8f0015ef0fc2152500077200bce487669 (unit test); 26884557d0f5a82d2bbb04cb15cf1ccf6e8d7eb9 (browser test); 614101632847a12a7a910cbc7a1ad509fb09bbf8 (CI workflow); this changelog commit follows.
 - **Lesson:** Widget framework upgrades demand inspecting current rendered DOM and checking computed style in a real browser. Old BaseWeb selectors cannot fix a React Aria multiselect.
+
+
+## 2026-10-11 — Protective Puts portfolio hedge controls: native Streamlit contrast and compact sizing
+
+- **Feature:** Protective Puts → PORTFOLIO HEDGE input controls and scan button.
+- **Production file changed:** src/protective_puts_portfolio_ui.py. Added browser regression scripts/test_protective_puts_hedge_controls_browser.py and an isolated step in .github/workflows/architecture-guard.yml; append-only src/TERMINAL_CHANGELOG.md.
+- **Broken/root cause:** The portfolio hedge controls showed large gray fields with orange text, near-invisible black minus/plus stepper controls and a blue primary scan button. The earlier CSS styled only portfolio tables and labels. Streamlit >=1.61 number inputs render through distinct React Aria stNumberInputContainer/stNumberInputField/stNumberInputStepDown/stNumberInputStepUp elements, while native primary buttons default to Streamlit's blue.
+- **Change:** Add CSS scoped to .st-key-pp_portfolio_hedge only. Native React Aria text/number roots have 40px dark backgrounds and orange borders, 38px readable orange input values and caret, clearly visible steppers including disabled/hover states, and a 40px orange scan button with black text and accessible focus treatment. Keep table cells, selected account controls, manual ticker inputs, and all calculations unchanged.
+- **Preserve:** Account default Raj Singh, saved ticker checkmarks, portfolio hedge mathematical scenario/ISK budget/DTE settings, public fallback, and no broker order side effects. Continue to use the Bloomberg orange/black square-control appearance without modifying global style.
+- **Intentionally NOT changed:** E*TRADE Risk Sizing, shared theme, streamlit_app.py, terminal_core.py, OAuth, Holdings, GEX, navigation, Vertical Options, and hedge pricing/math functions.
+- **Tests:** GitHub Actions run 38161843827 passed syntax, architecture, Risk/other tabs, Protective Puts regression, and a browser regression launched against the real feature CSS with an isolated Streamlit 7-control fixture. Its computed-style checks confirmed black/dark roots, orange foreground, readable steppers (including disabled), orange scan button/black text and precise 40px height. The deployed authenticated Protective Puts inputs were not interactively opened; frontend no-Oh-no smoke checked separately.
+- **Architecture guard:** PASS in run 38161843827 (changelog-only follow-up commit also triggers checks).
+- **Production commits:** 1ce4d5254a307fac90e863459e025b26ba50b462 CSS; 75e347662baf3db29edc386da68b6f30e5390502 browser test; eee64a14a294eb965ec0530cfda8acdba2f5fcce CI integration; this log commit follows.
+- **Lesson:** Native Streamlit widget shells and steppers need real DOM-specific CSS; a CSS source assertion or input-only color rule does not ensure visual contrast. Browser-computed styles should gate feature-local visual fixes.
