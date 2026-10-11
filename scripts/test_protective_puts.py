@@ -251,4 +251,18 @@ assert '"FULL GHOTRA COLUMNS' in ui_source
 assert "if not account_key:" in ui_source
 assert "SUBMIT {len(selected)} LIVE PUT ORDER(S)" in ui_source
 
+# Canvas editor styling must specify a legible foreground on every chain row.
+from src.protective_puts_portfolio_ui import _chain_row_colors
+
+regular = _chain_row_colors(2, False, False, 12)
+best = _chain_row_colors(1, False, True, 12)
+first = _chain_row_colors(0, True, True, 12)
+assert len(regular) == len(best) == len(first) == 12
+assert all("background-color:#080808" in cell and "color:#f6b56a" in cell
+           for cell in regular), regular
+assert all("background-color:#10130d" in cell and "color:#4af6c3" in cell
+           for cell in best), best
+assert all("background-color:#fb8b1e" in cell and "color:#000000" in cell
+           for cell in first), first
+
 print("PROTECTIVE PUTS TEST: PASS")
