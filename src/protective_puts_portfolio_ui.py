@@ -244,10 +244,18 @@ def _risk_long_term_tickers(account_key: str) -> set[str] | None:
         )
     if not isinstance(restored, dict) or restored.get("source") not in {"browser", "empty"}:
         return None
+    # Session Risk intent is authoritative after a user toggles LONG-TERM;
+    # otherwise use the browser's saved Risk intent, without modifying it.
+    session_risk = st.session_state.get("_risk_intent_state::" + token)
+    if isinstance(session_risk, dict):
+        return {
+            str(symbol).strip().upper()
+            for symbol in session_risk.get("tickers", [])
+            if str(symbol).strip()
+        }
     saved = restored.get("state")
     stored = saved.get("tickers") if isinstance(saved, dict) else []
     tickers = {str(symbol).strip().upper() for symbol in (stored or []) if str(symbol).strip()}
-    # Prefer newer Risk Sizing clicks made in this Streamlit session.
     overrides = st.session_state.get("risk_sleeve_intent_overrides") or {}
     account_overrides = overrides.get(account_key) if isinstance(overrides, dict) else None
     if isinstance(account_overrides, dict):
@@ -326,7 +334,10 @@ def _classified_hedge_book(
             denominator.loc[multi].gt(0)
         )
     )
+    original_pct = work["Gain/Loss %"].copy()
     work = classify_holdings(work, gain_threshold)
+    # Broker P&L may be missing: preserve that fact in the display.
+    work["Gain/Loss %"] = original_pct
     # Manual intent is ticker-scoped in Risk Sizing.
     manual = work["Symbol"].isin(long_term_tickers)
     work.loc[manual, "Sleeve"] = "LONG-TERM"
