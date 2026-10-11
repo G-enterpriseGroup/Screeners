@@ -33,6 +33,7 @@ from src.etrade_client import ETradeError, option_expiration_dates, quote_summar
 from src.option_book import extract_option_rows
 from src.protective_puts import build_put_analysis, validate_share_quantity
 from src.protective_puts_sources import public_expirations, public_put_chain, public_quote
+from src.protective_puts_portfolio_ui import render_portfolio_hedge
 from src.ticker_autocomplete import company_name, record_lookup
 
 
@@ -309,6 +310,19 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 "DATA FALLBACK ACTIVE // E*TRADE is not live // Protective Puts uses "
                 "yfinance first, then Yahoo Finance HTML scraping if yfinance fails."
             )
+
+        mode = st.radio(
+            "Protection Mode", ("SINGLE HOLDING", "PORTFOLIO HEDGE"),
+            horizontal=True, key="pp_protection_mode",
+        )
+        if mode == "PORTFOLIO HEDGE":
+            render_portfolio_hedge(
+                client, touch_session, get_expirations=_expirations,
+                get_chain=_put_chain, market_today=_market_today,
+                live_etrade=_live_etrade, money=_money,
+                metric_markup=_metric_markup,
+            )
+            return
 
         top_ratios = [0.95, 1.85, 0.80, 0.90, 0.80, 1.15]
         top = st.columns(top_ratios, gap="small")

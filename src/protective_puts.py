@@ -140,9 +140,76 @@ def build_put_analysis(
     return pd.DataFrame.from_records(records).sort_values(["Strike"]).reset_index(drop=True)
 
 
+# ==============================
+# PORTFOLIO ETF-PUT HEDGE SCENARIO MATH
+# ==============================
+def portfolio_hedge_candidates(
+    rows: Iterable[dict[str, Any]], *, symbol: str, expiry: date,
+    spot: float, exposure: float, stress_pct: float, beta: float,
+    target_loss_pct: float, premium_limit_pct: float, today: date,
+) -> pd.DataFrame:
+    """Find put quantities meeting modeled stress loss; not guaranteed max loss."""
+    import math
+
+    values = (spot, exposure, stress_pct, beta, target_loss_pct, premium_limit_pct)
+    if any(not math.isfinite(float(value)) for value in values):
+        raise ValueError("Portfolio hedge inputs must be finite")
+    if spot <= 0 or exposure <= 0 or not 0 < stress_pct < 100 or beta <= 0:
+        raise ValueError("Invalid price, exposure, stress scenario or beta")
+    if not 0 <= target_loss_pct < 100 or not 0 < premium_limit_pct <= 100:
+        raise ValueError("Invalid target remaining loss or premium budget")
+
+    portfolio_loss = min(exposure, exposure * beta * stress_pct / 100)
+    allowed_loss = exposure * target_loss_pct / 100
+    required_cover = portfolio_loss - allowed_loss
+    if required_cover <= 0:
+        return pd.DataFrame()
+    stressed_spot = spot * (1 - stress_pct / 100)
+    records: list[dict[str, Any]] = []
+
+    for row in rows:
+        if str(row.get("call_put") or "").upper() != "PUT":
+            continue
+        try:
+            strike, ask = float(row.get("strike")), float(row.get("ask"))
+        except (ValueError, TypeError):
+            continue
+        if not all(math.isfinite(v) for v in (strike, ask)) or strike <= 0 or ask <= 0:
+            continue
+        intrinsic = max(0.0, strike - stressed_spot) * CONTRACT_SIZE
+        cost_each = ask * CONTRACT_SIZE
+        net_cover_each = intrinsic - cost_each
+        if net_cover_each <= 0:
+            continue
+        contracts = max(1, math.ceil(required_cover / net_cover_each - 1e-10))
+        if contracts > 10000:
+            continue
+        premium = contracts * cost_each
+        if premium > exposure * premium_limit_pct / 100 + 1e-8:
+            continue
+        payoff = contracts * intrinsic
+        net_pnl = payoff - portfolio_loss - premium
+        remaining_loss = max(0.0, -net_pnl)
+        if remaining_loss > allowed_loss + 1e-6:
+            continue
+        records.append({
+            "Proxy": symbol, "Expiration": expiry.strftime("%m-%d-%y"),
+            "DTE": max(0, (expiry - today).days), "Strike": strike,
+            "Spot": spot, "Ask": ask, "Contracts": contracts,
+            "Put Cost": premium, "Cost %": premium / exposure * 100,
+            "Stress Put Payout": payoff, "Stress Net P&L": net_pnl,
+            "Stress Remaining Loss": remaining_loss,
+            "Stress Loss %": remaining_loss / exposure * 100,
+            "Volume": row.get("volume"), "Open Interest": row.get("open_interest"),
+            "Contract": str(row.get("osi") or ""),
+        })
+    return pd.DataFrame.from_records(records)
+
+
 __all__ = [
     "CONTRACT_SIZE",
     "build_put_analysis",
     "protective_put_metrics",
+    "portfolio_hedge_candidates",
     "validate_share_quantity",
 ]
