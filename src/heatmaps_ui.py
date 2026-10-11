@@ -771,6 +771,8 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             )
         elif view == "ANNUAL HISTORY":
             cols, sector_rows = _annual(prices, [t for t in tickers if t not in BENCHMARK_TICKERS])
+            if not cols:
+                cols, _ = _annual(prices, [t for t in BENCHMARK_TICKERS if t in prices])
             best, explanations, benchmark_rows, benchmark_status = _benchmark_analysis(
                 prices, cols, sector_rows
             )
