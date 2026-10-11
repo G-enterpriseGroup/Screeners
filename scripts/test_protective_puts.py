@@ -148,4 +148,50 @@ assert set(_sort_hedge_book(sortable, "HEDGE", "DESC", {"BBB", "CCC"}).head(2)["
 assert set(_sort_hedge_book(sortable, "HEDGE", "ASC", {"BBB", "CCC"}).tail(2)["Symbol"]) == {"BBB", "CCC"}
 assert _sort_hedge_book(sortable, "P&L %", "DESC", set()).iloc[-1]["Symbol"] == "DDD"
 
+
+# Direct ticker + matched put: $0 floor is the exact strike >= basis + ASK test.
+# For each expiration choose the cheapest such put; otherwise show real min loss.
+from src.protective_puts import cheapest_near_zero_put_by_expiration
+
+direct_rows = [
+    {"call_put":"PUT","strike":110.0,"ask":10.0,"osi":"EXP1_PRICY"},
+    {"call_put":"PUT","strike":108.0,"ask":8.0,"osi":"EXP1_CHEAP"},
+    {"call_put":"PUT","strike":105.0,"ask":2.0,"osi":"EXP1_LOSS"},
+    {"call_put":"PUT","strike":106.0,"ask":0.0,"osi":"ZERO_INVALID"},
+    {"call_put":"CALL","strike":115.0,"ask":1.0,"osi":"CALL_INVALID"},
+]
+far_rows = [
+    {"call_put":"PUT","strike":100.0,"ask":1.0,"osi":"EXP2_SMALL_LOSS"},
+    {"call_put":"PUT","strike":102.0,"ask":4.0,"osi":"EXP2_LARGE_LOSS"},
+    {"call_put":"PUT","strike":108.0,"ask":float("nan"),"osi":"INVALID_ASK"},
+]
+direct_scan = pd.concat([
+    build_put_analysis(
+        direct_rows, expiry=date(2026,12,18), stock_price=100,
+        shares=100, today=date(2026,10,11),
+    ),
+    build_put_analysis(
+        far_rows, expiry=date(2027,1,15), stock_price=100,
+        shares=100, today=date(2026,10,11),
+    ),
+], ignore_index=True)
+ranked = cheapest_near_zero_put_by_expiration(direct_scan, target_dte=68)
+assert len(ranked) == 2
+early = ranked[ranked["Expiration"] == "12-18-26"].iloc[0]
+late = ranked[ranked["Expiration"] == "01-15-27"].iloc[0]
+assert early["Contract"] == "EXP1_CHEAP", early
+assert early["Target Met"] and early["Max Loss (Ask)"] == 0
+assert early["Put Cost (Ask)"] == 800
+assert early["Priority Expiration"]
+assert late["Contract"] == "EXP2_SMALL_LOSS", late
+assert not late["Target Met"] and late["Max Loss (Ask)"] == 100
+assert late["Status"] == "MINIMUM AVAILABLE LOSS"
+assert ranked["Priority Expiration"].sum() == 1
+assert cheapest_near_zero_put_by_expiration(pd.DataFrame(), target_dte=60).empty
+try:
+    cheapest_near_zero_put_by_expiration(direct_scan, target_dte=-1)
+    raise AssertionError("negative DTE must be rejected")
+except ValueError:
+    pass
+
 print("PROTECTIVE PUTS TEST: PASS")
