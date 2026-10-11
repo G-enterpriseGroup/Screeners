@@ -68,8 +68,9 @@ jobs:
 
       - name: Test Protective Puts public fallback
         run: |
-          python -m py_compile src/protective_puts.py src/protective_puts_sources.py src/protective_puts_ui.py scripts/test_protective_puts.py scripts/test_protective_puts_sources.py
+          python -m py_compile src/protective_puts.py src/protective_puts_sources.py src/protective_puts_ui.py src/protective_puts_portfolio_ui.py src/protective_puts_orders.py scripts/test_protective_puts.py scripts/test_protective_puts_orders.py scripts/test_protective_puts_sources.py
           PYTHONPATH=. python scripts/test_protective_puts.py
+          PYTHONPATH=. python scripts/test_protective_puts_orders.py
           PYTHONPATH=. python scripts/test_protective_puts_sources.py
 
       - name: Test terminal-wide yfinance options fallback
