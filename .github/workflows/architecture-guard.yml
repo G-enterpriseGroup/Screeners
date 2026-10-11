@@ -103,6 +103,10 @@ jobs:
           echo "Raj's Terminal deployment endpoint did not return HTTP 200/303 after the production commit."
           exit 1
 
+      - name: Verify paged Protective Puts BUY checkboxes in browser
+        if: github.event_name == 'push'
+        run: python scripts/test_protective_puts_paging_browser.py
+
       - name: Check Vertical Options selected-account contrast in browser
         if: github.event_name == 'push'
         run: |
@@ -116,10 +120,6 @@ jobs:
       - name: Check Protective Puts complete chain canvas contrast
         if: github.event_name == 'push'
         run: python scripts/test_protective_puts_chain_browser.py
-
-      - name: Verify paged Protective Puts BUY checkboxes in browser
-        if: github.event_name == 'push'
-        run: python scripts/test_protective_puts_paging_browser.py
 
       - name: Verify deployed frontend is not on Oh no page
         if: github.event_name == 'push'
