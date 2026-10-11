@@ -2223,3 +2223,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Not yet verified PASS.
 - **Commit SHAs:** `5277acb`, `1551e09`, `d497cd1` (feature).
 - **Lesson:** For historical Fed comparison, derive policy moves from published *target* series, not effective market rates; do not assume the target range is always exactly 25 bps wide.
+
+## 2026-10-11 — Show both hike and cut counts in annual Fed Heatmap
+
+- **Feature changed:** Heatmaps Fed policy row only.
+- **Production file changed:** `src/heatmaps_ui.py` (plus this append-only changelog).
+- **Problem/root cause:** Year cells showed only the dominant direction's move count, hiding opposite-direction changes during a mixed policy year.
+- **Fix:** Display both actual target hike and cut counts (`↑N ↓N`) followed by year-end target upper-bound percentage, retaining underlying Fed source and detailed hover.
+- **Preserve:** Annual sector and benchmark returns, ranking, Fed rate-data logic, compact row, all other feature behavior.
+- **Intentionally not changed:** Other terminal tabs, navigation, Risk Sizing, GEX, OAuth, shared theme, `streamlit_app.py`, `src/terminal_core.py`.
+- **Tests:** Re-fetched committed owner file and verified both counts, year-end rate and hover fields occur in the actual annual row logic. Live browser, Python syntax and architecture guard not run in this connector-only environment; no passing claim.
+- **Architecture guard:** Unverified.
+- **Commit:** `6c8cec5b7844e7d5af21c493a0c30fcd1d8038ce` (production).
+- **Lesson:** Show independent yearly hike and cut counts; do not collapse mixed policy years into a single net-direction count.
