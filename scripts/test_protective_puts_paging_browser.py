@@ -89,32 +89,52 @@ def selected_count(driver) -> int:
 
 
 def click_first_checkbox(driver, expected: int) -> None:
-    """Click the full-width checkbox-style BUY button and verify its checkmark."""
+    """Check Risk Book orange-square appearance plus full-cell click persistence."""
     selector = '.st-key-pp_chain_native_grid [data-testid="stButton"] button'
     wait = WebDriverWait(driver, 30)
     buy = wait.until(lambda _: next((
         el for el in driver.find_elements(By.CSS_SELECTOR, selector)
         if el.is_displayed()
     ), None))
-    before = buy.text.strip()
+    before = buy.get_attribute("textContent").strip()
     assert before == "☐", ("BUY must start unchecked", before)
     dims = driver.execute_script(
         """
         const r=arguments[0].getBoundingClientRect();
         const styles=getComputedStyle(arguments[0]);
+        const square=getComputedStyle(arguments[0],"::before");
         return {width:r.width,height:r.height,background:styles.backgroundColor,
-                color:styles.color};
+                kind:arguments[0].getAttribute("data-testid"),
+                squareWidth:square.width,squareHeight:square.height,
+                squareBorder:square.borderTopColor,squareBackground:square.backgroundColor};
         """, buy
     )
     assert dims["width"] >= 35 and dims["height"] >= 40, dims
-    assert dims["background"] == "rgb(251, 139, 30)", dims
+    assert dims["background"] == "rgb(0, 0, 0)", dims
+    assert dims["kind"] == "stBaseButton-secondary", dims
+    assert dims["squareWidth"] == "16px" and dims["squareHeight"] == "16px", dims
+    assert dims["squareBorder"] == "rgb(251, 139, 30)", dims
+    assert dims["squareBackground"] == "rgb(0, 0, 0)", dims
     buy.click()
     wait.until(lambda _: selected_count(driver) == expected)
     buy_after = wait.until(lambda _: next((
         el for el in driver.find_elements(By.CSS_SELECTOR, selector)
-        if el.is_displayed() and el.text.strip() == "☑"
+        if el.is_displayed()
+        and el.get_attribute("textContent").strip() == "☑"
     ), None))
-    assert buy_after.is_displayed()
+    checked_style = driver.execute_script(
+        """
+        const square=getComputedStyle(arguments[0],"::before");
+        const check=getComputedStyle(arguments[0],"::after");
+        return {kind:arguments[0].getAttribute("data-testid"),
+                background:square.backgroundColor,
+                check:check.content,color:check.color};
+        """, buy_after
+    )
+    assert checked_style["kind"] == "stBaseButton-primary", checked_style
+    assert checked_style["background"] == "rgb(251, 139, 30)", checked_style
+    assert "✓" in checked_style["check"], checked_style
+    assert checked_style["color"] == "rgb(0, 0, 0)", checked_style
 
 
 def main() -> None:
