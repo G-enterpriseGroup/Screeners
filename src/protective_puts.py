@@ -275,11 +275,92 @@ def portfolio_hedge_candidates(
     return pd.DataFrame.from_records(records)
 
 
+# ==============================
+# COMPLETE PROXY PUT CHAIN / SCENARIO RANKING
+# ==============================
+def portfolio_chain_scenario(
+    rows: Iterable[dict[str, Any]], *, symbol: str, expiry: date,
+    spot: float, exposure: float, stress_pct: float,
+    beta: float, today: date, max_contracts: int = 250,
+) -> pd.DataFrame:
+    """Keep every valid ASK put, even if no contract can achieve a $0 scenario.
+
+    Index puts do not give a portfolio loss floor. We rank only the modeled
+    expiration-date stress result, including each put's entire purchase cost.
+    A net-negative hedge is retained as a lower-ranked visible chain quote.
+    """
+    import math
+    if not all(math.isfinite(float(v)) for v in (spot, exposure, stress_pct, beta)):
+        raise ValueError("Scenario inputs must be finite")
+    if spot <= 0 or exposure <= 0 or not 0 < stress_pct < 100 or beta <= 0:
+        raise ValueError("Invalid portfolio scenario")
+    if not 1 <= max_contracts <= 10000:
+        raise ValueError("Invalid order-quantity safety bound")
+    portfolio_loss = min(exposure, exposure * stress_pct * beta / 100)
+    stressed_spot = spot * (1.0 - stress_pct / 100)
+    records = []
+    for row in rows:
+        if str(row.get("call_put") or "").upper() != "PUT":
+            continue
+        try:
+            strike, ask = float(row.get("strike")), float(row.get("ask"))
+        except (ValueError, TypeError):
+            continue
+        if not all(math.isfinite(x) for x in (strike, ask)) or strike <= 0 or ask <= 0:
+            continue
+        payoff_each = max(0.0, strike - stressed_spot) * CONTRACT_SIZE
+        premium_each = ask * CONTRACT_SIZE
+        net_cover_each = payoff_each - premium_each
+        if net_cover_each > 0:
+            contracts = max(1, math.ceil(portfolio_loss / net_cover_each - 1e-10))
+        else:
+            contracts = 1
+        # Display unachievable hedge quantities honestly; do not silently
+        # cap requested hedges and show "fully protected".
+        orderable = contracts <= max_contracts
+        if not orderable:
+            contracts = max_contracts
+        total_premium = premium_each * contracts
+        payoff = payoff_each * contracts
+        remaining = max(0.0, portfolio_loss + total_premium - payoff)
+        records.append({
+            "Proxy": symbol, "Expiration": expiry.strftime("%m-%d-%y"),
+            "DTE": max(0, (expiry-today).days), "Strike": strike,
+            "Ask": ask, "Bid": row.get("bid"), "Last": row.get("last"),
+            "Volume": row.get("volume"), "Open Interest": row.get("open_interest"),
+            "Contracts": contracts, "Put Cost": total_premium,
+            "Cost %": 100 * total_premium / exposure,
+            "Stress Put Payout": payoff, "Stress Remaining Loss": remaining,
+            "Stress Loss %": 100 * remaining / exposure,
+            "Near Zero Scenario": remaining <= .005, "Orderable": orderable,
+            "Contract": str(row.get("osi") or ""),
+        })
+    return pd.DataFrame.from_records(records)
+
+
+def rank_portfolio_chain(frame: pd.DataFrame, *, preferred_dte: int = 60) -> pd.DataFrame:
+    """Closest modeled stress loss first, then premium; mark cheapest per expiry."""
+    if frame.empty:
+        return frame.copy()
+    ranked = frame.copy()
+    ranked["DTE Gap"] = (ranked["DTE"] - preferred_dte).abs()
+    ranked = ranked.sort_values(
+        ["Stress Remaining Loss", "Put Cost", "DTE Gap", "Proxy", "Expiration", "Strike"],
+        kind="stable",
+    ).reset_index(drop=True)
+    ranked["Best / Expiration"] = ~ranked.duplicated(["Proxy", "Expiration"])
+    ranked["Priority"] = False
+    ranked.loc[0, "Priority"] = True
+    return ranked
+
+
 __all__ = [
     "CONTRACT_SIZE",
     "build_put_analysis",
     "cheapest_near_zero_put_by_expiration",
     "protective_put_metrics",
     "portfolio_hedge_candidates",
+    "portfolio_chain_scenario",
+    "rank_portfolio_chain",
     "validate_share_quantity",
 ]
