@@ -47,8 +47,9 @@ _CSS = """
 }
 
 
-/* Native contract rows avoid Streamlit Glide's invisible canvas checkboxes. */
-/* Twelve compact rows, no accumulated Streamlit vertical gaps. */
+/* A full-cell checkbox-style BUTTON is deliberate: Streamlit's nested
+   checkbox label shrank to 16px on the authenticated page, making it
+   impossible to reliably click. Only this feature's BUY buttons are styled. */
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stVerticalBlock"]{
     gap:0!important;
 }
@@ -61,46 +62,24 @@ _CSS = """
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stColumn"]{
     min-width:0!important;padding:0!important;margin:0!important;
 }
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"]{
-    box-sizing:border-box!important;height:43px!important;min-height:43px!important;
-    display:flex!important;align-items:center!important;justify-content:center!important;
-    border-left:1px solid #a65c16!important;border-bottom:1px solid #a65c16!important;
-    background:#fb8b1e!important;margin:0!important;padding:0!important;
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"]{
+    height:43px!important;min-height:43px!important;margin:0!important;padding:0!important;
 }
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label{
-    display:flex!important;align-items:center!important;justify-content:center!important;
-    width:100%!important;height:43px!important;margin:0!important;
-    cursor:pointer!important;
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button{
+    box-sizing:border-box!important;width:100%!important;
+    min-width:100%!important;min-height:43px!important;height:43px!important;
+    margin:0!important;padding:0!important;border-radius:0!important;
+    background:#fb8b1e!important;border:1px solid #a65c16!important;
+    color:#000!important;-webkit-text-fill-color:#000!important;
+    font:900 27px/1 "Courier New",monospace!important;
+    box-shadow:none!important;cursor:pointer!important;
 }
-/* Reliable visual checkbox: overlay the actual clickable label rather than
-   styling Streamlit's changeable internal checkbox wrapper. */
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label{
-    position:relative!important;isolation:isolate!important;
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button *{
+    color:#000!important;-webkit-text-fill-color:#000!important;
+    font-size:27px!important;font-weight:900!important;
 }
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label::after{
-    content:"☐";position:absolute!important;inset:0!important;
-    display:flex!important;align-items:center!important;justify-content:center!important;
-    font:900 28px/1 "Courier New",monospace!important;
-    background:#fb8b1e!important;color:#000!important;
-    -webkit-text-fill-color:#000!important;
-    pointer-events:none!important;z-index:2!important;
-}
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked)::after{
-    content:"☑";background:#4af6c3!important;
-}
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:focus-within::after{
-    outline:2px solid #fff!important;outline-offset:-2px!important;
-}
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label > div:first-child{
-    box-sizing:border-box!important;width:23px!important;height:23px!important;
-    border:2px solid #000!important;border-radius:2px!important;
-    background:#fff!important;opacity:1!important;
-}
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked) > div:first-child{
-    background:#4af6c3!important;border-color:#000!important;
-}
-.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked) svg{
-    stroke:#000!important;color:#000!important;opacity:1!important;
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button:focus-visible{
+    outline:2px solid #fff!important;outline-offset:-3px!important;
 }
 .pp-chain-cells{
     box-sizing:border-box;display:grid;align-items:center;
@@ -1124,6 +1103,20 @@ def _chain_cell_markup(row: dict[str, Any]) -> str:
     ) + "</div>"
 
 
+def _toggle_contract_buy(state_key: str, scope_key: str, identity: str) -> None:
+    """Toggle an exact contract from a full-cell BUY control; never place an order."""
+    state = st.session_state.get(state_key)
+    if not isinstance(state, dict) or state.get("scope") != scope_key:
+        return
+    checked = set(state.get("ids") or set())
+    if identity in checked:
+        checked.remove(identity)
+    else:
+        checked.add(identity)
+    state["ids"] = checked
+    st.session_state[state_key] = state
+
+
 @st.fragment
 def _results(
     result: dict[str, Any], money: Callable, metric_markup: Callable,
@@ -1226,23 +1219,19 @@ def _results(
             '<div class="pp-chain-cells pp-chain-head">'
             + "".join("<span>"+v+"</span>" for v in head)+"</div>"
         )
-        page_checks: list[bool] = []
         for row, identity in zip(page_data.to_dict("records"), page_ids):
             left, right = st.columns([.66, 9.34], gap=None, vertical_alignment="center")
             check_key = "pp_put_buy_"+scope_key+"_"+hashlib.sha256(identity.encode()).hexdigest()[:20]
-            if check_key not in st.session_state:
-                st.session_state[check_key] = identity in saved_ids
             with left:
-                chosen_now = st.checkbox(
-                    f"BUY {row['Proxy']} {row['Expiration']} {row['Strike']} PUT",
-                    key=check_key, label_visibility="collapsed",
+                st.button(
+                    "☑" if identity in saved_ids else "☐",
+                    key=check_key, width="stretch",
+                    on_click=_toggle_contract_buy, args=(state_key, scope_key, identity),
+                    help=f"BUY {row['Proxy']} {row['Expiration']} {row['Strike']} PUT // SELECT / DESELECT",
                 )
-                page_checks.append(bool(chosen_now))
             right.html(_chain_cell_markup(row))
 
-    checked_ids = _reconcile_contract_checks(saved_ids, page_ids, page_checks)
-    state["ids"] = checked_ids
-    st.session_state[state_key] = state
+    checked_ids = set(st.session_state[state_key]["ids"])
     st.caption(
         f"{len(checked_ids)} SELECTED ACROSS ALL PAGES // "
         f"{len(data):,} LOADED CONTRACTS // {result.get('listed_count', 0)} LISTED EXPIRATIONS"
