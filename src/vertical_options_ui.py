@@ -85,47 +85,37 @@ _VERTICAL_OPTIONS_CSS = """
     font-family:"Courier New",monospace!important;
     font-weight:900!important;
 }
-.st-key-vertical_options_workspace [data-baseweb="tag"],
-.st-key-vertical_options_workspace [data-baseweb="tag"] *{
-    color:#000!important;
-    -webkit-text-fill-color:#000!important;
-}
-.st-key-vertical_options_workspace [data-baseweb="tag"] svg{
-    color:#000!important;
-    fill:#000!important;
-}
-
-/* MULTI-ACCOUNT CHIPS + DROPDOWN CHOICES // high contrast orange on black theme.
-   BaseWeb portals draw the option menu outside the feature container, so
-   guard the portal rules by the live Vertical Options workspace. */
-.st-key-vertical_options_workspace [data-baseweb="tag"]{
+/* Streamlit 1.61+ multiselect uses React Aria, not BaseWeb tags.
+   The actual selected chips are [data-tag] and the text is [title].
+   Keep this fix inside Vertical Options; no global dropdown overrides. */
+.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag]{
     background:#fb8b1e!important;
+    color:#000000!important;
+    -webkit-text-fill-color:#000000!important;
 }
-.st-key-vertical_options_workspace [data-baseweb="tag"] :is(span,div,button,svg){
-    color:#000!important;
-    -webkit-text-fill-color:#000!important;
+.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag] [title],
+.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag] button,
+.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag] button svg{
+    color:#000000!important;
+    -webkit-text-fill-color:#000000!important;
+    opacity:1!important;
 }
-body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] [data-baseweb="menu"],
-body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] [role="listbox"]{
-    background:#fb8b1e!important;
+.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag] button svg{
+    stroke:#000000!important;
 }
-body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] :is(
-    [role="option"],[data-baseweb="list-item"],li
-){
-    color:#000!important;
-    -webkit-text-fill-color:#000!important;
-    background:#fb8b1e!important;
+/* Dropdown is in a React Aria portal, not within the workspace container.
+   Its Accounts listbox label scopes this rule to this particular selector. */
+[data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="Accounts"]{
+    background:#050505!important;
 }
-body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] :is(
-    [role="option"],[data-baseweb="list-item"],li
-) *{
-    color:#000!important;
-    -webkit-text-fill-color:#000!important;
+[data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="Accounts"] [role="option"],
+[data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="Accounts"] [role="option"] *{
+    color:#f2f2f2!important;
+    -webkit-text-fill-color:#f2f2f2!important;
 }
-body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] :is(
-    [role="option"],[data-baseweb="list-item"],li
-):hover{
-    background:#ffb45f!important;
+[data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="Accounts"] [role="option"][data-focused] [data-item-hl],
+[data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="Accounts"] [role="option"][data-hovered] [data-item-hl]{
+    background:#171007!important;
 }
 
 
