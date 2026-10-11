@@ -304,4 +304,17 @@ try:
 except ValueError:
     pass
 
+# Listing must show all future expirations even when initial chain fetch is
+# purposefully sparse and includes later years.
+from datetime import timedelta
+from src.protective_puts_portfolio_ui import _sample_expirations
+
+all_dates = [date(2026,10,10) + timedelta(days=i*7) for i in range(110)]
+sparse = _sample_expirations(all_dates, date(2026,10,11), 60)
+assert sparse[0] == all_dates[1]
+assert sparse[-1] == all_dates[-1]
+assert len(sparse) <= 8, sparse
+assert any((x-date(2026,10,11)).days >= 365 for x in sparse)
+assert not _sample_expirations([], date(2026,10,11), 60)
+
 print("PROTECTIVE PUTS TEST: PASS")
