@@ -156,7 +156,7 @@ from src.protective_puts import cheapest_near_zero_put_by_expiration
 direct_rows = [
     {"call_put":"PUT","strike":110.0,"ask":10.0,"osi":"EXP1_PRICY"},
     {"call_put":"PUT","strike":108.0,"ask":8.0,"osi":"EXP1_CHEAP"},
-    {"call_put":"PUT","strike":105.0,"ask":2.0,"osi":"EXP1_LOSS"},
+    {"call_put":"PUT","strike":101.0,"ask":2.0,"osi":"EXP1_LOSS"},
     {"call_put":"PUT","strike":106.0,"ask":0.0,"osi":"ZERO_INVALID"},
     {"call_put":"CALL","strike":115.0,"ask":1.0,"osi":"CALL_INVALID"},
 ]
