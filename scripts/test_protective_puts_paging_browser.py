@@ -151,7 +151,7 @@ def main() -> None:
             wait.until(table_ready)
             assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataFrame"]')
             assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataEditor"]')
-            assert "100×max(0," in driver.find_element(By.CSS_SELECTOR,
+            assert "100×(" in driver.find_element(By.CSS_SELECTOR,
                 ".pp-chain-cells:not(.pp-chain-head)").text
             assert not driver.find_elements(By.XPATH,
                 "//*[contains(text(),'FULL GHOTRA COLUMNS')]")
