@@ -38,6 +38,7 @@ try:
     assert rows[0]["ask"] == 4.3
     assert rows[0]["volume"] == 1234.0
     assert rows[0]["open_interest"] == 5600.0
+    assert abs(rows[0]["implied_volatility"] - 0.20) < 1e-9
 
     sources._normalize_yfinance_puts = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("yf down"))
     fallback_rows, source = sources.public_put_chain("SPY", date(2026, 12, 18))
