@@ -89,36 +89,32 @@ def selected_count(driver) -> int:
 
 
 def click_first_checkbox(driver, expected: int) -> None:
-    """Click an actual accessible checkbox, never infer canvas coordinates."""
-    selector = '.st-key-pp_chain_native_grid [data-testid="stCheckbox"] label'
+    """Click the full-width checkbox-style BUY button and verify its checkmark."""
+    selector = '.st-key-pp_chain_native_grid [data-testid="stButton"] button'
     wait = WebDriverWait(driver, 30)
-    checkbox = wait.until(
-        lambda _: next(
-            (el for el in driver.find_elements(By.CSS_SELECTOR, selector)
-             if el.is_displayed()), None,
-        )
-    )
-    checkbox.click()
-    wait.until(lambda _: selected_count(driver) == expected)
-    chosen = checkbox.find_element(By.CSS_SELECTOR, 'input[type="checkbox"]')
-    assert chosen.is_selected(), "BUY must be visibly selected after clicking"
-    contrast = driver.execute_script(
+    buy = wait.until(lambda _: next((
+        el for el in driver.find_elements(By.CSS_SELECTOR, selector)
+        if el.is_displayed()
+    ), None))
+    before = buy.text.strip()
+    assert before == "☐", ("BUY must start unchecked", before)
+    dims = driver.execute_script(
         """
-        const label=arguments[0], pseudo=getComputedStyle(label,'::after');
-        const container=label.closest('[data-testid="stCheckbox"]');
-        const bg=getComputedStyle(container).backgroundColor;
-        const vis=label.getBoundingClientRect();
-        return {glyph:pseudo.content, color:pseudo.color,
-                background:pseudo.backgroundColor, cellBackground:bg,
-                width:vis.width, height:vis.height};
-        """, checkbox,
+        const r=arguments[0].getBoundingClientRect();
+        const styles=getComputedStyle(arguments[0]);
+        return {width:r.width,height:r.height,background:styles.backgroundColor,
+                color:styles.color};
+        """, buy
     )
-    assert "☑" in contrast["glyph"], contrast
-    assert contrast["background"] == "rgb(74, 246, 195)", contrast
-    assert contrast["color"] == "rgb(0, 0, 0)", contrast
-    assert contrast["cellBackground"] == "rgb(251, 139, 30)", contrast
-    assert contrast["width"] > 25 and contrast["height"] >= 35, contrast
-
+    assert dims["width"] >= 35 and dims["height"] >= 40, dims
+    assert dims["background"] == "rgb(251, 139, 30)", dims
+    buy.click()
+    wait.until(lambda _: selected_count(driver) == expected)
+    buy_after = wait.until(lambda _: next((
+        el for el in driver.find_elements(By.CSS_SELECTOR, selector)
+        if el.is_displayed() and el.text.strip() == "☑"
+    ), None))
+    assert buy_after.is_displayed()
 
 
 def main() -> None:
@@ -157,7 +153,7 @@ def main() -> None:
             assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataEditor"]')
             alignment = driver.execute_script("""
                 const grid=document.querySelector('.st-key-pp_chain_native_grid');
-                const ck=grid.querySelector('[data-testid="stCheckbox"]');
+                const ck=grid.querySelector('[data-testid="stButton"] button');
                 const row=grid.querySelector('.pp-chain-cells:not(.pp-chain-head)');
                 const calc=row.children[9];
                 const a=ck.getBoundingClientRect(), b=row.getBoundingClientRect();
