@@ -2505,3 +2505,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS in GitHub Actions run `38184861026`; all-workflow final result to be checked after the run finishes.
 - **Production commit SHA:** `a1e32d033341050d177692ca7bce4383713686ca`. This changelog-only commit follows.
 - **Lesson:** Disable a feature at the existing navigation allowlist, not by removing its implementation or changing unrelated page routing.
+
+## 2026-10-11 — Protective Puts BUY controls: Risk Book checkbox-square styling
+
+- **Feature:** Protective Puts → PORTFOLIO HEDGE, single put-chain BUY selection column.
+- **Exact production file changed:** `src/protective_puts_portfolio_ui.py`. Focused browser test changed: `scripts/test_protective_puts_paging_browser.py`. This entry is append-only.
+- **Broken presentation / root cause:** The options table rendered its entire BUY cell solid orange with a large Unicode box glyph, unlike E*TRADE Risk Sizing's black cell containing a centered 16px orange-bordered square. Earlier actual `st.checkbox` attempts in the options table had a 16px hit target and unreliable clicks.
+- **Minimum fix:** Copy the Risk Book visual sizes/colors (16px square, orange 2px border, black empty fill, orange checked fill with black check) using CSS pseudo-elements on the existing full-width 43px selection button. Use the button's checked `primary` type to style only selected rows, retaining its actual full-cell click target, existing label/help, keyed selection, paging and sorting.
+- **Must preserve:** Exactly one options decision table, max-loss math and tooltips, all loaded expirations, sortable 12-row pages, exact saved contract identities, selected-account and holdings memory, contract CSV, and explicit user-reviewed E*TRADE preview → confirm → SEND; checkbox clicks must never place orders.
+- **Intentionally untouched:** Original Risk Sizing checkbox/source and all Risk Sizing files, `src/theme.py`, `src/terminal_core.py`, `streamlit_app.py`, shared theme/navigation, GEX, Holdings, OAuth/broker clients, single-holding Protective Puts, option math and order-construction modules.
+- **Tests:** Inspected exact production and browser-test commit diffs; refetched live production owner, confirmed the checked-state key/type and no math changes. Updated the actual Streamlit/Selenium paging browser test to assert a 16px orange-outline square on black, orange-fill/black-check when selected, full 43px hit area, and selections retained across pages. Automated browser execution and complete architecture/test suite **not run in this tool environment** (repository checkout and network unavailable); must confirm GitHub Actions before asserting PASS or deployed correctness.
+- **Architecture guard:** Not independently run; `python scripts/validate_architecture.py` pending GitHub Actions confirmation.
+- **Commit SHAs:** production `e8aa231182e5429e4348c66c90db8b41323be2e4`; browser regression `7279328261b45fa0a7108c946630746686bd2b21`; this changelog-only commit follows.
+- **Lesson:** Match Risk Sizing checkbox appearance at the actual rendered square and checked state, but never shrink the reliable click area or change order-safety logic. Verify actual browser DOM/paging, not only static CSS.
