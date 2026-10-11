@@ -2248,3 +2248,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Not confirmed.
 - **Production commit:** `15511a01bdabb78892ea28a060ed8cbd92de227b`.
 - **Lesson:** Dense yearly table cells need a two-line layout rather than squeezing rate and move counts onto a single line.
+
+## 2026-10-11 — Shareable annual Heatmap HTML snapshot
+
+- **Feature:** Historical Heatmaps annual view.
+- **Files:** `src/heatmaps_ui.py`; append-only `src/TERMINAL_CHANGELOG.md`.
+- **Need/root cause:** Numeric CSV exports could not preserve the exact colored annual matrix, benchmark reference rows, hover explanations, or Fed target/move row for sharing and interpretation.
+- **Change:** Add annual-only `DOWNLOAD HEATMAP HTML` button, packaging the same computed heatmap markup, feature-local CSS, benchmark summary and Fed cells into a self-contained browser-openable HTML snapshot. Existing CSV/daily-price exports stay unchanged.
+- **Preserve:** Calculations, sector highlighting rules, Fed rate sources, SPY/QQQ/50-50 benchmark rows, ticker memory, compact Bloomberg theme, other views.
+- **Intentionally untouched:** All other feature owners, top navigation, shared CSS, `streamlit_app.py`, `src/terminal_core.py`.
+- **Tests:** Re-fetched committed code, checked exact annual-only HTML export path and unchanged CSV download controls. Live browser rendering and local Python/architecture validation not executable via current connector; do not assert passing tests.
+- **Architecture guard:** Not yet verified.
+- **Commit:** `b50f7ef9123a75299b966bdc16628568b9c92512`.
+- **Lesson:** Provide a self-contained colored snapshot alongside machine-readable data for reliable visual sharing.
