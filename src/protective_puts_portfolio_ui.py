@@ -48,6 +48,13 @@ _CSS = """
 
 
 /* Native contract rows avoid Streamlit Glide's invisible canvas checkboxes. */
+/* Twelve compact rows, no accumulated Streamlit vertical gaps. */
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stVerticalBlock"]{
+    gap:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stElementContainer"]{
+    margin:0!important;padding:0!important;
+}
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stHorizontalBlock"]{
     gap:0!important;align-items:stretch!important;margin:0!important;
 }
@@ -797,7 +804,7 @@ def _run_enter_scan() -> None:
 # ==============================
 # PAGED OPTION CHAIN / CHECKMARK STATE
 # ==============================
-_CHAIN_PAGE_SIZE = 25
+_CHAIN_PAGE_SIZE = 12
 
 
 def _contract_identity(row: dict[str, Any]) -> str:
@@ -1168,7 +1175,6 @@ def _results(
                 chosen_now = st.checkbox(
                     f"BUY {row['Proxy']} {row['Expiration']} {row['Strike']} PUT",
                     key=check_key, label_visibility="collapsed",
-                    help="Select this exact put contract for E*TRADE preview.",
                 )
                 page_checks.append(bool(chosen_now))
             right.html(_chain_cell_markup(row))
