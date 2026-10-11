@@ -36,6 +36,16 @@ _CSS = """
 .st-key-pp_portfolio_hedge [data-testid="stVerticalBlock"]{gap:4px!important;}
 .st-key-pp_portfolio_hedge [data-testid="stHorizontalBlock"]{gap:8px!important;align-items:center;}
 .st-key-pp_portfolio_hedge [data-testid="stColumn"]{min-width:0!important;}
+/* Glide's hover action toolbar creates an opaque black floating overlay
+   over financial columns. This scanner has its own CSV export and paging. */
+.st-key-pp_portfolio_hedge [data-testid="stElementToolbar"],
+.st-key-pp_portfolio_hedge [data-testid="stDataFrame"] [data-testid="stElementToolbar"]{
+    display:none!important;visibility:hidden!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_controls [data-testid="stSelectbox"]{
+    min-width:0!important;
+}
+
 .st-key-pp_portfolio_hedge [data-testid="stWidgetLabel"] *{
     color:#fb8b1e!important;font-family:"Courier New",monospace!important;
     font-size:.69rem!important;font-weight:900!important;
@@ -976,18 +986,17 @@ def _results(
         st.session_state["pp_chain_page"] = 0
         st.session_state.pop("pp_chain_expiration", None)
     saved_ids = set(state["ids"])
-    expirations = tuple(sorted(data["Expiration"].dropna().astype(str).unique()))
-    filter_options = ("ALL", *expirations)
+    # The expiry selector lives above this renderer and includes EVERY
+    # broker/public-listed future date, not merely already loaded chains.
+    choice = result.get("expiry_choice", "ALL")
+    expiration_filter = (
+        choice.strftime("%m-%d-%y") if hasattr(choice, "strftime") else "ALL"
+    )
     with st.container(key="pp_chain_controls", gap="small"):
-        fcol, prev_col, current_col, next_col = st.columns(
-            [2.2, 0.75, 1.1, 0.75], gap="small",
+        prev_col, current_col, next_col, summary_col = st.columns(
+            [0.8, 1.0, 0.8, 3.1], gap="small",
             vertical_alignment="bottom",
         )
-        with fcol:
-            expiration_filter = st.selectbox(
-                "EXPIRATION", filter_options, key="pp_chain_expiration",
-                on_change=_reset_chain_page,
-            )
         filtered = (
             data if expiration_filter == "ALL"
             else data.loc[data["Expiration"].eq(expiration_filter)]
@@ -1006,6 +1015,11 @@ def _results(
         st.session_state["pp_chain_page"] = page_index
         with current_col:
             st.caption(f"PAGE {page_index + 1}/{page_count}")
+        with summary_col:
+            st.caption(
+                f"{len(filtered):,} QUOTED ROWS // "
+                f"{len(data):,} SCANNED // {result.get('listed_count',0)} LISTED DATES"
+            )
 
     start = page_index * _CHAIN_PAGE_SIZE
     page_data = filtered.iloc[start:start + _CHAIN_PAGE_SIZE].copy()
@@ -1161,8 +1175,12 @@ def render_portfolio_hedge(
             if st.button("REFRESH PRICES", width="stretch", key="pp_hedge_scan"):
                 scan_now = True
         if scan_now:
+            # New scan invalidates any prior expiry dropdown and order preview.
+            st.session_state.pop("pp_chain_expiry_choice", None)
+            st.session_state.pop("pp_hedge_order_preview", None)
             errors = []
             work = []
+            all_expiries = {}
             today = market_today()
             for sym in proxies:
                 try:
@@ -1175,15 +1193,24 @@ def render_portfolio_hedge(
                     if spot <= 0:
                         raise ValueError("Put underlying quote unavailable.")
                     expiries, _ = get_expirations(client, sym, touch_session)
-                    future = sorted(x for x in expiries if x >= today)
+                    future = sorted(set(x for x in expiries if x >= today))
+                    all_expiries[sym] = (spot, future)
                     if not future:
                         errors.append(f"{sym}: no future put expirations found.")
-                    # All strikes returned by each selected expiry, up to the
-                    # nearest 24 expirations. Avoid unbounded broker requests.
-                    for expiry in sorted(
-                        future, key=lambda x: (abs((x-today).days-dte), x)
-                    )[:24]:
-                        work.append((sym, spot, expiry))
+                        continue
+                    # Quoting every daily expiry at once causes 4,000+ row
+                    # reruns and hundreds of broker calls. Load a spread of
+                    # near/mid/long expiries; the dropdown below exposes ALL
+                    # actual dates and loads any other date on demand.
+                    span = len(future) - 1
+                    target = min(
+                        range(len(future)),
+                        key=lambda i: (abs((future[i]-today).days-dte), i),
+                    )
+                    sample = {0, 1, 2, target}
+                    sample.update(round(span*f) for f in (.25, .5, .75, 1.0))
+                    for i in sorted(i for i in sample if i < len(future)):
+                        work.append((sym, spot, future[i]))
                 except Exception as exc:
                     errors.append(f"{sym} quote/expiry: {exc}")
             raw_frames = []
@@ -1203,10 +1230,53 @@ def render_portfolio_hedge(
                 "tickers": tuple(proxies), "frames": raw_frames,
                 "errors": errors, "scan_id": int(time.time() * 1000),
                 "chains_requested": len(work),
+                "available_expirations": all_expiries,
+                "attempted_dates": {(sym, expiry) for sym, _, expiry in work},
+                "loaded_version": 1,
             }
         raw = st.session_state.get("pp_hedge_raw_scan")
         if isinstance(raw, dict) and raw.get("tickers") == tuple(proxies):
-            cache_scope = (raw["scan_id"], fingerprint, market_today())
+            # Expiry choice includes every available broker-listed future date,
+            # irrespective of how many option chains have been downloaded.
+            calendar = raw.get("available_expirations") or {}
+            listed_dates = sorted({
+                expiry for _, dates in calendar.values() for expiry in dates
+            })
+            if listed_dates:
+                available_choices = ["ALL", *listed_dates]
+                current = st.session_state.get("pp_chain_expiry_choice")
+                if current not in available_choices:
+                    st.session_state["pp_chain_expiry_choice"] = "ALL"
+                choice = st.selectbox(
+                    "ALL LISTED EXPIRATIONS // SELECT ANY DATE TO FETCH ITS PUTS",
+                    available_choices, key="pp_chain_expiry_choice",
+                    on_change=_reset_chain_page,
+                    format_func=lambda value: (
+                        "ALL SCANNED EXPIRATIONS" if value == "ALL"
+                        else f"{value:%m-%d-%Y} // {(value-market_today()).days} DTE"
+                    ),
+                )
+                if choice != "ALL":
+                    for sym, (spot, dates) in calendar.items():
+                        if choice not in dates:
+                            continue
+                        pair = (sym, choice)
+                        if pair in raw["attempted_dates"]:
+                            continue
+                        raw["attempted_dates"].add(pair)
+                        try:
+                            chain, _, source = get_chain(client, sym, choice, touch_session)
+                            raw["frames"].append((sym, spot, choice, chain, source))
+                        except Exception as exc:
+                            raw["errors"].append(f"{sym} {choice:%m-%d-%y}: {exc}")
+                        raw["loaded_version"] += 1
+                        st.session_state.pop("pp_hedge_order_preview", None)
+            else:
+                choice = "ALL"
+            cache_scope = (
+                raw["scan_id"], raw.get("loaded_version", 1),
+                fingerprint, market_today(),
+            )
             cache = st.session_state.get("_pp_hedge_ranked_result_cache")
             if isinstance(cache, dict) and cache.get("scope") == cache_scope:
                 result = cache["result"]
@@ -1253,11 +1323,13 @@ def render_portfolio_hedge(
                     "direct_example": direct_example,
                     "scan_id": raw["scan_id"],
                     "chains": len(raw.get("frames", [])),
+                    "listed_count": len(listed_dates),
                     "errors": raw["errors"],
                 }
                 st.session_state["_pp_hedge_ranked_result_cache"] = {
                     "scope": cache_scope, "result": result,
                 }
+            result["expiry_choice"] = choice
             _results(result, money, metric_markup, client, touch_session,
                      live_etrade, account_key)
         else:
