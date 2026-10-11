@@ -258,10 +258,12 @@ regular = _chain_row_colors(2, False, False, 12)
 best = _chain_row_colors(1, False, True, 12)
 first = _chain_row_colors(0, True, True, 12)
 assert len(regular) == len(best) == len(first) == 12
+assert all("background-color:#fb8b1e" in cells[0] and "color:#000000" in cells[0]
+           for cells in (regular, best, first))
 assert all("background-color:#080808" in cell and "color:#f6b56a" in cell
-           for cell in regular), regular
+           for cell in regular[1:]), regular
 assert all("background-color:#10130d" in cell and "color:#4af6c3" in cell
-           for cell in best), best
+           for cell in best[1:]), best
 assert all("background-color:#fb8b1e" in cell and "color:#000000" in cell
            for cell in first), first
 
