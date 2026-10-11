@@ -127,9 +127,13 @@ def test() -> None:
             assert number_root["background"] == "rgb(8, 8, 8)", number_root
             assert number_root["height"] == 40, number_root
             minus = prefix + ".st-key-pp_hedge_dte [data-testid='stNumberInputStepDown']"
+            # Native number steppers animate color for 300 ms; wait until
+            # their final high-contrast style settles before asserting.
+            wait.until(
+                lambda _: (style(driver, minus) or {}).get("color")
+                == "rgb(251, 139, 30)"
+            )
             step = style(driver, minus)
-            assert step is not None, "DTE decrement control missing"
-            assert step["color"] == "rgb(251, 139, 30)", step
             assert step["background"] == "rgb(21, 16, 10)", step
             disabled = prefix + ".st-key-pp_hedge_target [data-testid='stNumberInputStepDown']"
             step_disabled = style(driver, disabled)
