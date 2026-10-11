@@ -41,7 +41,7 @@ for i in range(62):
         "Implied Volatility":.20,
         "Priority":i==0, "Best / Expiration":i<3,
         "Orderable":True, "Contract":f"SPYTEST{i:04d}",
-        "Max Loss Calc (Ask)":"EXAMPLE",
+        "Max Loss Calc (Ask)":f"max(0, (600.00 + 1.10 - {550+i:.2f}) × 100)",
         "Cost of Put (Last)":100.0, "Max Loss (Last)":max(0.0,1100-i),
         "Max Loss Calc (Last)":"EXAMPLE", "Put Cost":110.0,
     }
@@ -109,7 +109,12 @@ def click_first_checkbox(driver, expected: int) -> None:
         return {fill:s.backgroundColor,outline:s.borderTopColor};
         """, checkbox,
     )
-    assert contrast["outline"] == "rgb(251, 139, 30)", contrast
+    assert contrast["outline"] == "rgb(0, 0, 0)", contrast
+    assert contrast["fill"] == "rgb(74, 246, 195)", contrast
+    buy_cell = checkbox.find_element(By.XPATH, "ancestor::*[@data-testid='stCheckbox']")
+    assert driver.execute_script(
+        "return getComputedStyle(arguments[0]).backgroundColor", buy_cell
+    ) == "rgb(251, 139, 30)"
 
 
 def main() -> None:
@@ -137,6 +142,19 @@ def main() -> None:
             wait=WebDriverWait(driver,60)
             wait.until(lambda _: selected_count(driver)==0)
             assert "PAGE 1/6" in driver.page_source, "12-row pagination missing"
+            # Exactly ONE displayed chain grid with real loss calculation
+            # values; no second detailed/full Ghotra dataframe underneath.
+            def table_ready(_):
+                grids = driver.find_elements(By.CSS_SELECTOR, ".pp-chain-cells.pp-chain-head")
+                rows = driver.find_elements(By.CSS_SELECTOR, ".pp-chain-cells:not(.pp-chain-head)")
+                return len(grids)==1 and len(rows)==12 and "LOSS CALC" in grids[0].text
+            wait.until(table_ready)
+            assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataFrame"]')
+            assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataEditor"]')
+            assert "100×max(0," in driver.find_element(By.CSS_SELECTOR,
+                ".pp-chain-cells:not(.pp-chain-head)").text
+            assert not driver.find_elements(By.XPATH,
+                "//*[contains(text(),'FULL GHOTRA COLUMNS')]")
             click_first_checkbox(driver,1)
             driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_next button').click()
             wait.until(lambda _: "PAGE 2/6" in driver.page_source)
