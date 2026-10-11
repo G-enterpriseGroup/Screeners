@@ -1277,8 +1277,7 @@ def render_portfolio_hedge(
             if st.button("REFRESH PRICES", width="stretch", key="pp_hedge_scan"):
                 scan_now = True
         if scan_now:
-            # New scan invalidates any prior expiry dropdown and order preview.
-            st.session_state.pop("pp_chain_expiry_choice", None)
+            # New scan invalidates any prior broker-order preview.
             st.session_state.pop("pp_hedge_order_preview", None)
             errors = []
             work = []
@@ -1337,37 +1336,67 @@ def render_portfolio_hedge(
             listed_dates = sorted({
                 expiry for _, dates in calendar.values() for expiry in dates
             })
+            # No expiration FILTER. Show the complete market-data calendar and
+            # append quoted chains without hiding any previously loaded dates.
+            loaded_pairs = set(raw.get("attempted_dates") or ())
+            pending = sorted(
+                (sym, spot, expiry)
+                for sym, (spot, dates) in calendar.items()
+                for expiry in dates
+                if (sym, expiry) not in loaded_pairs
+            )
+            ready_dates = {
+                expiry for _, _, expiry, _, _ in raw.get("frames", [])
+            }
             if listed_dates:
-                available_choices = ["ALL", *listed_dates]
-                current = st.session_state.get("pp_chain_expiry_choice")
-                if current not in available_choices:
-                    st.session_state["pp_chain_expiry_choice"] = "ALL"
-                choice = st.selectbox(
-                    "ALL LISTED EXPIRATIONS // SELECT ANY DATE TO FETCH ITS PUTS",
-                    available_choices, key="pp_chain_expiry_choice",
-                    on_change=_reset_chain_page,
-                    format_func=lambda value: (
-                        "ALL SCANNED EXPIRATIONS" if value == "ALL"
-                        else f"{value:%m-%d-%Y} // {(value-market_today()).days} DTE"
-                    ),
+                st.caption(
+                    f"ALL FUTURE EXPIRATIONS // {len(listed_dates)} LISTED // "
+                    f"{listed_dates[0]:%m-%d-%Y} THROUGH {listed_dates[-1]:%m-%d-%Y} // "
+                    f"{len(ready_dates)} QUOTED DATES LOADED"
                 )
-                if choice != "ALL":
-                    for sym, (spot, dates) in calendar.items():
-                        if choice not in dates:
-                            continue
-                        pair = (sym, choice)
-                        if pair in raw["attempted_dates"]:
-                            continue
+                with st.expander(
+                    f"VIEW ALL {len(listed_dates)} LISTED EXPIRATION DATES (NO FILTER)",
+                    expanded=False,
+                ):
+                    st.caption(
+                        " // ".join(
+                            f"{expiry:%m-%d-%y}"
+                            + (" ✓" if expiry in ready_dates else " (PENDING QUOTE)")
+                            for expiry in listed_dates
+                        )
+                    )
+            if pending:
+                load_small, load_all, _ = st.columns(
+                    [1.3, 1.65, 2.7], gap="small",
+                )
+                with load_small:
+                    next_batch = st.button(
+                        "LOAD NEXT 8 EXPIRATIONS", key="pp_chain_load_next",
+                        width="stretch",
+                    )
+                with load_all:
+                    load_everything = st.button(
+                        f"LOAD ALL {len(pending)} REMAINING CHAINS",
+                        key="pp_chain_load_all", width="stretch",
+                    )
+                if next_batch or load_everything:
+                    batch = pending if load_everything else pending[:8]
+                    progress = st.progress(0.0, text="Loading additional listed put expirations...")
+                    for index, (sym, spot, expiry) in enumerate(batch, start=1):
+                        pair = (sym, expiry)
                         raw["attempted_dates"].add(pair)
                         try:
-                            chain, _, source = get_chain(client, sym, choice, touch_session)
-                            raw["frames"].append((sym, spot, choice, chain, source))
+                            chain, _, source = get_chain(client, sym, expiry, touch_session)
+                            raw["frames"].append((sym, spot, expiry, chain, source))
                         except Exception as exc:
-                            raw["errors"].append(f"{sym} {choice:%m-%d-%y}: {exc}")
+                            raw["errors"].append(f"{sym} {expiry:%m-%d-%y}: {exc}")
                         raw["loaded_version"] += 1
-                        st.session_state.pop("pp_hedge_order_preview", None)
-            else:
-                choice = "ALL"
+                        progress.progress(
+                            index / len(batch),
+                            text=f"LOADING {sym} {expiry:%m-%d-%Y} ({index}/{len(batch)})",
+                        )
+                    progress.empty()
+                    st.session_state.pop("pp_hedge_order_preview", None)
             cache_scope = (
                 raw["scan_id"], raw.get("loaded_version", 1),
                 fingerprint, market_today(),
@@ -1424,7 +1453,6 @@ def render_portfolio_hedge(
                 st.session_state["_pp_hedge_ranked_result_cache"] = {
                     "scope": cache_scope, "result": result,
                 }
-            result["expiry_choice"] = choice
             _results(result, money, metric_markup, client, touch_session,
                      live_etrade, account_key)
         else:
