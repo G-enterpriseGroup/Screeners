@@ -89,38 +89,27 @@ def selected_count(driver) -> int:
 
 
 def click_first_checkbox(driver, expected: int) -> None:
-    # Use the real browser mouse against the BUY column's first data row.
-    # Glide's header height, optional row markers, and its HDPI canvas vary
-    # across browser versions, so probe a few positions within BUY.
-    def get_canvas(_):
-        grids=driver.find_elements(
-            By.CSS_SELECTOR, '[data-testid="stDataFrame"], [data-testid="stDataEditor"]'
+    """Click an actual accessible checkbox, never infer canvas coordinates."""
+    selector = '.st-key-pp_chain_native_grid [data-testid="stCheckbox"] label'
+    wait = WebDriverWait(driver, 30)
+    checkbox = wait.until(
+        lambda _: next(
+            (el for el in driver.find_elements(By.CSS_SELECTOR, selector)
+             if el.is_displayed()), None,
         )
-        for grid in grids:
-            for candidate in grid.find_elements(By.CSS_SELECTOR,"canvas"):
-                if candidate.size["width"]>400 and candidate.size["height"]>150:
-                    return candidate
-        return False
-    for y in (62, 75, 54, 85, 110):
-        for x in (60, 92, 42, 110):
-            canvas=WebDriverWait(driver,25).until(get_canvas)
-            width,height=canvas.size["width"],canvas.size["height"]
-            if x>=width or y>=height:
-                continue
-            ActionChains(driver).move_to_element_with_offset(
-                canvas, round(x-width/2), round(y-height/2),
-            ).click().perform()
-            try:
-                WebDriverWait(driver,1.2,poll_frequency=.2).until(
-                    lambda _: selected_count(driver)==expected
-                )
-                return
-            except Exception:
-                continue
-    raise AssertionError(
-        "Actual Glide BUY checkbox did not toggle after visible-cell clicks; "
-        f"selected={selected_count(driver)} expected={expected}"
     )
+    checkbox.click()
+    wait.until(lambda _: selected_count(driver) == expected)
+    chosen = checkbox.find_element(By.CSS_SELECTOR, 'input[type="checkbox"]')
+    assert chosen.is_selected(), "BUY must be visibly selected after clicking"
+    contrast = driver.execute_script(
+        """
+        const label=arguments[0],box=label.querySelector('div');
+        const s=getComputedStyle(box);
+        return {fill:s.backgroundColor,outline:s.borderTopColor};
+        """, checkbox,
+    )
+    assert contrast["outline"] == "rgb(251, 139, 30)", contrast
 
 
 def main() -> None:
@@ -147,14 +136,14 @@ def main() -> None:
             driver.get(BASE)
             wait=WebDriverWait(driver,60)
             wait.until(lambda _: selected_count(driver)==0)
-            assert "PAGE 1/3" in driver.page_source, "25-row pagination missing"
+            assert "PAGE 1/6" in driver.page_source, "12-row pagination missing"
             click_first_checkbox(driver,1)
             driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_next button').click()
-            wait.until(lambda _: "PAGE 2/3" in driver.page_source)
+            wait.until(lambda _: "PAGE 2/6" in driver.page_source)
             assert selected_count(driver)==1
             click_first_checkbox(driver,2)
             driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_prev button').click()
-            wait.until(lambda _: "PAGE 1/3" in driver.page_source)
+            wait.until(lambda _: "PAGE 1/6" in driver.page_source)
             assert selected_count(driver)==2
             print("PROTECTIVE PUTS PAGED BUY CHECKBOX BROWSER TEST: PASS")
         finally:
