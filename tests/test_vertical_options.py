@@ -13,19 +13,18 @@ from src.vertical_options import (
 
 class VerticalOptionsTests(unittest.TestCase):
     def test_vertical_dropdown_text_contrast(self):
-        """Popup menu and selected account chips must be readable on orange."""
+        """Current Streamlit uses React Aria [data-tag], not BaseWeb chips."""
         source = (Path(__file__).resolve().parents[1]
                   / "src" / "vertical_options_ui.py").read_text(encoding="utf-8")
         self.assertIn(
-            'body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"]',
+            '.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag]',
             source,
         )
-        self.assertIn(
-            '.st-key-vertical_options_workspace [data-baseweb="tag"]{',
-            source,
-        )
+        self.assertIn('[data-tag] [title]', source)
+        self.assertIn('[data-testid="stMultiSelectDropdown"]', source)
         self.assertIn('background:#fb8b1e!important;', source)
-        self.assertIn('-webkit-text-fill-color:#000!important;', source)
+        self.assertIn('-webkit-text-fill-color:#000000!important;', source)
+        self.assertNotIn('[data-baseweb="tag"]', source)
 
     def test_call_debit_vertical_payload(self):
         payload = build_vertical_preview_payload(
