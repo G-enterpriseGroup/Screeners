@@ -934,34 +934,26 @@ def render_portfolio_hedge(
         st.html(_CSS)
         with st.expander("EDIT INVESTMENTS / ACCOUNT (SAVED CHECKMARKS)", expanded=False):
             book = _holdings(client, touch_session, live_etrade)
-        if book is None:
-            return
-        account_key, selected = book
+        account_key, selected = book if book is not None else ("", [])
         exposure = sum(float(row["Market Value"]) for row in selected)
-        st.caption(f'SELECTED // {len(selected)} TICKERS // {money(exposure)}')
+        if selected:
+            st.caption(f'PORTFOLIO // {len(selected)} TICKERS // {money(exposure)}')
+        else:
+            st.caption(
+                "TICKER-ONLY MODE // the Married Put columns illustrate 100 "
+                "shares of each entered ETF at its current price. "
+                "Select holdings above to also model your portfolio."
+            )
         st.html('<div class="pp-section">ENTER PUT TICKERS // PRESS ENTER TO SCAN</div>')
         entered = st.text_input(
-            "PUT ETF TICKERS", value="SPY,QQQ", key="pp_hedge_proxies",
+            "PUT TICKER", value="", key="pp_hedge_proxies",
+            placeholder="SPY  //  TYPE + ENTER",
             on_change=_run_enter_scan,
-            help="Comma-separated listed put underlyings. Enter commits and fetches chains.",
+            help="Enter a ticker and press Enter to scan. Comma-separated tickers also work.",
         )
-        with st.expander("OPTIONAL HEDGE ASSUMPTIONS", expanded=False):
-            a, b, c = st.columns(3, gap="small")
-            with a:
-                dte = int(st.number_input(
-                    "PRIORITY DAYS OUT", min_value=1, max_value=730,
-                    value=60, step=1, key="pp_hedge_dte",
-                ))
-            with b:
-                stress = float(st.number_input(
-                    "ETF DROP SCENARIO %", min_value=1.0, max_value=90.0,
-                    value=15.0, step=1.0, key="pp_hedge_stress",
-                ))
-            with c:
-                beta = float(st.number_input(
-                    "ASSUMED BASKET BETA", min_value=0.1, max_value=3.0,
-                    value=1.0, step=0.05, key="pp_hedge_beta",
-                ))
+        # Keep model constants stable and documented; no seven-input setup.
+        # Matched ETF married-put max loss is shown separately for 100 shares.
+        dte, stress, beta = 60, 15.0, 1.0
         proxies = list(dict.fromkeys(
             s for s in re.split(r"[\s,;]+", entered.strip().upper()) if s
         ))
@@ -970,9 +962,6 @@ def render_portfolio_hedge(
         )):
             st.warning("ENTER 1–5 VALID PUT TICKERS (E.G. SPY,QQQ) AND PRESS ENTER.")
             return
-        if not selected:
-            st.info("OPEN EDIT INVESTMENTS / ACCOUNT AND CHECK THE STOCKS TO HEDGE.")
-            return
         fingerprint = (
             account_key,
             tuple(sorted((row["Symbol"], round(float(row["Market Value"]), 2))
@@ -980,8 +969,9 @@ def render_portfolio_hedge(
             tuple(proxies), dte, stress, beta,
         )
         scan_now = bool(st.session_state.pop("_pp_hedge_scan_on_enter", False))
-        if st.button("REFRESH CHAIN", width="stretch", key="pp_hedge_scan"):
-            scan_now = True
+        with st.expander("REFRESH EXISTING CHAIN", expanded=False):
+            if st.button("REFRESH PRICES", width="stretch", key="pp_hedge_scan"):
+                scan_now = True
         if scan_now:
             errors = []
             work = []
@@ -1032,9 +1022,10 @@ def render_portfolio_hedge(
             frames = []
             for sym, spot, expiry, chain, source in raw.get("frames", []):
                 try:
+                    reference_exposure = exposure if exposure > 0 else spot * 100.0
                     f = portfolio_chain_scenario(
                         chain, symbol=sym, expiry=expiry, spot=spot,
-                        exposure=exposure, stress_pct=stress, beta=beta,
+                        exposure=reference_exposure, stress_pct=stress, beta=beta,
                         today=today, max_contracts=MAX_PUT_CONTRACTS,
                     )
                     if not f.empty:
@@ -1042,15 +1033,17 @@ def render_portfolio_hedge(
                         frames.append(f)
                 except Exception as exc:
                     raw.setdefault("errors", []).append(f"{sym} {expiry}: {exc}")
+            direct_example = exposure <= 0
             data = rank_portfolio_chain(
                 pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
-                preferred_dte=dte,
+                preferred_dte=dte, direct_100_share_example=direct_example,
             )
             result = {
                 "fingerprint": fingerprint, "data": data,
                 "exposure": exposure,
                 "stress_loss": min(exposure, exposure * beta * stress / 100),
                 "stress": stress, "beta": beta,
+                "direct_example": direct_example,
                 "scan_id": raw["scan_id"],
                 "chains": len(raw.get("frames", [])),
                 "errors": raw["errors"],
