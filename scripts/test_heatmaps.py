@@ -148,6 +148,31 @@ def run() -> None:
     no_leader, _, _, why = _benchmark_analysis(weaker, wc, wr)
     assert no_leader is None and "NO QUALIFYING SECTOR" in why
 
+    # Backtest: strong old history must NOT hide a losing recent decade.
+    recent_years = pd.to_datetime([f"{year}-12-30" for year in range(2000, 2026)])
+    old_winner = [100.0]
+    for i in range(1, 26):
+        old_winner.append(old_winner[-1] * (1.25 if i <= 15 else 1.06))
+    old_spy = [100.0 * (1.08 ** i) for i in range(26)]
+    old_qqq = [100.0 * (1.12 ** i) for i in range(26)]
+    stale = pd.DataFrame({"XLY": old_winner, "SPY": old_spy, "QQQ": old_qqq},
+                         index=recent_years)
+    stale_years, stale_rows = _annual(stale, ["XLY"])
+    stale_leader, stale_notes, _, _ = _benchmark_analysis(stale, stale_years, stale_rows)
+    assert stale_leader is None
+    assert "RECENT 10Y CHECK" in stale_notes["XLY"]
+    assert "NOT ELIGIBLE" in stale_notes["XLY"]
+
+    # Screenshot 2014-2025: rounded annual returns reproduce recent XLY
+    # underperformance. Not an independently sourced market-data verification.
+    screenshot_xly = [9.5, 9.9, 6.0, 22.8, 1.6, 28.4, 29.6, 27.9, -36.3, 39.6, 26.5, 7.4]
+    screenshot_spy = [13.5, 1.2, 12.0, 21.7, -4.6, 31.2, 18.3, 28.7, -18.2, 26.2, 24.9, 17.7]
+    screenshot_qqq = [19.2, 9.4, 7.1, 32.7, -0.1, 39.0, 48.4, 27.4, -32.6, 54.9, 25.6, 20.8]
+    screenshot_blend = [(a + b) / 2 for a, b in zip(screenshot_spy, screenshot_qqq)]
+    assert _annual_cagr(screenshot_xly[-10:]) < _annual_cagr(screenshot_blend[-10:])
+    assert _annual_cagr(screenshot_xly[-10:]) < _annual_cagr(screenshot_qqq[-10:])
+    assert sum(a > b for a, b in zip(screenshot_xly[-10:], screenshot_blend[-10:])) == 2
+
     # Insufficient benchmark history never creates a false winner.
     incomplete = comparison.drop(columns=["QQQ"])
     missing_winner, _, available_benchmarks, why = _benchmark_analysis(incomplete, cy, sector_rows)
