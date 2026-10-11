@@ -113,6 +113,10 @@ jobs:
         if: github.event_name == 'push'
         run: python scripts/test_protective_puts_hedge_controls_browser.py
 
+      - name: Check Protective Puts complete chain canvas contrast
+        if: github.event_name == 'push'
+        run: python scripts/test_protective_puts_chain_browser.py
+
       - name: Verify deployed frontend is not on Oh no page
         if: github.event_name == 'push'
         run: |
