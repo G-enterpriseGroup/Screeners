@@ -299,6 +299,15 @@ def _preferred_account_index(accounts: list[dict[str, Any]]) -> int:
     return 0
 
 
+def _safe_account_index(
+    accounts: list[dict[str, Any]], current: Any, initialized: bool,
+) -> int:
+    """Restore saved account selection without ever indexing a missing session key."""
+    if initialized and type(current) is int and 0 <= current < len(accounts):
+        return current
+    return _preferred_account_index(accounts)
+
+
 def _account_token(account_key: str) -> str:
     """Separate accounts without exposing account keys in localStorage names."""
     return hashlib.sha256(account_key.encode("utf-8")).hexdigest()[:24]
@@ -596,12 +605,14 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
     if not accounts:
         st.info("Connect E*TRADE to access your holdings.")
         return None
-    # Migrate existing sessions once, then preserve manual account changes.
-    if not st.session_state.get("_pp_hedge_raj_default_v2"):
-        st.session_state["pp_hedge_account"] = _preferred_account_index(accounts)
-        st.session_state["_pp_hedge_raj_default_v2"] = True
-    if st.session_state["pp_hedge_account"] not in range(len(accounts)):
-        st.session_state["pp_hedge_account"] = _preferred_account_index(accounts)
+    # Cached migration flags can survive when Streamlit evicts widget keys.
+    # Never directly index pp_hedge_account until its current value is valid.
+    selected_index = _safe_account_index(
+        accounts, st.session_state.get("pp_hedge_account"),
+        bool(st.session_state.get("_pp_hedge_raj_default_v2")),
+    )
+    st.session_state["pp_hedge_account"] = selected_index
+    st.session_state["_pp_hedge_raj_default_v2"] = True
     a, b = st.columns([4.0, 1.4], gap="small", vertical_alignment="bottom")
     with a:
         idx = st.selectbox(
@@ -1243,7 +1254,21 @@ def render_portfolio_hedge(
     with st.container(key="pp_portfolio_hedge", gap="small"):
         st.html(_CSS)
         with st.expander("EDIT INVESTMENTS / ACCOUNT (SAVED CHECKMARKS)", expanded=False):
-            book = _holdings(client, touch_session, live_etrade)
+            try:
+                book = _holdings(client, touch_session, live_etrade)
+            except Exception:
+                # Portfolio holdings are optional for ticker-only put scans.
+                # Do not allow stale broker/session data to crash the tab.
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Protective Puts optional holdings loading failed"
+                )
+                st.warning(
+                    "Holdings are temporarily unavailable. Ticker-only put "
+                    "scanning remains available; reconnect and refresh holdings "
+                    "before reviewing orders."
+                )
+                book = None
         account_key, selected = book if book is not None else ("", [])
         exposure = sum(float(row["Market Value"]) for row in selected)
         if selected:
