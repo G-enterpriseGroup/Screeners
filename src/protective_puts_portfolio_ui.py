@@ -16,10 +16,13 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from src.etrade_client import quote_summary
+from src.etrade_client import find_number, quote_summary, total_account_value
 from src.protective_puts import portfolio_hedge_candidates
 from src.protective_puts_sources import public_quote
-from src.risk_sizing import is_protected_long_term_holding
+from src.risk_sizing import (
+    CROWN_DEFAULT_TACTICAL_SLEEVE_PCT,
+    classify_holdings, is_protected_long_term_holding,
+)
 from src.risk_sizing_ui import _normalized_holdings
 
 
@@ -73,6 +76,17 @@ _CSS = """
 .pp-hedge-green{
     color:#4af6c3!important;-webkit-text-fill-color:#4af6c3!important;font-weight:900;
 }
+.pp-hedge-red{
+    color:#ff433d!important;-webkit-text-fill-color:#ff433d!important;font-weight:900;
+}
+.pp-hedge-blue{
+    color:#0068ff!important;-webkit-text-fill-color:#0068ff!important;font-weight:900;
+}
+.pp-hedge-sleeve{
+    white-space:normal;overflow-wrap:normal;font-size:.85rem;line-height:1.05;
+}
+.pp-hedge-sleeve span{font-weight:900;}
+
 .st-key-pp_hedge_native_grid [data-testid="stCheckbox"]{
     box-sizing:border-box!important;width:100%!important;height:var(--pp-book-row)!important;
     min-height:var(--pp-book-row)!important;margin:0!important;padding:0!important;
@@ -215,6 +229,143 @@ def _write_selection(account_key: str) -> None:
 
 
 
+# ==============================
+# READ-ONLY RISK BOOK CLASSIFICATION / ACCOUNT MATH
+# ==============================
+def _risk_long_term_tickers(account_key: str) -> set[str] | None:
+    """Read Risk's saved LONG-TERM intent without writing or pruning its memory."""
+    token = _account_token(account_key)
+    with st.container(key="pp_hedge_risk_reader_shell", gap=None):
+        restored = _SELECTION_COMPONENT(
+            storage_key="raj-terminal-risk-intent-v1:" + token,
+            server_state={"revision": 0, "tickers": []},
+            mode="read", hydrated=False, key="pp_hedge_risk_reader_" + token,
+            default=None,
+        )
+    if not isinstance(restored, dict) or restored.get("source") not in {"browser", "empty"}:
+        return None
+    saved = restored.get("state")
+    stored = saved.get("tickers") if isinstance(saved, dict) else []
+    tickers = {str(symbol).strip().upper() for symbol in (stored or []) if str(symbol).strip()}
+    # Prefer newer Risk Sizing clicks made in this Streamlit session.
+    overrides = st.session_state.get("risk_sleeve_intent_overrides") or {}
+    account_overrides = overrides.get(account_key) if isinstance(overrides, dict) else None
+    if isinstance(account_overrides, dict):
+        tickers.update(
+            str(symbol).strip().upper()
+            for symbol, intent in account_overrides.items()
+            if str(intent).strip().upper() == "LONG-TERM"
+        )
+    return tickers
+
+
+def _account_value(account_key: str, client: Any, live_etrade: Callable,
+                   touch_session: Callable, refresh: bool) -> float | None:
+    """Use broker account NAV for % ACCT; never invent a total from selected rows."""
+    balances = st.session_state.setdefault("etrade_balances", {})
+    if not isinstance(balances, dict):
+        balances = {}
+    payload = balances.get(account_key)
+    if live_etrade(client) and (refresh or not isinstance(payload, dict)):
+        try:
+            payload = client.get_balance(account_key)
+            st.session_state.setdefault("etrade_balances", {})[account_key] = payload
+            touch_session()
+        except Exception:
+            pass  # An unavailable account NAV must not prevent reading positions.
+    if isinstance(payload, dict):
+        account_total = total_account_value(payload)
+        if account_total is None:
+            market = find_number(payload, "netMv", "netMarketValue", "totalMarketValue")
+            cash = find_number(payload, "netCash", "cashBalance", "moneyMktBalance")
+            if market is not None and cash is not None:
+                account_total = market + cash
+        if account_total is not None and float(account_total) > 0:
+            return float(account_total)
+    snapshot = st.session_state.get("_risk_book_snapshot_v1")
+    if isinstance(snapshot, dict) and str(snapshot.get("account_key")) == account_key:
+        try:
+            saved_total = float(snapshot.get("account_total") or 0)
+            if saved_total > 0:
+                return saved_total
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _classified_hedge_book(
+    book: pd.DataFrame, *, account_total: float | None,
+    long_term_tickers: set[str], gain_threshold: float, tactical_pct: float,
+) -> pd.DataFrame:
+    """Aggregate ticker lots and reuse Risk's classification and return conventions.
+
+    P&L % for multiple lots uses summed unrealized P&L / summed acquisition
+    costs. Single-lot P&L % uses the broker's own normalized percent.
+    """
+    if book.empty:
+        return book.copy()
+    work = book.copy()
+    work["Symbol"] = work["Symbol"].astype(str).str.strip().str.upper()
+    for column in ("Quantity", "Market Value", "Gain/Loss", "Gain/Loss %",
+                   "Total Cost"):
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    work["_lots"] = 1
+    # Keep missing broker fields missing, rather than manufacturing zero P&L.
+    work = work.groupby("Symbol", as_index=False).agg({
+        "Quantity": "sum", "Market Value": "sum",
+        "Gain/Loss": lambda values: values.sum(min_count=1),
+        "Gain/Loss %": "first",
+        "Total Cost": lambda values: values.sum(min_count=1),
+        "_lots": "sum",
+    })
+    multi = work["_lots"].gt(1)
+    denominator = work["Total Cost"].where(work["Total Cost"].gt(0),
+                                            work["Market Value"] - work["Gain/Loss"])
+    work.loc[multi, "Gain/Loss %"] = (
+        100 * work.loc[multi, "Gain/Loss"] / denominator.loc[multi].where(
+            denominator.loc[multi].gt(0)
+        )
+    )
+    work = classify_holdings(work, gain_threshold)
+    # Manual intent is ticker-scoped in Risk Sizing.
+    manual = work["Symbol"].isin(long_term_tickers)
+    work.loc[manual, "Sleeve"] = "LONG-TERM"
+    investable = float(account_total or 0)
+    sleeve_dollars = investable * tactical_pct / 100.0
+    work["% Account"] = (
+        work["Market Value"].abs() / investable * 100
+        if investable > 0 else float("nan")
+    )
+    work["% Tactical Sleeve"] = float("nan")
+    if sleeve_dollars > 0:
+        tactical = work["Sleeve"].eq("TACTICAL")
+        work.loc[tactical, "% Tactical Sleeve"] = (
+            work.loc[tactical, "Market Value"].abs() / sleeve_dollars * 100
+        )
+    work["Last"] = work["Market Value"] / work["Quantity"]
+    return work.drop(columns="_lots").sort_values("Market Value", ascending=False)
+
+
+def _pnl_tone(value: Any) -> str:
+    try:
+        number = float(value)
+        if pd.isna(number):
+            return ""
+        return "pp-hedge-green" if number > 0 else "pp-hedge-red" if number < 0 else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _shown_number(value: Any, *, prefix: str = "", suffix: str = "") -> str:
+    try:
+        number = float(value)
+        if pd.isna(number):
+            return "—"
+        return f"{prefix}{number:,.2f}{suffix}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 
 def _holdings(client, touch_session: Callable, live_etrade: Callable):
     accounts = st.session_state.get("etrade_accounts") or []
@@ -284,32 +435,53 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
     if book.empty:
         st.info("No eligible long equity or ETF positions.")
         return None
-    book = book.groupby("Symbol", as_index=False).agg(
-        {"Quantity": "sum", "Market Value": "sum"}
-    ).sort_values("Market Value", ascending=False)
-    book["Last"] = book["Market Value"] / book["Quantity"]
+    long_term_tickers = _risk_long_term_tickers(account_key)
+    if long_term_tickers is None:
+        st.caption("RESTORING SAVED RISK SLEEVE CLASSIFICATIONS...")
+        return None
+    total = _account_value(account_key, client, live_etrade, touch_session, refresh)
+    settings = st.session_state.get("_risk_book_snapshot_v1") or {}
+    saved_settings = (
+        settings.get("settings") if isinstance(settings, dict)
+        and str(settings.get("account_key")) == account_key else {}
+    ) or {}
+    gain_threshold = float(st.session_state.get(
+        "risk_gain_threshold", saved_settings.get("risk_gain_threshold", 5.0)
+    ))
+    tactical_pct = float(st.session_state.get(
+        "risk_tactical_sleeve_pct",
+        saved_settings.get("risk_tactical_sleeve_pct", CROWN_DEFAULT_TACTICAL_SLEEVE_PCT)
+    ))
+    book = _classified_hedge_book(
+        book, account_total=total, long_term_tickers=long_term_tickers,
+        gain_threshold=gain_threshold, tactical_pct=tactical_pct,
+    )
     memory = _load_selection(account_key, set(book["Symbol"].tolist()))
     if memory is None:
         st.caption("RESTORING YOUR SAVED HEDGE SELECTIONS...")
         return None
     checked_symbols = set(memory["tickers"])
     st.caption(
-        "SELECT INVESTMENTS // SAME E*TRADE BOOK AS RISK SIZING // "
-        "CHECKMARKS SAVED IN THIS BROWSER PER ACCOUNT"
+        "SELECT INVESTMENTS // SAME E*TRADE P&L + CLASSIFICATION RULE AS RISK SIZING // "
+        "HEDGE CHECKMARKS SAVED IN THIS BROWSER PER ACCOUNT"
+        + (" // ACCOUNT NAV UNAVAILABLE: % ACCT AND SLEEVE % SHOWN AS —"
+           if total is None else "")
     )
     selected = []
-    grid_spec = [0.43, 0.72, 0.70, 0.80, 1.05]
+    # Same uninterrupted 48px Risk Book cells; retain the existing Shares/Last
+    # and add sleeve, broker P&L, and real account-weight columns.
+    grid_spec = [0.39, 0.95, 0.55, 0.58, 0.62, 0.58, 0.73, 0.78, 0.59]
+    labels = ("HEDGE", "SLEEVE / %", "SYMBOL", "SHARES", "LAST",
+              "P&L %", "P&L", "VALUE", "% ACCT")
     with st.container(key="pp_hedge_native_grid", gap=None):
         columns = st.columns(grid_spec, gap=None, vertical_alignment="center")
-        for index, (col, value) in enumerate(zip(
-            columns, ("HEDGE", "SYMBOL", "SHARES", "LAST", "VALUE")
-        )):
+        for index, (col, label) in enumerate(zip(columns, labels)):
             classes = "pp-hedge-cell pp-hedge-head"
             if index == 0:
                 classes += " pp-hedge-first pp-hedge-center"
-            elif index >= 2:
+            elif index >= 3:
                 classes += " pp-hedge-right"
-            col.html(f'<div class="{classes}">{value}</div>')
+            col.html(f'<div class="{classes}" title="{html.escape(label)}">{html.escape(label)}</div>')
         for row in book.to_dict("records"):
             symbol = row["Symbol"]
             cols = st.columns(grid_spec, gap=None, vertical_alignment="center")
@@ -324,18 +496,40 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
                     args=(account_key, symbol, widget_key),
                     help=f"Include {symbol} in this portfolio hedge.",
                 )
-            vals = (
-                symbol, f'{row["Quantity"]:,.2f}',
-                "$" + f'{row["Last"]:,.2f}', "$" + f'{row["Market Value"]:,.2f}',
-            )
-            for index, (col, value) in enumerate(zip(cols[1:], vals)):
-                classes = "pp-hedge-cell"
-                if index > 0:
-                    classes += " pp-hedge-right pp-hedge-green"
-                col.html(
-                    f'<div class="{classes}" title="{html.escape(value)}">'
-                    f'{html.escape(value)}</div>'
+            sleeve = str(row.get("Sleeve") or "")
+            sleeve_percent = row.get("% Tactical Sleeve")
+            if sleeve == "TACTICAL" and pd.notna(sleeve_percent):
+                sleeve_html = (
+                    'TACTICAL <span class="pp-hedge-blue">'
+                    + f'{float(sleeve_percent):.2f}%</span>'
                 )
+                sleeve_class = "pp-hedge-sleeve"
+            else:
+                sleeve_html = html.escape(sleeve or "—")
+                sleeve_class = "pp-hedge-green" if sleeve == "LONG-TERM" else "pp-hedge-sleeve"
+            pnl = row.get("Gain/Loss")
+            pnl_pct = row.get("Gain/Loss %")
+            pct_account = row.get("% Account")
+            values = (
+                sleeve_html, html.escape(symbol),
+                html.escape(_shown_number(row["Quantity"])),
+                html.escape(_shown_number(row["Last"], prefix="$")),
+                html.escape(_shown_number(pnl_pct, suffix="%")),
+                html.escape(_shown_number(pnl, prefix="$")),
+                html.escape(_shown_number(row["Market Value"], prefix="$")),
+                html.escape(_shown_number(pct_account, suffix="%")),
+            )
+            tones = (
+                sleeve_class, "", "", "",
+                _pnl_tone(pnl_pct), _pnl_tone(pnl), "", "",
+            )
+            for index, (col, value, tone) in enumerate(zip(cols[1:], values, tones)):
+                classes = "pp-hedge-cell"
+                if index >= 2:
+                    classes += " pp-hedge-right"
+                if tone:
+                    classes += " " + tone
+                col.html(f'<div class="{classes}">{value}</div>')
             if checked:
                 selected.append(row)
     _write_selection(account_key)
