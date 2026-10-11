@@ -30,6 +30,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 
+from src.heatmaps_export import export_annual_heatmap
+
 
 # ==============================
 # SECTORS / WATCHLIST MEMORY
@@ -879,6 +881,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
         )
 
         annual_download_html = None
+        annual_export = None
         if view == "ROLLING PERFORMANCE":
             cols, rows = _overview(prices, tickers)
             st.html(_heatmap_markup(
@@ -905,12 +908,14 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 prices, cols, sector_rows
             )
             rows = sector_rows + benchmark_rows
+            fed_cells = _fed_year_cells(cols)
+            annual_export = (cols, rows, fed_cells, best)
             annual_markup = _heatmap_markup(
                 "ANNUAL SECTOR RETURNS // INCEPTION TO PRESENT", cols, rows,
                 "SPY and QQQ are reference ETFs; SPY+QQQ 50/50 is rebalanced annually. "
                 "Yearly cells are adjusted-close returns; partial years are not used for ranking.",
                 annual=True, best_sector=best, explanations=explanations,
-                fed_cells=_fed_year_cells(cols),
+                fed_cells=fed_cells,
             )
             st.html(annual_markup)
             st.html('<div class="hm-notes">' + html.escape(benchmark_status) + '</div>')
@@ -959,6 +964,26 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             cols = comparison_cols
 
         _write_browser(vault_key, state)
+        if annual_export is not None:
+            pdf_col, png_col = st.columns(2, vertical_alignment="center")
+            with pdf_col:
+                st.download_button(
+                    "DOWNLOAD HEATMAP PDF",
+                    export_annual_heatmap(*annual_export, _sector_label, _shade, as_pdf=True),
+                    file_name="raj_annual_sector_heatmap.pdf",
+                    mime="application/pdf", use_container_width=True,
+                    key="heatmaps_export_pdf",
+                    help="Full-width vector PDF with selectable text, sector returns, benchmarks and Fed policy.",
+                )
+            with png_col:
+                st.download_button(
+                    "DOWNLOAD HEATMAP PNG",
+                    export_annual_heatmap(*annual_export, _sector_label, _shade, as_pdf=False),
+                    file_name="raj_annual_sector_heatmap.png",
+                    mime="image/png", use_container_width=True,
+                    key="heatmaps_export_png",
+                    help="High-resolution full heatmap image for sharing.",
+                )
         if annual_download_html is not None:
             actions_left, actions_mid, actions_share, actions_right = st.columns(
                 [1.1, 1.1, 1.25, 1.55], vertical_alignment="center"
