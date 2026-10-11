@@ -31,7 +31,9 @@ import streamlit as st
 
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
 from src.option_book import extract_option_rows
-from src.protective_puts import build_put_analysis, validate_share_quantity
+from src.protective_puts import (
+    build_put_analysis, cheapest_near_zero_put_by_expiration, validate_share_quantity,
+)
 from src.protective_puts_sources import public_expirations, public_put_chain, public_quote
 from src.protective_puts_portfolio_ui import render_portfolio_hedge
 from src.ticker_autocomplete import company_name, record_lookup
@@ -208,91 +210,119 @@ def _default_expiry(expirations: list[date]) -> date:
 
 
 def _render_scan_result(result: dict[str, Any]) -> None:
+    """One ASK-priced matched put per listed expiration; near-zero floor first."""
     frame = result.get("frame")
     if not isinstance(frame, pd.DataFrame) or frame.empty:
-        st.info("No usable put contracts were returned for the selected scan.")
+        st.info("No usable listed put contracts were returned for the expiration scan.")
         return
 
-    symbol = str(result.get("symbol") or "")
-    shares = int(result.get("shares") or 0)
+    target_dte = int(result.get("target_dte") or 60)
+    candidates = cheapest_near_zero_put_by_expiration(frame, target_dte=target_dte)
+    if candidates.empty:
+        st.warning(
+            "NO VALID PUT ASK QUOTES // Cannot establish a stock + put loss floor "
+            "from these expirations. Try another ticker or expiration."
+        )
+        return
+    selected = result.get("chosen_expiry")
+    if isinstance(selected, date):
+        candidates["Priority Expiration"] = (
+            candidates["Expiration"] == selected.strftime("%m-%d-%y")
+        )
+    if not candidates["Priority Expiration"].any():
+        candidates.loc[
+            (candidates["DTE"] - target_dte).abs().idxmin(),
+            "Priority Expiration",
+        ] = True
+    recommended = candidates.loc[candidates["Priority Expiration"]].iloc[0]
     stock_price = float(result.get("stock_price") or 0.0)
-    chain_sources = list(result.get("chain_sources") or [])
-    best_ask = frame.dropna(subset=["Max Loss (Ask)"]).copy()
-    best_row = None if best_ask.empty else best_ask.loc[best_ask["Max Loss (Ask)"].idxmin()]
+    shares = int(result.get("shares") or 0)
+    matched_zero = bool(recommended["Target Met"])
+    st.html('<div class="pp-section">SHARES + MATCHED PUT // EXPIRATION LOSS FLOOR</div>')
+    st.html(_metric_markup([
+        ("Ticker", str(result.get("symbol") or ""), "orange"),
+        ("Stock Basis / Share", _money(stock_price), "blue"),
+        ("Protected Shares", f"{shares:,}", "orange"),
+        ("Put Contracts", f"{shares // 100:,}", "orange"),
+        ("ASK Put Premium", _money(recommended["Put Cost (Ask)"]), "red"),
+        ("Worst Loss At Expiry", _money(recommended["Max Loss (Ask)"]),
+         "green" if matched_zero else "red"),
+    ]))
+    if matched_zero:
+        st.success(
+            "ZERO DOWNSIDE FLOOR AT EXPIRATION (modeled) // "
+            "The selected put's strike covers stock cost plus ASK premium. "
+            "Transaction costs and slippage are excluded."
+        )
+    else:
+        st.warning(
+            "A $0 MAXIMUM LOSS WAS NOT AVAILABLE FOR THE SELECTED EXPIRATION. "
+            f"The highlighted put has the lowest quoted worst-case loss: "
+            f"{_money(recommended['Max Loss (Ask)'])}. "
+            "The scan will not falsely label a losing stock + put position as risk-free."
+        )
 
-    st.html('<div class="pp-section">PROTECTIVE PUT SUMMARY</div>')
-    if chain_sources:
-        st.caption("OPTION CHAIN SOURCE // " + " + ".join(chain_sources))
-    st.html(
-        _metric_markup(
-            [
-                ("Underlying", symbol, "green"),
-                ("Purchase Price", _money(stock_price), "blue"),
-                ("Shares Protected", f"{shares:,}", "orange"),
-                ("Put Contracts", f"{shares // 100:,}", "orange"),
-                (
-                    "Lowest ASK Max Loss",
-                    "—" if best_row is None else _money(best_row["Max Loss (Ask)"]),
-                    "red",
-                ),
-                (
-                    "Lowest ASK Max Loss %",
-                    "—" if best_row is None else f"{float(best_row['Max Loss % (Ask)']):.2f}%",
-                    "red",
-                ),
+    st.html('<div class="pp-section">LISTED EXPIRATIONS // LOWEST-COST ZERO-LOSS PUT OR CLOSEST FLOOR</div>')
+    table = candidates[[
+        "Priority Expiration", "Expiration", "DTE", "Strike", "Ask",
+        "Contracts", "Put Cost (Ask)", "Max Loss (Ask)", "Status",
+    ]].copy()
+    table = table.rename(columns={
+        "Priority Expiration": "Selected",
+        "Put Cost (Ask)": "Total Put Premium",
+        "Max Loss (Ask)": "Shares + Put Max Loss",
+    })
+    table["Selected"] = table["Selected"].map({True: "★", False: ""})
+    def _highlight_floor(row):
+        primary = row["Selected"] == "★"
+        zero = row["Status"] == "ZERO-LOSS FLOOR"
+        if primary:
+            return [
+                "background-color:#fb8b1e;color:#000;font-weight:900"
+                for _ in row
             ]
-        )
-    )
-    if best_row is not None:
-        st.caption(
-            "LOWEST DISPLAYED ASK MAX LOSS // "
-            f"{best_row['Expiration']} // {float(best_row['Strike']):,.2f} PUT // "
-            "loss-minimization reference only; deeper ITM puts generally cost more."
-        )
-
-    st.html('<div class="pp-section">PUT CHAIN + MARRIED-PUT LOSS FLOOR</div>')
-    display_columns = [
-        "Expiration", "DTE", "Strike", "Bid", "Ask", "Last", "Volume", "Open Interest",
-        "Put Cost (Ask)", "Max Loss (Ask)", "Max Loss % (Ask)", "Breakeven (Ask)",
-        "Put Cost (Last)", "Max Loss (Last)",
-    ]
-    display = frame[display_columns].copy()
+        return [
+            "color:#4af6c3;font-weight:800" if zero else ""
+            for _ in row
+        ]
     st.dataframe(
-        display,
-        hide_index=True,
-        width="stretch",
-        height=min(920, max(260, 35 * len(display) + 45)),
+        table.style.apply(_highlight_floor, axis=1),
+        hide_index=True, width="stretch",
+        height=min(560, max(138, len(table) * 35 + 44)),
         column_config={
             "Strike": st.column_config.NumberColumn(format="$%.2f"),
-            "Bid": st.column_config.NumberColumn(format="$%.2f"),
             "Ask": st.column_config.NumberColumn(format="$%.2f"),
-            "Last": st.column_config.NumberColumn(format="$%.2f"),
-            "Put Cost (Ask)": st.column_config.NumberColumn(format="$%.2f"),
-            "Max Loss (Ask)": st.column_config.NumberColumn(format="$%.2f"),
-            "Max Loss % (Ask)": st.column_config.NumberColumn(format="%.2f%%"),
-            "Breakeven (Ask)": st.column_config.NumberColumn(format="$%.2f"),
-            "Put Cost (Last)": st.column_config.NumberColumn(format="$%.2f"),
-            "Max Loss (Last)": st.column_config.NumberColumn(format="$%.2f"),
+            "Total Put Premium": st.column_config.NumberColumn(format="$%.2f"),
+            "Shares + Put Max Loss": st.column_config.NumberColumn(format="$%.2f"),
         },
     )
-    st.download_button(
-        "EXPORT PROTECTIVE PUT CSV",
-        data=frame.to_csv(index=False),
-        file_name=f"{symbol}_protective_puts.csv",
-        mime="text/csv",
-        width="stretch",
-        key="pp_download_csv",
-    )
     st.caption(
-        "MAX LOSS (ASK) = STOCK COST + PUT ASK COST − STRIKE FLOOR VALUE. "
-        "Displayed as a positive dollar loss assuming the put is held through expiration. "
-        "LAST is a historical trade reference; ASK is the conservative purchase-side reference."
+        "ONE PUT PER 100 SHARES // ASK IS THE PURCHASE PRICE. "
+        "PER EXPIRATION: PICK CHEAPEST PUT WITH $0 MAX LOSS; IF NONE, "
+        "HIGHLIGHT THE PUT WITH THE LOWEST REAL MAX LOSS. "
+        "MAX LOSS = MAX(0, SHARES × (COST BASIS + ASK − STRIKE)). "
+        "This assumes direct puts on the SAME ticker held through expiry; "
+        "it excludes trading fees, execution slippage, dividends and early exercise."
     )
-    errors = list(result.get("errors") or [])
-    if errors:
+    with st.expander(f"ALL PUT STRIKES // {len(frame):,}"):
+        st.dataframe(
+            frame[[
+                "Expiration", "DTE", "Strike", "Bid", "Ask",
+                "Put Cost (Ask)", "Max Loss (Ask)", "Max Loss % (Ask)",
+                "Volume", "Open Interest",
+            ]], hide_index=True, width="stretch",
+        )
+    st.download_button(
+        "EXPORT PROTECTIVE PUT SCAN CSV", data=frame.to_csv(index=False),
+        file_name=f"{result['symbol']}_protective_puts.csv",
+        mime="text/csv", width="stretch", key="pp_download_csv",
+    )
+    if result.get("chain_sources"):
+        st.caption("OPTIONS DATA // " + " + ".join(result["chain_sources"]))
+    if result.get("errors"):
         with st.expander("CHAIN FETCH WARNINGS"):
-            for error in errors:
-                st.warning(str(error))
+            for msg in result["errors"]:
+                st.warning(str(msg))
 
 
 @st.fragment
@@ -324,7 +354,7 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             )
             return
 
-        top_ratios = [0.95, 1.85, 0.80, 0.90, 0.80, 1.15]
+        top_ratios = [1.05, 2.25, 0.90, 1.05, 0.90]
         top = st.columns(top_ratios, gap="small")
         with top[0]:
             if "pp_symbol" not in st.session_state:
@@ -404,74 +434,92 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             st.info("No listed put expirations are available for this symbol.")
             return
 
-        with top[5]:
-            scope = st.selectbox(
-                "Expiration Scope", ["ONE EXPIRATION", "ALL EXPIRATIONS"], key="pp_expiry_scope"
-            )
-
-        chosen_expiry = None
-        if scope == "ONE EXPIRATION":
-            if st.session_state.get("pp_expiry") not in expirations:
-                st.session_state["pp_expiry"] = _default_expiry(expirations)
-            expiry_row = st.columns([0.95, 0.72, 4.78], gap="small")
-            chosen_expiry = expiry_row[0].selectbox(
-                "Expiration", expirations, key="pp_expiry",
-                format_func=lambda value: value.strftime("%m-%d-%y"),
-            )
-            expiry_row[1].text_input(
-                "DTE", value=str(max(0, (chosen_expiry - _market_today()).days)),
-                disabled=True, key="pp_dte_display",
-            )
-            expiry_note = (
-                "ONE EXPIRATION IS FASTER // ALL EXPIRATIONS SCANS EVERY LISTED EXPIRY // "
-                f"EXPIRATION SOURCE // {expiration_source}"
-            )
-            expiry_row[2].markdown(
-                f'<div class="pp-inline-note">{html.escape(expiry_note)}</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption(
-                f"ALL EXPIRATIONS // {len(expirations):,} listed expirations // SOURCE {expiration_source} // "
-                "scan only when you press RUN PROTECTIVE PUT SCAN."
-            )
-
-        current_fingerprint = (
-            symbol, round(stock_price, 4), shares, scope, expiration_source,
-            "" if chosen_expiry is None else chosen_expiry.isoformat(),
+        st.html('<div class="pp-section">EXPIRATION PRIORITY // NEAR-ZERO SHARES + PUT LOSS</div>')
+        today = _market_today()
+        expirations = sorted(item for item in expirations if item >= today)
+        if not expirations:
+            st.info("There are no future listed put expiration dates for this ticker.")
+            return
+        expiry_columns = st.columns([0.82, 1.24, 3.2], gap="small",
+                                    vertical_alignment="bottom")
+        with expiry_columns[0]:
+            target_dte = int(st.number_input(
+                "HOW MANY DAYS OUT?", min_value=1, max_value=730,
+                value=60, step=1, key="pp_target_dte",
+                help="Automatically select the closest listed expiration.",
+            ))
+        closest = min(
+            expirations, key=lambda item: (abs((item - today).days - target_dte), item),
         )
-        if st.button("RUN PROTECTIVE PUT SCAN", type="primary", width="stretch", key="pp_scan"):
-            selected = [chosen_expiry] if chosen_expiry is not None else expirations
-            progress = st.progress(0.0, text="Initializing protective-put scan...")
+        if (
+            st.session_state.get("_pp_last_target_dte") != target_dte
+            or st.session_state.get("_pp_last_expiry_symbol") != symbol
+            or st.session_state.get("pp_expiry") not in expirations
+        ):
+            st.session_state["pp_expiry"] = closest
+        st.session_state["_pp_last_target_dte"] = target_dte
+        st.session_state["_pp_last_expiry_symbol"] = symbol
+        with expiry_columns[1]:
+            chosen_expiry = st.selectbox(
+                "LISTED EXPIRATION DATES", expirations, key="pp_expiry",
+                format_func=lambda item: (
+                    f"{item:%m-%d-%y} // {(item - today).days} DTE"
+                ),
+                help="Choose any listed date; the highlighted hedge uses this expiry.",
+            )
+        with expiry_columns[2]:
+            st.caption(
+                f"{len(expirations)} LISTED EXPIRATIONS // "
+                f"SELECTED {(chosen_expiry - today).days} DAYS OUT // "
+                "LOSS TARGET $0 // SAME-TICKER PUTS ONLY"
+            )
+
+        # Limit broker/public chain fetches to the 10 closest expirations;
+        # always include the user-selected date, regardless of target days.
+        nearby = sorted(
+            expirations,
+            key=lambda item: (
+                abs((item - chosen_expiry).days), item
+            ),
+        )[:10]
+        scan_dates = sorted(set([chosen_expiry, *nearby]))
+        current_fingerprint = (
+            symbol, round(stock_price, 4), shares,
+            target_dte, chosen_expiry.isoformat(),
+            expiration_source, tuple(scan_dates),
+        )
+        if st.button(
+            "FIND LOWEST-LOSS PROTECTIVE PUTS BY EXPIRATION",
+            type="primary", width="stretch", key="pp_scan",
+        ):
+            progress = st.progress(0.0, text="Comparing listed expiration puts...")
             frames: list[pd.DataFrame] = []
             errors: list[str] = []
             chain_sources: set[str] = set()
-            for index, expiry in enumerate(selected, start=1):
+            for index, expiry in enumerate(scan_dates, start=1):
                 try:
                     rows, _, chain_source = _put_chain(client, symbol, expiry, touch_session)
                     chain_sources.add(chain_source)
                     frame = build_put_analysis(
-                        rows, expiry=expiry, stock_price=stock_price, shares=shares, today=_market_today()
+                        rows, expiry=expiry, stock_price=stock_price,
+                        shares=shares, today=today,
                     )
                     if not frame.empty:
                         frames.append(frame)
-                except ETradeError as exc:
-                    errors.append(f"{expiry.isoformat()}: {exc}")
                 except Exception as exc:
                     errors.append(f"{expiry.isoformat()}: {exc}")
                 progress.progress(
-                    index / len(selected),
-                    text=f"Scanning {expiry.strftime('%m-%d-%y')} // {index}/{len(selected)}",
+                    index / len(scan_dates),
+                    text=f"Comparing {expiry:%m-%d-%y} // {index}/{len(scan_dates)}",
                 )
             progress.empty()
             st.session_state["pp_scan_result"] = {
                 "fingerprint": current_fingerprint,
-                "symbol": symbol,
-                "stock_price": stock_price,
-                "shares": shares,
+                "symbol": symbol, "stock_price": stock_price,
+                "shares": shares, "target_dte": target_dte,
+                "chosen_expiry": chosen_expiry,
                 "frame": pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
-                "errors": errors,
-                "chain_sources": sorted(chain_sources),
+                "errors": errors, "chain_sources": sorted(chain_sources),
             }
 
         result = st.session_state.get("pp_scan_result")
