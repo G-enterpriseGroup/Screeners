@@ -271,18 +271,6 @@ def portfolio_hedge_candidates(
             "Stress Loss %": remaining_loss / exposure * 100,
             "Volume": row.get("volume"), "Open Interest": row.get("open_interest"),
             "Contract": str(row.get("osi") or ""),
-            "Implied Volatility": row.get("implied_volatility"),
-            "Cost of Put (Ask)": direct_cost_ask,
-            "Max Loss (Ask)": direct_loss_ask,
-            "Max Loss Calc (Ask)": (
-                f"max(0, ({spot:.2f} + {ask:.2f} - {strike:.2f}) × 100)"
-            ),
-            "Cost of Put (Last)": direct_cost_last,
-            "Max Loss (Last)": direct_loss_last,
-            "Max Loss Calc (Last)": (
-                "" if last_quote is None else
-                f"max(0, ({spot:.2f} + {last_quote:.2f} - {strike:.2f}) × 100)"
-            ),
         })
     return pd.DataFrame.from_records(records)
 
@@ -362,6 +350,18 @@ def portfolio_chain_scenario(
             "Stress Loss %": 100 * remaining / exposure,
             "Near Zero Scenario": remaining <= .005, "Orderable": orderable,
             "Contract": str(row.get("osi") or ""),
+            "Implied Volatility": row.get("implied_volatility"),
+            "Cost of Put (Ask)": direct_cost_ask,
+            "Max Loss (Ask)": direct_loss_ask,
+            "Max Loss Calc (Ask)": (
+                f"max(0, ({spot:.2f} + {ask:.2f} - {strike:.2f}) × 100)"
+            ),
+            "Cost of Put (Last)": direct_cost_last,
+            "Max Loss (Last)": direct_loss_last,
+            "Max Loss Calc (Last)": (
+                "" if last_quote is None else
+                f"max(0, ({spot:.2f} + {last_quote:.2f} - {strike:.2f}) × 100)"
+            ),
         })
     return pd.DataFrame.from_records(records)
 
