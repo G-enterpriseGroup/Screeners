@@ -15,7 +15,8 @@ from src.heatmaps_ui import (
     SECTOR_NAMES,
     VIEWS,
     _annual,
-    _best_positive_sector,
+    _annual_cagr,
+    _benchmark_analysis,
     _calendar_returns,
     _clean_state,
     _export_csv,
@@ -105,30 +106,54 @@ def run() -> None:
     assert pcols == ["2000", "2001", "2002"]
     assert [label for label, _ in prows] == ["XLK"]
     assert "2001" in _heatmap_markup("BY YEAR", pcols, prows, annual=True)
-    # A recent fund with a perfect short record cannot beat mature sectors.
-    long_years = pd.to_datetime([f"{year}-12-30" for year in range(2000, 2026)])
-    mature_returns = [1.10 if i % 5 else 0.90 for i in range(25)]
-    mature_prices = [100.0]
-    for factor in mature_returns:
-        mature_prices.append(mature_prices[-1] * factor)
-    new_prices = [float("nan")] * 19 + [100.0]
-    for _ in range(6):
-        new_prices.append(new_prices[-1] * 1.20)
+    # Matched full-year total returns: sector must outperform BOTH ETF
+    # benchmarks plus an annually rebalanced equal-weight composite.
+    benchmark_dates = pd.to_datetime([f"{year}-12-30" for year in range(2000, 2026)])
+    def annual_path(factor):
+        return [100.0 * factor ** i for i in range(26)]
+    recent = [float("nan")] * 19 + [100.0 * (1.6 ** i) for i in range(7)]
     comparison = pd.DataFrame({
-        "XLK": mature_prices,
-        "XLC": new_prices,
-        "XLE": [100.0 * (1.01 ** i) * (0.8 if i % 2 else 1.0) for i in range(26)],
-    }, index=long_years)
-    yc, yr = _annual(comparison, ["XLK", "XLC", "XLE"])
-    winner = _best_positive_sector(comparison, yc, yr)
-    assert winner == "XLK", winner
-    highlighted = _heatmap_markup("ANNUAL", yc, yr, annual=True, best_sector=winner)
-    assert highlighted.count('background:#ffe100;color:#000000') == 1
-    assert 'Technology (XLK)</td>' in highlighted
-    assert _best_positive_sector(comparison[["XLC"]], yc, [yr[1]]) is None
-    # Under 15 full years must never receive the highlight.
-    assert _best_positive_sector(comparison.loc["2015":, ["XLK"]],
-                                 *_annual(comparison.loc["2015":, ["XLK"]], ["XLK"])) is None
+        "SPY": annual_path(1.07),
+        "QQQ": annual_path(1.10),
+        "XLK": annual_path(1.15),
+        "XLE": annual_path(1.03),
+        "XLC": recent,
+    }, index=benchmark_dates)
+    cy, sector_rows = _annual(comparison, ["XLK", "XLE", "XLC"])
+    leader, notes, benchmark_rows, message = _benchmark_analysis(comparison, cy, sector_rows)
+    assert leader == "XLK", message
+    assert len(benchmark_rows) == 3
+    assert [name for name, _ in benchmark_rows] == ["SPY", "QQQ", "SPY+QQQ 50/50"]
+    assert "SPY" in notes["XLK"] and "QQQ" in notes["XLK"]
+    assert "Information ratio" in notes["XLK"]
+    assert "2001-2024" in notes["XLK"], notes["XLK"]
+    assert "NOT ELIGIBLE" in notes["XLC"]
+    near(_annual_cagr([15.0] * 20), 15.0)
+    near(_annual_cagr([7.0] * 20), 7.0)
+    composite = dict(benchmark_rows)["SPY+QQQ 50/50"]
+    near(composite[1], 8.5)
+    marked = _heatmap_markup("BENCHMARK", cy, sector_rows + benchmark_rows,
+                             annual=True, best_sector=leader, explanations=notes)
+    assert marked.count('background:#ffe100;color:#000000') == 1
+    assert "BENCHMARK-RELATIVE LEADER" in marked
+    assert "SPY" in marked and "QQQ" in marked
+    assert 'title="Negative years:' in marked
+    assert "No benchmark" not in message
+
+    # Winner is suppressed when it does not beat QQQ, even if sector is green.
+    weaker = comparison.copy()
+    weaker["XLK"] = annual_path(1.09)
+    wc, wr = _annual(weaker, ["XLK", "XLE", "XLC"])
+    no_leader, _, _, why = _benchmark_analysis(weaker, wc, wr)
+    assert no_leader is None and "NO QUALIFYING SECTOR" in why
+
+    # Insufficient benchmark history never creates a false winner.
+    incomplete = comparison.drop(columns=["QQQ"])
+    missing_winner, _, available_benchmarks, why = _benchmark_analysis(incomplete, cy, sector_rows)
+    assert missing_winner is None
+    assert len(available_benchmarks) == 1
+    assert "unavailable" in why
+
     mcols, mrows = _monthly(prices, "XLRE")
     assert len(mcols) == 12
     assert [r[0] for r in mrows] == ["2025"]
