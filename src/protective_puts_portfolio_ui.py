@@ -47,9 +47,8 @@ _CSS = """
 }
 
 
-/* A full-cell checkbox-style BUTTON is deliberate: Streamlit's nested
-   checkbox label shrank to 16px on the authenticated page, making it
-   impossible to reliably click. Only this feature's BUY buttons are styled. */
+/* Risk Sizing's 16px black/orange square, with the existing reliable
+   full-row BUY button hit target. Scope both states to this options grid. */
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stVerticalBlock"]{
     gap:0!important;
 }
@@ -66,17 +65,38 @@ _CSS = """
     height:43px!important;min-height:43px!important;margin:0!important;padding:0!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button{
-    box-sizing:border-box!important;width:100%!important;
-    min-width:100%!important;min-height:43px!important;height:43px!important;
+    position:relative!important;box-sizing:border-box!important;
+    width:100%!important;min-width:100%!important;
+    height:43px!important;min-height:43px!important;
     margin:0!important;padding:0!important;border-radius:0!important;
-    background:#fb8b1e!important;border:1px solid #a65c16!important;
-    color:#000!important;-webkit-text-fill-color:#000!important;
-    font:900 27px/1 "Courier New",monospace!important;
+    background:#000!important;
+    border:0!important;border-left:1px solid #fb8b1e!important;
+    border-right:1px solid #a65c16!important;border-bottom:1px solid #a65c16!important;
     box-shadow:none!important;cursor:pointer!important;
+    color:transparent!important;-webkit-text-fill-color:transparent!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button *{
+    color:transparent!important;-webkit-text-fill-color:transparent!important;
+    font-size:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button::before{
+    content:""!important;position:absolute!important;left:50%!important;top:50%!important;
+    transform:translate(-50%,-50%)!important;box-sizing:border-box!important;
+    width:16px!important;height:16px!important;min-width:16px!important;min-height:16px!important;
+    border:2px solid #fb8b1e!important;border-radius:0!important;
+    background:#000!important;box-shadow:none!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button[data-testid="stBaseButton-primary"]::before{
+    background:#fb8b1e!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button[data-testid="stBaseButton-primary"]::after{
+    content:"✓"!important;position:absolute!important;left:50%!important;top:50%!important;
+    transform:translate(-50%,-50%)!important;
     color:#000!important;-webkit-text-fill-color:#000!important;
-    font-size:27px!important;font-weight:900!important;
+    font:900 13px/1 "Courier New",monospace!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button:hover{
+    background:#120a02!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stButton"] button:focus-visible{
     outline:2px solid #fff!important;outline-offset:-3px!important;
@@ -1225,6 +1245,7 @@ def _results(
             with left:
                 st.button(
                     "☑" if identity in saved_ids else "☐",
+                    type="primary" if identity in saved_ids else "secondary",
                     key=check_key, width="stretch",
                     on_click=_toggle_contract_buy, args=(state_key, scope_key, identity),
                     help=f"BUY {row['Proxy']} {row['Expiration']} {row['Strike']} PUT // SELECT / DESELECT",
