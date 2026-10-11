@@ -194,4 +194,24 @@ try:
 except ValueError:
     pass
 
+
+from src.protective_puts import portfolio_chain_scenario, rank_portfolio_chain
+scenario_rows = [
+    {"call_put":"PUT","strike":110.0,"ask":2.0},
+    {"call_put":"PUT","strike":96.0,"ask":1.0},
+    {"call_put":"PUT","strike":80.0,"ask":0.1},
+    {"call_put":"PUT","strike":90.0,"ask":0.0},
+    {"call_put":"CALL","strike":110.0,"ask":2.0},
+]
+scenario = portfolio_chain_scenario(
+    scenario_rows, symbol="SPY", expiry=date(2026,12,18),
+    spot=100, exposure=10000, stress_pct=15, beta=1, today=date(2026,10,11),
+)
+assert len(scenario) == 3
+ranked_scenario = rank_portfolio_chain(scenario, preferred_dte=60)
+assert ranked_scenario.iloc[0]["Strike"] == 110.0
+assert ranked_scenario.iloc[0]["Stress Remaining Loss"] == 0
+assert ranked_scenario.iloc[0]["Priority"]
+assert ranked_scenario.iloc[-1]["Stress Remaining Loss"] > 0
+
 print("PROTECTIVE PUTS TEST: PASS")
