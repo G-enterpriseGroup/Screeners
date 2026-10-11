@@ -89,54 +89,38 @@ def selected_count(driver) -> int:
 
 
 def click_first_checkbox(driver, expected: int) -> None:
-    # Native Glide checkbox is on a canvas; render/layout can include a
-    # row-header gutter and varying column widths. Resolve the visible
-    # BUY cell from its orange fill before making a real Selenium click.
-    def canvas_and_cell(_):
+    # Use the real browser mouse against the BUY column's first data row.
+    # Glide's header height, optional row markers, and its HDPI canvas vary
+    # across browser versions, so probe a few positions within BUY.
+    def get_canvas(_):
         grids=driver.find_elements(
             By.CSS_SELECTOR, '[data-testid="stDataFrame"], [data-testid="stDataEditor"]'
         )
         for grid in grids:
-            for candidate in grid.find_elements(By.CSS_SELECTOR, "canvas"):
-                if candidate.size["width"]<400 or candidate.size["height"]<150:
-                    continue
-                coords=driver.execute_script("""
-                    const c=arguments[0];
-                    const ctx=c.getContext('2d',{willReadFrequently:true});
-                    if(!ctx) return null;
-                    const b=c.getBoundingClientRect();
-                    const scaleX=c.width/b.width, scaleY=c.height/b.height;
-                    // Orange BUY cells lie immediately beneath the orange header.
-                    // Find the long orange band below the header and use its middle.
-                    for(let y=43;y<85;y+=3){
-                        const row=ctx.getImageData(0,Math.floor(y*scaleY),
-                                      Math.min(200,c.width),1).data;
-                        let left=-1,right=-1;
-                        for(let x=10;x<Math.min(150,b.width);x++){
-                            const k=Math.floor(x*scaleX)*4;
-                            if(Math.abs(row[k]-251)<14 &&
-                               Math.abs(row[k+1]-139)<14 &&
-                               Math.abs(row[k+2]-30)<14){
-                                if(left<0)left=x;
-                                right=x;
-                            }
-                        }
-                        if(right-left>25) return {x:Math.floor((left+right)/2),
-                                                  y:y, width:b.width, height:b.height};
-                    }
-                    return null;
-                """,candidate)
-                if coords:
-                    return candidate, coords
+            for candidate in grid.find_elements(By.CSS_SELECTOR,"canvas"):
+                if candidate.size["width"]>400 and candidate.size["height"]>150:
+                    return candidate
         return False
-    canvas,coords=WebDriverWait(driver,35).until(canvas_and_cell)
-    # Avoid waiting on a timer: wait for the real Streamlit rerun with the
-    # selected-across-all-pages count increased by one.
-    ActionChains(driver).move_to_element_with_offset(
-        canvas, int(coords["x"]-coords["width"]/2),
-        int(coords["y"]-coords["height"]/2),
-    ).click().perform()
-    WebDriverWait(driver,20).until(lambda _: selected_count(driver)==expected)
+    for y in (62, 75, 54, 85, 110):
+        for x in (60, 92, 42, 110):
+            canvas=WebDriverWait(driver,25).until(get_canvas)
+            width,height=canvas.size["width"],canvas.size["height"]
+            if x>=width or y>=height:
+                continue
+            ActionChains(driver).move_to_element_with_offset(
+                canvas, round(x-width/2), round(y-height/2),
+            ).click().perform()
+            try:
+                WebDriverWait(driver,1.2,poll_frequency=.2).until(
+                    lambda _: selected_count(driver)==expected
+                )
+                return
+            except Exception:
+                continue
+    raise AssertionError(
+        "Actual Glide BUY checkbox did not toggle after visible-cell clicks; "
+        f"selected={selected_count(driver)} expected={expected}"
+    )
 
 
 def main() -> None:
