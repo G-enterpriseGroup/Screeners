@@ -199,6 +199,7 @@ def _normalize_yfinance_puts(symbol: str, expiry: date) -> list[dict[str, Any]]:
                 "last": _number(row.get("lastPrice")),
                 "volume": _number(row.get("volume")),
                 "open_interest": _number(row.get("openInterest")),
+                "implied_volatility": _number(row.get("impliedVolatility")),
                 "osi": str(row.get("contractSymbol") or ""),
             }
         )
