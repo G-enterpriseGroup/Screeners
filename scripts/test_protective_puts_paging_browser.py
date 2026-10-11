@@ -54,7 +54,7 @@ result={
     "chains":1, "errors":[],
 }
 def money(v):
-    return f"\${float(v):,.2f}"
+    return f"${float(v):,.2f}"
 def metric_markup(items):
     return "<div>TEST METRICS</div>"
 
