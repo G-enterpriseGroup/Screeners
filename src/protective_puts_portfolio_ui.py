@@ -37,6 +37,71 @@ _CSS = """
 }
 /* Mirror the live E*TRADE Risk Book native-grid contract, locally only:
    48px rows, 1.02rem type, continuous orange borders, no column gutters. */
+/* PORTFOLIO HEDGE INPUTS // feature-scoped native React Aria styling.
+   Current Streamlit renders number fields and steppers separately; setting
+   input color alone leaves the gray outer panel and invisible black +/-.
+   Preserve the existing market-data and hedge-calculation widget keys. */
+.st-key-pp_portfolio_hedge [data-testid="stTextInputRootElement"],
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputContainer"]{
+    box-sizing:border-box!important;
+    height:40px!important;min-height:40px!important;
+    border:1px solid #fb8b1e!important;border-radius:0!important;
+    background:#080808!important;box-shadow:none!important;
+}
+.st-key-pp_portfolio_hedge [data-testid="stTextInputField"],
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputField"]{
+    color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;
+    background:transparent!important;caret-color:#fb8b1e!important;
+    font:900 .86rem/1.2 "Courier New",monospace!important;
+    min-height:38px!important;height:38px!important;
+    padding:0 10px!important;
+}
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepDown"],
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepUp"]{
+    width:34px!important;min-width:34px!important;
+    border:0!important;border-left:1px solid #7a4818!important;
+    border-radius:0!important;background:#15100a!important;
+    color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;
+    cursor:pointer!important;
+}
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepDown"] svg,
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepUp"] svg,
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepDown"] svg *,
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepUp"] svg *{
+    stroke:currentColor!important;color:inherit!important;
+}
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepDown"]:enabled:hover,
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepUp"]:enabled:hover{
+    background:#fb8b1e!important;color:#000!important;
+}
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepDown"]:disabled,
+.st-key-pp_portfolio_hedge [data-testid="stNumberInputStepUp"]:disabled{
+    background:#0c0b09!important;color:#aa7743!important;
+    cursor:not-allowed!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_hedge_scan button{
+    box-sizing:border-box!important;min-height:40px!important;height:40px!important;
+    border:1px solid #fb8b1e!important;border-radius:0!important;
+    background:#fb8b1e!important;box-shadow:none!important;
+    color:#000!important;-webkit-text-fill-color:#000!important;
+    font:900 .84rem/1 "Courier New",monospace!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_hedge_scan button *{
+    color:#000!important;-webkit-text-fill-color:#000!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_hedge_scan button:hover{
+    background:#ffad52!important;border-color:#ffad52!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_hedge_scan button:focus-visible{
+    outline:2px solid #f5f5f5!important;outline-offset:2px!important;
+}
+/* Keep the help labels tight and fully legible beside the compact editors. */
+.st-key-pp_portfolio_hedge [data-testid="stTextInput"] [data-testid="stWidgetLabel"] *,
+.st-key-pp_portfolio_hedge [data-testid="stNumberInput"] [data-testid="stWidgetLabel"] *{
+    color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;
+    font-size:.72rem!important;font-weight:900!important;
+}
+
 .st-key-pp_hedge_native_grid{
     --pp-book-row:48px;--pp-book-font:1.02rem;--pp-book-pad:8px;
 }
