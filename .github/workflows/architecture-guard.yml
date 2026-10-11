@@ -105,7 +105,9 @@ jobs:
 
       - name: Verify paged Protective Puts BUY checkboxes in browser
         if: github.event_name == 'push'
-        run: python scripts/test_protective_puts_paging_browser.py
+        run: |
+          python -m pip install selenium==4.36.0
+          python scripts/test_protective_puts_paging_browser.py
 
       - name: Check Vertical Options selected-account contrast in browser
         if: github.event_name == 'push'
