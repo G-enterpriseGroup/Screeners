@@ -2492,3 +2492,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS, run `38181925440`; final changelog-only commit should be validated again.
 - **Production/test history:** Starting from `a83f12595353b56fe92c2e67d56e8be2427c7c03`, code/table changes `2cb2862a1f02e1dc9fee8673d40c39963da0ff23`, `72f969395f67fd45bf9adbadd3d618de81dd8b54`, `ed44c6c52d0fc83013c60b1f92baa6313cc8837e` (full-cell BUY control); focused regression updates through `76171b42b7f3687714ed8135aa6bd2ee2d459c4f`. Some intermediate commits failed intentionally updated outdated assertions; final run passed.
 - **Lesson:** Never add a second data grid to compensate for missing columns in the first. Verify **actual DOM click target dimensions** and interactions in browser before declaring native checkbox controls fixed; a CSS color test is insufficient. Prefer a compact, cohesive table and preserve order-safety isolation.
+
+## 2026-10-11 — Disable Bull Debit Spread top-level tab, preserve feature
+
+- **Feature changed:** Top navigation / Bull Debit Spread visibility only.
+- **Production file changed:** `src/tab_bar_v4.py`; this append-only record is in `src/TERMINAL_CHANGELOG.md`.
+- **Previous state / root cause:** `BULL DEBIT SPREAD` was still in `DEFAULT_TAB_ORDER`, so the top-level tab remained visible.
+- **Minimum change:** Add the existing route key to `DISABLED_TAB_ROUTES` and remove it only from `DEFAULT_TAB_ORDER`. The current `_clean_order` / `_clean_active` already exclude removed keys from saved navigation order and redirect stale active selections to a visible tab.
+- **Must preserve:** The dormant `streamlit_app.py` dispatch, `src/bull_debit_ui.py` and `src/bull_debit_spread.py` calculations and E*TRADE/yfinance read-only chain fallback. Re-enable only by removing the dormant key and adding it back to the visible default order.
+- **Intentionally NOT changed:** `streamlit_app.py`, Bull Debit renderer/math, `src/terminal_core.py`, E*TRADE OAuth/session, Risk Sizing, Protective Puts, GEX, Holdings, other tabs, shared theme, component CSS and layout.
+- **Tests performed:** Inspected the exact production diff and refetched the committed navigation code; confirmed the key is absent from the visible list and present in the dormant set while the other nine tab keys remain. GitHub Actions `38184861026` passed `python scripts/validate_architecture.py`, production Python syntax checks including `src/tab_bar_v4.py`, `scripts/test_tab_layout.py` across active tabs, and the deployed Streamlit health endpoint. Remaining browser-suite steps were still running when this log entry was added.
+- **Architecture guard:** PASS in GitHub Actions run `38184861026`; all-workflow final result to be checked after the run finishes.
+- **Production commit SHA:** `a1e32d033341050d177692ca7bce4383713686ca`. This changelog-only commit follows.
+- **Lesson:** Disable a feature at the existing navigation allowlist, not by removing its implementation or changing unrelated page routing.
