@@ -2314,3 +2314,30 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS in CI run \`38159607124\` (final changelog commit requires its own CI completion).
 - **Production commits:** \`6fdd0ac1b00c160f88543f49178635304898a4dc\`, \`1cc44bd70e3805184082f9e212ad2131e284693c\`, \`dac35fe69ad95387271a28cace338825bf1da3e0\`; this changelog append commit follows.
 - **Lesson:** Hedge portfolio candidate selection needs the same sleeve classification, broker P&L and account-relative exposure as Risk Sizing. Do not recompute an account percentage from selected symbols alone, and do not overwrite another tab's stored classification intent when merely displaying it.
+
+
+## 2026-10-11 — Protective Puts portfolio hedge holdings sort restored
+
+- **Feature changed:** Protective Puts / PORTFOLIO HEDGE holdings table.
+- **Production file:** `src/protective_puts_portfolio_ui.py`; focused regression additions in `scripts/test_protective_puts.py`; this append-only changelog.
+- **Broken/root cause:** The Risk-Sizing-style hedge table was rebuilt with its nine data fields but omitted the Risk Book's sorting widgets. Holdings stayed locked in market-value order, making it difficult to prioritize losses, sleeve type, and account exposure when choosing hedges.
+- **Changed:** Added a compact SORT selector + ASC/DESC selector above the table, with DEFAULT (highest market value), HEDGE checked, SLEEVE / %, SYMBOL, SHARES, LAST, P&L %, P&L, VALUE, and % ACCT. Stable numeric sorts, missing values last, symbol tiebreaks; rows reorder only visually. Original account+symbol keyed checkboxes remain intact and independently browser-persisted across sort changes.
+- **Preserve:** Hedge checkmarks per browser/account, default Raj Singh account, selected exposure math, exact Risk Book-inspired 48px grid and typography, E*TRADE source priority, option-chain scanner and read-only order boundary.
+- **Intentionally NOT changed:** Risk Sizing itself, shared layout/theme, OAuth, E*TRADE broker client, GEX, Holdings, Navigation, `src/terminal_core.py`, `streamlit_app.py`, and other feature owners.
+- **Tests:** Synthetic sort tests across every supported column in both directions, HEDGE sorting with selected tickers, missing P&L ordering and same underlying ticker/value identity; GitHub Actions run `38160515281` PASS, including syntax, architecture, Risk/tabs, Protective Puts regressions, production health and live frontend no-"Oh no" smoke.
+- **Architecture guard:** PASS in `38160515281`.
+- **Production commits:** `d866b84eeb3847df59daaf555dc3865c3a0024b3`, `eed72aa9dd845ecee3469e041ba88ad7e70cb32f`.
+- **Lesson:** For a user-facing cloned Risk Book, preserve the sort affordance as well as the table columns, and always decouple saved checkbox identity from the row position.
+
+## 2026-10-11 — Vertical Options account selection/dropdown contrast
+
+- **Feature changed:** Vertical Options selection-menu and chosen-account readability.
+- **Production file:** `src/vertical_options_ui.py`; focused CSS regression in `tests/test_vertical_options.py`; this append-only changelog.
+- **Broken/root cause:** BaseWeb selected accounts and portal-based dropdown options could inherit orange text on orange fill, creating unreadable selections. The prior selected-tag override was insufficient for nested chip elements and portaled option menus.
+- **Changed:** In Vertical Options-only CSS, force selected multiselect tags to orange background with black text/remove icons, and force black dropdown-option text on orange with a high-contrast hover state. Portal selectors are guarded by `body:has(.st-key-vertical_options_workspace)` because option menus render outside the ticket's DOM container. Non-selected input fields remain orange on dark.
+- **Preserve:** Current compact Bloomberg orange/black theme, ticker autocomplete behavior, option legs/validation, multi-account preview fingerprint and explicit-order-send safety; never globally reassign Streamlit widgets or modify the shared theme.
+- **Intentionally NOT changed:** Protective Puts for this styling fix, Risk Sizing, E*TRADE OAuth/client/order payloads, GEX, Holdings, top navigation, `src/theme.py`, `src/terminal_core.py`, `streamlit_app.py`.
+- **Tests:** Local-scoped CSS rule assertions in `tests/test_vertical_options.py`; GitHub Actions `38160515281` PASS for Vertical Options payload/contrast tests, syntax, architecture validation, neighboring tabs, Streamlit production health and deployed frontend startup. Authenticated actual select-popup visual contrast was not manually exercised.
+- **Architecture guard:** PASS in `38160515281`.
+- **Production commits:** `98a47ba2c236abef3d8ce8a9836e034d3c5a392f`, `fc19b61460d08dfd1f14da6ad14e8c97968acad9`.
+- **Lesson:** Selection overlays may be portaled beyond a feature's DOM scope. Make popup colors contrast explicitly but guard portal CSS by that feature's presence.
