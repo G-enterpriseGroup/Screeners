@@ -78,4 +78,48 @@ assert portfolio_hedge_candidates(
     target_loss_pct=5, premium_limit_pct=10, today=date(2026, 10, 11),
 ).empty
 
+
+# Portfolio table must match E*TRADE Risk Sizing sleeve and account math.
+import pandas as pd
+from src.protective_puts_portfolio_ui import _classified_hedge_book, _preferred_account_index
+
+assert _preferred_account_index([
+    {"accountName": "Another Account", "accountId": "0001"},
+    {"accountName": "Raj Singh", "accountId": "5474"},
+]) == 1
+
+holdings = pd.DataFrame([
+    {"Symbol": "AAA", "Quantity": 10, "Market Value": 1200, "Gain/Loss": 200,
+     "Gain/Loss %": 20.0, "Total Cost": 1000},
+    {"Symbol": "AAA", "Quantity": 5, "Market Value": 450, "Gain/Loss": -50,
+     "Gain/Loss %": -10.0, "Total Cost": 500},
+    {"Symbol": "BBB", "Quantity": 10, "Market Value": 800, "Gain/Loss": -100,
+     "Gain/Loss %": -11.11, "Total Cost": 900},
+    {"Symbol": "CCC", "Quantity": 20, "Market Value": 1000, "Gain/Loss": -200,
+     "Gain/Loss %": -16.67, "Total Cost": 1200},
+    {"Symbol": "DDD", "Quantity": 5, "Market Value": 500, "Gain/Loss": None,
+     "Gain/Loss %": None, "Total Cost": None},
+])
+hedge_book = _classified_hedge_book(
+    holdings, account_total=10000.0, long_term_tickers={"BBB"},
+    gain_threshold=5.0, tactical_pct=15.0,
+).set_index("Symbol")
+assert len(hedge_book) == 4
+assert hedge_book.loc["AAA", "Quantity"] == 15
+assert hedge_book.loc["AAA", "Market Value"] == 1650
+assert hedge_book.loc["AAA", "Gain/Loss"] == 150
+assert abs(hedge_book.loc["AAA", "Gain/Loss %"] - 10.0) < 1e-9
+assert hedge_book.loc["AAA", "Sleeve"] == "LONG-TERM"
+assert hedge_book.loc["BBB", "Sleeve"] == "LONG-TERM"
+assert hedge_book.loc["CCC", "Sleeve"] == "TACTICAL"
+assert abs(hedge_book.loc["CCC", "% Tactical Sleeve"] - (1000/1500*100)) < 1e-9
+assert abs(hedge_book.loc["AAA", "% Account"] - 16.5) < 1e-9
+assert pd.isna(hedge_book.loc["DDD", "Gain/Loss %"])
+unknown_nav = _classified_hedge_book(
+    holdings, account_total=None, long_term_tickers=set(),
+    gain_threshold=5.0, tactical_pct=15.0,
+).set_index("Symbol")
+assert unknown_nav["% Account"].isna().all()
+assert unknown_nav["% Tactical Sleeve"].isna().all()
+
 print("PROTECTIVE PUTS TEST: PASS")
