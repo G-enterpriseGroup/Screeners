@@ -747,7 +747,6 @@ def _fed_year_cells(columns: list[str]) -> list[tuple[str, str, str]]:
         cuts = int((changes < -0.001).sum())
         end = float(current.iloc[-1])
         direction = "up" if hikes > cuts else "down" if cuts > hikes else "flat"
-        arrow = "↑" if direction == "up" else "↓" if direction == "down" else "↔"
         # Upper range bound is used from December 2008 onward.
         if year >= 2009 or (year == 2008 and current.index[-1] >= pd.Timestamp(2008, 12, 16)):
             lower_current = lower_history[lower_history.index <= current.index[-1]]
@@ -755,7 +754,7 @@ def _fed_year_cells(columns: list[str]) -> list[tuple[str, str, str]]:
                       if not lower_current.empty else f"upper bound {end:.2f}%")
         else:
             target = f"{end:.2f}%"
-        label = f"{arrow}{hikes if direction == 'up' else cuts if direction == 'down' else 0} {end:.2f}%"
+        label = f"↑{hikes} ↓{cuts} {end:.2f}%"
         tip = (f"{year} FED TARGET // {hikes} hikes, {cuts} cuts // "
                f"year-end target {target} // source: FRED DFEDTAR / DFEDTARU. "
                "Displayed rate is upper bound when a target range applies.")
