@@ -265,4 +265,41 @@ assert all("background-color:#10130d" in cell and "color:#4af6c3" in cell
 assert all("background-color:#fb8b1e" in cell and "color:#000000" in cell
            for cell in first), first
 
+# The full chain may exceed 4,000 rows; page selection must preserve
+# exact contract identity and never silently switch BUY to a different strike.
+from src.protective_puts_portfolio_ui import (
+    _CHAIN_PAGE_SIZE, _contract_identity, _reconcile_contract_checks,
+    _selected_contract_orders,
+)
+assert _CHAIN_PAGE_SIZE <= 30
+rows = []
+for i in range(122):
+    rows.append({
+        "Proxy": "SPY", "Expiration": "12-18-26", "Strike": float(600+i),
+        "Contract": f"SPY_P_{600+i}", "Orderable": True,
+        "Contracts": 1, "Ask": 2.0,
+    })
+big_chain = pd.DataFrame(rows)
+keys = [_contract_identity(row) for row in rows]
+assert len(keys) == len(set(keys))
+saved = _reconcile_contract_checks(set(), keys[:25], [True]+[False]*24)
+assert saved == {keys[0]}
+saved = _reconcile_contract_checks(saved, keys[25:50], [False]*24+[True])
+assert saved == {keys[0], keys[49]}, saved
+saved = _reconcile_contract_checks(saved, keys[:25], [False]*25)
+assert saved == {keys[49]}
+orders = _selected_contract_orders(big_chain, saved)
+assert len(orders) == 1 and orders[0]["Strike"] == 649.0
+try:
+    _reconcile_contract_checks(saved, keys[:2], [True])
+    raise AssertionError("Mismatch in checked rows must fail")
+except ValueError:
+    pass
+big_chain.loc[49, "Orderable"] = False
+try:
+    _selected_contract_orders(big_chain, saved)
+    raise AssertionError("Unorderable contract must block review")
+except ValueError:
+    pass
+
 print("PROTECTIVE PUTS TEST: PASS")
