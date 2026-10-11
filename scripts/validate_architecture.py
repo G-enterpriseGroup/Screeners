@@ -52,6 +52,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "protective_puts.py",
     SRC / "protective_puts_sources.py",
     SRC / "protective_puts_ui.py",
+    SRC / "protective_puts_portfolio_ui.py",
     SRC / "yfinance_options.py",
     SRC / "rebalance_portfolio_ui.py",
     SRC / "tab_bar_v4.py",

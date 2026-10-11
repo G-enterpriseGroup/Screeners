@@ -2272,3 +2272,18 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Unverified.
 - **Production commits:** `07479fce`, `3cf38e27`, `2e0357d3`.
 - **Lesson:** Use vector PDF with embedded selectable text when a wide financial heatmap must be machine-readable; do not export only the visible scrolled viewport.
+
+
+## 2026-10-11 — Portfolio proxy-put hedges inside Protective Puts
+
+- **Feature:** Protective Puts; optional PORTFOLIO HEDGE mode alongside the unchanged SINGLE HOLDING scanner.
+- **Production files:** `src/protective_puts_portfolio_ui.py` (new), `src/protective_puts_ui.py` (mode dispatch), `src/protective_puts.py` (read-only scenario math); focused test `scripts/test_protective_puts.py`; architecture ownership and guard file updated.
+- **Missing/root cause:** The married-put scan hedged one 100-share underlying at a time; users could not select positions from their brokerage book or compare multiple ETF proxy-put hedges by preferred expiration and price.
+- **Change:** Added native selection checkboxes for long stocks/ETFs from the same E*TRADE portfolio snapshot and normalized holdings function used by Risk Sizing (excluding cash, CUSIPs/fixed income, options and shorts). Users enter 1–5 put-proxy symbols (default SPY,QQQ), priority DTE and allowed window, ETF downside scenario, assumed basket beta, target modeled remaining loss (default 0%) and premium budget. Existing E*TRADE-first, yfinance/Yahoo fallback quote and chains are reused. The scan includes ASK premium and option payoff at expiration, sizes integer put contracts to meet the *modeled* loss target, and selects the cheapest qualifying hedge for each expiration; the recommendation prioritizes the closest target DTE then premium. Results export to CSV.
+- **Safety:** This is a portfolio stress scenario, **not** a guaranteed zero or bounded maximum loss, because ETF proxy puts can diverge from portfolio holdings; disclose beta assumption, basis/correlation, slippage, liquidity and path risk. No order preview/place/cancel actions.
+- **Preserve:** Original single-stock married-put math, 100-share lot coverage, source priority, option normalization, account/book identity and Bloomberg-style feature-local appearance.
+- **Intentionally unchanged:** E*TRADE Risk Sizing code and formulas, broker OAuth/client, Holdings presentation, GEX, navigation, shared theme, `streamlit_app.py`, `src/terminal_core.py`, and live-order features.
+- **Tests:** Added focused synthetic proxy-put economics checks including premium, integer contract sizing, payout and insufficient-budget rejection. Architecture guard includes the new production module. GitHub Actions validation must be inspected for final PASS; deployed live broker behavior not directly tested.
+- **Architecture guard:** See latest Terminal Architecture Guard GitHub Actions run; PASS is not asserted before CI completes.
+- **Production commits:** `4e6644081b17a2ca3b5e320d8e9bd4b1ff293a72` new UI helper; `594a27e34455600363f59b7f998cd9e940b94183` integration/math/tests; this append-only changelog commit follows.
+- **Lesson:** An index/ETF put on a correlated but different basket does not establish a hard loss floor. Model explicit stress payoff net of ASK premium, differentiate scenario loss from actual max loss, and preserve direct-underlying married puts unchanged.

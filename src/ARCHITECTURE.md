@@ -48,7 +48,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
 | E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
 | Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, `src/yfinance_options.py` public chain fallback, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
-| Protective Puts read-only analytics | `src/protective_puts_ui.py` | `src/protective_puts.py`, `src/protective_puts_sources.py`, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` quote/chain transport | Risk Sizing, Vertical Options ordering, OAuth, GEX, Holdings |
+| Protective Puts read-only analytics | `src/protective_puts_ui.py` | `src/protective_puts_portfolio_ui.py` portfolio proxy-put mode, `src/protective_puts.py` analytics/math, `src/protective_puts_sources.py` public fallback, read-only chain normalization from `src/option_book.py`, existing `src/etrade_client.py` quote/chain transport | Risk Sizing, Vertical Options ordering, OAuth, GEX, Holdings |
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
 | GEX terminal wrapper/context | `src/gex_workspace_v2.py` | `src/gex_ui_v3.py`, `src/yfinance_options.py` public chain fallback when E*TRADE is not live | Risk/OAuth/Holdings files |
@@ -121,12 +121,14 @@ Production path:
 
 - Change **ticker/purchase price/shares/expiration scope, compact layout, scan progress, table, or CSV export** → `src/protective_puts_ui.py`.
 - Change **protective-put premium cost, breakeven, strike floor, max-loss math, or normalized analysis columns** → `src/protective_puts.py`.
+- Change **portfolio holdings selection, editable SPY/QQQ proxy list, priority DTE, crash scenario, premium budget, and cheapest-per-expiry table** → `src/protective_puts_portfolio_ui.py`. Reuse Risk Sizing's read-only holdings normalization and the existing Protective Puts quote/chain loaders; do not edit Risk Sizing.
+- Change **portfolio hedge stress-payoff and premium-inclusive contract sizing math** → `src/protective_puts.py`. The zero-loss target is a *modeled expiration-date stress outcome*, never a guaranteed maximum loss for a basket of securities with proxy ETF puts.
 - Reuse `src/option_book.py::extract_option_rows` for read-only E*TRADE option-chain normalization; do not duplicate broker payload parsing.
 - When E*TRADE is not live, public fallback belongs only in `src/protective_puts_sources.py`: try yfinance first, then direct Yahoo Finance HTML scraping. Never route this fallback through OAuth or shared broker files.
 - Protective Puts is analytics-only. It must not preview, place, change, or cancel orders.
 - Preserve full coverage as one put contract per 100 shares; the production UI accepts only 100-share lots.
 - ASK is the conservative put-purchase reference. LAST is retained only to match the legacy Married Put analysis as a historical trade reference.
-- Keep Protective Puts styling local to `src/protective_puts_ui.py`; do not edit Risk Sizing or the shared theme to imitate its appearance.
+- Keep Protective Puts styling local to `src/protective_puts_ui.py` and the portfolio-specific `src/protective_puts_portfolio_ui.py`; do not edit Risk Sizing or the shared theme to imitate its appearance.
 
 ## GEX edit map
 
