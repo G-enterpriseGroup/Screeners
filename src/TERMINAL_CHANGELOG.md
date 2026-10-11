@@ -2236,3 +2236,15 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Unverified.
 - **Commit:** `6c8cec5b7844e7d5af21c493a0c30fcd1d8038ce` (production).
 - **Lesson:** Show independent yearly hike and cut counts; do not collapse mixed policy years into a single net-direction count.
+
+## 2026-10-11 — Prevent annual Fed heatmap cells overlapping
+
+- **Feature/file:** Heatmaps only, `src/heatmaps_ui.py` plus this changelog.
+- **Broken/root cause:** Both hike/cut counts and year-end rate were rendered in one unbroken line inside narrow year columns, overflowing and overlapping neighboring cells.
+- **Changed:** Render counts (`↑N ↓N`) on the first compact centered line and year-end rate on a second line inside each Fed cell; add only Fed-row scoped sizing and clipping.
+- **Preserved:** Historical Fed data, counts, tooltip, year headers, sector returns/ranking, R/G totals, benchmarks, terminal styling and all other tabs.
+- **Not edited:** Navigation, GEX, Risk, OAuth, Holdings, shared theme, `streamlit_app.py`, `src/terminal_core.py`.
+- **Verification:** Re-read committed production owner file and verified new per-cell markup and scoped CSS; live browser, full syntax check and architecture guard still unverified in connector-only environment.
+- **Architecture guard:** Not confirmed.
+- **Production commit:** `15511a01bdabb78892ea28a060ed8cbd92de227b`.
+- **Lesson:** Dense yearly table cells need a two-line layout rather than squeezing rate and move counts onto a single line.
