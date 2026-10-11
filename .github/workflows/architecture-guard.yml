@@ -103,6 +103,12 @@ jobs:
           echo "Raj's Terminal deployment endpoint did not return HTTP 200/303 after the production commit."
           exit 1
 
+      - name: Verify Protective Puts stale-account recovery in browser
+        if: github.event_name == 'push'
+        run: |
+          python -m pip install selenium==4.36.0
+          python scripts/test_protective_puts_account_recovery_browser.py
+
       - name: Verify paged Protective Puts BUY checkboxes in browser
         if: github.event_name == 'push'
         run: |
