@@ -14,6 +14,8 @@ This is a market-data estimate, not State Street's official fund performance.
 from __future__ import annotations
 
 import hashlib
+import io
+import urllib.request
 import html
 import math
 import re
@@ -691,10 +693,10 @@ def _fed_target_history() -> pd.Series:
     pieces = []
     for series_id in ("DFEDTAR", "DFEDTARU"):
         try:
-            frame = pd.read_csv(
-                f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}",
-                timeout=15,
-            )
+            with urllib.request.urlopen(
+                f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}", timeout=15
+            ) as response:
+                frame = pd.read_csv(io.BytesIO(response.read()))
             dates = pd.to_datetime(frame.iloc[:, 0], errors="coerce")
             values = pd.to_numeric(frame.iloc[:, 1], errors="coerce")
             series = pd.Series(values.to_numpy(), index=dates).dropna()
