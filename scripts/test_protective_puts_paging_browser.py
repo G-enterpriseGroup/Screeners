@@ -104,17 +104,21 @@ def click_first_checkbox(driver, expected: int) -> None:
     assert chosen.is_selected(), "BUY must be visibly selected after clicking"
     contrast = driver.execute_script(
         """
-        const label=arguments[0],box=label.querySelector('div');
-        const s=getComputedStyle(box);
-        return {fill:s.backgroundColor,outline:s.borderTopColor};
+        const label=arguments[0], pseudo=getComputedStyle(label,'::after');
+        const container=label.closest('[data-testid="stCheckbox"]');
+        const bg=getComputedStyle(container).backgroundColor;
+        const vis=label.getBoundingClientRect();
+        return {glyph:pseudo.content, color:pseudo.color,
+                background:pseudo.backgroundColor, cellBackground:bg,
+                width:vis.width, height:vis.height};
         """, checkbox,
     )
-    assert contrast["outline"] == "rgb(0, 0, 0)", contrast
-    assert contrast["fill"] == "rgb(74, 246, 195)", contrast
-    buy_cell = checkbox.find_element(By.XPATH, "ancestor::*[@data-testid='stCheckbox']")
-    assert driver.execute_script(
-        "return getComputedStyle(arguments[0]).backgroundColor", buy_cell
-    ) == "rgb(251, 139, 30)"
+    assert "☑" in contrast["glyph"], contrast
+    assert contrast["background"] == "rgb(74, 246, 195)", contrast
+    assert contrast["color"] == "rgb(0, 0, 0)", contrast
+    assert contrast["cellBackground"] == "rgb(251, 139, 30)", contrast
+    assert contrast["width"] > 25 and contrast["height"] >= 35, contrast
+
 
 
 def main() -> None:
