@@ -1105,9 +1105,7 @@ def _results(
         "100-SHARE MAX LOSS = SAME-TICKER MARRIED PUT EXAMPLE, NOT THE BASKET. "
         "ASK = PURCHASE REFERENCE; LAST = HISTORICAL. ORANGE = TOP ROW; GREEN = BEST/EXP."
     )
-    # Scans can contain >4,000 options. Never mount them all in an
-    # editable Glide canvas; only 25 cells worth of row data per page.
-    # The complete, unchanged ranked result stays in session cache.
+    # Sort the complete loaded chain; render just 25 native checkboxes/page.
     scope = (result["scan_id"], result["fingerprint"])
     scope_key = hashlib.sha256(repr(scope).encode("utf-8")).hexdigest()[:16]
     state_key = "_pp_chain_checked_contracts"
@@ -1116,24 +1114,24 @@ def _results(
         state = {"scope": scope_key, "ids": set()}
         st.session_state[state_key] = state
         st.session_state["pp_chain_page"] = 0
-        st.session_state.pop("pp_chain_expiration", None)
     saved_ids = set(state["ids"])
-    # The expiry selector lives above this renderer and includes EVERY
-    # broker/public-listed future date, not merely already loaded chains.
-    choice = result.get("expiry_choice", "ALL")
-    expiration_filter = (
-        choice.strftime("%m-%d-%y") if hasattr(choice, "strftime") else "ALL"
-    )
+
     with st.container(key="pp_chain_controls", gap="small"):
-        prev_col, current_col, next_col, summary_col = st.columns(
-            [0.8, 1.0, 0.8, 3.1], gap="small",
-            vertical_alignment="bottom",
+        sc, dc, prev_col, next_col, indicator = st.columns(
+            [1.75, .8, .9, .9, 1.3], gap="small", vertical_alignment="bottom",
         )
-        filtered = (
-            data if expiration_filter == "ALL"
-            else data.loc[data["Expiration"].eq(expiration_filter)]
-        )
-        page_count = max(1, (len(filtered) + _CHAIN_PAGE_SIZE - 1) // _CHAIN_PAGE_SIZE)
+        with sc:
+            sort_by = st.selectbox(
+                "SORT", list(_CHAIN_SORT_COLUMNS), key="pp_chain_sort",
+                label_visibility="collapsed",
+            )
+        with dc:
+            direction = st.selectbox(
+                "ORDER", ("ASC", "DESC"), key="pp_chain_direction",
+                label_visibility="collapsed",
+            )
+        ordered = _sort_contract_chain(data, sort_by, direction)
+        page_count = max(1, (len(ordered) + _CHAIN_PAGE_SIZE - 1) // _CHAIN_PAGE_SIZE)
         page_index = min(max(0, int(st.session_state.get("pp_chain_page", 0))),
                          page_count - 1)
         with prev_col:
@@ -1145,81 +1143,48 @@ def _results(
                          key="pp_chain_next", width="stretch"):
                 page_index += 1
         st.session_state["pp_chain_page"] = page_index
-        with current_col:
-            st.caption(f"PAGE {page_index + 1}/{page_count}")
-        with summary_col:
-            st.caption(
-                f"{len(filtered):,} QUOTED ROWS // "
-                f"{len(data):,} SCANNED // {result.get('listed_count',0)} LISTED DATES"
-            )
+        with indicator:
+            st.caption(f"PAGE {page_index + 1}/{page_count} // {len(ordered):,} PUTS")
 
     start = page_index * _CHAIN_PAGE_SIZE
-    page_data = filtered.iloc[start:start + _CHAIN_PAGE_SIZE].copy()
+    page_data = ordered.iloc[start:start + _CHAIN_PAGE_SIZE].copy()
     page_ids = [_contract_identity(row) for row in page_data.to_dict("records")]
-    cols = [
-        "Proxy", "Expiration", "DTE", "Strike", "Bid", "Ask",
-        "Cost of Put (Ask)", "Max Loss (Ask)", "Stress Remaining Loss",
-        "Contracts", "Open Interest",
-    ]
-    display = page_data[cols].copy().reset_index(drop=True)
-    display.insert(0, "BUY", [identity in saved_ids for identity in page_ids])
-
-    def _style(row):
-        index = int(row.name)
-        return _chain_row_colors(
-            index, bool(page_data.iloc[index]["Priority"]),
-            bool(page_data.iloc[index]["Best / Expiration"]), len(row),
+    head = ["ETF", "EXP", "DTE", "STRIKE", "BID", "ASK",
+            "PUT COST", "100SH LOSS", "BASKET LOSS", "QTY", "OI"]
+    with st.container(key="pp_chain_native_grid", gap=None):
+        left, right = st.columns([.66, 9.34], gap=None, vertical_alignment="center")
+        left.html('<div class="pp-chain-buy-head">BUY</div>')
+        right.html(
+            '<div class="pp-chain-cells pp-chain-head">'
+            + "".join("<span>"+v+"</span>" for v in head)+"</div>"
         )
+        page_checks: list[bool] = []
+        for row, identity in zip(page_data.to_dict("records"), page_ids):
+            left, right = st.columns([.66, 9.34], gap=None, vertical_alignment="center")
+            check_key = "pp_put_buy_"+scope_key+"_"+hashlib.sha256(identity.encode()).hexdigest()[:20]
+            if check_key not in st.session_state:
+                st.session_state[check_key] = identity in saved_ids
+            with left:
+                chosen_now = st.checkbox(
+                    f"BUY {row['Proxy']} {row['Expiration']} {row['Strike']} PUT",
+                    key=check_key, label_visibility="collapsed",
+                    help="Select this exact put contract for E*TRADE preview.",
+                )
+                page_checks.append(bool(chosen_now))
+            right.html(_chain_cell_markup(row))
 
-    edited = st.data_editor(
-        display.style.apply(_style, axis=1),
-        hide_index=True, width="stretch",
-        # Separate widget identity per filter/page, without losing the shared
-        # contract IDs; no index-shift can accidentally select a different PUT.
-        key=f"pp_hedge_contract_editor_{scope_key}_{expiration_filter}_{page_index}",
-        height= min(415, 43 + len(display) * 32), row_height=32,
-        disabled=cols,
-        column_config={
-            "BUY": st.column_config.CheckboxColumn(
-                "BUY", width="small",
-                help="Select a PUT for review; no order is submitted."
-            ),
-            "Proxy": st.column_config.TextColumn("ETF", width="small"),
-            "Expiration": st.column_config.TextColumn("EXP", width="small"),
-            "DTE": st.column_config.NumberColumn("DTE", width="small", format="%d"),
-            "Strike": st.column_config.NumberColumn("STRIKE", format="$%.2f", width="small"),
-            "Bid": st.column_config.NumberColumn("BID", format="$%.2f", width="small"),
-            "Ask": st.column_config.NumberColumn("ASK", format="$%.2f", width="small"),
-            "Cost of Put (Ask)": st.column_config.NumberColumn(
-                "PUT COST", format="$%.2f", width="small",
-            ),
-            "Max Loss (Ask)": st.column_config.NumberColumn(
-                "100SH LOSS", format="$%.2f", width="small",
-            ),
-            "Stress Remaining Loss": st.column_config.NumberColumn(
-                "BASKET LOSS", format="$%.2f", width="small",
-            ),
-            "Contracts": st.column_config.NumberColumn("QTY", format="%d", width="small"),
-            "Open Interest": st.column_config.NumberColumn(
-                "OI", format="%.0f", width="small",
-            ),
-        },
-    )
-    checked_ids = _reconcile_contract_checks(
-        saved_ids, page_ids, [bool(x) for x in edited["BUY"].fillna(False)],
-    )
+    checked_ids = _reconcile_contract_checks(saved_ids, page_ids, page_checks)
     state["ids"] = checked_ids
     st.session_state[state_key] = state
     st.caption(
-        f'{len(checked_ids)} SELECTED ACROSS ALL PAGES // '
-        f'{len(filtered):,} MATCHING PUTS // {len(data):,} TOTAL // '
-        'CHECK BUY, THEN REVIEW BELOW.'
+        f"{len(checked_ids)} SELECTED ACROSS ALL PAGES // "
+        f"{len(data):,} LOADED CONTRACTS // {result.get('listed_count', 0)} LISTED EXPIRATIONS"
     )
-    with st.expander("FULL GHOTRA COLUMNS // CURRENT PAGE (ALL ROWS IN CSV)"):
+    with st.expander("FULL GHOTRA COLUMNS // CURRENT PAGE (ALL LOADED IN CSV)"):
         details = [
             "Proxy", "Contract", "Expiration", "DTE", "Strike",
             "Last", "Bid", "Ask", "Volume", "Open Interest",
-            "Implied Volatility", "Cost of Put (Ask)", "Max Loss (Ask)",
+            "Cost of Put (Ask)", "Max Loss (Ask)",
             "Max Loss Calc (Ask)", "Cost of Put (Last)",
             "Max Loss (Last)", "Max Loss Calc (Last)",
             "Put Cost", "Stress Remaining Loss",
@@ -1227,7 +1192,12 @@ def _results(
         st.dataframe(
             page_data[details].style.set_properties(**{
                 "background-color": "#080808", "color": "#f6b56a",
-            }).format(na_rep="—"),
+            }).format({
+                "Strike": "{:,.2f}", "Last": "{:.2f}", "Bid": "{:.2f}",
+                "Ask": "{:.2f}", "Cost of Put (Ask)": "{:,.2f}",
+                "Max Loss (Ask)": "{:,.2f}", "Cost of Put (Last)": "{:,.2f}",
+                "Max Loss (Last)": "{:,.2f}",
+            }, na_rep="—"),
             hide_index=True, width="stretch",
             height=min(390, 43 + len(page_data) * 32),
         )
@@ -1241,7 +1211,7 @@ def _results(
         "CHECK BUY TO PREVIEW SPECIFIC PUT LIMIT ORDERS."
     )
     if "export_csv" not in result:
-        result["export_csv"] = data.to_csv(index=False)
+        result["export_csv"] = data.drop(columns=["Implied Volatility"], errors="ignore").to_csv(index=False)
     st.download_button(
         "EXPORT FULL GHOTRA PUT CHAIN CSV",
         data=result["export_csv"],
