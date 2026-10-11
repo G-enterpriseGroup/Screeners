@@ -214,4 +214,41 @@ assert ranked_scenario.iloc[0]["Stress Remaining Loss"] == 0
 assert ranked_scenario.iloc[0]["Priority"]
 assert ranked_scenario.iloc[-1]["Stress Remaining Loss"] > 0
 
+# Ghotra 100-share table applies only to the PUT UNDERLYING, not proxy holdings.
+from pathlib import Path
+
+legacy_rows = [
+    {"call_put": "PUT", "strike": 108, "ask": 8.0,
+     "last": 8.2, "bid": 7.7, "implied_volatility": .24, "osi": "SPYP108"},
+    {"call_put": "PUT", "strike": 101, "ask": 2.0,
+     "last": None, "implied_volatility": None, "osi": "SPYP101"},
+]
+legacy = portfolio_chain_scenario(
+    legacy_rows, symbol="SPY", expiry=date(2026, 12, 18),
+    spot=100, exposure=55000, stress_pct=15, beta=1,
+    today=date(2026, 10, 11),
+)
+assert len(legacy) == 2
+first = legacy.loc[legacy["Strike"] == 108].iloc[0]
+second = legacy.loc[legacy["Strike"] == 101].iloc[0]
+assert first["Cost of Put (Ask)"] == 800
+assert first["Max Loss (Ask)"] == 0
+assert abs(first["Max Loss (Last)"] - 20) < 1e-9
+assert first["Implied Volatility"] == .24
+assert "100" in first["Max Loss Calc (Ask)"]
+assert second["Max Loss (Ask)"] == 100
+assert pd.isna(second["Max Loss (Last)"])
+ranked_direct = rank_portfolio_chain(
+    legacy, preferred_dte=68, direct_100_share_example=True,
+)
+assert ranked_direct.iloc[0]["Strike"] == 108
+assert ranked_direct.iloc[0]["Priority"]
+ui_source = (Path(__file__).resolve().parents[1] /
+             "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
+assert 'with st.expander("OPTIONAL HEDGE ASSUMPTIONS"' not in ui_source
+assert '"PUT TICKER", value=""' in ui_source
+assert '"FULL GHOTRA COLUMNS' in ui_source
+assert "if not account_key:" in ui_source
+assert "SUBMIT {len(selected)} LIVE PUT ORDER(S)" in ui_source
+
 print("PROTECTIVE PUTS TEST: PASS")
