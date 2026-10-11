@@ -689,6 +689,11 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
 # ==============================
 # ENTER-TO-SCAN / FULL CHAIN / EXPLICIT BROKER ORDER REVIEW
 # ==============================
+def _reset_chain_page() -> None:
+    """Keep the first-ranked contracts visible when expiration filter changes."""
+    st.session_state["pp_chain_page"] = 0
+
+
 def _run_enter_scan() -> None:
     """Streamlit on_change runs after Enter; never places an order."""
     st.session_state["_pp_hedge_scan_on_enter"] = True
@@ -696,8 +701,56 @@ def _run_enter_scan() -> None:
     st.session_state.pop("pp_hedge_live_confirm", None)
 
 
+# ==============================
+# PAGED OPTION CHAIN / CHECKMARK STATE
+# ==============================
+_CHAIN_PAGE_SIZE = 25
+
+
+def _contract_identity(row: dict[str, Any]) -> str:
+    """Stable identity across pages and expirations within a scanned chain."""
+    return "|".join((
+        str(row["Proxy"]).strip().upper(),
+        str(row["Expiration"]).strip(),
+        f'{float(row["Strike"]):.6f}',
+        str(row.get("Contract") or "").strip(),
+    ))
+
+
+def _reconcile_contract_checks(
+    saved: set[str], page_ids: list[str], checked: list[bool],
+) -> set[str]:
+    """Only update rows on the current page; retain selections elsewhere."""
+    if len(page_ids) != len(checked):
+        raise ValueError("Checkbox results do not match this option-chain page.")
+    updated = set(saved)
+    for identity, enabled in zip(page_ids, checked):
+        if enabled:
+            updated.add(identity)
+        else:
+            updated.discard(identity)
+    return updated
+
+
+def _selected_contract_orders(data: pd.DataFrame, checked_ids: set[str]) -> list[dict[str, Any]]:
+    """Preview the exact whole-chain checked contracts, not just visible rows."""
+    if not checked_ids:
+        return []
+    chosen = []
+    for row in data.to_dict("records"):
+        if _contract_identity(row) not in checked_ids:
+            continue
+        if not bool(row["Orderable"]):
+            raise ValueError(
+                f"{row['Proxy']} {row['Expiration']} {row['Strike']}: "
+                "modeled contracts exceed the 250-contract order limit."
+            )
+        chosen.append(row)
+    return chosen
+
+
 def _selected_order_rows(display: pd.DataFrame, edited: pd.DataFrame) -> list[dict[str, Any]]:
-    """Bind checkbox choices to exact row identity from the current scan."""
+    """Compatibility helper for existing single-page selection safety tests."""
     if edited.empty or "BUY" not in edited:
         return []
     selected_indices = edited.index[edited["BUY"].fillna(False)].tolist()
@@ -854,7 +907,12 @@ def _chain_row_colors(index: int, priority: bool, best_per_expiry: bool, width: 
         style = "background-color:#10130d;color:#4af6c3;font-weight:800"
     else:
         style = "background-color:#080808;color:#f6b56a;font-weight:750"
-    return [style] * width
+    cells = [style] * width
+    if cells:
+        # Streamlit uses a black native checkbox glyph: give BUY a bright
+        # amber cell so both checked and unchecked squares are visible.
+        cells[0] = "background-color:#fb8b1e;color:#000000;font-weight:900"
+    return cells
 
 
 def _results(
@@ -905,33 +963,79 @@ def _results(
         "100-SHARE MAX LOSS = SAME-TICKER MARRIED PUT EXAMPLE, NOT THE BASKET. "
         "ASK = PURCHASE REFERENCE; LAST = HISTORICAL. ORANGE = TOP ROW; GREEN = BEST/EXP."
     )
-    # Primary grid: only decision-making fields. All remaining Ghotra
-    # columns remain available in the full-details expander and CSV.
+    # Scans can contain >4,000 options. Never mount them all in an
+    # editable Glide canvas; only 25 cells worth of row data per page.
+    # The complete, unchanged ranked result stays in session cache.
+    scope = (result["scan_id"], result["fingerprint"])
+    scope_key = hashlib.sha256(repr(scope).encode("utf-8")).hexdigest()[:16]
+    state_key = "_pp_chain_checked_contracts"
+    state = st.session_state.get(state_key)
+    if not isinstance(state, dict) or state.get("scope") != scope_key:
+        state = {"scope": scope_key, "ids": set()}
+        st.session_state[state_key] = state
+        st.session_state["pp_chain_page"] = 0
+    saved_ids = set(state["ids"])
+    expirations = tuple(sorted(data["Expiration"].dropna().astype(str).unique()))
+    filter_options = ("ALL", *expirations)
+    with st.container(key="pp_chain_controls", gap="small"):
+        fcol, prev_col, current_col, next_col = st.columns(
+            [2.2, 0.75, 1.1, 0.75], gap="small",
+            vertical_alignment="bottom",
+        )
+        with fcol:
+            expiration_filter = st.selectbox(
+                "EXPIRATION", filter_options, key="pp_chain_expiration",
+                on_change=_reset_chain_page,
+            )
+        filtered = (
+            data if expiration_filter == "ALL"
+            else data.loc[data["Expiration"].eq(expiration_filter)]
+        )
+        page_count = max(1, (len(filtered) + _CHAIN_PAGE_SIZE - 1) // _CHAIN_PAGE_SIZE)
+        page_index = min(max(0, int(st.session_state.get("pp_chain_page", 0))),
+                         page_count - 1)
+        with prev_col:
+            if st.button("◀ PREV", disabled=page_index == 0,
+                         key="pp_chain_prev", width="stretch"):
+                page_index -= 1
+        with next_col:
+            if st.button("NEXT ▶", disabled=page_index >= page_count - 1,
+                         key="pp_chain_next", width="stretch"):
+                page_index += 1
+        st.session_state["pp_chain_page"] = page_index
+        with current_col:
+            st.caption(f"PAGE {page_index + 1}/{page_count}")
+
+    start = page_index * _CHAIN_PAGE_SIZE
+    page_data = filtered.iloc[start:start + _CHAIN_PAGE_SIZE].copy()
+    page_ids = [_contract_identity(row) for row in page_data.to_dict("records")]
     cols = [
         "Proxy", "Expiration", "DTE", "Strike", "Bid", "Ask",
         "Cost of Put (Ask)", "Max Loss (Ask)", "Stress Remaining Loss",
         "Contracts", "Open Interest",
     ]
-    display = data[cols].copy()
-    display.insert(0, "BUY", False)
+    display = page_data[cols].copy().reset_index(drop=True)
+    display.insert(0, "BUY", [identity in saved_ids for identity in page_ids])
 
     def _style(row):
-        index = row.name
+        index = int(row.name)
         return _chain_row_colors(
-            index, bool(data.iloc[index]["Priority"]),
-            bool(data.iloc[index]["Best / Expiration"]), len(row),
+            index, bool(page_data.iloc[index]["Priority"]),
+            bool(page_data.iloc[index]["Best / Expiration"]), len(row),
         )
 
     edited = st.data_editor(
         display.style.apply(_style, axis=1),
         hide_index=True, width="stretch",
-        key="pp_hedge_contract_editor_" + str(result["scan_id"]),
-        height=415, row_height=32,
+        # Separate widget identity per filter/page, without losing the shared
+        # contract IDs; no index-shift can accidentally select a different PUT.
+        key=f"pp_hedge_contract_editor_{scope_key}_{expiration_filter}_{page_index}",
+        height= min(415, 43 + len(display) * 32), row_height=32,
         disabled=cols,
         column_config={
             "BUY": st.column_config.CheckboxColumn(
                 "BUY", width="small",
-                help="Check to review a PUT LIMIT order; selection cannot submit."
+                help="Select a PUT for review; no order is submitted."
             ),
             "Proxy": st.column_config.TextColumn("ETF", width="small"),
             "Expiration": st.column_config.TextColumn("EXP", width="small"),
@@ -954,7 +1058,17 @@ def _results(
             ),
         },
     )
-    with st.expander("FULL GHOTRA COLUMNS // ASK + LAST MAX LOSS CALCULATIONS"):
+    checked_ids = _reconcile_contract_checks(
+        saved_ids, page_ids, [bool(x) for x in edited["BUY"].fillna(False)],
+    )
+    state["ids"] = checked_ids
+    st.session_state[state_key] = state
+    st.caption(
+        f'{len(checked_ids)} SELECTED ACROSS ALL PAGES // '
+        f'{len(filtered):,} MATCHING PUTS // {len(data):,} TOTAL // '
+        'CHECK BUY, THEN REVIEW BELOW.'
+    )
+    with st.expander("FULL GHOTRA COLUMNS // CURRENT PAGE (ALL ROWS IN CSV)"):
         details = [
             "Proxy", "Contract", "Expiration", "DTE", "Strike",
             "Last", "Bid", "Ask", "Volume", "Open Interest",
@@ -963,16 +1077,15 @@ def _results(
             "Max Loss (Last)", "Max Loss Calc (Last)",
             "Put Cost", "Stress Remaining Loss",
         ]
-        # Explicit body color is necessary for Streamlit's canvas renderer.
-        detailed = data[details].style.set_properties(
-            **{"background-color": "#080808", "color": "#f6b56a",
-               "font-weight": "750"}
-        ).format(na_rep="—")
         st.dataframe(
-            detailed, hide_index=True, width="stretch", height=390,
+            page_data[details].style.set_properties(**{
+                "background-color": "#080808", "color": "#f6b56a",
+            }).format(na_rep="—"),
+            hide_index=True, width="stretch",
+            height=min(390, 43 + len(page_data) * 32),
         )
     try:
-        chosen = _selected_order_rows(data, edited)
+        chosen = _selected_contract_orders(data, checked_ids)
     except ValueError as exc:
         chosen = []
         st.error(str(exc) + " // DESELECT THIS OPTION BEFORE REVIEW.")
