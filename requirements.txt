@@ -6,6 +6,8 @@ yfinance>=1.7,<2
 beautifulsoup4>=4.12
 requests-oauthlib>=2.0
 plotly>=5.24
+reportlab>=4.2,<5
+Pillow>=10.0
 webauthn>=2.2,<3
 # redeploy marker: exact first 5%-below-ASK risk-sizing restore
 # clean rebuild marker: 2026-09-11 exposure-hover-leader-lines-commas-v3
