@@ -1,0 +1,155 @@
+"""Live browser test: put BUY checkboxes survive fast cross-page navigation.
+
+Uses the exact Protective Puts _results renderer, 62 synthetic put contracts,
+the production Streamlit theme, and a read-only broker stub. Never calls an
+E*TRADE API. Checks that a real click is captured and stays with its contract
+after visiting a different option-chain page.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+
+ROOT = Path(__file__).resolve().parents[1]
+PORT = 18683
+BASE = f"http://127.0.0.1:{PORT}"
+FIXTURE = '''
+import pandas as pd
+import streamlit as st
+from src.protective_puts_portfolio_ui import _CSS, _results
+
+st.set_page_config(layout="wide", page_title="Put chain selection regression")
+data=[]
+for i in range(62):
+    row={
+        "Proxy":"SPY", "Expiration": "12-18-26", "DTE":68,
+        "Strike": float(550+i), "Bid":1.0, "Ask":1.1,
+        "Last":1.0, "Cost of Put (Ask)":110.0,
+        "Max Loss (Ask)":max(0.0,1000-i), "Stress Remaining Loss":float(i),
+        "Contracts":1, "Open Interest":1000+i, "Volume":250+i,
+        "Implied Volatility":.20,
+        "Priority":i==0, "Best / Expiration":i<3,
+        "Orderable":True, "Contract":f"SPYTEST{i:04d}",
+        "Max Loss Calc (Ask)":"EXAMPLE",
+        "Cost of Put (Last)":100.0, "Max Loss (Last)":max(0.0,1100-i),
+        "Max Loss Calc (Last)":"EXAMPLE", "Put Cost":110.0,
+    }
+    data.append(row)
+frame=pd.DataFrame(data)
+result={
+    "data":frame, "direct_example":True, "scan_id":963321,
+    "fingerprint":("test","SPY"), "exposure":0,
+    "stress_loss":0, "stress":15.0, "beta":1.0,
+    "chains":1, "errors":[],
+}
+def money(v):
+    return f"\${float(v):,.2f}"
+def metric_markup(items):
+    return "<div>TEST METRICS</div>"
+
+with st.container(key="pp_portfolio_hedge", gap="small"):
+    st.html(_CSS)
+    _results(result, money, metric_markup, object(), lambda:None,
+             lambda client:False, "")
+'''
+
+
+def wait_health(proc: subprocess.Popen) -> None:
+    limit=time.monotonic()+45
+    while time.monotonic()<limit:
+        if proc.poll() is not None:
+            raise AssertionError(f"Streamlit fixture exited unexpectedly: {proc.returncode}")
+        try:
+            with urllib.request.urlopen(BASE+"/_stcore/health", timeout=2) as res:
+                if res.status==200:
+                    return
+        except Exception:
+            time.sleep(.5)
+    raise AssertionError("Browser fixture did not start")
+
+
+def selected_count(driver) -> int:
+    labels=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stCaptionContainer"]')
+    for el in labels:
+        content=el.text
+        if "SELECTED ACROSS ALL PAGES" in content:
+            return int(content.split(" SELECTED")[0].strip())
+    return -1
+
+
+def click_first_checkbox(driver) -> None:
+    grids=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataFrame"]')
+    assert grids, "No real Streamlit option-chain editor found"
+    canvas=next(
+        (c for c in grids[0].find_elements(By.CSS_SELECTOR,"canvas")
+         if c.size["width"]>400 and c.size["height"]>150), None
+    )
+    assert canvas is not None, "No visible option-chain canvas"
+    width=canvas.size["width"]
+    height=canvas.size["height"]
+    # Streamlit Glide row 1: x center of first (BUY) column, below 36px header.
+    ActionChains(driver).move_to_element_with_offset(
+        canvas, int(44-width/2), int(54-height/2),
+    ).click().perform()
+
+
+def main() -> None:
+    with tempfile.TemporaryDirectory(prefix="pp_paging_") as tmp:
+        app=Path(tmp)/"paging_app.py"
+        app.write_text(FIXTURE,encoding="utf-8")
+        env=os.environ.copy()
+        env["PYTHONPATH"]=str(ROOT)+os.pathsep+env.get("PYTHONPATH","")
+        proc=subprocess.Popen([
+            sys.executable,"-m","streamlit","run",str(app),
+            "--server.port",str(PORT),"--server.headless","true",
+            "--browser.gatherUsageStats","false",
+        ],cwd=ROOT,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.STDOUT)
+        driver=None
+        try:
+            wait_health(proc)
+            opts=Options()
+            opts.add_argument("--headless=new")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--force-device-scale-factor=1")
+            opts.add_argument("--window-size=1600,1000")
+            driver=webdriver.Chrome(options=opts)
+            driver.get(BASE)
+            wait=WebDriverWait(driver,60)
+            wait.until(lambda _: selected_count(driver)==0)
+            assert "PAGE 1/3" in driver.page_source, "25-row pagination missing"
+            click_first_checkbox(driver)
+            wait.until(lambda _: selected_count(driver)==1)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_next button').click()
+            wait.until(lambda _: "PAGE 2/3" in driver.page_source)
+            assert selected_count(driver)==1
+            click_first_checkbox(driver)
+            wait.until(lambda _: selected_count(driver)==2)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_prev button').click()
+            wait.until(lambda _: "PAGE 1/3" in driver.page_source)
+            assert selected_count(driver)==2
+            print("PROTECTIVE PUTS PAGED BUY CHECKBOX BROWSER TEST: PASS")
+        finally:
+            if driver is not None:
+                driver.quit()
+            proc.terminate()
+            try:
+                proc.wait(timeout=7)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
+
+if __name__ == "__main__":
+    main()
