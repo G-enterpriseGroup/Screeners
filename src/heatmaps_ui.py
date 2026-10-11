@@ -709,9 +709,26 @@ def _fed_target_history() -> pd.Series:
     return combined[~combined.index.duplicated(keep="last")]
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fed_lower_target_history() -> pd.Series:
+    """Actual FRED target range lower bound; never infer spread width."""
+    try:
+        with urllib.request.urlopen(
+            "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARL", timeout=15
+        ) as response:
+            frame = pd.read_csv(io.BytesIO(response.read()))
+        dates = pd.to_datetime(frame.iloc[:, 0], errors="coerce")
+        values = pd.to_numeric(frame.iloc[:, 1], errors="coerce")
+        series = pd.Series(values.to_numpy(), index=dates).dropna()
+        return series[~series.index.isna()].sort_index()
+    except Exception:
+        return pd.Series(dtype=float)
+
+
 def _fed_year_cells(columns: list[str]) -> list[tuple[str, str, str]]:
     """Text, tooltip and direction for each year, using actual target changes."""
     history = _fed_target_history()
+    lower_history = _fed_lower_target_history()
     result = []
     for col in columns:
         try:
@@ -733,8 +750,9 @@ def _fed_year_cells(columns: list[str]) -> list[tuple[str, str, str]]:
         arrow = "↑" if direction == "up" else "↓" if direction == "down" else "↔"
         # Upper range bound is used from December 2008 onward.
         if year >= 2009 or (year == 2008 and current.index[-1] >= pd.Timestamp(2008, 12, 16)):
-            low = max(0.0, end - 0.25)
-            target = f"{low:.2f}–{end:.2f}%"
+            lower_current = lower_history[lower_history.index <= current.index[-1]]
+            target = (f"{float(lower_current.iloc[-1]):.2f}–{end:.2f}%"
+                      if not lower_current.empty else f"upper bound {end:.2f}%")
         else:
             target = f"{end:.2f}%"
         label = f"{arrow}{hikes if direction == 'up' else cuts if direction == 'down' else 0} {end:.2f}%"
