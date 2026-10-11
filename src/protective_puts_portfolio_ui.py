@@ -357,6 +357,58 @@ def _classified_hedge_book(
     return work.drop(columns="_lots").sort_values("Market Value", ascending=False)
 
 
+# ==============================
+# PORTFOLIO HEDGE HOLDINGS SORTING
+# ==============================
+_HEDGE_SORT_OPTIONS = (
+    "DEFAULT", "HEDGE", "SLEEVE / %", "SYMBOL", "SHARES", "LAST",
+    "P&L %", "P&L", "VALUE", "% ACCT",
+)
+
+
+def _sort_hedge_book(
+    book: pd.DataFrame, sort_by: str, direction: str,
+    selected_symbols: set[str],
+) -> pd.DataFrame:
+    """Order visible rows without changing ticker-keyed checkbox persistence."""
+    result = book.copy()
+    if result.empty:
+        return result.reset_index(drop=True)
+    choice = str(sort_by or "DEFAULT").upper()
+    ascending = str(direction or "DESC").upper() == "ASC"
+
+    if choice == "HEDGE":
+        result["_hedge_checked_sort"] = result["Symbol"].astype(str).isin(selected_symbols)
+        columns = ["_hedge_checked_sort", "Symbol"]
+        orders = [ascending, True]
+    elif choice == "SLEEVE / %":
+        columns = ["Sleeve", "% Tactical Sleeve", "Symbol"]
+        orders = [ascending, ascending, True]
+    else:
+        field = {
+            "DEFAULT": "Market Value",
+            "SYMBOL": "Symbol",
+            "SHARES": "Quantity",
+            "LAST": "Last",
+            "P&L %": "Gain/Loss %",
+            "P&L": "Gain/Loss",
+            "VALUE": "Market Value",
+            "% ACCT": "% Account",
+        }.get(choice, "Market Value")
+        columns = [field] if field == "Symbol" else [field, "Symbol"]
+        orders = [ascending] if field == "Symbol" else [ascending, True]
+        if choice == "DEFAULT":
+            orders = [False, True]  # Risk Book default: highest value first.
+
+    return (
+        result.sort_values(
+            columns, ascending=orders, kind="stable", na_position="last",
+        )
+        .drop(columns=["_hedge_checked_sort"], errors="ignore")
+        .reset_index(drop=True)
+    )
+
+
 def _pnl_tone(value: Any) -> str:
     try:
         number = float(value)
@@ -478,6 +530,23 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
         + (" // ACCOUNT NAV UNAVAILABLE: % ACCT AND SLEEVE % SHOWN AS —"
            if total is None else "")
     )
+    sort_col, direction_col, _ = st.columns(
+        [1.25, 0.72, 3.0], gap="small", vertical_alignment="center",
+    )
+    with sort_col:
+        sort_by = st.selectbox(
+            "Hedge Holdings Sort", _HEDGE_SORT_OPTIONS,
+            key="pp_hedge_book_sort", label_visibility="collapsed",
+            format_func=lambda value: f"SORT: {value}",
+            help="Sort the hedge holdings without changing saved HEDGE checkmarks.",
+        )
+    with direction_col:
+        direction = st.selectbox(
+            "Hedge Holdings Sort Direction", ("DESC", "ASC"),
+            key="pp_hedge_book_direction", label_visibility="collapsed",
+            format_func=lambda value: "↓ DESC" if value == "DESC" else "↑ ASC",
+        )
+    book = _sort_hedge_book(book, sort_by, direction, checked_symbols)
     selected = []
     # Same uninterrupted 48px Risk Book cells; retain the existing Shares/Last
     # and add sleeve, broker P&L, and real account-weight columns.
