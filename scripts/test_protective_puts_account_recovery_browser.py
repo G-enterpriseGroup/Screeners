@@ -96,7 +96,12 @@ def run() -> None:
             assert "KeyError" not in body, body
             assert "ENTER PUT TICKERS" in body, body
 
-            # A holdings-loader failure must not hide ticker-only scanning.
+            # The recovery warning belongs inside the collapsed investments
+            # expander. Open it first so Selenium checks visible content.
+            expander = driver.find_element(
+                By.CSS_SELECTOR, '[data-testid="stExpander"] summary'
+            )
+            expander.click()
             trigger = wait.until(lambda _: driver.find_element(
                 By.XPATH, "//label[contains(., 'SIMULATE HOLDINGS LOAD FAILURE')]"
             ))
