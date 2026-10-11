@@ -560,7 +560,8 @@ def _benchmark_analysis(
 
 def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[float | None]]],
                     subtitle: str = "", *, annual: bool = False, best_sector: str | None = None,
-                    explanations: dict[str, str] | None = None) -> str:
+                    explanations: dict[str, str] | None = None,
+                    fed_cells: list[tuple[str, str, str]] | None = None) -> str:
     values = [
         abs(float(v)) for _, row in rows for v in row
         if v is not None and math.isfinite(float(v))
@@ -587,6 +588,14 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
     if annual:
         out.append("<th>R / G</th>")
     out.append("</tr></thead><tbody>")
+    if annual and fed_cells is not None:
+        out.append('<tr class="hm-fed-row"><td title="Federal Reserve year-end federal funds target; hover over each cell">FED TARGET / MOVES</td>')
+        for text_value, tooltip, direction in fed_cells:
+            background = {"up": "#4e3516", "down": "#173d35", "flat": "#242424"}[direction]
+            out.append('<td title="' + html.escape(tooltip, quote=True) +
+                       '" style="background:' + background + ';color:#f5f5f5;font-weight:700">' +
+                       html.escape(text_value) + '</td>')
+        out.append('<td>—</td></tr>')
     for label, data in rows:
         label_text = _sector_label(label) if named_rows or label in BENCHMARK_TICKERS or label == BENCHMARK_BLEND else label
         winner_style = ' style="background:#ffe100;color:#000000;font-weight:800"' if label == best_sector else ""
@@ -670,6 +679,68 @@ def _export_csv(columns: list[str], rows: list[tuple[str, list[float | None]]],
     ).rename_axis("SECTOR_OR_TICKER" if annual else "TICKER_OR_YEAR").to_csv(
         float_format="%.5f"
     ).encode("utf-8")
+
+
+
+# ==============================
+# FED POLICY / ANNUAL RATE CONTEXT
+# ==============================
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fed_target_history() -> pd.Series:
+    """FRED's historic single target followed by the target-range upper bound."""
+    pieces = []
+    for series_id in ("DFEDTAR", "DFEDTARU"):
+        try:
+            frame = pd.read_csv(
+                f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}",
+                timeout=15,
+            )
+            dates = pd.to_datetime(frame.iloc[:, 0], errors="coerce")
+            values = pd.to_numeric(frame.iloc[:, 1], errors="coerce")
+            series = pd.Series(values.to_numpy(), index=dates).dropna()
+            pieces.append(series[~series.index.isna()])
+        except Exception:
+            continue
+    if not pieces:
+        return pd.Series(dtype=float)
+    combined = pd.concat(pieces).sort_index()
+    return combined[~combined.index.duplicated(keep="last")]
+
+
+def _fed_year_cells(columns: list[str]) -> list[tuple[str, str, str]]:
+    """Text, tooltip and direction for each year, using actual target changes."""
+    history = _fed_target_history()
+    result = []
+    for col in columns:
+        try:
+            year = int(col)
+        except (TypeError, ValueError):
+            result.append(("—", "Not a calendar year", "flat"))
+            continue
+        current = history[history.index.year == year]
+        prior = history[history.index < pd.Timestamp(year, 1, 1)]
+        if current.empty:
+            result.append(("—", f"{year}: Fed target data unavailable", "flat"))
+            continue
+        baseline = prior.iloc[-1] if not prior.empty else current.iloc[0]
+        changes = pd.concat([pd.Series([baseline]), current.reset_index(drop=True)]).diff().dropna()
+        hikes = int((changes > 0.001).sum())
+        cuts = int((changes < -0.001).sum())
+        end = float(current.iloc[-1])
+        direction = "up" if hikes > cuts else "down" if cuts > hikes else "flat"
+        arrow = "↑" if direction == "up" else "↓" if direction == "down" else "↔"
+        # Upper range bound is used from December 2008 onward.
+        if year >= 2009 or (year == 2008 and current.index[-1] >= pd.Timestamp(2008, 12, 16)):
+            low = max(0.0, end - 0.25)
+            target = f"{low:.2f}–{end:.2f}%"
+        else:
+            target = f"{end:.2f}%"
+        label = f"{arrow}{hikes if direction == 'up' else cuts if direction == 'down' else 0} {end:.2f}%"
+        tip = (f"{year} FED TARGET // {hikes} hikes, {cuts} cuts // "
+               f"year-end target {target} // source: FRED DFEDTAR / DFEDTARU. "
+               "Displayed rate is upper bound when a target range applies.")
+        result.append((label, tip, direction))
+    return result
 
 
 # ==============================
@@ -811,6 +882,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 "SPY and QQQ are reference ETFs; SPY+QQQ 50/50 is rebalanced annually. "
                 "Yearly cells are adjusted-close returns; partial years are not used for ranking.",
                 annual=True, best_sector=best, explanations=explanations,
+                fed_cells=_fed_year_cells(cols),
             ))
             st.html('<div class="hm-notes">' + html.escape(benchmark_status) + '</div>')
         else:
