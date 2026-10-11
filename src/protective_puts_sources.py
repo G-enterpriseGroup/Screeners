@@ -273,6 +273,11 @@ def _scrape_puts(symbol: str, expiry: date) -> list[dict[str, Any]]:
         ask_key = next((key for key in record if key == "ask"), "")
         volume_key = next((key for key in record if key == "volume"), "")
         oi_key = next((key for key in record if "open interest" in key), "")
+        iv_key = next((key for key in record if "implied volatility" in key), "")
+        raw_iv = str(record.get(iv_key) or "").strip()
+        iv = _number(raw_iv)
+        if iv is not None and "%" in raw_iv:
+            iv /= 100.0
         strike = _number(record.get(strike_key))
         if strike is None:
             continue
@@ -286,6 +291,7 @@ def _scrape_puts(symbol: str, expiry: date) -> list[dict[str, Any]]:
                 "last": _number(record.get(last_key)),
                 "volume": _number(record.get(volume_key)),
                 "open_interest": _number(record.get(oi_key)),
+                "implied_volatility": iv,
                 "osi": str(record.get(contract_key) or ""),
             }
         )
