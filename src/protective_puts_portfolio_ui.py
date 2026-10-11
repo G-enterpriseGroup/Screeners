@@ -10,6 +10,7 @@ import hashlib
 import html
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable
 
 import pandas as pd
@@ -17,7 +18,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import find_number, quote_summary, total_account_value
-from src.protective_puts import portfolio_hedge_candidates
+from src.protective_puts import portfolio_chain_scenario, rank_portfolio_chain
+from src.protective_puts_orders import (
+    MAX_PUT_CONTRACTS, build_put_preview, build_place_payload,
+    preview_details, extract_order_id, selected_put_signature,
+)
 from src.protective_puts_sources import public_quote
 from src.risk_sizing import (
     CROWN_DEFAULT_TACTICAL_SLEEVE_PCT,
@@ -681,152 +686,297 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
     return account_key, selected
 
 
-def _results(result: dict[str, Any], money: Callable, metric_markup: Callable):
-    data = result["data"]
-    if data.empty:
-        st.warning(
-            "NO QUALIFYING PUT HEDGE // No contract can meet the modeled "
-            "remaining-loss target within the premium budget and expiration window."
-        )
-    else:
-        winners = data.loc[data["Lowest Cost / Expiration"]].copy()
-        best = winners.sort_values(["DTE Gap", "Put Cost", "DTE"]).iloc[0]
-        st.html('<div class="pp-section">PORTFOLIO HEDGE // PRIORITY EXPIRATION</div>')
-        st.html(metric_markup([
-            ("Selected Value", money(result["exposure"]), "orange"),
-            ("Unhedged Stress Loss", money(result["stress_loss"]), "red"),
-            ("Put ETF / Expiry", str(best["Proxy"]) + " / " + str(best["Expiration"]), "green"),
-            ("Put Contracts", f'{int(best["Contracts"]):,}', "blue"),
-            ("ASK Premium", money(best["Put Cost"]), "red"),
-            ("Stress Remaining Loss", money(best["Stress Remaining Loss"]), "green"),
-        ]))
-        st.caption(
-            f'PREFERRED DTE // {best["Proxy"]} {best["Expiration"]} // '
-            f'{best["Strike"]:.2f} PUT × {int(best["Contracts"]):,} // '
-            f'{best["Cost %"]:.2f}% premium of exposure // '
-            f'{int(best["DTE Gap"])} days from target // READ ONLY'
-        )
-        st.html('<div class="pp-section">LOWEST PREMIUM HEDGE // EACH EXPIRATION</div>')
-        cols = (
-            "Proxy", "Expiration", "DTE", "Strike", "Contracts", "Ask",
-            "Put Cost", "Cost %", "Stress Remaining Loss", "Stress Loss %",
-        )
-        st.dataframe(
-            winners[list(cols)], hide_index=True, width="stretch",
-            height=min(650, max(145, len(winners) * 35 + 42)),
-            column_config={
-                "Strike": st.column_config.NumberColumn(format="$%.2f"),
-                "Ask": st.column_config.NumberColumn(format="$%.2f"),
-                "Put Cost": st.column_config.NumberColumn(format="$%.2f"),
-                "Cost %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Stress Remaining Loss": st.column_config.NumberColumn(format="$%.2f"),
-                "Stress Loss %": st.column_config.NumberColumn(format="%.2f%%"),
-            },
-        )
-        with st.expander(f"ALL VIABLE PUTS // {len(data):,} // YELLOW = CHEAPEST PER EXPIRATION"):
-            highlighted = data.style.apply(
-                lambda row: [
-                    "background-color:#fb8b1e;color:#000;font-weight:900"
-                    if row["Lowest Cost / Expiration"] else ""
-                    for _ in row
-                ], axis=1,
-            )
-            st.dataframe(highlighted, hide_index=True, width="stretch")
-        st.download_button(
-            "EXPORT PORTFOLIO HEDGES CSV", data=data.to_csv(index=False),
-            file_name="portfolio_put_hedges.csv", mime="text/csv",
-            key="pp_hedge_csv", width="stretch",
-        )
+# ==============================
+# ENTER-TO-SCAN / FULL CHAIN / EXPLICIT BROKER ORDER REVIEW
+# ==============================
+def _run_enter_scan() -> None:
+    """Streamlit on_change runs after Enter; never places an order."""
+    st.session_state["_pp_hedge_scan_on_enter"] = True
+    st.session_state.pop("pp_hedge_order_preview", None)
+    st.session_state.pop("pp_hedge_live_confirm", None)
+
+
+def _selected_order_rows(display: pd.DataFrame, edited: pd.DataFrame) -> list[dict[str, Any]]:
+    """Bind checkbox choices to exact row identity from the current scan."""
+    if edited.empty or "BUY" not in edited:
+        return []
+    selected_indices = edited.index[edited["BUY"].fillna(False)].tolist()
+    result = []
+    for index in selected_indices:
+        row = display.iloc[int(index)].to_dict()
+        if not bool(row["Orderable"]):
+            continue
+        result.append(row)
+    return result
+
+
+def _render_order_review(
+    client: Any, touch_session: Callable, live_etrade: Callable,
+    account_key: str, selected: list[dict[str, Any]],
+    scan_key: tuple, money: Callable,
+) -> None:
+    """Two-step exact preview/confirm/place; each action requires a live click."""
+    if not selected:
+        st.caption("CHECK PUT CONTRACTS IN THE CHAIN TO ENABLE E*TRADE ORDER REVIEW.")
+        st.session_state.pop("pp_hedge_order_preview", None)
+        return
+    total = sum(int(row["Contracts"]) * float(row["Ask"]) * 100 for row in selected)
     st.caption(
-        "SCENARIO MODEL, NOT MAX LOSS GUARANTEE // assumes selected equities fall "
-        "by assumed beta × proxy ETF drop. Put intrinsic payoff at expiration minus "
-        "ASK premium offsets that modeled loss. SPY/QQQ cannot guarantee a floor "
-        "for unrelated securities; correlation/basis risk, changes before expiry, "
-        "fees, slippage and liquidity are NOT modeled."
+        f"BUY_OPEN PUTS // {len(selected)} CONTRACT LINES // "
+        f"TOTAL ASK LIMIT PREMIUM {money(total)} // DAY ORDERS // "
+        "ONE E*TRADE ACCOUNT"
     )
-    if result["errors"]:
-        with st.expander(f"QUOTE/CHAIN WARNINGS // {len(result['errors'])}"):
-            for message in result["errors"]:
-                st.warning(message)
+    if not live_etrade(client):
+        st.warning("CONNECT E*TRADE TO PREVIEW OR SUBMIT. Public option quotes are analytics only.")
+        return
+    try:
+        signature = (account_key, scan_key, selected_put_signature(selected))
+    except (KeyError, ValueError, TypeError):
+        st.error("Invalid option-row selection; rescan before order review.")
+        return
+    review = st.session_state.get("pp_hedge_order_preview")
+    if isinstance(review, dict) and (
+        review.get("fingerprint") != signature
+        or time.time() - float(review.get("timestamp", 0)) > 90
+    ):
+        st.session_state.pop("pp_hedge_order_preview", None)
+        st.session_state.pop("pp_hedge_live_confirm", None)
+        review = None
+    if st.button(
+        f"REVIEW {len(selected)} PUT ORDER(S) WITH E*TRADE",
+        width="stretch", key="pp_hedge_order_review",
+    ):
+        previews = []
+        warnings = []
+        for row in selected:
+            try:
+                expiry = pd.to_datetime(row["Expiration"], format="%m-%d-%y").date()
+                payload = build_put_preview(
+                    symbol=str(row["Proxy"]), expiry=expiry,
+                    strike=float(row["Strike"]), quantity=int(row["Contracts"]),
+                    limit=float(row["Ask"]),
+                )
+                response = client.preview_order(account_key, payload)
+                touch_session()
+                details = preview_details(response)
+                if details.get("preview_id") in (None, ""):
+                    raise ValueError("E*TRADE did not return a preview ID.")
+                previews.append({
+                    "row": row,
+                    "place": build_place_payload(payload, details["preview_id"]),
+                    "details": details,
+                })
+                warnings.extend(details.get("messages") or [])
+            except Exception as exc:
+                st.session_state.pop("pp_hedge_order_preview", None)
+                st.error(f"ORDER REVIEW BLOCKED // {row['Proxy']} {row['Expiration']} "
+                         f"{row['Strike']} PUT: {exc}")
+                return
+        if len(previews) == len(selected):
+            st.session_state["pp_hedge_order_preview"] = {
+                "fingerprint": signature, "timestamp": time.time(),
+                "previews": previews,
+            }
+            st.session_state.pop("pp_hedge_live_confirm", None)
+            review = st.session_state["pp_hedge_order_preview"]
+            st.success("ALL E*TRADE PREVIEWS ACCEPTED // NO LIVE ORDERS SENT.")
+            for warning in warnings:
+                st.warning("E*TRADE: " + str(warning))
+    review = st.session_state.get("pp_hedge_order_preview")
+    if not isinstance(review, dict) or review.get("fingerprint") != signature:
+        return
+    if time.time() - float(review.get("timestamp", 0)) > 90:
+        st.session_state.pop("pp_hedge_order_preview", None)
+        st.warning("ORDER PREVIEW EXPIRED // Review the exact contracts again.")
+        return
+    for line in review["previews"]:
+        r, d = line["row"], line["details"]
+        st.caption(
+            f"PREVIEW {r['Proxy']} {r['Expiration']} {r['Strike']:.2f} PUT // "
+            f"BUY_OPEN {int(r['Contracts'])} @ LIMIT {money(r['Ask'])} // "
+            f"EST VALUE {money(d.get('total_order_value')) if d.get('total_order_value') is not None else 'N/A'} "
+            f"// EST COMMISSION {money(d.get('estimated_commission')) if d.get('estimated_commission') is not None else 'N/A'}"
+        )
+    confirmed = st.checkbox(
+        "I CONFIRM THESE EXACT LIVE PUT BUY ORDERS IN THE SELECTED E*TRADE ACCOUNT",
+        key="pp_hedge_live_confirm",
+    )
+    if st.button(
+        f"SUBMIT {len(selected)} LIVE PUT ORDER(S)",
+        key="pp_hedge_order_send", type="primary",
+        width="stretch", disabled=not confirmed,
+    ):
+        # Consume preview atomically before the first network request to
+        # prevent a rerun/double-click from submitting duplicate orders.
+        active = st.session_state.pop("pp_hedge_order_preview", None)
+        st.session_state.pop("pp_hedge_live_confirm", None)
+        if not isinstance(active, dict) or active.get("fingerprint") != signature:
+            st.error("ORDER REVIEW INVALID // No order was sent.")
+            return
+        if time.time() - active["timestamp"] > 90:
+            st.error("ORDER PREVIEW EXPIRED // No order was sent.")
+            return
+        sent = []
+        for line in active["previews"]:
+            r = line["row"]
+            try:
+                response = client.place_order(account_key, line["place"])
+                touch_session()
+                order_id = extract_order_id(response)
+                if order_id in (None, ""):
+                    raise RuntimeError("No confirmed order ID; check E*TRADE before retrying.")
+                sent.append(f"{r['Proxy']} {r['Expiration']} {r['Strike']} PUT // ORDER {order_id}")
+            except Exception as exc:
+                st.error(f"ORDER STATUS UNCERTAIN // {r['Proxy']} {r['Expiration']}: {exc}. "
+                         "STOPPED. Check E*TRADE Orders before attempting a retry.")
+                break  # Never blindly retry or continue a partially failed basket.
+        for summary in sent:
+            st.success("SUBMITTED // " + summary)
+        st.session_state["pp_hedge_last_order_results"] = sent
+
+
+def _results(
+    result: dict[str, Any], money: Callable, metric_markup: Callable,
+    client: Any, touch_session: Callable, live_etrade: Callable,
+    account_key: str,
+) -> None:
+    """Complete quoted chain with selected modeled stress hedges pinned on top."""
+    data = result["data"]
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        st.warning(
+            "NO USABLE PUT ASKS RETURNED. Confirm the ETF ticker, E*TRADE connection "
+            "and listed expiration availability; see source warnings below."
+        )
+        for error in result.get("errors") or []:
+            st.caption(str(error))
+        return
+    top = data.iloc[0]
+    st.html('<div class="pp-section">PUT OPTION CHAIN // LOWEST MODELED LOSS FIRST</div>')
+    st.html(metric_markup([
+        ("Selected Equities", money(result["exposure"]), "orange"),
+        ("Unhedged Stress Loss", money(result["stress_loss"]), "red"),
+        ("Top Hedge", f'{top["Proxy"]} {top["Expiration"]} {top["Strike"]:.2f} P', "green"),
+        ("Top ASK Premium", money(top["Put Cost"]), "orange"),
+        ("Top Stress Loss", money(top["Stress Remaining Loss"]), "green"
+         if bool(top["Near Zero Scenario"]) else "red"),
+        ("Scanned Puts", f'{len(data):,}', "orange"),
+    ]))
+    st.caption(
+        f'PORTFOLIO SCENARIO: ETF FALLS {result["stress"]:.0f}% // '
+        f'ASSUMED BASKET BETA {result["beta"]:.2f}. '
+        "LOSS IS A MODELED EXPIRATION-DATE OUTCOME, NOT GUARANTEED MAX LOSS. "
+        "YELLOW = LOWEST MODELED LOSS (PREMIUM USED AS TIEBREAKER)."
+    )
+    cols = ["Proxy", "Expiration", "DTE", "Strike", "Bid", "Ask",
+            "Contracts", "Put Cost", "Stress Remaining Loss",
+            "Volume", "Open Interest", "Cost %"]
+    display = data[cols].copy()
+    display.insert(0, "BUY", False)
+    highlight = data["Priority"] | data["Best / Expiration"]
+    def _style(row):
+        idx = row.name
+        if bool(data.iloc[idx]["Priority"]):
+            return ["background-color:#fb8b1e;color:#000;font-weight:900"] * len(row)
+        if bool(highlight.iloc[idx]):
+            return ["color:#4af6c3;font-weight:900"] * len(row)
+        return [""] * len(row)
+    editor_key = "pp_hedge_contract_editor_" + str(result["scan_id"])
+    edited = st.data_editor(
+        display.style.apply(_style, axis=1),
+        hide_index=True, width="stretch", key=editor_key,
+        height=min(670, max(205, min(len(display), 18) * 35 + 42)),
+        disabled=cols,
+        column_config={
+            "BUY": st.column_config.CheckboxColumn("BUY", help="Select this exact option contract for order review."),
+            "Strike": st.column_config.NumberColumn(format="$%.2f"),
+            "Bid": st.column_config.NumberColumn(format="$%.2f"),
+            "Ask": st.column_config.NumberColumn(format="$%.2f"),
+            "Put Cost": st.column_config.NumberColumn(format="$%.2f"),
+            "Stress Remaining Loss": st.column_config.NumberColumn(format="$%.2f"),
+            "Cost %": st.column_config.NumberColumn(format="%.2f%%"),
+        },
+    )
+    chosen = _selected_order_rows(data, edited)
+    st.caption(
+        f"{len(data):,} PUT ROWS // {result['chains']} EXPIRATION CHAINS // "
+        "ALL AVAILABLE STRIKES IN SCANNED EXPIRATIONS // "
+        "CHECK BUY BOXES TO PREVIEW LIMIT BUY_OPEN ORDERS."
+    )
+    st.download_button(
+        "EXPORT FULL PUT CHAIN CSV", data=data.to_csv(index=False),
+        file_name="portfolio_full_put_chain.csv", mime="text/csv",
+        key="pp_hedge_csv", width="stretch",
+    )
+    _render_order_review(
+        client, touch_session, live_etrade, account_key, chosen,
+        result["fingerprint"], money,
+    )
+    if result.get("errors"):
+        with st.expander(f"DATA WARNINGS // {len(result['errors'])}"):
+            for err in result["errors"]:
+                st.warning(str(err))
 
 
 def render_portfolio_hedge(
     client, touch_session, *, get_expirations, get_chain,
     market_today, live_etrade, money, metric_markup,
 ):
-    """Portfolio hedge scanner with isolated controls and broker read-only access."""
+    """Enter tickers + Enter to scan full quoted puts; safe reviewed execution."""
     with st.container(key="pp_portfolio_hedge", gap="small"):
         st.html(_CSS)
-        st.html('<div class="pp-section">1 // SELECT YOUR INVESTMENTS</div>')
-        book = _holdings(client, touch_session, live_etrade)
+        with st.expander("EDIT INVESTMENTS / ACCOUNT (SAVED CHECKMARKS)", expanded=False):
+            book = _holdings(client, touch_session, live_etrade)
         if book is None:
             return
         account_key, selected = book
         exposure = sum(float(row["Market Value"]) for row in selected)
         st.caption(f'SELECTED // {len(selected)} TICKERS // {money(exposure)}')
-
-        st.html('<div class="pp-section">2 // HEDGE TICKERS + EXPIRATION TARGET</div>')
-        a, b, c = st.columns([2.1, 1.0, 1.0], gap="small")
-        with a:
-            entered = st.text_input(
-                "PUT ETF TICKERS", value="SPY,QQQ", key="pp_hedge_proxies",
-                help="Separate put-underlying tickers with commas, e.g. SPY,QQQ.",
-            )
-        with b:
-            dte = int(st.number_input(
-                "PRIORITY DTE", min_value=1, max_value=730,
-                value=60, step=1, key="pp_hedge_dte",
-            ))
-        with c:
-            band = int(st.number_input(
-                "DTE +/- DAYS", min_value=0, max_value=365,
-                value=21, step=1, key="pp_hedge_band",
-            ))
-        x, y, z, w = st.columns(4, gap="small")
-        with x:
-            stress = float(st.number_input(
-                "ETF DROP %", min_value=1.0, max_value=90.0,
-                value=15.0, step=1.0, key="pp_hedge_stress",
-            ))
-        with y:
-            beta = float(st.number_input(
-                "ASSUMED BASKET BETA", min_value=0.1, max_value=3.0,
-                value=1.0, step=0.05, key="pp_hedge_beta",
-                help="Scenario assumption, NOT measured live beta.",
-            ))
-        with z:
-            target = float(st.number_input(
-                "TARGET STRESS LOSS %", min_value=0.0, max_value=50.0,
-                value=0.0, step=0.5, key="pp_hedge_target",
-                help="Remaining modeled loss; zero is NOT guaranteed maximum loss.",
-            ))
-        with w:
-            budget = float(st.number_input(
-                "MAX PREMIUM %", min_value=0.1, max_value=100.0,
-                value=10.0, step=0.5, key="pp_hedge_budget",
-                help="Maximum ASK premium as percent of hedged equities.",
-            ))
+        st.html('<div class="pp-section">ENTER PUT TICKERS // PRESS ENTER TO SCAN</div>')
+        entered = st.text_input(
+            "PUT ETF TICKERS", value="SPY,QQQ", key="pp_hedge_proxies",
+            on_change=_run_enter_scan,
+            help="Comma-separated listed put underlyings. Enter commits and fetches chains.",
+        )
+        with st.expander("OPTIONAL HEDGE ASSUMPTIONS", expanded=False):
+            a, b, c = st.columns(3, gap="small")
+            with a:
+                dte = int(st.number_input(
+                    "PRIORITY DAYS OUT", min_value=1, max_value=730,
+                    value=60, step=1, key="pp_hedge_dte",
+                ))
+            with b:
+                stress = float(st.number_input(
+                    "ETF DROP SCENARIO %", min_value=1.0, max_value=90.0,
+                    value=15.0, step=1.0, key="pp_hedge_stress",
+                ))
+            with c:
+                beta = float(st.number_input(
+                    "ASSUMED BASKET BETA", min_value=0.1, max_value=3.0,
+                    value=1.0, step=0.05, key="pp_hedge_beta",
+                ))
         proxies = list(dict.fromkeys(
             s for s in re.split(r"[\s,;]+", entered.strip().upper()) if s
         ))
         if not (1 <= len(proxies) <= 5 and all(
             re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", s) for s in proxies
         )):
-            st.warning("Enter 1–5 valid put ETF tickers, separated by commas.")
+            st.warning("ENTER 1–5 VALID PUT TICKERS (E.G. SPY,QQQ) AND PRESS ENTER.")
             return
         if not selected:
-            st.info("Select at least one investment above to enable the hedge scan.")
+            st.info("OPEN EDIT INVESTMENTS / ACCOUNT AND CHECK THE STOCKS TO HEDGE.")
             return
-
         fingerprint = (
-            account_key, tuple(sorted(
-                (row["Symbol"], round(float(row["Market Value"]), 2))
-                for row in selected
-            )), tuple(proxies), dte, band, stress, beta, target, budget,
+            account_key,
+            tuple(sorted((row["Symbol"], round(float(row["Market Value"]), 2))
+                         for row in selected)),
+            tuple(proxies), dte, stress, beta,
         )
-        if st.button("SCAN PORTFOLIO PUT HEDGES", type="primary",
-                     width="stretch", key="pp_hedge_scan"):
-            errors, work, frames = [], [], []
+        scan_now = bool(st.session_state.pop("_pp_hedge_scan_on_enter", False))
+        if st.button("REFRESH CHAIN", width="stretch", key="pp_hedge_scan"):
+            scan_now = True
+        if scan_now:
+            errors = []
+            work = []
             today = market_today()
             for sym in proxies:
                 try:
@@ -835,63 +985,70 @@ def render_portfolio_hedge(
                         touch_session()
                     else:
                         quote = public_quote(sym)
-                    spot = float(quote.get("last") or 0.0)
+                    spot = float(quote.get("last") or 0)
                     if spot <= 0:
-                        raise ValueError("No valid proxy quote")
+                        raise ValueError("Put underlying quote unavailable.")
                     expiries, _ = get_expirations(client, sym, touch_session)
-                    future = [expiry for expiry in expiries if expiry >= today]
-                    near = [
-                        expiry for expiry in future
-                        if abs((expiry - today).days - dte) <= band
-                    ]
-                    if not near and future:
-                        near = [min(future, key=lambda expiry: abs((expiry-today).days-dte))]
+                    future = sorted(x for x in expiries if x >= today)
+                    if not future:
+                        errors.append(f"{sym}: no future put expirations found.")
+                    # All strikes returned by each selected expiry, up to the
+                    # nearest 24 expirations. Avoid unbounded broker requests.
                     for expiry in sorted(
-                        near, key=lambda expiry: (abs((expiry-today).days-dte), expiry)
-                    )[:16]:
+                        future, key=lambda x: (abs((x-today).days-dte), x)
+                    )[:24]:
                         work.append((sym, spot, expiry))
                 except Exception as exc:
                     errors.append(f"{sym} quote/expiry: {exc}")
-
-            progress = st.progress(0.0, text="Scanning expiration put chains...")
+            raw_frames = []
+            progress = st.progress(0.0, text="Fetching put option chains...")
             for index, (sym, spot, expiry) in enumerate(work, 1):
                 try:
-                    puts, _, source = get_chain(client, sym, expiry, touch_session)
-                    frame = portfolio_hedge_candidates(
-                        puts, symbol=sym, expiry=expiry, spot=spot,
-                        exposure=exposure, stress_pct=stress, beta=beta,
-                        target_loss_pct=target, premium_limit_pct=budget,
-                        today=today,
-                    )
-                    if not frame.empty:
-                        frame["Option Source"] = source
-                        frame["DTE Gap"] = (frame["DTE"] - dte).abs()
-                        frames.append(frame)
+                    chain, _, source = get_chain(client, sym, expiry, touch_session)
+                    raw_frames.append((sym, spot, expiry, chain, source))
                 except Exception as exc:
-                    errors.append(f"{sym} {expiry.isoformat()}: {exc}")
+                    errors.append(f"{sym} {expiry:%m-%d-%y}: {exc}")
                 progress.progress(
                     index / max(1, len(work)),
-                    text=f"Scanning {sym} {expiry:%m-%d-%y} // {index}/{len(work)}",
+                    text=f"FETCHING {sym} {expiry:%m-%d-%y} ({index}/{len(work)})",
                 )
             progress.empty()
-            data = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-            if not data.empty:
-                data = data.sort_values(
-                    ["Expiration", "Put Cost", "Stress Remaining Loss", "Proxy", "Strike"]
-                ).reset_index(drop=True)
-                data["Lowest Cost / Expiration"] = ~data["Expiration"].duplicated()
-                data = data.sort_values(
-                    ["DTE Gap", "Put Cost", "DTE", "Proxy", "Strike"]
-                ).reset_index(drop=True)
-            st.session_state["pp_hedge_result"] = {
+            st.session_state["pp_hedge_raw_scan"] = {
+                "tickers": tuple(proxies), "frames": raw_frames,
+                "errors": errors, "scan_id": int(time.time() * 1000),
+                "chains_requested": len(work),
+            }
+        raw = st.session_state.get("pp_hedge_raw_scan")
+        if isinstance(raw, dict) and raw.get("tickers") == tuple(proxies):
+            today = market_today()
+            frames = []
+            for sym, spot, expiry, chain, source in raw.get("frames", []):
+                try:
+                    f = portfolio_chain_scenario(
+                        chain, symbol=sym, expiry=expiry, spot=spot,
+                        exposure=exposure, stress_pct=stress, beta=beta,
+                        today=today, max_contracts=MAX_PUT_CONTRACTS,
+                    )
+                    if not f.empty:
+                        f["Source"] = source
+                        frames.append(f)
+                except Exception as exc:
+                    raw.setdefault("errors", []).append(f"{sym} {expiry}: {exc}")
+            data = rank_portfolio_chain(
+                pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
+                preferred_dte=dte,
+            )
+            result = {
                 "fingerprint": fingerprint, "data": data,
                 "exposure": exposure,
                 "stress_loss": min(exposure, exposure * beta * stress / 100),
-                "errors": errors,
+                "stress": stress, "beta": beta,
+                "scan_id": raw["scan_id"],
+                "chains": len(raw.get("frames", [])),
+                "errors": raw["errors"],
             }
-        result = st.session_state.get("pp_hedge_result")
-        if isinstance(result, dict):
-            if result.get("fingerprint") == fingerprint:
-                _results(result, money, metric_markup)
-            else:
-                st.caption("INPUTS CHANGED // scan again to refresh.")
+            _results(result, money, metric_markup, client, touch_session,
+                     live_etrade, account_key)
+        else:
+            st.caption("ENTER A PUT TICKER AND PRESS ENTER TO LOAD ITS OPTION CHAIN.")
+
