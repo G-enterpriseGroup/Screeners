@@ -341,7 +341,7 @@ assert _sort_contract_chain(sort_rows, "100SH LOSS", "ASC").iloc[0]["Strike"] ==
 assert "pp-chain-top" in _chain_cell_markup(sort_rows.iloc[1].to_dict())
 assert "pp-chain-cells" in _chain_cell_markup(sort_rows.iloc[0].to_dict())
 assert "MAX LOSS" in _chain_cell_markup(sort_rows.iloc[0].to_dict()).upper()
-assert "100×max(0," in _chain_cell_markup({**sort_rows.iloc[0].to_dict(), "Max Loss Calc (Ask)": "max(0, (700.00 + 1.30 - 600.00) × 100)"})
+assert "100×(" in _chain_cell_markup({**sort_rows.iloc[0].to_dict(), "Max Loss Calc (Ask)": "max(0, (700.00 + 1.30 - 600.00) × 100)"})
 feature_src = (Path(__file__).resolve().parents[1] /
                "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
 assert "with st.container(key=\"pp_chain_native_grid\"" in feature_src
