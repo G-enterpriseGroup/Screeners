@@ -95,6 +95,40 @@ _VERTICAL_OPTIONS_CSS = """
     fill:#000!important;
 }
 
+/* MULTI-ACCOUNT CHIPS + DROPDOWN CHOICES // high contrast orange on black theme.
+   BaseWeb portals draw the option menu outside the feature container, so
+   guard the portal rules by the live Vertical Options workspace. */
+.st-key-vertical_options_workspace [data-baseweb="tag"]{
+    background:#fb8b1e!important;
+}
+.st-key-vertical_options_workspace [data-baseweb="tag"] :is(span,div,button,svg){
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+}
+body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] [data-baseweb="menu"],
+body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] [role="listbox"]{
+    background:#fb8b1e!important;
+}
+body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] :is(
+    [role="option"],[data-baseweb="list-item"],li
+){
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+    background:#fb8b1e!important;
+}
+body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] :is(
+    [role="option"],[data-baseweb="list-item"],li
+) *{
+    color:#000!important;
+    -webkit-text-fill-color:#000!important;
+}
+body:has(.st-key-vertical_options_workspace) [data-baseweb="popover"] :is(
+    [role="option"],[data-baseweb="list-item"],li
+):hover{
+    background:#ffb45f!important;
+}
+
+
 .vo-company-field{
     width:100%;
     min-width:0;
