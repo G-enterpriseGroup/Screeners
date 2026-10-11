@@ -2341,3 +2341,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS in `38160515281`.
 - **Production commits:** `98a47ba2c236abef3d8ce8a9836e034d3c5a392f`, `fc19b61460d08dfd1f14da6ad14e8c97968acad9`.
 - **Lesson:** Selection overlays may be portaled beyond a feature's DOM scope. Make popup colors contrast explicitly but guard portal CSS by that feature's presence.
+
+
+## 2026-10-11 — Vertical Options: fix invisible selected-account chip in React Aria multiselect
+
+- **Feature:** Vertical Options → ACCOUNTS selector only.
+- **Production:** src/vertical_options_ui.py; focused static regression tests/test_vertical_options.py; new browser regression scripts/test_vertical_options_selector_browser.py; CI workflow .github/workflows/architecture-guard.yml; this append-only changelog.
+- **Broken/root cause:** The selected Raj Singh account label was orange on an orange chip and only became visible when double-clicking to highlight its text. Earlier CSS targeted old BaseWeb data-baseweb="tag" and BaseWeb popover selectors, but the production Streamlit multiselect uses React Aria data-tag chips, nested title spans, and stMultiSelectDropdown; the original CSS did not select live DOM nodes.
+- **Change:** Replace old ineffective account-specific BaseWeb tag/popover CSS with selectors for React Aria stMultiSelect data-tag elements. Force orange selected chip and black chip text/remove icon; keep actual React Aria Accounts listbox readable with light text on dark background. No global style edits.
+- **Preserve:** Raj Singh default, multi-account selection, fragment-scoped widget updates, debit-spread math and validation, per-account preview, explicit live order-send workflow, compact Bloomberg theme.
+- **Intentionally untouched:** E*TRADE OAuth/client and order payloads; Risk Sizing, Protective Puts, GEX, Holdings, navigation, src/theme.py, src/terminal_core.py and streamlit_app.py.
+- **Tests:** Updated static regression for React Aria markup. Added browser test that launches isolated Streamlit multiselect with live production Vertical Options CSS, verifies actual computed selected-chip orange background and black text (without highlighting), opens dropdown, selects a second account, and verifies both account names remain readable. GitHub Actions run 38161243463 reported PASS on that browser test and architecture/feature checks; the authenticated deployed selector was not directly exercised.
+- **Architecture guard:** PASS in GitHub Actions run 38161243463; the changelog-only follow-up commit triggers a final run.
+- **Commit SHAs:** 2320662a72e5b2690bcb85e09380086088bf6d55 (CSS); 5c5cffc8f0015ef0fc2152500077200bce487669 (unit test); 26884557d0f5a82d2bbb04cb15cf1ccf6e8d7eb9 (browser test); 614101632847a12a7a910cbc7a1ad509fb09bbf8 (CI workflow); this changelog commit follows.
+- **Lesson:** Widget framework upgrades demand inspecting current rendered DOM and checking computed style in a real browser. Old BaseWeb selectors cannot fix a React Aria multiselect.
