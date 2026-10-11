@@ -46,6 +46,73 @@ _CSS = """
     min-width:0!important;
 }
 
+
+/* Native contract rows avoid Streamlit Glide's invisible canvas checkboxes. */
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stHorizontalBlock"]{
+    gap:0!important;align-items:stretch!important;margin:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stColumn"]{
+    min-width:0!important;padding:0!important;margin:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"]{
+    height:35px!important;min-height:35px!important;
+    display:flex!important;align-items:center!important;justify-content:center!important;
+    border-left:1px solid #a65c16!important;border-bottom:1px solid #a65c16!important;
+    background:#080808!important;margin:0!important;padding:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label{
+    display:flex!important;align-items:center!important;justify-content:center!important;
+    width:100%!important;height:35px!important;margin:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label > div:first-child{
+    box-sizing:border-box!important;width:20px!important;height:20px!important;
+    border:2px solid #fb8b1e!important;border-radius:2px!important;
+    background:#080808!important;opacity:1!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked) > div:first-child{
+    background:#fb8b1e!important;border-color:#fb8b1e!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked) svg{
+    stroke:#000!important;color:#000!important;opacity:1!important;
+}
+.pp-chain-cells{
+    box-sizing:border-box;display:grid;align-items:center;
+    grid-template-columns:.55fr 1.05fr .38fr .78fr .70fr .70fr .85fr 1fr 1.05fr .42fr .55fr;
+    width:100%;height:35px;min-height:35px;
+    background:#080808;color:#f6b56a;
+    font:800 .80rem/1.1 "Courier New",monospace;font-variant-numeric:tabular-nums;
+}
+.pp-chain-cells span{
+    box-sizing:border-box;display:flex;align-items:center;
+    height:35px;min-width:0;white-space:nowrap;overflow:hidden;
+    padding:0 5px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;
+}
+.pp-chain-cells span:nth-child(n+3){justify-content:flex-end;}
+.pp-chain-head,.pp-chain-head span{
+    background:#fb8b1e!important;color:#000!important;
+    -webkit-text-fill-color:#000!important;font-weight:900!important;
+}
+.pp-chain-top,.pp-chain-top span{
+    background:#fb8b1e!important;color:#000!important;
+    -webkit-text-fill-color:#000!important;
+}
+.pp-chain-best,.pp-chain-best span{
+    background:#10130d!important;color:#4af6c3!important;
+    -webkit-text-fill-color:#4af6c3!important;
+}
+.pp-chain-buy-head{
+    display:flex;align-items:center;justify-content:center;
+    background:#fb8b1e;color:#000;height:35px;font:900 .8rem "Courier New",monospace;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_hedge_csv button{
+    background:#fb8b1e!important;color:#000!important;
+    -webkit-text-fill-color:#000!important;border:1px solid #fb8b1e!important;
+    border-radius:0!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_hedge_csv button *{
+    color:#000!important;-webkit-text-fill-color:#000!important;
+}
+
 .st-key-pp_portfolio_hedge [data-testid="stWidgetLabel"] *{
     color:#fb8b1e!important;font-family:"Courier New",monospace!important;
     font-size:.69rem!important;font-weight:900!important;
