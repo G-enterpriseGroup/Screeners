@@ -2261,3 +2261,14 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** Not yet verified.
 - **Commit:** `b50f7ef9123a75299b966bdc16628568b9c92512`.
 - **Lesson:** Provide a self-contained colored snapshot alongside machine-readable data for reliable visual sharing.
+
+## 2026-10-11 — Annual Heatmap PDF + high-resolution PNG download
+
+- **Feature / files:** Annual Heatmaps only; `src/heatmaps_ui.py`, new feature-local `src/heatmaps_export.py`, `requirements.txt` for ReportLab/Pillow, and this append-only log.
+- **Request/root cause:** HTML/CSV snapshots were inconvenient to upload as a full visual; a browser screenshot could crop many calendar years and OCR could misread crowded cells.
+- **Change:** Added DOWNLOAD HEATMAP PDF and DOWNLOAD HEATMAP PNG buttons in Annual History. One export renderer reproduces all available years, sector/benchmark rows, Fed target and annual move counts, colors, highlighted sector and R/G totals. PDF contains vector geometry and selectable text rather than a screenshot; PNG exports at twice PDF drawing scale. Preserved existing HTML/CSV exports.
+- **Do not change:** Historic return calculations, benchmark selection, Fed data, saved watchlists, E*TRADE, Risk, GEX, OAuth, navigation, shared theme, orders or core.
+- **Validation:** Re-fetched committed sources and confirmed feature route/exports. Direct production Python syntax check, architecture guard, live PDF render and Streamlit browser smoke test were unavailable due no runnable repository checkout/network from the local verifier; pass not asserted.
+- **Architecture guard:** Unverified.
+- **Production commits:** `07479fce`, `3cf38e27`, `2e0357d3`.
+- **Lesson:** Use vector PDF with embedded selectable text when a wide financial heatmap must be machine-readable; do not export only the visible scrolled viewport.
