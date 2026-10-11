@@ -72,7 +72,11 @@ def _symbol(value: Any) -> str:
 def _sector_label(ticker: str) -> str:
     """Human-readable sector plus symbol; other custom tickers keep their symbol."""
     name = SECTOR_NAMES.get(ticker)
-    return f"{name} ({ticker})" if name else ticker
+    if name:
+        return f"{name} ({ticker})"
+    return {"SPY": "S&P 500 Benchmark (SPY)",
+            "QQQ": "Nasdaq-100 Benchmark (QQQ)",
+            BENCHMARK_BLEND: "50/50 SPY + QQQ (ANNUAL REBALANCE)"}.get(ticker, ticker)
 
 
 def _clean_state(raw: Any) -> dict[str, Any]:
@@ -351,6 +355,8 @@ _HEATMAP_CSS = """
  box-shadow:-2px 0 0 #080808}
 .hm-grid.hm-year-counts th:last-child{z-index:4;color:#ff9d32}
 .hm-count-red{color:#ff6374}.hm-count-green{color:#29d4a6}
+.hm-grid tr.hm-benchmark-row td:first-child{background:#26212f;color:#c6b7ff}
+.hm-grid tr.hm-benchmark-row td{border-top:1px solid #474051}
 
 .hm-grid.hm-annual th{white-space:normal;vertical-align:middle;line-height:1.18}
 .hm-grid.hm-annual th:first-child{width:66px;min-width:66px}
@@ -553,10 +559,13 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
         out.append("<th>R / G</th>")
     out.append("</tr></thead><tbody>")
     for label, data in rows:
-        label_text = _sector_label(label) if named_rows else label
+        label_text = _sector_label(label) if named_rows or label in BENCHMARK_TICKERS or label == BENCHMARK_BLEND else label
         winner_style = ' style="background:#ffe100;color:#000000;font-weight:800"' if label == best_sector else ""
         tooltip = (explanations or {}).get(label, label_text)
-        out.append('<tr><td title="' + html.escape(tooltip, quote=True) + '"' + winner_style + '>'
+        benchmark_row = ' class="hm-benchmark-row"' if annual and (
+            label in BENCHMARK_TICKERS or label == BENCHMARK_BLEND
+        ) else ""
+        out.append('<tr' + benchmark_row + '><td title="' + html.escape(tooltip, quote=True) + '"' + winner_style + '>'
                    + html.escape(label_text) + "</td>")
         for col, value in zip(columns, data):
             bg, fg = _shade(value, scale)
