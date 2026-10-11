@@ -2196,3 +2196,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - Architecture result: Latest run pending.
 - Production fix commit: 25c83094.
 - Lesson: Benchmark display should work even with a benchmark-only saved watchlist.
+
+## 2026-10-10 — XLY highlight backtest and recent-decade validation
+
+- Feature: Heatmaps annual benchmark-relative winner. Production file: src/heatmaps_ui.py. Tests: scripts/test_heatmaps.py.
+- Observed issue: XLY won by about +1.01 percentage points of full-history CAGR versus 50/50 SPY/QQQ but the user's screenshot shows weak recent outperformance. A full-history winner can conceal a decade of benchmark lag.
+- Screenshot check (rounded displayed returns, not a fresh independent Yahoo pull): over 2014–2025, XLY CAGR 12.46%, SPY 13.41%, QQQ 18.55%, annually rebalanced 50/50 16.14%; XLY beat the blend in only 3 of 12 years. Over 2016–2025, XLY CAGR 13.02%, 50/50 CAGR 17.26%, and only 2 of 10 years beat the blend.
+- Root cause: Ranking required full-history CAGR and majority-of-years excess but had no recent-decade confirmation. A historical leader could be persistently weaker recently.
+- Fix: Keep the existing at-least-15-full-year benchmark comparison, but additionally require the most recent ten matched complete calendar years to be consecutive, sector CAGR above both SPY and QQQ and the 50/50 blend, and at least six positive year-over-year excess-return years. If no sector qualifies, do not highlight one. Hover explanations disclose each sector's recent decade CAGR and win count.
+- Intentionally unchanged: Annual returns and table cells, R/G counts, gradient, saved watchlists, SPY/QQQ reference rows, other tabs and shared theme.
+- Tests: Synthetic old-winner-versus-recent-loser regression and screenshot rounded-return check, plus existing Heatmaps suite, architecture guard and unrelated-tab/deployment checks in GitHub Actions.
+- Architecture and deployment: see final GitHub Actions result.
+- Production commits: f6964e80; test commit e5ad9644. This entry is append-only.
+- Lesson: Validate recent ten-year benchmark persistence before highlighting a lifetime historical winner. Screenshot-based estimates must be marked as such.
