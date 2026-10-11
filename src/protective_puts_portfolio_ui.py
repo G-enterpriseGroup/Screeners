@@ -1008,6 +1008,54 @@ def _chain_row_colors(index: int, priority: bool, best_per_expiry: bool, width: 
     return cells
 
 
+_CHAIN_SORT_COLUMNS = {
+    "LOWEST LOSS": None,
+    "EXPIRATION": "DTE",
+    "ETF": "Proxy",
+    "STRIKE": "Strike",
+    "ASK": "Ask",
+    "PUT COST": "Cost of Put (Ask)",
+    "100SH LOSS": "Max Loss (Ask)",
+    "BASKET LOSS": "Stress Remaining Loss",
+    "QTY": "Contracts",
+    "OPEN INTEREST": "Open Interest",
+}
+
+
+def _sort_contract_chain(data: pd.DataFrame, criterion: str, direction: str) -> pd.DataFrame:
+    """Sort all quoted expirations before paging, with contract-stable ties."""
+    field = _CHAIN_SORT_COLUMNS.get(criterion)
+    if field is None:
+        return data.reset_index(drop=True) if direction == "ASC" else data.iloc[::-1].reset_index(drop=True)
+    return data.sort_values(
+        [field, "Proxy", "DTE", "Strike", "Contract"],
+        ascending=[direction == "ASC", True, True, True, True],
+        kind="stable", na_position="last",
+    ).reset_index(drop=True)
+
+
+def _chain_cell_markup(row: dict[str, Any]) -> str:
+    """Escaped, two-decimal Bloomberg row; no hover toolbar or canvas."""
+    tone = ("pp-chain-top" if row.get("Priority") else
+            "pp-chain-best" if row.get("Best / Expiration") else "")
+    def price(value: Any) -> str:
+        try:
+            return "—" if pd.isna(value) else "$" + f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "—"
+    values = [
+        str(row["Proxy"]), str(row["Expiration"]), str(int(row["DTE"])),
+        price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
+        price(row["Cost of Put (Ask)"]), price(row["Max Loss (Ask)"]),
+        price(row["Stress Remaining Loss"]),
+        str(int(row["Contracts"])), str(int(row["Open Interest"])) if pd.notna(row["Open Interest"]) else "—",
+    ]
+    return '<div class="pp-chain-cells '+tone+'">' + "".join(
+        "<span title='"+html.escape(v, quote=True)+"'>"+html.escape(v)+"</span>"
+        for v in values
+    )+"</div>"
+
+
 @st.fragment
 def _results(
     result: dict[str, Any], money: Callable, metric_markup: Callable,
