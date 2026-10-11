@@ -197,7 +197,7 @@ except ValueError:
 
 from src.protective_puts import portfolio_chain_scenario, rank_portfolio_chain
 scenario_rows = [
-    {"call_put":"PUT","strike":110.0,"ask":2.0},
+    {"call_put":"PUT","strike":110.0,"ask":1.5},
     {"call_put":"PUT","strike":96.0,"ask":1.0},
     {"call_put":"PUT","strike":80.0,"ask":0.1},
     {"call_put":"PUT","strike":90.0,"ask":0.0},
