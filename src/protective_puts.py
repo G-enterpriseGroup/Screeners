@@ -271,6 +271,18 @@ def portfolio_hedge_candidates(
             "Stress Loss %": remaining_loss / exposure * 100,
             "Volume": row.get("volume"), "Open Interest": row.get("open_interest"),
             "Contract": str(row.get("osi") or ""),
+            "Implied Volatility": row.get("implied_volatility"),
+            "Cost of Put (Ask)": direct_cost_ask,
+            "Max Loss (Ask)": direct_loss_ask,
+            "Max Loss Calc (Ask)": (
+                f"max(0, ({spot:.2f} + {ask:.2f} - {strike:.2f}) × 100)"
+            ),
+            "Cost of Put (Last)": direct_cost_last,
+            "Max Loss (Last)": direct_loss_last,
+            "Max Loss Calc (Last)": (
+                "" if last_quote is None else
+                f"max(0, ({spot:.2f} + {last_quote:.2f} - {strike:.2f}) × 100)"
+            ),
         })
     return pd.DataFrame.from_records(records)
 
@@ -320,6 +332,22 @@ def portfolio_chain_scenario(
         orderable = contracts <= max_contracts
         if not orderable:
             contracts = max_contracts
+        # Ghotra Married Put columns: explicitly a *100-share example in
+        # this proxy ETF*, never the guaranteed loss of unrelated holdings.
+        # ASK is the purchase-side estimate; LAST is informational only.
+        direct_cost_ask = ask * CONTRACT_SIZE
+        direct_loss_ask = max(0.0, (spot + ask - strike) * CONTRACT_SIZE)
+        try:
+            last_quote = float(row.get("last"))
+            if not math.isfinite(last_quote) or last_quote < 0:
+                last_quote = None
+        except (TypeError, ValueError):
+            last_quote = None
+        direct_cost_last = None if last_quote is None else last_quote * CONTRACT_SIZE
+        direct_loss_last = (
+            None if last_quote is None
+            else max(0.0, (spot + last_quote - strike) * CONTRACT_SIZE)
+        )
         total_premium = premium_each * contracts
         payoff = payoff_each * contracts
         remaining = max(0.0, portfolio_loss + total_premium - payoff)
@@ -338,15 +366,22 @@ def portfolio_chain_scenario(
     return pd.DataFrame.from_records(records)
 
 
-def rank_portfolio_chain(frame: pd.DataFrame, *, preferred_dte: int = 60) -> pd.DataFrame:
+def rank_portfolio_chain(
+    frame: pd.DataFrame, *, preferred_dte: int = 60,
+    direct_100_share_example: bool = False,
+) -> pd.DataFrame:
     """Closest modeled stress loss first, then premium; mark cheapest per expiry."""
     if frame.empty:
         return frame.copy()
     ranked = frame.copy()
     ranked["DTE Gap"] = (ranked["DTE"] - preferred_dte).abs()
+    sort_columns = (
+        ["Max Loss (Ask)", "Cost of Put (Ask)", "DTE Gap", "Proxy", "Expiration", "Strike"]
+        if direct_100_share_example
+        else ["Stress Remaining Loss", "Put Cost", "DTE Gap", "Proxy", "Expiration", "Strike"]
+    )
     ranked = ranked.sort_values(
-        ["Stress Remaining Loss", "Put Cost", "DTE Gap", "Proxy", "Expiration", "Strike"],
-        kind="stable",
+        sort_columns, kind="stable", na_position="last",
     ).reset_index(drop=True)
     ranked["Best / Expiration"] = ~ranked.duplicated(["Proxy", "Expiration"])
     ranked["Priority"] = False
