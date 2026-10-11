@@ -247,7 +247,8 @@ ui_source = (Path(__file__).resolve().parents[1] /
              "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
 assert 'with st.expander("OPTIONAL HEDGE ASSUMPTIONS"' not in ui_source
 assert '"PUT TICKER", value=""' in ui_source
-assert '"FULL GHOTRA COLUMNS' in ui_source
+assert '"FULL GHOTRA COLUMNS' not in ui_source
+assert '"LOSS CALC"' in ui_source
 assert "if not account_key:" in ui_source
 assert "SUBMIT {len(selected)} LIVE PUT ORDER(S)" in ui_source
 
@@ -339,10 +340,13 @@ assert _sort_contract_chain(sort_rows, "OPEN INTEREST", "DESC").iloc[0]["Open In
 assert _sort_contract_chain(sort_rows, "100SH LOSS", "ASC").iloc[0]["Strike"] == 650
 assert "pp-chain-top" in _chain_cell_markup(sort_rows.iloc[1].to_dict())
 assert "pp-chain-cells" in _chain_cell_markup(sort_rows.iloc[0].to_dict())
+assert "MAX LOSS" in _chain_cell_markup(sort_rows.iloc[0].to_dict()).upper()
+assert "100×max(0," in _chain_cell_markup({**sort_rows.iloc[0].to_dict(), "Max Loss Calc (Ask)": "max(0, (700.00 + 1.30 - 600.00) × 100)"})
 feature_src = (Path(__file__).resolve().parents[1] /
                "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
 assert "with st.container(key=\"pp_chain_native_grid\"" in feature_src
-assert 'with st.expander("FULL GHOTRA COLUMNS' in feature_src
+assert 'with st.expander("FULL GHOTRA COLUMNS' not in feature_src
+assert "st.dataframe(" not in feature_src.split("@st.fragment\\ndef _results(", 1)[-1].split("def render_portfolio_hedge(", 1)[0]
 assert 'key="pp_chain_expiry_choice"' not in feature_src
 assert '"Implied Volatility", "Cost of Put (Ask)"' not in feature_src
 assert "LOAD ALL" in feature_src and "REMAINING CHAINS" in feature_src
