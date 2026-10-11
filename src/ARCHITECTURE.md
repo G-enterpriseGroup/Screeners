@@ -117,15 +117,16 @@ Production path:
 
 Production path:
 
-`streamlit_app.py` → `src/protective_puts_ui.py` → `src/protective_puts.py` + read-only E*TRADE quote/chain transport
+`streamlit_app.py` → `src/protective_puts_ui.py` → `src/protective_puts_portfolio_ui.py` + `src/protective_puts.py` + `src/protective_puts_orders.py` for reviewed single-leg PUT orders
 
 - Change **ticker/purchase price/shares/expiration scope, compact layout, scan progress, table, or CSV export** → `src/protective_puts_ui.py`.
 - Change **protective-put premium cost, breakeven, strike floor, max-loss math, or normalized analysis columns** → `src/protective_puts.py`.
 - Change **portfolio holdings selection, editable SPY/QQQ proxy list, priority DTE, crash scenario, premium budget, and cheapest-per-expiry table** → `src/protective_puts_portfolio_ui.py`. Reuse Risk Sizing's read-only holdings normalization and the existing Protective Puts quote/chain loaders; do not edit Risk Sizing.
-- Change **portfolio hedge stress-payoff and premium-inclusive contract sizing math** → `src/protective_puts.py`. The zero-loss target is a *modeled expiration-date stress outcome*, never a guaranteed maximum loss for a basket of securities with proxy ETF puts.
+- Change **portfolio hedge stress-payoff, complete put-chain ranking, and premium-inclusive contract sizing math** → `src/protective_puts.py`.
+- Change **reviewed single-leg put BUY_OPEN LIMIT payload safety** → `src/protective_puts_orders.py`; order selection/confirmation belongs in `src/protective_puts_portfolio_ui.py`. The zero-loss target is a *modeled expiration-date stress outcome*, never a guaranteed maximum loss for a basket of securities with proxy ETF puts.
 - Reuse `src/option_book.py::extract_option_rows` for read-only E*TRADE option-chain normalization; do not duplicate broker payload parsing.
 - When E*TRADE is not live, public fallback belongs only in `src/protective_puts_sources.py`: try yfinance first, then direct Yahoo Finance HTML scraping. Never route this fallback through OAuth or shared broker files.
-- Protective Puts is analytics-only. It must not preview, place, change, or cancel orders.
+- Protective Puts SINGLE HOLDING remains read-only. PORTFOLIO HEDGE is live-order capable only after an explicit user selection, a successful E*TRADE preview for every chosen single-leg PUT BUY_OPEN LIMIT order, a fresh review, and a separate affirmative confirmation followed by SEND LIVE. `src/protective_puts_orders.py` owns validated payload construction; only `src/protective_puts_portfolio_ui.py` may call the broker preview/place methods. Enter-to-scan and row checkmarks must never submit orders, and an uncertain broker response must stop the basket without automatic retries.
 - Preserve full coverage as one put contract per 100 shares; the production UI accepts only 100-share lots.
 - ASK is the conservative put-purchase reference. LAST is retained only to match the legacy Married Put analysis as a historical trade reference.
 - Keep Protective Puts styling local to `src/protective_puts_ui.py` and the portfolio-specific `src/protective_puts_portfolio_ui.py`; do not edit Risk Sizing or the shared theme to imitate its appearance.
