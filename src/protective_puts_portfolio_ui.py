@@ -699,6 +699,22 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
 # ==============================
 # ENTER-TO-SCAN / FULL CHAIN / EXPLICIT BROKER ORDER REVIEW
 # ==============================
+
+def _sample_expirations(future: list[Any], today: Any, target_dte: int) -> list[Any]:
+    """Across the FULL listed horizon, load a few dates now and the rest on demand."""
+    ordered = sorted(set(d for d in future if d >= today))
+    if not ordered:
+        return []
+    span = len(ordered)-1
+    target = min(
+        range(len(ordered)),
+        key=lambda i:(abs((ordered[i]-today).days-target_dte), i),
+    )
+    selected = {0, 1, 2, target}
+    selected.update(round(span*f) for f in (.25,.5,.75,1.0))
+    return [ordered[i] for i in sorted(i for i in selected if i < len(ordered))]
+
+
 def _reset_chain_page() -> None:
     """Keep the first-ranked contracts visible when expiration filter changes."""
     st.session_state["pp_chain_page"] = 0
@@ -925,6 +941,7 @@ def _chain_row_colors(index: int, priority: bool, best_per_expiry: bool, width: 
     return cells
 
 
+@st.fragment
 def _results(
     result: dict[str, Any], money: Callable, metric_markup: Callable,
     client: Any, touch_session: Callable, live_etrade: Callable,
@@ -1202,15 +1219,8 @@ def render_portfolio_hedge(
                     # reruns and hundreds of broker calls. Load a spread of
                     # near/mid/long expiries; the dropdown below exposes ALL
                     # actual dates and loads any other date on demand.
-                    span = len(future) - 1
-                    target = min(
-                        range(len(future)),
-                        key=lambda i: (abs((future[i]-today).days-dte), i),
-                    )
-                    sample = {0, 1, 2, target}
-                    sample.update(round(span*f) for f in (.25, .5, .75, 1.0))
-                    for i in sorted(i for i in sample if i < len(future)):
-                        work.append((sym, spot, future[i]))
+                    for expiry in _sample_expirations(future, today, dte):
+                        work.append((sym, spot, expiry))
                 except Exception as exc:
                     errors.append(f"{sym} quote/expiry: {exc}")
             raw_frames = []
