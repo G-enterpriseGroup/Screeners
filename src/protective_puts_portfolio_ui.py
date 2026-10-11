@@ -72,6 +72,25 @@ _CSS = """
     width:100%!important;height:43px!important;margin:0!important;
     cursor:pointer!important;
 }
+/* Reliable visual checkbox: overlay the actual clickable label rather than
+   styling Streamlit's changeable internal checkbox wrapper. */
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label{
+    position:relative!important;isolation:isolate!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label::after{
+    content:"☐";position:absolute!important;inset:0!important;
+    display:flex!important;align-items:center!important;justify-content:center!important;
+    font:900 28px/1 "Courier New",monospace!important;
+    background:#fb8b1e!important;color:#000!important;
+    -webkit-text-fill-color:#000!important;
+    pointer-events:none!important;z-index:2!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked)::after{
+    content:"☑";background:#4af6c3!important;
+}
+.st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:focus-within::after{
+    outline:2px solid #fff!important;outline-offset:-2px!important;
+}
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label > div:first-child{
     box-sizing:border-box!important;width:23px!important;height:23px!important;
     border:2px solid #000!important;border-radius:2px!important;
