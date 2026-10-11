@@ -359,6 +359,11 @@ _HEATMAP_CSS = """
 .hm-count-red{color:#ff6374}.hm-count-green{color:#29d4a6}
 .hm-grid tr.hm-benchmark-row td:first-child{background:#26212f;color:#c6b7ff}
 .hm-grid tr.hm-benchmark-row td{border-top:1px solid #474051}
+.hm-grid tr.hm-fed-row td:not(:first-child):not(:last-child){padding:4px 1px;line-height:1.12;font-size:11px;overflow:hidden}
+.hm-fed-moves,.hm-fed-rate{display:block;white-space:nowrap;text-align:center}
+.hm-fed-moves{font-size:10px;letter-spacing:-.2px}
+.hm-fed-rate{font-size:11px;margin-top:2px;color:#fff}
+
 
 .hm-grid.hm-annual th{white-space:normal;vertical-align:middle;line-height:1.18}
 .hm-grid.hm-annual th:first-child{width:66px;min-width:66px}
@@ -594,9 +599,12 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
         out.append('<tr class="hm-fed-row"><td title="Federal Reserve year-end federal funds target; hover over each cell">FED TARGET / MOVES</td>')
         for text_value, tooltip, direction in fed_cells:
             background = {"up": "#4e3516", "down": "#173d35", "flat": "#242424"}[direction]
+            parts = text_value.rsplit(" ", 1)
+            moves, rate = parts if len(parts) == 2 else (text_value, "")
             out.append('<td title="' + html.escape(tooltip, quote=True) +
                        '" style="background:' + background + ';color:#f5f5f5;font-weight:700">' +
-                       html.escape(text_value) + '</td>')
+                       '<span class="hm-fed-moves">' + html.escape(moves) + '</span>' +
+                       '<span class="hm-fed-rate">' + html.escape(rate) + '</span></td>')
         out.append('<td>—</td></tr>')
     for label, data in rows:
         label_text = _sector_label(label) if named_rows or label in BENCHMARK_TICKERS or label == BENCHMARK_BLEND else label
