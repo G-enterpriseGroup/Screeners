@@ -878,6 +878,7 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             + ' // POSITIVE = GAIN // NEGATIVE = LOSS</div>'
         )
 
+        annual_download_html = None
         if view == "ROLLING PERFORMANCE":
             cols, rows = _overview(prices, tickers)
             st.html(_heatmap_markup(
@@ -904,14 +905,34 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 prices, cols, sector_rows
             )
             rows = sector_rows + benchmark_rows
-            st.html(_heatmap_markup(
+            annual_markup = _heatmap_markup(
                 "ANNUAL SECTOR RETURNS // INCEPTION TO PRESENT", cols, rows,
                 "SPY and QQQ are reference ETFs; SPY+QQQ 50/50 is rebalanced annually. "
                 "Yearly cells are adjusted-close returns; partial years are not used for ranking.",
                 annual=True, best_sector=best, explanations=explanations,
                 fed_cells=_fed_year_cells(cols),
-            ))
+            )
+            st.html(annual_markup)
             st.html('<div class="hm-notes">' + html.escape(benchmark_status) + '</div>')
+            # Standalone copy of the exact colored annual matrix for sharing and review.
+            # Inline the existing feature-local CSS; no broker data or external assets.
+            annual_download_html = (
+                '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                '<title>Raj Terminal - Annual Sector Heatmap</title>'
+                + _HEATMAP_CSS
+                + '<style>body{background:#080808;color:#f1f1f1;margin:16px;'
+                  'font-family:"Courier New",monospace}.hm-scroll{max-height:none}'
+                  '.hm-grid{width:max-content;min-width:100%}'
+                  'h1{font-size:17px;color:#ff9d32;margin:0 0 7px}</style>'
+                + '</head><body><h1>RAJ TERMINAL // ANNUAL SECTOR HEATMAP</h1>'
+                + '<div class="hm-notes">Historical adjusted-close returns and annual '
+                  'Federal Reserve target policy; current year may be partial. '
+                  'Exported snapshot; not a live market feed.</div>'
+                + annual_markup
+                + '<div class="hm-notes">' + html.escape(benchmark_status) + '</div>'
+                + '</body></html>'
+            )
         else:
             active = focus if focus in available else available[0]
             cols, rows = _monthly(prices, active)
@@ -938,7 +959,22 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
             cols = comparison_cols
 
         _write_browser(vault_key, state)
-        actions_left, actions_mid, actions_right = st.columns([1.3, 1.3, 2.0], vertical_alignment="center")
+        if annual_download_html is not None:
+            actions_left, actions_mid, actions_share, actions_right = st.columns(
+                [1.1, 1.1, 1.25, 1.55], vertical_alignment="center"
+            )
+            with actions_share:
+                st.download_button(
+                    "DOWNLOAD HEATMAP HTML", annual_download_html.encode("utf-8"),
+                    file_name="raj_annual_sector_heatmap.html",
+                    mime="text/html", use_container_width=True,
+                    key="heatmaps_export_annual_html",
+                    help="Open in any browser or upload here for analysis; includes Fed moves, sector returns and SPY/QQQ benchmarks.",
+                )
+        else:
+            actions_left, actions_mid, actions_right = st.columns(
+                [1.3, 1.3, 2.0], vertical_alignment="center"
+            )
         with actions_left:
             st.download_button(
                 "EXPORT HEATMAP CSV", _export_csv(cols, rows, annual=(view == "ANNUAL HISTORY")),
