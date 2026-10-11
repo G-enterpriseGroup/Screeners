@@ -317,4 +317,35 @@ assert len(sparse) <= 8, sparse
 assert any((x-date(2026,10,11)).days >= 365 for x in sparse)
 assert not _sample_expirations([], date(2026,10,11), 60)
 
+# Native contracts are page-sized, sortable over the whole chain, and never
+# rely on a canvas checkbox or expiration filter for the primary workflow.
+from src.protective_puts_portfolio_ui import (
+    _CHAIN_SORT_COLUMNS, _sort_contract_chain, _chain_cell_markup,
+)
+sort_rows = pd.DataFrame([
+    {"Proxy":"SPY","Expiration":"10-18-26","DTE":7,"Strike":600.0,
+     "Bid":1.2,"Ask":1.3,"Cost of Put (Ask)":130.0,"Max Loss (Ask)":250.0,
+     "Stress Remaining Loss":150.0,"Contracts":1,"Open Interest":100,
+     "Contract":"SPY7", "Priority":False,"Best / Expiration":False},
+    {"Proxy":"SPY","Expiration":"12-18-26","DTE":68,"Strike":650.0,
+     "Bid":2.2,"Ask":2.3,"Cost of Put (Ask)":230.0,"Max Loss (Ask)":10.0,
+     "Stress Remaining Loss":0.0,"Contracts":1,"Open Interest":900,
+     "Contract":"SPY68","Priority":True,"Best / Expiration":True},
+])
+assert "EXPIRATION" in _CHAIN_SORT_COLUMNS
+assert _sort_contract_chain(sort_rows, "EXPIRATION", "ASC").iloc[0]["DTE"] == 7
+assert _sort_contract_chain(sort_rows, "EXPIRATION", "DESC").iloc[0]["DTE"] == 68
+assert _sort_contract_chain(sort_rows, "OPEN INTEREST", "DESC").iloc[0]["Open Interest"] == 900
+assert _sort_contract_chain(sort_rows, "100SH LOSS", "ASC").iloc[0]["Strike"] == 650
+assert "pp-chain-top" in _chain_cell_markup(sort_rows.iloc[1].to_dict())
+assert "pp-chain-cells" in _chain_cell_markup(sort_rows.iloc[0].to_dict())
+feature_src = (Path(__file__).resolve().parents[1] /
+               "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
+assert "with st.container(key=\"pp_chain_native_grid\"" in feature_src
+assert 'with st.expander("FULL GHOTRA COLUMNS' in feature_src
+assert 'key="pp_chain_expiry_choice"' not in feature_src
+assert '"Implied Volatility", "Cost of Put (Ask)"' not in feature_src
+assert "LOAD ALL" in feature_src and "REMAINING CHAINS" in feature_src
+assert "_CHAIN_PAGE_SIZE = 12" in feature_src
+
 print("PROTECTIVE PUTS TEST: PASS")
