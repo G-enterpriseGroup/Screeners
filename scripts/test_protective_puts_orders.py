@@ -41,4 +41,23 @@ try:
     raise AssertionError("oversized quantity accepted")
 except ValueError:
     pass
+
+import pandas as pd
+from src.protective_puts_portfolio_ui import _selected_order_rows
+candidate = pd.DataFrame([
+    {"Proxy":"SPY","Expiration":"12-18-26","Strike":600,
+     "Contracts":2,"Ask":5.25,"Orderable":True},
+    {"Proxy":"SPY","Expiration":"12-18-26","Strike":601,
+     "Contracts":250,"Ask":4.50,"Orderable":False},
+])
+eligible = candidate.copy()
+eligible["BUY"] = [True, False]
+assert len(_selected_order_rows(candidate, eligible)) == 1
+eligible["BUY"] = [False, True]
+try:
+    _selected_order_rows(candidate, eligible)
+    raise AssertionError("oversized hedge selection must not be silently ignored")
+except ValueError:
+    pass
+
 print("PROTECTIVE PUT LIMIT PREVIEW VALIDATION: PASS")
