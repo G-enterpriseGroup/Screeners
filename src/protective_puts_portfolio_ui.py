@@ -940,13 +940,13 @@ def _results(
             "Bid": st.column_config.NumberColumn("BID", format="$%.2f", width="small"),
             "Ask": st.column_config.NumberColumn("ASK", format="$%.2f", width="small"),
             "Cost of Put (Ask)": st.column_config.NumberColumn(
-                "100SH PUT COST", format="$%.2f", width="small",
+                "PUT COST", format="$%.2f", width="small",
             ),
             "Max Loss (Ask)": st.column_config.NumberColumn(
-                "100SH MAX LOSS", format="$%.2f", width="small",
+                "100SH LOSS", format="$%.2f", width="small",
             ),
             "Stress Remaining Loss": st.column_config.NumberColumn(
-                "BASKET STRESS LOSS", format="$%.2f", width="small",
+                "BASKET LOSS", format="$%.2f", width="small",
             ),
             "Contracts": st.column_config.NumberColumn("QTY", format="%d", width="small"),
             "Open Interest": st.column_config.NumberColumn(
