@@ -2186,3 +2186,13 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - Architecture result: Pending final workflow completion.
 - Initial commits: eb9eddba, a5000752, db641d41.
 - Lesson: Outperformance requires matched-year, risk-aware benchmark-relative evidence, not simply a green-year count.
+
+## 2026-10-10 — Benchmark-only Heatmaps watchlist coverage
+
+- Feature and file: HEATMAPS, src/heatmaps_ui.py.
+- Case: When saved tickers contain only SPY or QQQ, the sector-derived year columns are empty even though benchmark history is available.
+- Fix: Use benchmark historical years for the table columns when no nonbenchmark year columns exist. Keep watchlist persistence, annual calculations, benchmark leaderboard logic and all unrelated features unchanged.
+- Tests: Prior benchmark and other-tab regressions passing; final architecture and browser-health validation on GitHub Actions workflow.
+- Architecture result: Latest run pending.
+- Production fix commit: 25c83094.
+- Lesson: Benchmark display should work even with a benchmark-only saved watchlist.
