@@ -141,6 +141,75 @@ def build_put_analysis(
 
 
 # ==============================
+# LOWEST-COST NEAR-ZERO DIRECT MARRIED PUTS BY EXPIRATION
+# ==============================
+def cheapest_near_zero_put_by_expiration(
+    frame: pd.DataFrame, *, target_dte: int,
+) -> pd.DataFrame:
+    """Select one honest, ASK-funded stock+put floor per listed expiration.
+
+    Prefer the lowest premium of zero-loss-floor puts. If zero cannot be
+    reached, select the contract with the smallest *actual* maximum loss,
+    then lowest premium. Highlight the expiration nearest the chosen horizon.
+    This is a direct matched-underlying married put, NOT an ETF proxy hedge.
+    """
+    columns = (
+        "Expiration", "DTE", "Strike", "Ask", "Contracts",
+        "Put Cost (Ask)", "Max Loss (Ask)", "Max Loss % (Ask)",
+        "Breakeven (Ask)", "Contract", "Target Met", "Status",
+        "Priority Expiration",
+    )
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    if int(target_dte) < 0:
+        raise ValueError("Target expiration days must be nonnegative.")
+    data = frame.copy()
+    for col in ("DTE", "Strike", "Ask", "Put Cost (Ask)",
+                "Max Loss (Ask)", "Max Loss % (Ask)"):
+        data[col] = pd.to_numeric(data[col], errors="coerce")
+    # A zero/negative ASK or NaN/inf is not an executable purchase quote.
+    data = data.replace([float("inf"), float("-inf")], float("nan"))
+    data = data.dropna(subset=[
+        "DTE", "Strike", "Ask", "Put Cost (Ask)", "Max Loss (Ask)",
+    ])
+    data = data[
+        data["Ask"].gt(0) & data["Strike"].gt(0)
+        & data["Put Cost (Ask)"].ge(0) & data["Max Loss (Ask)"].ge(0)
+    ]
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    data["Target Met"] = data["Max Loss (Ask)"].le(0.005)
+    data["_priority"] = ~data["Target Met"]
+    data = data.sort_values(
+        ["Expiration", "_priority", "Max Loss (Ask)", "Put Cost (Ask)", "Strike"],
+        kind="stable",
+    )
+    zero = data.loc[data["Target Met"]].sort_values(
+        ["Expiration", "Put Cost (Ask)", "Strike"], kind="stable",
+    ).drop_duplicates("Expiration")
+    fallback = data.loc[~data["Target Met"]].drop_duplicates("Expiration")
+    best = pd.concat([zero, fallback], ignore_index=True)
+    best = best.sort_values(
+        ["Expiration", "_priority", "Max Loss (Ask)", "Put Cost (Ask)"],
+        kind="stable",
+    ).drop_duplicates("Expiration").drop(columns=["_priority"])
+    best["Status"] = best["Target Met"].map({
+        True: "ZERO-LOSS FLOOR", False: "MINIMUM AVAILABLE LOSS",
+    })
+    best["Priority Expiration"] = False
+    ordered = best.sort_values(
+        ["DTE", "Put Cost (Ask)", "Expiration"], kind="stable",
+    ).reset_index(drop=True)
+    chosen = ordered.assign(
+        _gap=(ordered["DTE"] - int(target_dte)).abs()
+    ).sort_values(
+        ["_gap", "Put Cost (Ask)", "DTE"], kind="stable",
+    ).index[0]
+    ordered.loc[chosen, "Priority Expiration"] = True
+    return ordered[[col for col in columns if col in ordered.columns]].copy()
+
+
+# ==============================
 # PORTFOLIO ETF-PUT HEDGE SCENARIO MATH
 # ==============================
 def portfolio_hedge_candidates(
@@ -209,6 +278,7 @@ def portfolio_hedge_candidates(
 __all__ = [
     "CONTRACT_SIZE",
     "build_put_analysis",
+    "cheapest_near_zero_put_by_expiration",
     "protective_put_metrics",
     "portfolio_hedge_candidates",
     "validate_share_quantity",
