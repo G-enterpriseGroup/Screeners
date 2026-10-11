@@ -2174,3 +2174,15 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - Tests and architecture guard: final GitHub Actions workflow pending.
 - Fix commit: 3ba99eae.
 - Lesson: Syntax-check edited production files before pushing.
+
+## 2026-10-10 — Heatmaps benchmark-relative leader
+
+- Feature: HEATMAPS. Production: src/heatmaps_ui.py; tests: scripts/test_heatmaps.py.
+- Root cause: Positive-year rates could choose a sector that underperformed broad market ETFs; the yellow highlight had no return-based rationale.
+- Fix: Retrieve SPY and QQQ as read-only annual benchmarks, and display those rows plus an annually rebalanced equal-weight SPY/QQQ comparison. Use only the sector and both benchmarks' shared full calendar years (minimum 15). Highlight one sector only when its geometric annual return exceeds SPY, QQQ and their 50/50 portfolio, and it beats the blend in a majority of comparable years. Rank by benchmark-relative annualized outperformance. Explain the CAGR, years, win rate, information ratio, and qualifying criteria on name hover. No qualifying sector means no yellow row.
+- Preserved: R/G counter, sector layout, cached historical returns, watchlist memory, custom symbols, exports and styling.
+- Untouched: Risk, GEX, Holdings, OAuth, orders, navigation, shared theme and terminal_core.py.
+- Checks: Focused tests expanded for matched-year comparisons, missing data, display rows and tooltip; architecture guard and production browser checks via GitHub Actions.
+- Architecture result: Pending final workflow completion.
+- Initial commits: eb9eddba, a5000752, db641d41.
+- Lesson: Outperformance requires matched-year, risk-aware benchmark-relative evidence, not simply a green-year count.
