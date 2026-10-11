@@ -2287,3 +2287,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** See latest Terminal Architecture Guard GitHub Actions run; PASS is not asserted before CI completes.
 - **Production commits:** `4e6644081b17a2ca3b5e320d8e9bd4b1ff293a72` new UI helper; `594a27e34455600363f59b7f998cd9e940b94183` integration/math/tests; this append-only changelog commit follows.
 - **Lesson:** An index/ETF put on a correlated but different basket does not establish a hard loss floor. Model explicit stress payoff net of ASK premium, differentiate scenario loss from actual max loss, and preserve direct-underlying married puts unchanged.
+
+
+## 2026-10-11 — Match Risk Sizing hedge holdings grid, preserve selections, default Raj account
+
+- **Feature / production file:** Protective Puts portfolio hedge table; \`src/protective_puts_portfolio_ui.py\` only, plus this append-only change log.
+- **Problem / root cause:** Portfolio mode was built with tiny unbordered 38px-style cells, separated columns, and checkbox state stored only in ephemeral Streamlit session state. Initial account selection inherited the Risk tab index or first account instead of explicitly defaulting to Raj Singh.
+- **Fix:** Copied the **visual contract**, not live production changes, from the Risk Book's native table: 48px contiguous bordered rows, 1.02rem Courier typography, visible black/orange native checkboxes, right-aligned green numbers, compact zero-gap layout. Added isolated browser-local checkbox persistence per hashed account key using the existing Risk intent component implementation in a separately named component namespace with rotating backups. Hydrate selections before showing checkbox rows; only explicitly clicked changes write the browser state, with removed positions pruned on refresh. Default account selects Raj Singh by exact account name, falling back to the existing canonical Risk account ending 5474 when its display name is unavailable; user changes remain sticky.
+- **Preserve:** Existing selected-market-value hedge calculation, proxy options scan, read-only order boundary, Risk math/table and broker integrations. Selection memory is local to the current browser/profile, and not cloud-synchronized across devices; keep this limitation explicit.
+- **Intentionally NOT modified:** Risk Sizing, \`src/risk_sizing_ui_v2.py\`, \`src/risk_sizing_ui_v10.py\`, OAuth, E*TRADE client, Holdings, GEX, navigation, global theme, Streamlit shell, terminal_core, and cross-feature memory components.
+- **Tests / architecture:** GitHub Actions run 38158851987 succeeded: architecture validation, existing Protective Puts math/fallback, Risk LONG-TERM intent and tab render, unrelated feature tests, production health, and deployed frontend no-Oh-no check. Direct authenticated checkbox cross-refresh behavior not browser-tested in this execution environment.
+- **Architecture guard:** PASS (GitHub Actions run 38158851987).
+- **Production commit:** \`39baf9c2a45b504b10a984c1667c59d9778f5a9b\` (UI/memory); this append-only log commit follows.
+- **Lesson:** Copy full row sizing, border, checkbox, and typography structure when matching Risk Book—not just the color palette. Stateful checkboxes need browser hydration before first render and account-scoped persistence, otherwise refreshing Streamlit loses them.
