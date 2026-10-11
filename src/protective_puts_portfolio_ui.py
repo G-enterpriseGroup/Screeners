@@ -1094,9 +1094,11 @@ def _results(
         f"{len(data):,} PUT ROWS // {result['chains']} EXPIRATION CHAINS // "
         "CHECK BUY TO PREVIEW SPECIFIC PUT LIMIT ORDERS."
     )
+    if "export_csv" not in result:
+        result["export_csv"] = data.to_csv(index=False)
     st.download_button(
         "EXPORT FULL GHOTRA PUT CHAIN CSV",
-        data=result.setdefault("export_csv", data.to_csv(index=False)),
+        data=result["export_csv"],
         file_name="portfolio_full_put_chain.csv", mime="text/csv",
         on_click="ignore",
         key="pp_hedge_csv", width="stretch",
