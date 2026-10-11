@@ -1202,50 +1202,58 @@ def render_portfolio_hedge(
             }
         raw = st.session_state.get("pp_hedge_raw_scan")
         if isinstance(raw, dict) and raw.get("tickers") == tuple(proxies):
-            today = market_today()
-            frames = []
-            for sym, spot, expiry, chain, source in raw.get("frames", []):
-                try:
-                    reference_exposure = exposure if exposure > 0 else spot * 100.0
-                    f = portfolio_chain_scenario(
-                        chain, symbol=sym, expiry=expiry, spot=spot,
-                        exposure=reference_exposure, stress_pct=stress, beta=beta,
-                        today=today, max_contracts=MAX_PUT_CONTRACTS,
-                    )
-                    if not f.empty:
-                        if exposure <= 0:
-                            # Ticker-only: one put, not a fictitious bulk hedge.
-                            f["Contracts"] = 1
-                            f["Put Cost"] = f["Cost of Put (Ask)"]
-                            f["Cost %"] = 100.0 * f["Put Cost"] / reference_exposure
-                            f["Stress Put Payout"] = (
-                                (f["Strike"] - spot * (1 - stress / 100)).clip(lower=0) * 100
-                            )
-                            f["Stress Remaining Loss"] = (
-                                reference_exposure * stress / 100
-                                + f["Put Cost"] - f["Stress Put Payout"]
-                            ).clip(lower=0)
-                            f["Near Zero Scenario"] = f["Stress Remaining Loss"].le(.005)
-                            f["Orderable"] = True
-                        f["Source"] = source
-                        frames.append(f)
-                except Exception as exc:
-                    raw.setdefault("errors", []).append(f"{sym} {expiry}: {exc}")
-            direct_example = exposure <= 0
-            data = rank_portfolio_chain(
-                pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
-                preferred_dte=dte, direct_100_share_example=direct_example,
-            )
-            result = {
-                "fingerprint": fingerprint, "data": data,
-                "exposure": exposure,
-                "stress_loss": min(exposure, exposure * beta * stress / 100),
-                "stress": stress, "beta": beta,
-                "direct_example": direct_example,
-                "scan_id": raw["scan_id"],
-                "chains": len(raw.get("frames", [])),
-                "errors": raw["errors"],
-            }
+            cache_scope = (raw["scan_id"], fingerprint, market_today())
+            cache = st.session_state.get("_pp_hedge_ranked_result_cache")
+            if isinstance(cache, dict) and cache.get("scope") == cache_scope:
+                result = cache["result"]
+            else:
+                today = market_today()
+                frames = []
+                for sym, spot, expiry, chain, source in raw.get("frames", []):
+                    try:
+                        reference_exposure = exposure if exposure > 0 else spot * 100.0
+                        f = portfolio_chain_scenario(
+                            chain, symbol=sym, expiry=expiry, spot=spot,
+                            exposure=reference_exposure, stress_pct=stress, beta=beta,
+                            today=today, max_contracts=MAX_PUT_CONTRACTS,
+                        )
+                        if not f.empty:
+                            if exposure <= 0:
+                                # Ticker-only: one put, not a fictitious bulk hedge.
+                                f["Contracts"] = 1
+                                f["Put Cost"] = f["Cost of Put (Ask)"]
+                                f["Cost %"] = 100.0 * f["Put Cost"] / reference_exposure
+                                f["Stress Put Payout"] = (
+                                    (f["Strike"] - spot * (1 - stress / 100)).clip(lower=0) * 100
+                                )
+                                f["Stress Remaining Loss"] = (
+                                    reference_exposure * stress / 100
+                                    + f["Put Cost"] - f["Stress Put Payout"]
+                                ).clip(lower=0)
+                                f["Near Zero Scenario"] = f["Stress Remaining Loss"].le(.005)
+                                f["Orderable"] = True
+                            f["Source"] = source
+                            frames.append(f)
+                    except Exception as exc:
+                        raw.setdefault("errors", []).append(f"{sym} {expiry}: {exc}")
+                direct_example = exposure <= 0
+                data = rank_portfolio_chain(
+                    pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
+                    preferred_dte=dte, direct_100_share_example=direct_example,
+                )
+                result = {
+                    "fingerprint": fingerprint, "data": data,
+                    "exposure": exposure,
+                    "stress_loss": min(exposure, exposure * beta * stress / 100),
+                    "stress": stress, "beta": beta,
+                    "direct_example": direct_example,
+                    "scan_id": raw["scan_id"],
+                    "chains": len(raw.get("frames", [])),
+                    "errors": raw["errors"],
+                }
+                st.session_state["_pp_hedge_ranked_result_cache"] = {
+                    "scope": cache_scope, "result": result,
+                }
             _results(result, money, metric_markup, client, touch_session,
                      live_etrade, account_key)
         else:
