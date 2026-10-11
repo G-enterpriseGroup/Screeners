@@ -89,13 +89,18 @@ def selected_count(driver) -> int:
 
 
 def click_first_checkbox(driver) -> None:
-    grids=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataFrame"]')
-    assert grids, "No real Streamlit option-chain editor found"
-    canvas=next(
-        (c for c in grids[0].find_elements(By.CSS_SELECTOR,"canvas")
-         if c.size["width"]>400 and c.size["height"]>150), None
-    )
-    assert canvas is not None, "No visible option-chain canvas"
+    # The caption mounts before Glide initializes the editor canvas.
+    # Wait for the actual interactive canvas rather than sampling too early.
+    def ready(_):
+        grids=driver.find_elements(
+            By.CSS_SELECTOR, '[data-testid="stDataFrame"], [data-testid="stDataEditor"]'
+        )
+        for grid in grids:
+            for candidate in grid.find_elements(By.CSS_SELECTOR, "canvas"):
+                if candidate.size["width"]>400 and candidate.size["height"]>150:
+                    return candidate
+        return False
+    canvas=WebDriverWait(driver, 35).until(ready)
     width=canvas.size["width"]
     height=canvas.size["height"]
     # Streamlit Glide row 1: x center of first (BUY) column, below 36px header.
