@@ -2399,3 +2399,15 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard:** PASS in run `38172703518`; documentation-only follow-up commit must be checked separately.
 - **Relevant commits:** `b0e3d68353135105dec2775f4f9eceabb5066c09` full chain, `ef1a28cfcce323584da714752065ca467d464e86` payloads, `afc684c27a32e0ba2e3a4ba7783a9fe2a4322b0a` UI, `12715c02623fda90e6012f2838ac3e3cd26b8d7c` architecture, `787bc04da99605c17170d92c73a6ac5cd13fa026` chain test, `ef3e3182f6ca62bc6bf73771c12c71e3a9a06d9c` payload test, `13599305a550e4e24ccaef25ca475ce666ffe527` CI, `b8bb6f835d89257d99a79e066a3263d8fa324b95` guard, `acf6b7aa567213e43c918536dd3c79c02a13e133` corrected synthetic tie and this changelog commit.
 - **Lesson:** Expose the entire scanned chain rather than filtering out the less favorable puts; keep analytics/row selection completely separate from live trade submission, with broker preview and unambiguous contemporaneous confirmation. Never market a proxy-put basket as guaranteed zero loss.
+
+## 2026-10-11 — Portfolio Hedge oversized selected-row safety follow-up
+
+- **Feature/files:** Protective Puts portfolio put order review only; `src/protective_puts_portfolio_ui.py` and `scripts/test_protective_puts_orders.py` plus this append-only changelog.
+- **Issue/root cause:** A full-chain strike may mathematically require more than the 250-contract broker-order safety limit. Previously checking that row silently excluded it from review, without explaining why.
+- **Fix:** Show an explicit Orderable column. If the user checks a row exceeding the 250-contract limit, display an error and block preview rather than silently dropping the user's selected option. Leave actual modeled stress outcome, all visible strikes, ranking and every other option unchanged.
+- **Safety preserved:** One live E*TRADE account, BUY_OPEN PUT LIMIT and DAY, broker preview IDs, 90-second review freshness, exact basket fingerprint, separate checkbox confirming LIVE submission and separate SEND click, no retry after uncertain response. No order is sent by changing a ticker, pressing Enter or checking a row.
+- **Intentionally unchanged:** Risk Sizing, broker transport, OAuth, other tabs, shared theme, `streamlit_app.py`, `src/terminal_core.py`, and the original DIRECT single-holding read-only option scanner.
+- **Tests:** Added a synthetic selection test verifying valid contracts are selected and over-limit contracts are rejected before broker review; GitHub Actions run `38172903917` checks full suite (report result after completion).
+- **Architecture guard:** Existing new Protective Puts consent and payload checks; final CI result must be verified.
+- **Commits:** `479171df0962ba51f86357d092702f01a01d15a0` rejection UI; `3fa303d270e569d8ab371b35e5d02f49fa069d23` regression; this changelog entry.
+- **Lesson:** When showing every option quote, clearly identify and block unorderable candidates rather than silently ignoring a checked contract.
