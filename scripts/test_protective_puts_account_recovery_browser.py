@@ -38,7 +38,7 @@ if not st.session_state.get("_test_seeded"):
     st.session_state["_pp_hedge_raj_default_v2"] = True
     st.session_state.pop("pp_hedge_account", None)
 
-if st.query_params.get("broken") == "1":
+if st.checkbox("SIMULATE HOLDINGS LOAD FAILURE", key="test_broken_holdings"):
     def broken_holdings(*args, **kwargs):
         raise KeyError("simulated malformed holdings snapshot")
     ui._holdings = broken_holdings
@@ -97,7 +97,10 @@ def run() -> None:
             assert "ENTER PUT TICKERS" in body, body
 
             # A holdings-loader failure must not hide ticker-only scanning.
-            driver.get(BASE+"?broken=1")
+            trigger = wait.until(lambda _: driver.find_element(
+                By.XPATH, "//label[contains(., 'SIMULATE HOLDINGS LOAD FAILURE')]"
+            ))
+            trigger.click()
             wait.until(lambda _: "Holdings are temporarily unavailable" in
                        driver.find_element(By.TAG_NAME,"body").text)
             body=driver.find_element(By.TAG_NAME,"body").text
