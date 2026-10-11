@@ -348,4 +348,19 @@ assert '"Implied Volatility", "Cost of Put (Ask)"' not in feature_src
 assert "LOAD ALL" in feature_src and "REMAINING CHAINS" in feature_src
 assert "_CHAIN_PAGE_SIZE = 12" in feature_src
 
+
+# A migrated Streamlit session can retain the Raj-default marker while the
+# account selector widget key has expired. Do not raise KeyError or switch a
+# valid manually chosen account on subsequent reruns.
+from src.protective_puts_portfolio_ui import _safe_account_index
+test_accounts = [
+    {"accountName": "Another Account", "accountIdKey": "test-other"},
+    {"accountName": "Raj Singh", "accountIdKey": "test-primary"},
+]
+assert _safe_account_index(test_accounts, None, True) == 1
+assert _safe_account_index(test_accounts, 99, True) == 1
+assert _safe_account_index(test_accounts, "1", True) == 1
+assert _safe_account_index(test_accounts, 0, True) == 0
+assert _safe_account_index(test_accounts, 0, False) == 1
+
 print("PROTECTIVE PUTS TEST: PASS")
