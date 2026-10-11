@@ -46,6 +46,8 @@ SECTOR_NAMES = {
     "XLY": "Consumer Discretionary",
 }
 DEFAULT_TICKERS = tuple(SECTOR_NAMES)
+BENCHMARK_TICKERS = ("SPY", "QQQ")
+BENCHMARK_BLEND = "SPY+QQQ 50/50"
 MAX_TICKERS = 60
 VIEWS = ("ANNUAL HISTORY", "ROLLING PERFORMANCE", "MONTHLY HISTORY")
 _HEATMAP_STATE_VERSION = 3
@@ -378,39 +380,152 @@ def _shade(value: float | None, scale: float) -> tuple[str, str]:
     return "#%02x%02x%02x" % rgb, color
 
 
-def _best_positive_sector(prices: pd.DataFrame, columns: list[str],
-                          rows: list[tuple[str, list[float | None]]]) -> str | None:
-    """Rank mature sectors by positive-year consistency and return strength."""
-    min_years = 15  # New funds cannot outrank decades of evidence.
-    scores = []
-    for ticker, values in rows:
+def _annual_cagr(returns: list[float]) -> float:
+    """Geometric annualized total return from full calendar-year percent returns."""
+    if not returns or any(not math.isfinite(x) or x <= -100.0 for x in returns):
+        return float("nan")
+    return 100.0 * (math.prod(1.0 + r / 100.0 for r in returns) ** (1.0 / len(returns)) - 1.0)
+
+
+def _benchmark_analysis(
+    prices: pd.DataFrame,
+    columns: list[str],
+    rows: list[tuple[str, list[float | None]]],
+) -> tuple[str | None, dict[str, str], list[tuple[str, list[float | None]]], str]:
+    """Compare each sector with both ETFs on exactly matched FULL calendar years.
+
+    The 50/50 portfolio is rebalanced at each year boundary: each calendar
+    year's percent return is the arithmetic average of SPY and QQQ returns.
+    Geometric CAGR is computed by compounding those annual returns.
+    """
+    benchmark_returns: dict[str, dict[int, float]] = {}
+    benchmark_rows: list[tuple[str, list[float | None]]] = []
+    for symbol in BENCHMARK_TICKERS:
+        if symbol in prices and len(prices[symbol].dropna()) >= 2:
+            history = _calendar_returns(prices[symbol], "year")
+            benchmark_returns[symbol] = history
+            benchmark_rows.append((symbol, [history.get(int(y)) for y in columns]))
+
+    if len(benchmark_returns) < 2:
+        return None, {}, benchmark_rows, (
+            "Benchmark comparison unavailable: both SPY and QQQ histories are required. "
+            "No sector is highlighted."
+        )
+
+    spy, qqq = benchmark_returns["SPY"], benchmark_returns["QQQ"]
+    blend = {
+        year: (spy[year] + qqq[year]) / 2.0
+        for year in spy.keys() & qqq.keys()
+        if all(math.isfinite(float(v)) and v > -100.0 for v in (spy[year], qqq[year]))
+    }
+    benchmark_rows.append((BENCHMARK_BLEND, [blend.get(int(y)) for y in columns]))
+
+    explanations: dict[str, str] = {}
+    eligible_rankings: list[tuple[float, float, float, int, str]] = []
+    for ticker, returns in rows:
         if ticker not in SECTOR_NAMES or ticker not in prices:
             continue
-        history = prices[ticker].dropna()
-        if history.empty:
+        sector_series = prices[ticker].dropna()
+        if sector_series.empty:
             continue
-        # Exclude inception and latest calendar years because they may be partial.
-        complete = [float(value) for year, value in zip(columns, values)
-                    if history.index[0].year < int(year) < history.index[-1].year
-                    and value is not None and math.isfinite(float(value))]
-        if len(complete) < min_years:
+        matched = []
+        for year_str, value in zip(columns, returns):
+            year = int(year_str)
+            if year not in blend or value is None or not math.isfinite(float(value)):
+                continue
+            # Exclude a year's return unless ALL three instruments traded
+            # before that calendar year and continued trading afterward.
+            histories = (sector_series, prices["SPY"].dropna(), prices["QQQ"].dropna())
+            if not all(h.index[0].year < year < h.index[-1].year for h in histories):
+                continue
+            if float(value) <= -100.0:
+                continue
+            matched.append((year, float(value), float(spy[year]), float(qqq[year]), blend[year]))
+
+        n = len(matched)
+        if n < 15:
+            explanations[ticker] = (
+                f"{_sector_label(ticker)}: NOT ELIGIBLE\n"
+                f"Only {n} complete matched SPY/QQQ calendar years; minimum 15.\n"
+                "Partial launch/current years and missing benchmark years are excluded."
+            )
             continue
-        positive = sum(value > 0 for value in complete)
-        hit_rate = positive / len(complete)
-        average_return = sum(complete) / len(complete)
-        # Confidence-adjusted hit rate: 20 neutral prior years penalize
-        # short histories without counting unavailable years as losses.
-        adjusted_rate = (positive + 10.0) / (len(complete) + 20.0)
-        scores.append((adjusted_rate, average_return, len(complete), ticker))
-    if not scores:
-        return None
-    # Require a genuinely positive record, not merely a high short-sample score.
-    best = max(scores)
-    return best[3] if best[0] > 0.5 else None
+
+        sector_cagr = _annual_cagr([x[1] for x in matched])
+        spy_cagr = _annual_cagr([x[2] for x in matched])
+        qqq_cagr = _annual_cagr([x[3] for x in matched])
+        blend_cagr = _annual_cagr([x[4] for x in matched])
+        excess = [x[1] - x[4] for x in matched]
+        win_count = sum(x > 0 for x in excess)
+        win_rate = win_count / n
+        avg_excess = sum(excess) / n
+        tracking_error = float(np.std(excess, ddof=1)) if n > 1 else 0.0
+        info_ratio = avg_excess / tracking_error if tracking_error > 1e-9 else float("nan")
+        outperf = sector_cagr - blend_cagr
+        # A yellow winner must beat BOTH ETFs AND their blended portfolio,
+        # and outperform the blend in a majority of comparable years.
+        qualifies = (
+            outperf > 0 and sector_cagr > spy_cagr
+            and sector_cagr > qqq_cagr and win_rate > 0.5
+        )
+        explanation = (
+            f"{_sector_label(ticker)} | {matched[0][0]}-{matched[-1][0]} ({n} complete years)\n"
+            f"Compounded annual return: {sector_cagr:+.2f}%\n"
+            f"SPY: {spy_cagr:+.2f}% | QQQ: {qqq_cagr:+.2f}%\n"
+            f"50/50 SPY+QQQ (annually rebalanced): {blend_cagr:+.2f}%\n"
+            f"Excess CAGR vs 50/50: {outperf:+.2f} percentage points/year\n"
+            f"YoY beat rate vs 50/50: {win_count}/{n} ({win_rate:.0%})\n"
+            f"Mean annual excess: {avg_excess:+.2f} pp; "
+            f"tracking error: {tracking_error:.2f} pp\n"
+            f"Information ratio: {info_ratio:+.2f}"
+            if math.isfinite(info_ratio) else
+            f"{_sector_label(ticker)} | {matched[0][0]}-{matched[-1][0]} ({n} complete years)\n"
+            f"Compounded annual return: {sector_cagr:+.2f}%\n"
+            f"SPY: {spy_cagr:+.2f}% | QQQ: {qqq_cagr:+.2f}%\n"
+            f"50/50 SPY+QQQ: {blend_cagr:+.2f}%\n"
+            f"Excess CAGR vs 50/50: {outperf:+.2f} pp/year\n"
+            f"YoY beat rate: {win_count}/{n} ({win_rate:.0%})\n"
+            f"Mean annual excess: {avg_excess:+.2f} pp; tracking error: {tracking_error:.2f} pp\n"
+            "Information ratio: N/A (zero tracking error)"
+        )
+        explanation += (
+            "\nELIGIBLE: beat SPY, QQQ, and their 50/50 blend with >50% annual wins."
+            if qualifies else
+            "\nNOT ELIGIBLE: must beat SPY, QQQ, and 50/50 CAGR, plus >50% annual wins."
+        )
+        explanations[ticker] = explanation
+        if qualifies:
+            eligible_rankings.append((
+                outperf, win_rate,
+                info_ratio if math.isfinite(info_ratio) else 0.0, n, ticker,
+            ))
+
+    if eligible_rankings:
+        best = max(eligible_rankings)
+        winner = best[-1]
+        explanations[winner] = (
+            "BENCHMARK-RELATIVE LEADER // WHY THIS SECTOR WON\n"
+            + explanations[winner]
+            + "\nRanked first by excess compounded annual return over the 50/50 blend; "
+              "annual beat rate and relative information ratio break ties. "
+              "Historical ranking, not a forecast."
+        )
+        status = (
+            f"LEADER: {_sector_label(winner)} // {best[0]:+.2f} pp/year CAGR "
+            "above the annually rebalanced SPY/QQQ 50/50 benchmark. "
+            "Hover over the yellow sector name for the matched-year calculation."
+        )
+        return winner, explanations, benchmark_rows, status
+    return None, explanations, benchmark_rows, (
+        "NO QUALIFYING SECTOR // None with at least 15 matching complete calendar years "
+        "beats SPY, QQQ and their annually rebalanced 50/50 blend in CAGR "
+        "AND wins more than half the matched years. Hover over sector names for details."
+    )
 
 
 def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[float | None]]],
-                    subtitle: str = "", *, annual: bool = False, best_sector: str | None = None) -> str:
+                    subtitle: str = "", *, annual: bool = False, best_sector: str | None = None,
+                    explanations: dict[str, str] | None = None) -> str:
     values = [
         abs(float(v)) for _, row in rows for v in row
         if v is not None and math.isfinite(float(v))
@@ -440,7 +555,8 @@ def _heatmap_markup(title: str, columns: list[str], rows: list[tuple[str, list[f
     for label, data in rows:
         label_text = _sector_label(label) if named_rows else label
         winner_style = ' style="background:#ffe100;color:#000000;font-weight:800"' if label == best_sector else ""
-        out.append('<tr><td title="' + html.escape(label_text, quote=True) + '"' + winner_style + '>'
+        tooltip = (explanations or {}).get(label, label_text)
+        out.append('<tr><td title="' + html.escape(tooltip, quote=True) + '"' + winner_style + '>'
                    + html.escape(label_text) + "</td>")
         for col, value in zip(columns, data):
             bg, fg = _shade(value, scale)
@@ -592,7 +708,10 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
 
         with st.spinner("Loading maximum available adjusted-close history..."):
             try:
-                prices, missing = _historical_prices(tuple(tickers))
+                requested = tuple(dict.fromkeys(
+                    [*tickers, *(BENCHMARK_TICKERS if view == "ANNUAL HISTORY" else ())]
+                ))
+                prices, missing = _historical_prices(requested)
             except Exception as exc:
                 st.error(f"Historical market data unavailable: {type(exc).__name__}. Try REFRESH DATA.")
                 prices, missing = pd.DataFrame(), tuple(tickers)
@@ -610,6 +729,10 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
         available = [ticker for ticker in tickers if ticker in prices.columns]
         first = {ticker: prices[ticker].dropna().index[0] for ticker in available}
         last = {ticker: prices[ticker].dropna().index[-1] for ticker in available}
+        if not available:
+            _write_browser(vault_key, state)
+            st.warning("No historical prices loaded for saved tickers.")
+            return
         oldest = min(first.values())
         latest = max(last.values())
         st.html(
@@ -638,13 +761,18 @@ def _render_heatmaps_fragment(vault_key: str) -> None:
                 ]), hide_index=True, use_container_width=True,
             )
         elif view == "ANNUAL HISTORY":
-            cols, rows = _annual(prices, tickers)
+            cols, sector_rows = _annual(prices, [t for t in tickers if t not in BENCHMARK_TICKERS])
+            best, explanations, benchmark_rows, benchmark_status = _benchmark_analysis(
+                prices, cols, sector_rows
+            )
+            rows = sector_rows + benchmark_rows
             st.html(_heatmap_markup(
                 "ANNUAL SECTOR RETURNS // INCEPTION TO PRESENT", cols, rows,
-                "Sectors are rows; calendar years are columns (including 2001 where available). "
-                "Fund history before inception is blank; first and current years may be partial.",
-                annual=True, best_sector=_best_positive_sector(prices, cols, rows),
+                "SPY and QQQ are reference ETFs; SPY+QQQ 50/50 is rebalanced annually. "
+                "Yearly cells are adjusted-close returns; partial years are not used for ranking.",
+                annual=True, best_sector=best, explanations=explanations,
             ))
+            st.html('<div class="hm-notes">' + html.escape(benchmark_status) + '</div>')
         else:
             active = focus if focus in available else available[0]
             cols, rows = _monthly(prices, active)
