@@ -122,4 +122,30 @@ unknown_nav = _classified_hedge_book(
 assert unknown_nav["% Account"].isna().all()
 assert unknown_nav["% Tactical Sleeve"].isna().all()
 
+
+# A displayed row can move, but its account/ticker selection identity cannot.
+from src.protective_puts_portfolio_ui import _sort_hedge_book, _HEDGE_SORT_OPTIONS
+
+sortable = hedge_book.reset_index()
+original_symbols = set(sortable["Symbol"])
+original_values = sortable.set_index("Symbol")["Market Value"].to_dict()
+assert all(
+    name in _HEDGE_SORT_OPTIONS
+    for name in ("HEDGE", "SLEEVE / %", "SYMBOL", "SHARES", "LAST",
+                 "P&L %", "P&L", "VALUE", "% ACCT")
+)
+for criterion in _HEDGE_SORT_OPTIONS:
+    for direction in ("ASC", "DESC"):
+        arranged = _sort_hedge_book(sortable, criterion, direction, {"BBB", "CCC"})
+        assert set(arranged["Symbol"]) == original_symbols
+        assert arranged.set_index("Symbol")["Market Value"].to_dict() == original_values
+        assert "_hedge_checked_sort" not in arranged.columns
+assert list(_sort_hedge_book(sortable, "SYMBOL", "ASC", set())["Symbol"]) == sorted(original_symbols)
+assert list(_sort_hedge_book(sortable, "SYMBOL", "DESC", set())["Symbol"]) == sorted(original_symbols, reverse=True)
+assert _sort_hedge_book(sortable, "VALUE", "DESC", set()).iloc[0]["Symbol"] == "AAA"
+assert _sort_hedge_book(sortable, "VALUE", "ASC", set()).iloc[0]["Symbol"] == "DDD"
+assert set(_sort_hedge_book(sortable, "HEDGE", "DESC", {"BBB", "CCC"}).head(2)["Symbol"]) == {"BBB", "CCC"}
+assert set(_sort_hedge_book(sortable, "HEDGE", "ASC", {"BBB", "CCC"}).tail(2)["Symbol"]) == {"BBB", "CCC"}
+assert _sort_hedge_book(sortable, "P&L %", "DESC", set()).iloc[-1]["Symbol"] == "DDD"
+
 print("PROTECTIVE PUTS TEST: PASS")
