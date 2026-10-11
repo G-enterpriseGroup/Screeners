@@ -841,6 +841,22 @@ def _render_order_review(
         st.session_state["pp_hedge_last_order_results"] = sent
 
 
+def _chain_row_colors(index: int, priority: bool, best_per_expiry: bool, width: int) -> list[str]:
+    """Explicit canvas-cell colors: all ordinary rows must remain readable.
+
+    Streamlit's Glide data editor renders cells on canvas, so CSS scoped to the
+    DOM is insufficient. All non-editable cells receive Styler declarations;
+    the BUY checkbox stays as the sole interactive column.
+    """
+    if priority:
+        style = "background-color:#fb8b1e;color:#000000;font-weight:900"
+    elif best_per_expiry:
+        style = "background-color:#10130d;color:#4af6c3;font-weight:800"
+    else:
+        style = "background-color:#080808;color:#f6b56a;font-weight:750"
+    return [style] * width
+
+
 def _results(
     result: dict[str, Any], money: Callable, metric_markup: Callable,
     client: Any, touch_session: Callable, live_etrade: Callable,
@@ -856,7 +872,7 @@ def _results(
 
     top = data.iloc[0]
     direct_example = bool(result.get("direct_example"))
-    st.html('<div class="pp-section">MARRIED PUT // OPTION CHAIN // LOWEST LOSS FIRST</div>')
+    st.html('<div class="pp-section">PUT OPTIONS // LOWEST LOSS FIRST</div>')
     if direct_example:
         st.html(metric_markup([
             ("Put Underlying", str(top["Proxy"]), "orange"),
@@ -874,60 +890,68 @@ def _results(
         )
     else:
         st.html(metric_markup([
-            ("Selected Equities", money(result["exposure"]), "orange"),
-            ("Modeled Unhedged Loss", money(result["stress_loss"]), "red"),
-            ("Top Hedge", f'{top["Proxy"]} {top["Expiration"]} {top["Strike"]:.2f} P', "green"),
-            ("Hedge ASK Cost", money(top["Put Cost"]), "orange"),
-            ("Modeled Stress Loss", money(top["Stress Remaining Loss"]), "green"
+            ("Hedged Basket", money(result["exposure"]), "orange"),
+            ("Scenario Loss", money(result["stress_loss"]), "red"),
+            ("Lowest Residual", money(top["Stress Remaining Loss"]), "green"
              if bool(top["Near Zero Scenario"]) else "red"),
-            ("Scanned Puts", f'{len(data):,}', "orange"),
+            ("Top Put", f'{top["Proxy"]} {top["Strike"]:.2f} P', "green"),
+            ("Premium (ASK)", money(top["Put Cost"]), "orange"),
         ]))
         st.caption(
-            f'PORTFOLIO SCENARIO // ETF -{result["stress"]:.0f}% // '
-            f'ASSUMED BETA {result["beta"]:.2f}. '
-            "YELLOW = LOWEST MODELED RESIDUAL LOSS. PROXY ETF PUTS "
-            "CANNOT GUARANTEE A ZERO-LOSS FLOOR ON DIFFERENT STOCKS."
+            f'MODELED ETF -{result["stress"]:.0f}% / BETA {result["beta"]:.2f} '
+            '// NOT A GUARANTEED PORTFOLIO LOSS CAP.'
         )
     st.caption(
-        "GHOTRA MAX LOSS (ASK/LAST) COLUMNS USE AN ILLUSTRATIVE 100 SHARES OF "
-        "THE PUT UNDERLYING, NOT THE SEPARATE PORTFOLIO. LAST IS HISTORICAL; "
-        "ASK IS THE BUYING REFERENCE."
+        "100-SHARE MAX LOSS = SAME-TICKER MARRIED PUT EXAMPLE, NOT THE BASKET. "
+        "ASK = PURCHASE REFERENCE; LAST = HISTORICAL. ORANGE = TOP ROW; GREEN = BEST/EXP."
     )
+    # Primary grid: only decision-making fields. All remaining Ghotra
+    # columns remain available in the full-details expander and CSV.
     cols = [
-        "Proxy", "Expiration", "DTE", "Strike", "Last", "Bid", "Ask",
-        "Volume", "Open Interest", "Implied Volatility",
-        "Cost of Put (Ask)", "Max Loss (Ask)",
-        "Orderable", "Contracts", "Put Cost", "Stress Remaining Loss",
+        "Proxy", "Expiration", "DTE", "Strike", "Bid", "Ask",
+        "Cost of Put (Ask)", "Max Loss (Ask)", "Stress Remaining Loss",
+        "Contracts", "Open Interest",
     ]
     display = data[cols].copy()
     display.insert(0, "BUY", False)
+
     def _style(row):
         index = row.name
-        if bool(data.iloc[index]["Priority"]):
-            return ["background-color:#fb8b1e;color:#000;font-weight:900"] * len(row)
-        if bool(data.iloc[index]["Best / Expiration"]):
-            return ["color:#4af6c3;font-weight:900"] * len(row)
-        return [""] * len(row)
+        return _chain_row_colors(
+            index, bool(data.iloc[index]["Priority"]),
+            bool(data.iloc[index]["Best / Expiration"]), len(row),
+        )
 
     edited = st.data_editor(
         display.style.apply(_style, axis=1),
         hide_index=True, width="stretch",
         key="pp_hedge_contract_editor_" + str(result["scan_id"]),
-        height=min(670, max(205, min(len(display), 18) * 35 + 42)),
+        height=415, row_height=32,
         disabled=cols,
         column_config={
             "BUY": st.column_config.CheckboxColumn(
-                "BUY", help="Select the contract for E*TRADE preview. Enter does not submit."
+                "BUY", width="small",
+                help="Check to review a PUT LIMIT order; selection cannot submit."
             ),
-            "Strike": st.column_config.NumberColumn(format="$%.2f"),
-            "Last": st.column_config.NumberColumn(format="$%.2f"),
-            "Bid": st.column_config.NumberColumn(format="$%.2f"),
-            "Ask": st.column_config.NumberColumn(format="$%.2f"),
-            "Cost of Put (Ask)": st.column_config.NumberColumn(format="$%.2f"),
-            "Max Loss (Ask)": st.column_config.NumberColumn(format="$%.2f"),
-            "Put Cost": st.column_config.NumberColumn(format="$%.2f"),
-            "Stress Remaining Loss": st.column_config.NumberColumn(format="$%.2f"),
-            "Implied Volatility": st.column_config.NumberColumn(format="%.4f"),
+            "Proxy": st.column_config.TextColumn("ETF", width="small"),
+            "Expiration": st.column_config.TextColumn("EXP", width="small"),
+            "DTE": st.column_config.NumberColumn("DTE", width="small", format="%d"),
+            "Strike": st.column_config.NumberColumn("STRIKE", format="$%.2f", width="small"),
+            "Bid": st.column_config.NumberColumn("BID", format="$%.2f", width="small"),
+            "Ask": st.column_config.NumberColumn("ASK", format="$%.2f", width="small"),
+            "Cost of Put (Ask)": st.column_config.NumberColumn(
+                "100SH PUT COST", format="$%.2f", width="small",
+            ),
+            "Max Loss (Ask)": st.column_config.NumberColumn(
+                "100SH MAX LOSS", format="$%.2f", width="small",
+            ),
+            "Stress Remaining Loss": st.column_config.NumberColumn(
+                "BASKET STRESS LOSS", format="$%.2f", width="small",
+            ),
+            "Contracts": st.column_config.NumberColumn("QTY", format="%d", width="small"),
+            "Open Interest": st.column_config.NumberColumn(
+                "OI", format="%.0f", width="small",
+            ),
         },
     )
     with st.expander("FULL GHOTRA COLUMNS // ASK + LAST MAX LOSS CALCULATIONS"):
@@ -939,9 +963,13 @@ def _results(
             "Max Loss (Last)", "Max Loss Calc (Last)",
             "Put Cost", "Stress Remaining Loss",
         ]
+        # Explicit body color is necessary for Streamlit's canvas renderer.
+        detailed = data[details].style.set_properties(
+            **{"background-color": "#080808", "color": "#f6b56a",
+               "font-weight": "750"}
+        ).format(na_rep="—")
         st.dataframe(
-            data[details], hide_index=True, width="stretch",
-            height=min(650, max(175, min(20, len(data)) * 32 + 42)),
+            detailed, hide_index=True, width="stretch", height=390,
         )
     try:
         chosen = _selected_order_rows(data, edited)
