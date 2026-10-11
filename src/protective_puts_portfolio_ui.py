@@ -732,6 +732,9 @@ def _render_order_review(
     if not live_etrade(client):
         st.warning("CONNECT E*TRADE TO PREVIEW OR SUBMIT. Public option quotes are analytics only.")
         return
+    if not account_key:
+        st.warning("OPEN EDIT INVESTMENTS / ACCOUNT AND PICK AN E*TRADE ACCOUNT BEFORE REVIEW.")
+        return
     try:
         signature = (account_key, scan_key, selected_put_signature(selected))
     except (KeyError, ValueError, TypeError):
@@ -843,63 +846,103 @@ def _results(
     client: Any, touch_session: Callable, live_etrade: Callable,
     account_key: str,
 ) -> None:
-    """Complete quoted chain with selected modeled stress hedges pinned on top."""
+    """Ghotra Married Put columns with ranking, BUY, and explicit broker review."""
     data = result["data"]
     if not isinstance(data, pd.DataFrame) or data.empty:
-        st.warning(
-            "NO USABLE PUT ASKS RETURNED. Confirm the ETF ticker, E*TRADE connection "
-            "and listed expiration availability; see source warnings below."
-        )
+        st.warning("NO VALID PUT ASKS // Enter another ticker or check option-chain availability.")
         for error in result.get("errors") or []:
             st.caption(str(error))
         return
+
     top = data.iloc[0]
-    st.html('<div class="pp-section">PUT OPTION CHAIN // LOWEST MODELED LOSS FIRST</div>')
-    st.html(metric_markup([
-        ("Selected Equities", money(result["exposure"]), "orange"),
-        ("Unhedged Stress Loss", money(result["stress_loss"]), "red"),
-        ("Top Hedge", f'{top["Proxy"]} {top["Expiration"]} {top["Strike"]:.2f} P', "green"),
-        ("Top ASK Premium", money(top["Put Cost"]), "orange"),
-        ("Top Stress Loss", money(top["Stress Remaining Loss"]), "green"
-         if bool(top["Near Zero Scenario"]) else "red"),
-        ("Scanned Puts", f'{len(data):,}', "orange"),
-    ]))
+    direct_example = bool(result.get("direct_example"))
+    st.html('<div class="pp-section">MARRIED PUT // OPTION CHAIN // LOWEST LOSS FIRST</div>')
+    if direct_example:
+        st.html(metric_markup([
+            ("Put Underlying", str(top["Proxy"]), "orange"),
+            ("Reference", "100 ETF SHARES", "blue"),
+            ("Top Strike", f'{top["Strike"]:.2f} PUT', "green"),
+            ("Put Cost (ASK)", money(top["Cost of Put (Ask)"]), "orange"),
+            ("100-Share Max Loss (ASK)", money(top["Max Loss (Ask)"]),
+             "green" if float(top["Max Loss (Ask)"]) <= .005 else "red"),
+            ("Put Contracts", "1", "orange"),
+        ]))
+        st.caption(
+            "100-SHARE SAME-TICKER EXAMPLE AT CURRENT QUOTE // YELLOW = LOWEST "
+            "MARRIED-PUT MAX LOSS, CHEAPEST PREMIUM TIEBREAKER. "
+            "A PUT ORDER BY ITSELF DOES NOT INCLUDE OR PROTECT 100 SHARES."
+        )
+    else:
+        st.html(metric_markup([
+            ("Selected Equities", money(result["exposure"]), "orange"),
+            ("Modeled Unhedged Loss", money(result["stress_loss"]), "red"),
+            ("Top Hedge", f'{top["Proxy"]} {top["Expiration"]} {top["Strike"]:.2f} P', "green"),
+            ("Hedge ASK Cost", money(top["Put Cost"]), "orange"),
+            ("Modeled Stress Loss", money(top["Stress Remaining Loss"]), "green"
+             if bool(top["Near Zero Scenario"]) else "red"),
+            ("Scanned Puts", f'{len(data):,}', "orange"),
+        ]))
+        st.caption(
+            f'PORTFOLIO SCENARIO // ETF -{result["stress"]:.0f}% // '
+            f'ASSUMED BETA {result["beta"]:.2f}. '
+            "YELLOW = LOWEST MODELED RESIDUAL LOSS. PROXY ETF PUTS "
+            "CANNOT GUARANTEE A ZERO-LOSS FLOOR ON DIFFERENT STOCKS."
+        )
     st.caption(
-        f'PORTFOLIO SCENARIO: ETF FALLS {result["stress"]:.0f}% // '
-        f'ASSUMED BASKET BETA {result["beta"]:.2f}. '
-        "LOSS IS A MODELED EXPIRATION-DATE OUTCOME, NOT GUARANTEED MAX LOSS. "
-        "YELLOW = LOWEST MODELED LOSS (PREMIUM USED AS TIEBREAKER)."
+        "GHOTRA MAX LOSS (ASK/LAST) COLUMNS USE AN ILLUSTRATIVE 100 SHARES OF "
+        "THE PUT UNDERLYING, NOT THE SEPARATE PORTFOLIO. LAST IS HISTORICAL; "
+        "ASK IS THE BUYING REFERENCE."
     )
-    cols = ["Proxy", "Expiration", "DTE", "Strike", "Bid", "Ask",
-            "Orderable",
-            "Contracts", "Put Cost", "Stress Remaining Loss",
-            "Volume", "Open Interest", "Cost %"]
+    cols = [
+        "Proxy", "Expiration", "DTE", "Strike", "Last", "Bid", "Ask",
+        "Volume", "Open Interest", "Implied Volatility",
+        "Cost of Put (Ask)", "Max Loss (Ask)",
+        "Orderable", "Contracts", "Put Cost", "Stress Remaining Loss",
+    ]
     display = data[cols].copy()
     display.insert(0, "BUY", False)
-    highlight = data["Priority"] | data["Best / Expiration"]
     def _style(row):
-        idx = row.name
-        if bool(data.iloc[idx]["Priority"]):
+        index = row.name
+        if bool(data.iloc[index]["Priority"]):
             return ["background-color:#fb8b1e;color:#000;font-weight:900"] * len(row)
-        if bool(highlight.iloc[idx]):
+        if bool(data.iloc[index]["Best / Expiration"]):
             return ["color:#4af6c3;font-weight:900"] * len(row)
         return [""] * len(row)
-    editor_key = "pp_hedge_contract_editor_" + str(result["scan_id"])
+
     edited = st.data_editor(
         display.style.apply(_style, axis=1),
-        hide_index=True, width="stretch", key=editor_key,
+        hide_index=True, width="stretch",
+        key="pp_hedge_contract_editor_" + str(result["scan_id"]),
         height=min(670, max(205, min(len(display), 18) * 35 + 42)),
         disabled=cols,
         column_config={
-            "BUY": st.column_config.CheckboxColumn("BUY", help="Select this exact option contract for order review."),
+            "BUY": st.column_config.CheckboxColumn(
+                "BUY", help="Select the contract for E*TRADE preview. Enter does not submit."
+            ),
             "Strike": st.column_config.NumberColumn(format="$%.2f"),
+            "Last": st.column_config.NumberColumn(format="$%.2f"),
             "Bid": st.column_config.NumberColumn(format="$%.2f"),
             "Ask": st.column_config.NumberColumn(format="$%.2f"),
+            "Cost of Put (Ask)": st.column_config.NumberColumn(format="$%.2f"),
+            "Max Loss (Ask)": st.column_config.NumberColumn(format="$%.2f"),
             "Put Cost": st.column_config.NumberColumn(format="$%.2f"),
             "Stress Remaining Loss": st.column_config.NumberColumn(format="$%.2f"),
-            "Cost %": st.column_config.NumberColumn(format="%.2f%%"),
+            "Implied Volatility": st.column_config.NumberColumn(format="%.4f"),
         },
     )
+    with st.expander("FULL GHOTRA COLUMNS // ASK + LAST MAX LOSS CALCULATIONS"):
+        details = [
+            "Proxy", "Contract", "Expiration", "DTE", "Strike",
+            "Last", "Bid", "Ask", "Volume", "Open Interest",
+            "Implied Volatility", "Cost of Put (Ask)", "Max Loss (Ask)",
+            "Max Loss Calc (Ask)", "Cost of Put (Last)",
+            "Max Loss (Last)", "Max Loss Calc (Last)",
+            "Put Cost", "Stress Remaining Loss",
+        ]
+        st.dataframe(
+            data[details], hide_index=True, width="stretch",
+            height=min(650, max(175, min(20, len(data)) * 32 + 42)),
+        )
     try:
         chosen = _selected_order_rows(data, edited)
     except ValueError as exc:
@@ -907,11 +950,11 @@ def _results(
         st.error(str(exc) + " // DESELECT THIS OPTION BEFORE REVIEW.")
     st.caption(
         f"{len(data):,} PUT ROWS // {result['chains']} EXPIRATION CHAINS // "
-        "ALL AVAILABLE STRIKES IN SCANNED EXPIRATIONS // "
-        "CHECK BUY BOXES TO PREVIEW LIMIT BUY_OPEN ORDERS."
+        "CHECK BUY TO PREVIEW SPECIFIC PUT LIMIT ORDERS."
     )
     st.download_button(
-        "EXPORT FULL PUT CHAIN CSV", data=data.to_csv(index=False),
+        "EXPORT FULL GHOTRA PUT CHAIN CSV",
+        data=data.to_csv(index=False),
         file_name="portfolio_full_put_chain.csv", mime="text/csv",
         key="pp_hedge_csv", width="stretch",
     )
@@ -1029,6 +1072,20 @@ def render_portfolio_hedge(
                         today=today, max_contracts=MAX_PUT_CONTRACTS,
                     )
                     if not f.empty:
+                        if exposure <= 0:
+                            # Ticker-only: one put, not a fictitious bulk hedge.
+                            f["Contracts"] = 1
+                            f["Put Cost"] = f["Cost of Put (Ask)"]
+                            f["Cost %"] = 100.0 * f["Put Cost"] / reference_exposure
+                            f["Stress Put Payout"] = (
+                                (f["Strike"] - spot * (1 - stress / 100)).clip(lower=0) * 100
+                            )
+                            f["Stress Remaining Loss"] = (
+                                reference_exposure * stress / 100
+                                + f["Put Cost"] - f["Stress Put Payout"]
+                            ).clip(lower=0)
+                            f["Near Zero Scenario"] = f["Stress Remaining Loss"].le(.005)
+                            f["Orderable"] = True
                         f["Source"] = source
                         frames.append(f)
                 except Exception as exc:
