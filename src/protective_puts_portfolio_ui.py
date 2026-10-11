@@ -705,7 +705,10 @@ def _selected_order_rows(display: pd.DataFrame, edited: pd.DataFrame) -> list[di
     for index in selected_indices:
         row = display.iloc[int(index)].to_dict()
         if not bool(row["Orderable"]):
-            continue
+            raise ValueError(
+                f"{row['Proxy']} {row['Expiration']} {row['Strike']}: "
+                "modeled contracts exceed the 250-contract order limit."
+            )
         result.append(row)
     return result
 
@@ -868,6 +871,7 @@ def _results(
         "YELLOW = LOWEST MODELED LOSS (PREMIUM USED AS TIEBREAKER)."
     )
     cols = ["Proxy", "Expiration", "DTE", "Strike", "Bid", "Ask",
+            "Orderable",
             "Contracts", "Put Cost", "Stress Remaining Loss",
             "Volume", "Open Interest", "Cost %"]
     display = data[cols].copy()
@@ -896,7 +900,11 @@ def _results(
             "Cost %": st.column_config.NumberColumn(format="%.2f%%"),
         },
     )
-    chosen = _selected_order_rows(data, edited)
+    try:
+        chosen = _selected_order_rows(data, edited)
+    except ValueError as exc:
+        chosen = []
+        st.error(str(exc) + " // DESELECT THIS OPTION BEFORE REVIEW.")
     st.caption(
         f"{len(data):,} PUT ROWS // {result['chains']} EXPIRATION CHAINS // "
         "ALL AVAILABLE STRIKES IN SCANNED EXPIRATIONS // "
