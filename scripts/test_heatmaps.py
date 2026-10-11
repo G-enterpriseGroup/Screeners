@@ -53,7 +53,8 @@ def run() -> None:
     assert _clean_state({"state_version": 3, "view": "ROLLING PERFORMANCE"})["view"] == "ROLLING PERFORMANCE"
     assert _sector_label("XLK") == "Technology (XLK)"
     assert _sector_label("XLY") == "Consumer Discretionary (XLY)"
-    assert _sector_label("QQQ") == "QQQ"
+    assert _sector_label("QQQ") == "Nasdaq-100 Benchmark (QQQ)"
+    assert _sector_label("SPY") == "S&P 500 Benchmark (SPY)"
     assert len(SECTOR_NAMES) == 11
     assert _clean_state({"tickers": []})["tickers"] == []
     assert _clean_state({"tickers": ["xlk", "XLK", "qqq"], "focus": "qqq"})["tickers"] == ["XLK", "QQQ"]
