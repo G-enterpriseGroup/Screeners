@@ -468,11 +468,27 @@ def _benchmark_analysis(
         tracking_error = float(np.std(excess, ddof=1)) if n > 1 else 0.0
         info_ratio = avg_excess / tracking_error if tracking_error > 1e-9 else float("nan")
         outperf = sector_cagr - blend_cagr
-        # A yellow winner must beat BOTH ETFs AND their blended portfolio,
-        # and outperform the blend in a majority of comparable years.
+        # Long-run outperformance alone may conceal a decade of recent
+        # underperformance. Require ten consecutive recent full years too.
+        recent = matched[-10:]
+        consecutive = (
+            len(recent) == 10
+            and [x[0] for x in recent] == list(range(recent[-1][0] - 9, recent[-1][0] + 1))
+        )
+        recent_sector = _annual_cagr([x[1] for x in recent]) if consecutive else float("nan")
+        recent_spy = _annual_cagr([x[2] for x in recent]) if consecutive else float("nan")
+        recent_qqq = _annual_cagr([x[3] for x in recent]) if consecutive else float("nan")
+        recent_blend = _annual_cagr([x[4] for x in recent]) if consecutive else float("nan")
+        recent_wins = sum(x[1] > x[4] for x in recent) if consecutive else 0
+        recent_confirmed = (
+            consecutive and recent_sector > recent_spy
+            and recent_sector > recent_qqq and recent_sector > recent_blend
+            and recent_wins >= 6
+        )
         qualifies = (
             outperf > 0 and sector_cagr > spy_cagr
             and sector_cagr > qqq_cagr and win_rate > 0.5
+            and recent_confirmed
         )
         explanation = (
             f"{_sector_label(ticker)} | {matched[0][0]}-{matched[-1][0]} ({n} complete years)\n"
@@ -495,9 +511,20 @@ def _benchmark_analysis(
             "Information ratio: N/A (zero tracking error)"
         )
         explanation += (
-            "\nELIGIBLE: beat SPY, QQQ, and their 50/50 blend with >50% annual wins."
+            f"\nRECENT 10Y CHECK ({recent[0][0]}-{recent[-1][0]}): "
+            f"sector {recent_sector:+.2f}% CAGR | "
+            f"SPY {recent_spy:+.2f}% | QQQ {recent_qqq:+.2f}% | "
+            f"50/50 {recent_blend:+.2f}% | "
+            f"beat blend {recent_wins}/10 years"
+            if consecutive else
+            "\nRECENT 10Y CHECK: unavailable (need 10 consecutive complete matched years)"
+        )
+        explanation += (
+            "\nELIGIBLE: beat SPY, QQQ and blend over full and recent 10Y periods; "
+            "beat blend in a majority of years in BOTH windows."
             if qualifies else
-            "\nNOT ELIGIBLE: must beat SPY, QQQ, and 50/50 CAGR, plus >50% annual wins."
+            "\nNOT ELIGIBLE: must beat SPY and QQQ CAGR in both the full and recent "
+            "10Y periods; beat blend in >50% of years in both windows."
         )
         explanations[ticker] = explanation
         if qualifies:
@@ -513,19 +540,21 @@ def _benchmark_analysis(
             "BENCHMARK-RELATIVE LEADER // WHY THIS SECTOR WON\n"
             + explanations[winner]
             + "\nRanked first by excess compounded annual return over the 50/50 blend; "
-              "annual beat rate and relative information ratio break ties. "
+              "annual beat rate and relative information ratio break ties; "
+              "a recent 10Y outperformance check is also required. "
               "Historical ranking, not a forecast."
         )
         status = (
             f"LEADER: {_sector_label(winner)} // {best[0]:+.2f} pp/year CAGR "
             "above the annually rebalanced SPY/QQQ 50/50 benchmark. "
-            "Hover over the yellow sector name for the matched-year calculation."
+            "Recent 10Y confirmation passed. Hover over the yellow sector name for details."
         )
         return winner, explanations, benchmark_rows, status
     return None, explanations, benchmark_rows, (
         "NO QUALIFYING SECTOR // None with at least 15 matching complete calendar years "
         "beats SPY, QQQ and their annually rebalanced 50/50 blend in CAGR "
-        "AND wins more than half the matched years. Hover over sector names for details."
+        "AND wins more than half the matched years, including a confirmed last 10Y period. "
+        "Hover over sector names for details."
     )
 
 
