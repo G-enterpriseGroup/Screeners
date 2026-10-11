@@ -62,39 +62,41 @@ _CSS = """
     min-width:0!important;padding:0!important;margin:0!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"]{
-    height:35px!important;min-height:35px!important;
+    box-sizing:border-box!important;height:43px!important;min-height:43px!important;
     display:flex!important;align-items:center!important;justify-content:center!important;
     border-left:1px solid #a65c16!important;border-bottom:1px solid #a65c16!important;
-    background:#080808!important;margin:0!important;padding:0!important;
+    background:#fb8b1e!important;margin:0!important;padding:0!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label{
     display:flex!important;align-items:center!important;justify-content:center!important;
-    width:100%!important;height:35px!important;margin:0!important;
+    width:100%!important;height:43px!important;margin:0!important;
+    cursor:pointer!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label > div:first-child{
-    box-sizing:border-box!important;width:20px!important;height:20px!important;
-    border:2px solid #fb8b1e!important;border-radius:2px!important;
-    background:#080808!important;opacity:1!important;
+    box-sizing:border-box!important;width:23px!important;height:23px!important;
+    border:2px solid #000!important;border-radius:2px!important;
+    background:#fff!important;opacity:1!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked) > div:first-child{
-    background:#fb8b1e!important;border-color:#fb8b1e!important;
+    background:#4af6c3!important;border-color:#000!important;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_chain_native_grid [data-testid="stCheckbox"] label:has(input:checked) svg{
     stroke:#000!important;color:#000!important;opacity:1!important;
 }
 .pp-chain-cells{
     box-sizing:border-box;display:grid;align-items:center;
-    grid-template-columns:.55fr 1.05fr .38fr .78fr .70fr .70fr .85fr 1fr 1.05fr .42fr .55fr;
-    width:100%;height:35px;min-height:35px;
+    grid-template-columns:.48fr 1.75fr .77fr .36fr .72fr .58fr .58fr .85fr 1.02fr 2.02fr 1.05fr .46fr .48fr;
+    width:100%;height:43px;min-height:43px;
     background:#080808;color:#f6b56a;
-    font:800 .80rem/1.1 "Courier New",monospace;font-variant-numeric:tabular-nums;
+    font:800 .78rem/1.1 "Courier New",monospace;font-variant-numeric:tabular-nums;
 }
 .pp-chain-cells span{
     box-sizing:border-box;display:flex;align-items:center;
-    height:35px;min-width:0;white-space:nowrap;overflow:hidden;
-    padding:0 5px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;
+    height:43px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    padding:0 4px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;
 }
-.pp-chain-cells span:nth-child(n+3){justify-content:flex-end;}
+.pp-chain-cells span:nth-child(n+4){justify-content:flex-end;}
+.pp-chain-cells span:nth-child(10){justify-content:flex-start;font-size:.69rem;}
 .pp-chain-head,.pp-chain-head span{
     background:#fb8b1e!important;color:#000!important;
     -webkit-text-fill-color:#000!important;font-weight:900!important;
@@ -109,7 +111,7 @@ _CSS = """
 }
 .pp-chain-buy-head{
     display:flex;align-items:center;justify-content:center;
-    background:#fb8b1e;color:#000;height:35px;font:900 .8rem "Courier New",monospace;
+    background:#fb8b1e;color:#000;height:43px;font:900 .8rem "Courier New",monospace;
 }
 .st-key-pp_portfolio_hedge .st-key-pp_hedge_csv button{
     background:#fb8b1e!important;color:#000!important;
@@ -1053,25 +1055,54 @@ def _sort_contract_chain(data: pd.DataFrame, criterion: str, direction: str) -> 
 
 
 def _chain_cell_markup(row: dict[str, Any]) -> str:
-    """Escaped, two-decimal Bloomberg row; no hover toolbar or canvas."""
+    """One readable Ghotra-style quote table, with per-contract loss math."""
     tone = ("pp-chain-top" if row.get("Priority") else
             "pp-chain-best" if row.get("Best / Expiration") else "")
+
     def price(value: Any) -> str:
         try:
             return "—" if pd.isna(value) else "$" + f"{float(value):,.2f}"
         except (TypeError, ValueError):
             return "—"
-    values = [
-        str(row["Proxy"]), str(row["Expiration"]), str(int(row["DTE"])),
-        price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
-        price(row["Cost of Put (Ask)"]), price(row["Max Loss (Ask)"]),
-        price(row["Stress Remaining Loss"]),
-        str(int(row["Contracts"])), str(int(row["Open Interest"])) if pd.notna(row["Open Interest"]) else "—",
+
+    # The original complete ASK-based calculation is preserved in the tooltip.
+    # A compact numbers-only rendering makes it readable inside the table.
+    expression = str(row.get("Max Loss Calc (Ask)") or "—")
+    match = re.search(
+        r"\(\s*([\d.,]+)\s*\+\s*([\d.,]+)\s*-\s*([\d.,]+)\s*\)\s*[×x*]\s*100",
+        expression,
+    )
+    if match:
+        a, b, k = (f"{float(value.replace(',', '')):,.2f}" for value in match.groups())
+        compact_calc = f"100×max(0,{a}+{b}−{k})"
+    else:
+        compact_calc = expression
+
+    rows = [
+        ("Proxy", str(row["Proxy"])),
+        ("Contract", str(row.get("Contract") or "—")),
+        ("Expiration", str(row["Expiration"])),
+        ("DTE", str(int(row["DTE"]))),
+        ("Strike", price(row["Strike"])),
+        ("Bid", price(row["Bid"])),
+        ("Ask", price(row["Ask"])),
+        ("Cost of Put (Ask)", price(row["Cost of Put (Ask)"])),
+        ("Max Loss (Ask)", price(row["Max Loss (Ask)"])),
+        ("Max Loss Calc (Ask)", compact_calc),
+        ("Stress Remaining Loss", price(row["Stress Remaining Loss"])),
+        ("Contracts", str(int(row["Contracts"]))),
+        ("Open Interest", str(int(row["Open Interest"]))
+         if pd.notna(row["Open Interest"]) else "—"),
     ]
-    return '<div class="pp-chain-cells '+tone+'">' + "".join(
-        "<span title='"+html.escape(v, quote=True)+"'>"+html.escape(v)+"</span>"
-        for v in values
-    )+"</div>"
+    return '<div class="pp-chain-cells ' + tone + '">' + "".join(
+        '<span title="' + html.escape(
+            f"{name}: {expression if name == 'Max Loss Calc (Ask)' else value}"
+            + (f" // LAST {price(row.get('Last'))} // VOL {row.get('Volume')}"
+               if name == "Contract" else ""),
+            quote=True,
+        ) + '">' + html.escape(value) + '</span>'
+        for name, value in rows
+    ) + "</div>"
 
 
 @st.fragment
@@ -1167,8 +1198,8 @@ def _results(
     start = page_index * _CHAIN_PAGE_SIZE
     page_data = ordered.iloc[start:start + _CHAIN_PAGE_SIZE].copy()
     page_ids = [_contract_identity(row) for row in page_data.to_dict("records")]
-    head = ["ETF", "EXP", "DTE", "STRIKE", "BID", "ASK",
-            "PUT COST", "100SH LOSS", "BASKET LOSS", "QTY", "OI"]
+    head = ["ETF", "CONTRACT", "EXP", "DTE", "STRIKE", "BID", "ASK",
+            "PUT COST", "MAX LOSS", "LOSS CALC", "BASKET LOSS", "QTY", "OI"]
     with st.container(key="pp_chain_native_grid", gap=None):
         left, right = st.columns([.66, 9.34], gap=None, vertical_alignment="center")
         left.html('<div class="pp-chain-buy-head">BUY</div>')
@@ -1197,27 +1228,6 @@ def _results(
         f"{len(checked_ids)} SELECTED ACROSS ALL PAGES // "
         f"{len(data):,} LOADED CONTRACTS // {result.get('listed_count', 0)} LISTED EXPIRATIONS"
     )
-    with st.expander("FULL GHOTRA COLUMNS // CURRENT PAGE (ALL LOADED IN CSV)"):
-        details = [
-            "Proxy", "Contract", "Expiration", "DTE", "Strike",
-            "Last", "Bid", "Ask", "Volume", "Open Interest",
-            "Cost of Put (Ask)", "Max Loss (Ask)",
-            "Max Loss Calc (Ask)", "Cost of Put (Last)",
-            "Max Loss (Last)", "Max Loss Calc (Last)",
-            "Put Cost", "Stress Remaining Loss",
-        ]
-        st.dataframe(
-            page_data[details].style.set_properties(**{
-                "background-color": "#080808", "color": "#f6b56a",
-            }).format({
-                "Strike": "{:,.2f}", "Last": "{:.2f}", "Bid": "{:.2f}",
-                "Ask": "{:.2f}", "Cost of Put (Ask)": "{:,.2f}",
-                "Max Loss (Ask)": "{:,.2f}", "Cost of Put (Last)": "{:,.2f}",
-                "Max Loss (Last)": "{:,.2f}",
-            }, na_rep="—"),
-            hide_index=True, width="stretch",
-            height=min(390, 43 + len(page_data) * 32),
-        )
     try:
         chosen = _selected_contract_orders(data, checked_ids)
     except ValueError as exc:
