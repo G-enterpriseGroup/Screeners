@@ -974,6 +974,7 @@ def _results(
         state = {"scope": scope_key, "ids": set()}
         st.session_state[state_key] = state
         st.session_state["pp_chain_page"] = 0
+        st.session_state.pop("pp_chain_expiration", None)
     saved_ids = set(state["ids"])
     expirations = tuple(sorted(data["Expiration"].dropna().astype(str).unique()))
     filter_options = ("ALL", *expirations)
@@ -1095,8 +1096,9 @@ def _results(
     )
     st.download_button(
         "EXPORT FULL GHOTRA PUT CHAIN CSV",
-        data=data.to_csv(index=False),
+        data=result.setdefault("export_csv", data.to_csv(index=False)),
         file_name="portfolio_full_put_chain.csv", mime="text/csv",
+        on_click="ignore",
         key="pp_hedge_csv", width="stretch",
     )
     _render_order_review(
