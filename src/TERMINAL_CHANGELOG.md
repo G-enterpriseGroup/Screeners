@@ -2209,3 +2209,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - Architecture and deployment: see final GitHub Actions result.
 - Production commits: f6964e80; test commit e5ad9644. This entry is append-only.
 - Lesson: Validate recent ten-year benchmark persistence before highlighting a lifetime historical winner. Screenshot-based estimates must be marked as such.
+
+## 2026-10-11 — Annual Heatmaps Federal Reserve target-rate row
+
+- **Feature:** Historical HEATMAPS annual matrix.
+- **Production file changed:** `src/heatmaps_ui.py`; change log `src/TERMINAL_CHANGELOG.md`.
+- **Request:** Show annual Fed interest-rate hikes or cuts alongside sector returns and the year-end target rate.
+- **Root cause:** The annual matrix only included market performance and benchmark rows; it lacked macro policy history.
+- **Change:** Add a single compact `FED TARGET / MOVES` row aligned with existing year columns. Read the historical pre-December-2008 target from FRED `DFEDTAR`, subsequent upper range boundary from `DFEDTARU`, and actual lower range boundary from `DFEDTARL`. Count each within-year target increase/decrease against the preceding December endpoint; show directional arrow, count and upper target rate in the cell. Hover shows hikes, cuts, exact year-end target/range, and source. Cache daily history 24 hours; show unavailable when source fails.
+- **Preserved:** Sector performance calculations, benchmark leader logic, R/G counts, watchlist memory, custom tickers, CSV exports, existing theme, and historical return rows.
+- **Intentionally untouched:** All non-Heatmaps feature files, including Risk, GEX, OAuth, Holdings, navigation, shared theme, `streamlit_app.py`, and `src/terminal_core.py`.
+- **Checks:** Production import path traced via `streamlit_app.py` and architecture map, minimal feature-only diff committed. Live feature smoke testing and local architecture validation could not be completed from this environment; deployment health not independently verified.
+- **Architecture guard:** Not yet verified PASS.
+- **Commit SHAs:** `5277acb`, `1551e09`, `d497cd1` (feature).
+- **Lesson:** For historical Fed comparison, derive policy moves from published *target* series, not effective market rates; do not assume the target range is always exactly 25 bps wide.
