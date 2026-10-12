@@ -85,7 +85,7 @@ def selected_count(driver) -> int:
     labels=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stCaptionContainer"]')
     for el in labels:
         content=el.text
-        if "SELECTED ACROSS ALL PAGES" in content:
+        if "SELECTED ACROSS ALL LOADED CONTRACTS" in content:
             return int(content.split(" SELECTED")[0].strip())
     return -1
 
