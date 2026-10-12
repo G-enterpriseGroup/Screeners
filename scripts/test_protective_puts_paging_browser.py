@@ -272,10 +272,14 @@ def main() -> None:
             in_scroll_iframe(driver,check_saved)
             assert selected_count(driver)==2
             set_filter("HIGHLIGHTED ONLY")
-            assert visible_stats()["values"] == ["SPYTEST0020", "SPYTEST0053"]
+            wait.until(
+                lambda _: visible_stats()["values"] == ["SPYTEST0020", "SPYTEST0053"]
+            )
             assert selected_count(driver)==2
             set_filter("ALL CONTRACTS")
-            assert visible_stats()["total"]>visible_stats()["client"]*3
+            wait.until(
+                lambda _: visible_stats()["total"] > visible_stats()["client"] * 3
+            )
             assert selected_count(driver)==2
             print("PROTECTIVE PUTS DEFAULT YEARLY FILTER / SCROLL / BUY: PASS")
         finally:
