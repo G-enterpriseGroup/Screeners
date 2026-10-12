@@ -2,7 +2,9 @@
 
 from datetime import date
 
-from src.protective_puts import build_put_analysis, protective_put_metrics
+from src.protective_puts import (
+    build_put_analysis, portfolio_risk_slide, protective_put_metrics,
+)
 
 
 metrics = protective_put_metrics(
@@ -43,6 +45,30 @@ assert frame.iloc[0]["Contracts"] == 2
 assert frame.iloc[0]["Put Cost (Ask)"] == 400.0
 assert frame.iloc[0]["Max Loss (Ask)"] == 1400.0
 assert abs(frame.iloc[0]["Max Loss % (Ask)"] - 7.0) < 1e-9
+
+risk_slide = portfolio_risk_slide(
+    portfolio_value=100000.0,
+    selected_puts=[{
+        "Spot": 100.0, "Strike": 95.0, "Ask": 2.0, "Contracts": 10,
+    }],
+)
+assert list(risk_slide["Market Move %"]) == [-20,-15,-10,-5,-2,0,2,5,10,15,20]
+down20 = risk_slide.loc[risk_slide["Market Move %"] == -20].iloc[0]
+flat = risk_slide.loc[risk_slide["Market Move %"] == 0].iloc[0]
+up20 = risk_slide.loc[risk_slide["Market Move %"] == 20].iloc[0]
+assert down20["Unhedged Portfolio"] == 80000.0
+assert down20["Put Intrinsic"] == 15000.0
+assert down20["Put Premium"] == 2000.0
+assert down20["With Selected Puts"] == 93000.0
+assert flat["With Selected Puts"] == 98000.0
+assert up20["With Selected Puts"] == 118000.0
+assert portfolio_risk_slide(
+    portfolio_value=100000.0, selected_puts=[],
+)["With Selected Puts"].equals(
+    portfolio_risk_slide(
+        portfolio_value=100000.0, selected_puts=[],
+    )["Unhedged Portfolio"]
+)
 
 
 from src.protective_puts import portfolio_hedge_candidates
@@ -232,6 +258,7 @@ assert len(legacy) == 2
 first = legacy.loc[legacy["Strike"] == 108].iloc[0]
 second = legacy.loc[legacy["Strike"] == 101].iloc[0]
 assert first["Cost of Put (Ask)"] == 800
+assert first["Spot"] == 100
 assert first["Max Loss (Ask)"] == 0
 assert abs(first["Max Loss (Last)"] - 20) < 1e-9
 assert first["Implied Volatility"] == .24
@@ -307,18 +334,14 @@ try:
 except ValueError:
     pass
 
-# Listing must show all future expirations even when initial chain fetch is
-# purposefully sparse and includes later years.
-from datetime import timedelta
-from src.protective_puts_portfolio_ui import _sample_expirations
-
-all_dates = [date(2026,10,10) + timedelta(days=i*7) for i in range(110)]
-sparse = _sample_expirations(all_dates, date(2026,10,11), 60)
-assert sparse[0] == all_dates[1]
-assert sparse[-1] == all_dates[-1]
-assert len(sparse) <= 8, sparse
-assert any((x-date(2026,10,11)).days >= 365 for x in sparse)
-assert not _sample_expirations([], date(2026,10,11), 60)
+# Portfolio Hedge must fetch every listed future expiration for every entered
+# ticker on the explicit Enter scan; later UI edits only reuse cached raw data.
+assert "work.extend((sym, spot, expiry) for expiry in future)" in ui_source
+assert "_sample_expirations(future" not in ui_source
+assert "LOAD ALL" not in ui_source
+assert "REMAINING CHAINS" not in ui_source
+assert "BASKET LOSS ?" in ui_source
+assert "_render_risk_slide(result, chosen, money, metric_markup)" in ui_source
 
 # The virtualized scroller sorts all loaded contracts and keeps exact BUY IDs;
 # the prior native 12-row paging widgets must no longer appear.
@@ -361,8 +384,7 @@ assert 'with st.expander("FULL GHOTRA COLUMNS' not in feature_src
 assert "st.dataframe(" not in feature_src.split("@st.fragment\\ndef _results(", 1)[-1].split("def render_portfolio_hedge(", 1)[0]
 assert 'key="pp_chain_expiry_choice"' not in feature_src
 assert '"Implied Volatility", "Cost of Put (Ask)"' not in feature_src
-assert "LOAD ALL" in feature_src and "REMAINING CHAINS" in feature_src
-assert "_CHAIN_PAGE_SIZE = 12" in feature_src
+assert "LOAD ALL" not in feature_src and "REMAINING CHAINS" not in feature_src
 
 
 
@@ -413,5 +435,23 @@ assert _safe_account_index(test_accounts, 99, True) == 1
 assert _safe_account_index(test_accounts, "1", True) == 1
 assert _safe_account_index(test_accounts, 0, True) == 0
 assert _safe_account_index(test_accounts, 0, False) == 1
+
+single_ui_source = (Path(__file__).resolve().parents[1] /
+                    "src" / "protective_puts_ui.py").read_text(encoding="utf-8")
+assert 'st.session_state["pp_protection_mode"] = "PORTFOLIO HEDGE"' in single_ui_source
+assert "scan_dates = list(expirations)" in single_ui_source
+assert '"raw_chains": raw_chains' in single_ui_source
+assert '_pp_single_quote_snapshot' in single_ui_source
+assert "run the Protective Put scan again to refresh the table" not in single_ui_source
+
+assert '"BASKET LOSS ?"' in scroller_html
+assert "Modeled dollars still lost by the selected holdings basket" in scroller_html
+
+app_source = (Path(__file__).resolve().parents[1] /
+              "streamlit_app.py").read_text(encoding="utf-8")
+assert "def _cache_all_account_holdings():" in app_source
+assert "_etrade_holdings_cached_account_keys" in app_source
+background = app_source.split('with st.container(key="terminal_background_hooks"', 1)[1]
+assert "_cache_all_account_holdings()" in background.split('if active_tab == "HOLDINGS"', 1)[0]
 
 print("PROTECTIVE PUTS TEST: PASS")
