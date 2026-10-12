@@ -313,22 +313,32 @@ def main() -> None:
                 wait.until(lambda _: in_scroll_iframe(driver,check_pair)
                            ==[str(expected>0).lower()]*2)
 
-            rapid_toggle_pair(2)
-            # Every checked BUY exposes an OptionStrat proxy-hedge deep link
-            # beside the orange square, without creating a new table column.
+            # The OptionStrat control must be obvious before selection instead
+            # of being invisible. It becomes a live deep link only after BUY is
+            # checked, preserving the select -> verify workflow.
             def check_optionstrat_link():
                 return driver.execute_script("""
                     const row=document.querySelector('.row[data-index="0"]');
                     const link=row?.querySelector('a.os-link');
                     if(!link) return null;
-                    return {visible:getComputedStyle(link).visibility,
-                            href:link.href, label:link.textContent,
-                            target:link.target, rel:link.rel};
+                    const style=getComputedStyle(link);
+                    return {visible:style.visibility, pointer:style.pointerEvents,
+                            href:link.getAttribute('href')||"",
+                            disabled:link.getAttribute('aria-disabled'),
+                            label:link.textContent, target:link.target, rel:link.rel};
                 """)
             os_link=in_scroll_iframe(driver,check_optionstrat_link)
             assert os_link is not None, os_link
             assert os_link["visible"]=="visible", os_link
             assert os_link["label"]=="OS↗", os_link
+            assert os_link["disabled"]=="true", os_link
+            assert os_link["href"]=="", os_link
+
+            rapid_toggle_pair(2)
+            os_link=in_scroll_iframe(driver,check_optionstrat_link)
+            assert os_link is not None, os_link
+            assert os_link["visible"]=="visible", os_link
+            assert os_link["disabled"]=="false", os_link
             assert os_link["target"]=="_blank", os_link
             assert "noopener" in os_link["rel"], os_link
             assert os_link["href"].startswith(
