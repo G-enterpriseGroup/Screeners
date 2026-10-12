@@ -333,7 +333,7 @@ def main() -> None:
             assert "noopener" in os_link["rel"], os_link
             assert os_link["href"].startswith(
                 "https://optionstrat.com/build/protective-put/SPY/"
-                "x100@600.00,.SPY261218P550x1@1.10"
+                "x100@600.00,.SPY261218P570x1@1.10"
             ), os_link
             slide=wait.until(lambda _: next((
                 el for el in driver.find_elements(By.CSS_SELECTOR,"table.pp-risk-table")
