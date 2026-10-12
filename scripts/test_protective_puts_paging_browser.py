@@ -1,9 +1,9 @@
-"""Live browser test: put BUY checkboxes survive fast cross-page navigation.
+"""Browser regression: scroll all loaded Protective Puts and retain BUY state.
 
-Uses the exact Protective Puts _results renderer, 62 synthetic put contracts,
-the production Streamlit theme, and a read-only broker stub. Never calls an
-E*TRADE API. Checks that a real click is captured and stays with its contract
-after visiting a different option-chain page.
+Uses the real virtualized Protective Puts chain component, 62 synthetic rows
+spanning 2026 and 2027, and read-only broker stubs. Never places orders.
+Tests scroll range, yearly lime/black winner styling, exact checkbox clicks,
+and selection persistence after scrolling back.
 """
 from __future__ import annotations
 
@@ -33,10 +33,12 @@ st.set_page_config(layout="wide", page_title="Put chain selection regression")
 data=[]
 for i in range(62):
     row={
-        "Proxy":"SPY", "Expiration": "12-18-26", "DTE":68,
+        "Proxy":"SPY", "Expiration": "12-18-26" if i<31 else "01-15-27",
+        "DTE":68 if i<31 else 96,
         "Strike": float(550+i), "Bid":1.0, "Ask":1.1,
         "Last":1.0, "Cost of Put (Ask)":110.0,
-        "Max Loss (Ask)":max(0.0,1000-i), "Stress Remaining Loss":float(i),
+        "Max Loss (Ask)":0.0 if i in (20,53) else 1000.0+i,
+        "Stress Remaining Loss":float(i),
         "Contracts":1, "Open Interest":1000+i, "Volume":250+i,
         "Implied Volatility":.20,
         "Priority":i==0, "Best / Expiration":i<3,
@@ -88,58 +90,65 @@ def selected_count(driver) -> int:
     return -1
 
 
-def click_first_checkbox(driver, expected: int) -> None:
-    """Check Risk Book orange-square appearance plus full-cell click persistence."""
-    selector = '.st-key-pp_chain_native_grid [data-testid="stButton"] button'
-    wait = WebDriverWait(driver, 30)
-    buy = wait.until(lambda _: next((
-        el for el in driver.find_elements(By.CSS_SELECTOR, selector)
-        if el.is_displayed()
+def in_scroll_iframe(driver, callback):
+    """Interact with the actual, independently scrolling Streamlit component."""
+    wait=WebDriverWait(driver, 45)
+    frame=wait.until(lambda _: next((
+        el for el in driver.find_elements(
+            By.CSS_SELECTOR, '[data-testid="stCustomComponentV1"] iframe'
+        ) if el.is_displayed()
     ), None))
-    before = buy.get_attribute("textContent").strip()
-    assert before == "☐", ("BUY must start unchecked", before)
-    dims = driver.execute_script(
-        """
-        const r=arguments[0].getBoundingClientRect();
-        const styles=getComputedStyle(arguments[0]);
-        const square=getComputedStyle(arguments[0],"::before");
-        return {width:r.width,height:r.height,background:styles.backgroundColor,
-                kind:arguments[0].getAttribute("data-testid"),
-                squareWidth:square.width,squareHeight:square.height,
-                squareBorder:square.borderTopColor,squareBackground:square.backgroundColor};
-        """, buy
-    )
-    assert dims["width"] >= 35 and dims["height"] >= 40, dims
-    assert dims["background"] == "rgb(0, 0, 0)", dims
-    assert dims["kind"] == "stBaseButton-secondary", dims
-    assert dims["squareWidth"] == "16px" and dims["squareHeight"] == "16px", dims
-    assert dims["squareBorder"] == "rgb(251, 139, 30)", dims
-    assert dims["squareBackground"] == "rgb(0, 0, 0)", dims
-    buy.click()
-    wait.until(lambda _: selected_count(driver) == expected)
-    buy_after = wait.until(lambda _: next((
-        el for el in driver.find_elements(By.CSS_SELECTOR, selector)
-        if el.is_displayed()
-        and el.get_attribute("textContent").strip() == "☑"
-    ), None))
-    checked_style = driver.execute_script(
-        """
-        const square=getComputedStyle(arguments[0],"::before");
-        const check=getComputedStyle(arguments[0],"::after");
-        return {kind:arguments[0].getAttribute("data-testid"),
-                background:square.backgroundColor,
-                check:check.content,color:check.color};
-        """, buy_after
-    )
-    assert checked_style["kind"] == "stBaseButton-primary", checked_style
-    assert checked_style["background"] == "rgb(251, 139, 30)", checked_style
-    assert "✓" in checked_style["check"], checked_style
-    assert checked_style["color"] == "rgb(0, 0, 0)", checked_style
+    driver.switch_to.frame(frame)
+    try:
+        wait.until(lambda _: driver.find_elements(By.CSS_SELECTOR, "#scroll .row"))
+        return callback()
+    finally:
+        driver.switch_to.default_content()
+
+
+def inspect_and_click_row(driver, index: int, expected: int) -> None:
+    """A full-width orange outlined BUY square remains clickable at any scroll depth."""
+    def inspect():
+        wait=WebDriverWait(driver, 20)
+        scroll=driver.find_element(By.ID,"scroll")
+        driver.execute_script(
+            "arguments[0].scrollTop=arguments[1];"
+            "arguments[0].dispatchEvent(new Event('scroll'));",
+            scroll, max(0, index-2)*43,
+        )
+        row=wait.until(lambda _: next((
+            el for el in driver.find_elements(By.CSS_SELECTOR, f'.row[data-index="{index}"]')
+            if el.is_displayed()
+        ), None))
+        assert "annual" in row.get_attribute("class"), row.get_attribute("class")
+        styles=driver.execute_script(
+            """
+            const cell=arguments[0].querySelector(".cell");
+            const buy=arguments[0].querySelector(".buy");
+            const r=buy.getBoundingClientRect();
+            const square=getComputedStyle(arguments[0].querySelector(".square"));
+            return {background:getComputedStyle(cell).backgroundColor,
+                    foreground:getComputedStyle(cell).color,
+                    width:r.width,height:r.height,
+                    squareWidth:square.width,squareBorder:square.borderTopColor,
+                    selected:buy.getAttribute("aria-pressed")};
+            """, row,
+        )
+        assert styles["background"] == "rgb(163, 230, 53)", styles
+        assert styles["foreground"] == "rgb(0, 0, 0)", styles
+        assert styles["width"] >= 35 and styles["height"] >= 40, styles
+        assert styles["squareWidth"] == "16px", styles
+        assert styles["squareBorder"] == "rgb(251, 139, 30)", styles
+        assert styles["selected"] == "false", styles
+        row.find_element(By.CSS_SELECTOR,"button.buy").click()
+
+    in_scroll_iframe(driver,inspect)
+    WebDriverWait(driver,35).until(lambda _: selected_count(driver)==expected)
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="pp_paging_") as tmp:
-        app=Path(tmp)/"paging_app.py"
+    with tempfile.TemporaryDirectory(prefix="pp_scrolling_") as tmp:
+        app=Path(tmp)/"scrolling_app.py"
         app.write_text(FIXTURE,encoding="utf-8")
         env=os.environ.copy()
         env["PYTHONPATH"]=str(ROOT)+os.pathsep+env.get("PYTHONPATH","")
@@ -161,41 +170,50 @@ def main() -> None:
             driver.get(BASE)
             wait=WebDriverWait(driver,60)
             wait.until(lambda _: selected_count(driver)==0)
-            assert "PAGE 1/6" in driver.page_source, "12-row pagination missing"
-            # Exactly ONE displayed chain grid with real loss calculation
-            # values; no second detailed/full Ghotra dataframe underneath.
-            def table_ready(_):
-                grids = driver.find_elements(By.CSS_SELECTOR, ".pp-chain-cells.pp-chain-head")
-                rows = driver.find_elements(By.CSS_SELECTOR, ".pp-chain-cells:not(.pp-chain-head)")
-                return len(grids)==1 and len(rows)==12 and "LOSS CALC" in grids[0].text
-            wait.until(table_ready)
-            assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataFrame"]')
-            assert not driver.find_elements(By.CSS_SELECTOR, '[data-testid="stDataEditor"]')
-            alignment = driver.execute_script("""
-                const grid=document.querySelector('.st-key-pp_chain_native_grid');
-                const ck=grid.querySelector('[data-testid="stButton"] button');
-                const row=grid.querySelector('.pp-chain-cells:not(.pp-chain-head)');
-                const calc=row.children[9];
-                const a=ck.getBoundingClientRect(), b=row.getBoundingClientRect();
-                return {topGap:Math.abs(a.top-b.top), heightGap:Math.abs(a.height-b.height),
-                        calcWidth:calc.clientWidth, calcContentWidth:calc.scrollWidth};
-            """)
-            assert alignment["topGap"] <= 4, alignment
-            assert alignment["heightGap"] <= 4, alignment
-            assert alignment["calcWidth"] >= 100, alignment
-            assert "100×(" in driver.find_element(By.CSS_SELECTOR,
-                ".pp-chain-cells:not(.pp-chain-head)").text
-            assert not driver.find_elements(By.XPATH,
-                "//*[contains(text(),'FULL GHOTRA COLUMNS')]")
-            click_first_checkbox(driver,1)
-            driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_next button').click()
-            wait.until(lambda _: "PAGE 2/6" in driver.page_source)
-            assert selected_count(driver)==1
-            click_first_checkbox(driver,2)
-            driver.find_element(By.CSS_SELECTOR, '.st-key-pp_chain_prev button').click()
-            wait.until(lambda _: "PAGE 1/6" in driver.page_source)
+            assert "SCROLL ALL 62 LOADED PUTS" in driver.page_source
+            assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_prev')
+            assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_next')
+            assert not driver.find_elements(By.CSS_SELECTOR,'[data-testid="stDataFrame"]')
+            assert not driver.find_elements(By.CSS_SELECTOR,'[data-testid="stDataEditor"]')
+
+            def check_virtualized():
+                scroll=driver.find_element(By.ID,"scroll")
+                info=driver.execute_script(
+                    """
+                    const s=arguments[0];
+                    return {visible:s.querySelectorAll(".row").length,
+                            total:s.scrollHeight,client:s.clientHeight,
+                            header:document.getElementById("head").textContent};
+                    """, scroll,
+                )
+                assert 0<info["visible"]<40, info
+                assert info["total"]>info["client"]*3, info
+                assert "LOSS CALC" in info["header"], info
+                assert "100×(" in scroll.text, scroll.text
+            in_scroll_iframe(driver,check_virtualized)
+
+            inspect_and_click_row(driver,20,1)
+            inspect_and_click_row(driver,53,2)
+
+            def check_saved():
+                scroll=driver.find_element(By.ID,"scroll")
+                driver.execute_script(
+                    "arguments[0].scrollTop=0;"
+                    "arguments[0].dispatchEvent(new Event('scroll'));",scroll,
+                )
+                assert scroll.find_elements(By.CSS_SELECTOR, ".row")
+                driver.execute_script(
+                    "arguments[0].scrollTop=20*43;"
+                    "arguments[0].dispatchEvent(new Event('scroll'));",scroll,
+                )
+                row=WebDriverWait(driver,20).until(lambda _: next((
+                    el for el in driver.find_elements(By.CSS_SELECTOR,'.row[data-index="20"]')
+                    if el.is_displayed()
+                ), None))
+                assert row.find_element(By.CSS_SELECTOR,"button.buy").get_attribute("aria-pressed")=="true"
+            in_scroll_iframe(driver,check_saved)
             assert selected_count(driver)==2
-            print("PROTECTIVE PUTS PAGED BUY CHECKBOX BROWSER TEST: PASS")
+            print("PROTECTIVE PUTS SCROLL / YEAR HIGHLIGHT / BUY BROWSER TEST: PASS")
         finally:
             if driver is not None:
                 driver.quit()
