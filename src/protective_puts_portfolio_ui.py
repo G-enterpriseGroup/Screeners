@@ -1247,7 +1247,7 @@ def _chain_scroll_values(
             f"PUT QTY {contracts} // {equivalent_shares:,.0f} ETF SHARES REPRESENTED "
             "AT 100 SHARES PER PUT CONTRACT"
         )
-    qty_value = f"{contracts} / {equivalent_shares:,.1f} SH"
+    qty_value = f"{contracts} / {equivalent_shares:,.1f} SH" if exposure > 0 else f"{contracts} / {equivalent_shares:,.0f} SH"
     oi = row.get("Open Interest")
     values = [
         str(row["Proxy"]), str(row.get("Contract") or "—"),
