@@ -234,8 +234,11 @@ def main() -> None:
                     ) if choice in el.text and el.is_displayed()
                 ),None))
                 target.click()
-                wait.until(lambda _: choice in driver.find_element(
-                    By.CSS_SELECTOR,'.st-key-pp_chain_highlight_filter'
+                expected=("62 DISPLAYED / 62 QUOTED PUTS"
+                          if choice=="ALL CONTRACTS"
+                          else "2 DISPLAYED / 62 QUOTED PUTS")
+                wait.until(lambda _: expected in driver.find_element(
+                    By.TAG_NAME,"body"
                 ).text)
 
             set_filter("ALL CONTRACTS")
