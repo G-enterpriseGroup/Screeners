@@ -278,6 +278,7 @@ assert '"FULL GHOTRA COLUMNS' not in ui_source
 scroller_html = (Path(__file__).resolve().parents[1] /
                  "src" / "components" / "pp_put_chain_scroller_v1" / "index.html").read_text(encoding="utf-8")
 assert '"LOSS CALC"' in scroller_html
+assert '"QTY / EQ SH"' in scroller_html
 assert "if not account_key:" in ui_source
 assert "SUBMIT {len(selected)} LIVE PUT ORDER(S)" in ui_source
 
@@ -418,8 +419,14 @@ assert best_ids == {
 assert not _annual_lowest_loss_ids(annual_rows.iloc[0:0])
 sample_display = dict(sort_rows.iloc[0].to_dict())
 sample_display["Max Loss Calc (Ask)"] = "max(0, (700.00 + 1.30 - 600.00) × 100)"
-assert "100×(" in _chain_scroll_values(sample_display)["values"][9]
-assert len(_chain_scroll_values(sample_display)["values"]) == 13
+sample_display["Spot"] = 500.0
+direct_payload = _chain_scroll_values(sample_display)
+portfolio_payload = _chain_scroll_values(sample_display, hedge_exposure=100000.0)
+assert "100×(" in direct_payload["values"][9]
+assert direct_payload["values"][11] == "1 / 100 SH"
+assert portfolio_payload["values"][11] == "1 / 200 SH"
+assert "SELECTED BASKET $100,000.00" in portfolio_payload["qty_title"]
+assert len(portfolio_payload["values"]) == 13
 
 
 # A migrated Streamlit session can retain the Raj-default marker while the
