@@ -206,6 +206,8 @@ def main() -> None:
                                 ids:[...s.querySelectorAll(".row")].map(el=>el.dataset.index),
                                 values:[...s.querySelectorAll(".row .cell:nth-child(3)")]
                                        .map(el=>el.textContent),
+                                qty:[...s.querySelectorAll(".row .cell:nth-child(13)")]
+                                    .map(el=>el.textContent),
                                 header:document.getElementById("head").textContent};
                         """,scroll,
                     )
@@ -216,7 +218,9 @@ def main() -> None:
             only=visible_stats()
             assert only["visible"] == 2, only
             assert only["values"] == ["SPYTEST0020", "SPYTEST0053"], only
+            assert only["qty"] == ["1 / 100 SH", "1 / 100 SH"], only
             assert "LOSS CALC" in only["header"], only
+            assert "QTY / EQ SH" in only["header"], only
             assert "2 DISPLAYED / 62 QUOTED PUTS" in driver.page_source
 
             def set_filter(choice):
