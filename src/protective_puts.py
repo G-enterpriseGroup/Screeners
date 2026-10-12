@@ -342,6 +342,7 @@ def portfolio_chain_scenario(
         records.append({
             "Proxy": symbol, "Expiration": expiry.strftime("%m-%d-%y"),
             "DTE": max(0, (expiry-today).days), "Strike": strike,
+            "Spot": spot,
             "Ask": ask, "Bid": row.get("bid"), "Last": row.get("last"),
             "Volume": row.get("volume"), "Open Interest": row.get("open_interest"),
             "Contracts": contracts, "Put Cost": total_premium,
@@ -362,6 +363,68 @@ def portfolio_chain_scenario(
                 "" if last_quote is None else
                 f"max(0, ({spot:.2f} + {last_quote:.2f} - {strike:.2f}) × 100)"
             ),
+        })
+    return pd.DataFrame.from_records(records)
+
+
+def portfolio_risk_slide(
+    *, portfolio_value: float, selected_puts: Iterable[dict[str, Any]],
+    beta: float = 1.0,
+    moves: Iterable[float] = (-20, -15, -10, -5, -2, 0, 2, 5, 10, 15, 20),
+) -> pd.DataFrame:
+    """Model portfolio value across fixed market moves using selected puts.
+
+    The stock/ETF book moves by beta times the market move. Each selected
+    proxy put is valued at intrinsic value only at the same percentage move,
+    and its full ASK premium is deducted. This is a static expiration-style
+    stress view, not a forecast or guaranteed portfolio floor.
+    """
+    import math
+
+    base = float(portfolio_value)
+    beta_value = float(beta)
+    if not math.isfinite(base) or base < 0:
+        raise ValueError("Portfolio value must be a finite non-negative number")
+    if not math.isfinite(beta_value) or beta_value <= 0:
+        raise ValueError("Portfolio beta must be a finite positive number")
+
+    normalized_puts: list[tuple[float, float, float, int]] = []
+    premium_total = 0.0
+    for row in selected_puts:
+        try:
+            spot = float(row.get("Spot"))
+            strike = float(row.get("Strike"))
+            ask = float(row.get("Ask"))
+            contracts = int(row.get("Contracts"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            not all(math.isfinite(v) for v in (spot, strike, ask))
+            or spot <= 0 or strike <= 0 or ask <= 0 or contracts <= 0
+        ):
+            continue
+        normalized_puts.append((spot, strike, ask, contracts))
+        premium_total += ask * CONTRACT_SIZE * contracts
+
+    records: list[dict[str, float]] = []
+    for raw_move in moves:
+        move = float(raw_move)
+        if not math.isfinite(move) or move <= -100:
+            raise ValueError("Market moves must be finite and greater than -100%")
+        unhedged = max(0.0, base * (1.0 + beta_value * move / 100.0))
+        put_intrinsic = sum(
+            max(0.0, strike - spot * (1.0 + move / 100.0))
+            * CONTRACT_SIZE * contracts
+            for spot, strike, _, contracts in normalized_puts
+        )
+        with_puts = max(0.0, unhedged + put_intrinsic - premium_total)
+        records.append({
+            "Market Move %": move,
+            "Unhedged Portfolio": unhedged,
+            "With Selected Puts": with_puts,
+            "Hedge Benefit": with_puts - unhedged,
+            "Put Intrinsic": put_intrinsic,
+            "Put Premium": premium_total,
         })
     return pd.DataFrame.from_records(records)
 
@@ -396,6 +459,7 @@ __all__ = [
     "protective_put_metrics",
     "portfolio_hedge_candidates",
     "portfolio_chain_scenario",
+    "portfolio_risk_slide",
     "rank_portfolio_chain",
     "validate_share_quantity",
 ]
