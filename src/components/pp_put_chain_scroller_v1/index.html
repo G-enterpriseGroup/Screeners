@@ -47,7 +47,7 @@ function syncHeight(){head.style.paddingRight=(scroll.offsetWidth-scroll.clientW
 for(const title of HEAD){
  const cell=document.createElement("span");cell.textContent=title;
  if(title==="MAX LOSS"){
-   cell.title="Illustrative matched-ETF expiration loss at the ETF-equivalent shares of the selected basket, including ASK premium per share. Not a guaranteed actual-portfolio loss cap or the payoff of an integer-contract PUT order.";
+   cell.title="Worst modeled expiration loss of the selected basket expressed as ETF-equivalent shares PLUS the displayed integer PUT quantity (100 underlying shares per contract), minus the FULL ASK premium per contract. This is not a guaranteed actual-portfolio loss cap.";
  }else if(title==="QTY / EQ SH"){
    cell.title="PUT order contract quantity / selected basket market value expressed as equivalent ETF shares at the current ETF spot. Each PUT contract covers 100 ETF shares.";
  }
