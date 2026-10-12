@@ -8,6 +8,7 @@ and selection persistence after scrolling back.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -85,8 +86,9 @@ def selected_count(driver) -> int:
     labels=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stCaptionContainer"]')
     for el in labels:
         content=el.text
-        if "SELECTED ACROSS ALL LOADED CONTRACTS" in content:
-            return int(content.split(" SELECTED")[0].strip())
+        found=re.search(r"(\\d+) SELECTED ACROSS ALL LOADED CONTRACTS",content)
+        if found:
+            return int(found.group(1))
     return -1
 
 
@@ -187,27 +189,64 @@ def main() -> None:
             driver.get(BASE)
             wait=WebDriverWait(driver,60)
             wait.until(lambda _: selected_count(driver)==0)
-            assert "SCROLL ALL 62 LOADED PUTS" in driver.page_source
+            assert "62 LOADED PUTS" in driver.page_source
+            assert "HIGHLIGHTED ONLY" in driver.page_source
             assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_prev')
             assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_next')
             assert not driver.find_elements(By.CSS_SELECTOR,'[data-testid="stDataFrame"]')
             assert not driver.find_elements(By.CSS_SELECTOR,'[data-testid="stDataEditor"]')
 
+            def visible_stats():
+                def measure():
+                    scroll=driver.find_element(By.ID,"scroll")
+                    return driver.execute_script(
+                        """
+                        const s=arguments[0];
+                        return {visible:s.querySelectorAll(".row").length,
+                                total:s.scrollHeight,client:s.clientHeight,
+                                ids:[...s.querySelectorAll(".row")].map(el=>el.dataset.index),
+                                values:[...s.querySelectorAll(".row .cell:nth-child(3)")]
+                                       .map(el=>el.textContent),
+                                header:document.getElementById("head").textContent};
+                        """,scroll,
+                    )
+                return in_scroll_iframe(driver,measure)
+
+            # Default highlights-only filter displays the one annual winner
+            # in each year, rather than the 62 loaded quoted contracts.
+            only=visible_stats()
+            assert only["visible"] == 2, only
+            assert only["values"] == ["SPYTEST0020", "SPYTEST0053"], only
+            assert "LOSS CALC" in only["header"], only
+            assert "2 DISPLAYED / 62 QUOTED PUTS" in driver.page_source
+
+            def set_filter(choice):
+                picker=wait.until(lambda _: next((
+                    el for el in driver.find_elements(
+                        By.CSS_SELECTOR,
+                        '.st-key-pp_chain_highlight_filter [role="combobox"], '
+                        '.st-key-pp_chain_highlight_filter [data-testid="stSelectbox"]'
+                    ) if el.is_displayed()
+                ),None))
+                picker.click()
+                target=wait.until(lambda _: next((
+                    el for el in driver.find_elements(
+                        By.CSS_SELECTOR,'[role="option"],[data-testid="stSelectboxVirtualDropdown"] li'
+                    ) if choice in el.text and el.is_displayed()
+                ),None))
+                target.click()
+                wait.until(lambda _: choice in driver.find_element(
+                    By.CSS_SELECTOR,'.st-key-pp_chain_highlight_filter'
+                ).text)
+
+            set_filter("ALL CONTRACTS")
             def check_virtualized():
-                scroll=driver.find_element(By.ID,"scroll")
-                info=driver.execute_script(
-                    """
-                    const s=arguments[0];
-                    return {visible:s.querySelectorAll(".row").length,
-                            total:s.scrollHeight,client:s.clientHeight,
-                            header:document.getElementById("head").textContent};
-                    """, scroll,
-                )
-                assert 0<info["visible"]<40, info
-                assert info["total"]>info["client"]*3, info
-                assert "LOSS CALC" in info["header"], info
-                assert "100×(" in scroll.text, scroll.text
-            in_scroll_iframe(driver,check_virtualized)
+                info=visible_stats()
+                assert 0<info["visible"]<40,info
+                assert info["total"]>info["client"]*3,info
+                assert "LOSS CALC" in info["header"],info
+            check_virtualized()
+            assert "62 DISPLAYED / 62 QUOTED PUTS" in driver.page_source
 
             inspect_and_click_row(driver,20,1)
             inspect_and_click_row(driver,53,2)
@@ -230,7 +269,13 @@ def main() -> None:
                 assert row.find_element(By.CSS_SELECTOR,"button.buy").get_attribute("aria-pressed")=="true"
             in_scroll_iframe(driver,check_saved)
             assert selected_count(driver)==2
-            print("PROTECTIVE PUTS SCROLL / YEAR HIGHLIGHT / BUY BROWSER TEST: PASS")
+            set_filter("HIGHLIGHTED ONLY")
+            assert visible_stats()["values"] == ["SPYTEST0020", "SPYTEST0053"]
+            assert selected_count(driver)==2
+            set_filter("ALL CONTRACTS")
+            assert visible_stats()["total"]>visible_stats()["client"]*3
+            assert selected_count(driver)==2
+            print("PROTECTIVE PUTS DEFAULT YEARLY FILTER / SCROLL / BUY: PASS")
         finally:
             if driver is not None:
                 driver.quit()
