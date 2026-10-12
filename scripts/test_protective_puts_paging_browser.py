@@ -314,6 +314,27 @@ def main() -> None:
                            ==[str(expected>0).lower()]*2)
 
             rapid_toggle_pair(2)
+            # Every checked BUY exposes an OptionStrat proxy-hedge deep link
+            # beside the orange square, without creating a new table column.
+            def check_optionstrat_link():
+                return driver.execute_script("""
+                    const row=document.querySelector('.row[data-index="0"]');
+                    const link=row?.querySelector('a.os-link');
+                    if(!link) return null;
+                    return {visible:getComputedStyle(link).visibility,
+                            href:link.href, label:link.textContent,
+                            target:link.target, rel:link.rel};
+                """)
+            os_link=in_scroll_iframe(driver,check_optionstrat_link)
+            assert os_link is not None, os_link
+            assert os_link["visible"]=="visible", os_link
+            assert os_link["label"]=="OS↗", os_link
+            assert os_link["target"]=="_blank", os_link
+            assert "noopener" in os_link["rel"], os_link
+            assert os_link["href"].startswith(
+                "https://optionstrat.com/build/protective-put/SPY/"
+                "x100@600.00,.SPY261218P550x1@1.10"
+            ), os_link
             slide=wait.until(lambda _: next((
                 el for el in driver.find_elements(By.CSS_SELECTOR,"table.pp-risk-table")
                 if el.is_displayed()
