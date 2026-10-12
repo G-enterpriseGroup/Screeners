@@ -1320,6 +1320,9 @@ def _results(
                 st.session_state[state_key] = state
                 st.session_state.pop("pp_hedge_order_preview", None)
                 st.session_state.pop("pp_hedge_live_confirm", None)
+                # ACK the new server selection before another BUY click.
+                # The virtualized iframe retains its scroll position.
+                st.rerun(scope="fragment")
     checked_ids = set(st.session_state[state_key]["ids"])
     st.caption(
         f"{len(checked_ids)} SELECTED ACROSS ALL LOADED CONTRACTS // "
