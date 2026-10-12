@@ -248,7 +248,9 @@ ui_source = (Path(__file__).resolve().parents[1] /
 assert 'with st.expander("OPTIONAL HEDGE ASSUMPTIONS"' not in ui_source
 assert '"PUT TICKER", value=""' in ui_source
 assert '"FULL GHOTRA COLUMNS' not in ui_source
-assert '"LOSS CALC"' in ui_source
+scroller_html = (Path(__file__).resolve().parents[1] /
+                 "src" / "components" / "pp_put_chain_scroller_v1" / "index.html").read_text(encoding="utf-8")
+assert '"LOSS CALC"' in scroller_html
 assert "if not account_key:" in ui_source
 assert "SUBMIT {len(selected)} LIVE PUT ORDER(S)" in ui_source
 
@@ -347,8 +349,7 @@ feature_src = (Path(__file__).resolve().parents[1] /
 assert "_PUT_CHAIN_SCROLL_COMPONENT(" in feature_src
 assert 'st.button("◀ PREV"' not in feature_src
 assert 'st.button("NEXT ▶"' not in feature_src
-scroller_html = (Path(__file__).resolve().parents[1] /
-                 "src" / "components" / "pp_put_chain_scroller_v1" / "index.html").read_text(encoding="utf-8")
+
 assert 'overflow-y:auto' in scroller_html
 assert 'scroll.addEventListener("scroll"' in scroller_html
 assert '#a3e635' in scroller_html and 'color:#000!important' in scroller_html
