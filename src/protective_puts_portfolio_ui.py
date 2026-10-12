@@ -1252,8 +1252,8 @@ def _chain_scroll_values(
     values = [
         str(row["Proxy"]), str(row.get("Contract") or "—"),
         str(row["Expiration"]), str(int(row["DTE"])),
-        price(strike), price(row["Bid"]), price(ask),
-        price(row["Cost of Put (Ask)"]), price(max_loss),
+        price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
+        price(row["Cost of Put (Ask)"]), price(display_loss),
         compact_calc, qty_value, str(int(oi)) if pd.notna(oi) else "—",
     ]
     return {
