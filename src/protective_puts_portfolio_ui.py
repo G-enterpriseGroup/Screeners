@@ -348,7 +348,7 @@ def _selected_symbols(value: Any) -> list[str]:
         return []
     return sorted({
         symbol for raw in value
-        if re.fullmatch(r"[A-Z][A-Z0-9.\\-]{0,12}",
+        if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,12}",
                         symbol := str(raw).strip().upper())
     })
 
@@ -1210,6 +1210,7 @@ def _chain_scroll_values(
             f"{equivalent_shares:,.1f}×({spot:.2f}+{float(row['Ask']):.2f}"
             f"−{float(row['Strike']):.2f})⁺"
         )
+        display_loss = loss
         qty_title = (
             f"PUT QTY {contracts} // SELECTED BASKET ${exposure:,.2f} ÷ "
             f"{row['Proxy']} SPOT ${spot:,.2f} = {equivalent_shares:,.2f} "
@@ -1217,6 +1218,7 @@ def _chain_scroll_values(
         )
     else:
         equivalent_shares = float(contracts * 100)
+        display_loss = row["Max Loss (Ask)"]
         expression = str(row.get("Max Loss Calc (Ask)") or "—")
         match = re.search(
             r"\(\s*([\d.,]+)\s*\+\s*([\d.,]+)\s*-\s*([\d.,]+)\s*\)\s*[×x*]\s*100",
@@ -1238,8 +1240,7 @@ def _chain_scroll_values(
         str(row["Expiration"]), str(int(row["DTE"])),
         price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
         price(row["Cost of Put (Ask)"]),
-        price(row.get("ETF-Equivalent Max Loss (Ask)", row["Max Loss (Ask)"])),
-        compact_calc, qty_value, str(int(oi)) if pd.notna(oi) else "—",
+        price(display_loss), compact_calc, qty_value, str(int(oi)) if pd.notna(oi) else "—",
     ]
     return {
         "values": values, "calc": expression, "qty_title": qty_title,
@@ -1330,7 +1331,10 @@ def _results(
             st.caption(str(error))
         return
 
-    top = data.iloc[0]
+    rankable = data.loc[data["Orderable"].eq(True)] if "Orderable" in data else data
+    top = _sort_contract_chain(
+        rankable if not rankable.empty else data, "LOWEST LOSS", "ASC",
+    ).iloc[0]
     direct_example = bool(result.get("direct_example"))
     st.html('<div class="pp-section">PUT OPTIONS // LOWEST LOSS FIRST</div>')
     if direct_example:
@@ -1378,7 +1382,9 @@ def _results(
             "(SELECTED BASKET VALUE ÷ ETF SPOT)). FULL-PRECISION ETF-EQUIVALENT "
             "SHARES USED; HOVER LOSS CALC FOR NUMBERS. THIS IS A HYPOTHETICAL "
             "MATCHED-ETF EXPIRATION LOSS, NOT A GUARANTEED LOSS CAP FOR YOUR "
-            "ACTUAL HOLDINGS OR THE PAYOFF OF THE SHOWN INTEGER PUT ORDER."
+            "ACTUAL HOLDINGS OR THE PAYOFF OF THE SHOWN INTEGER PUT ORDER. "
+            "PUT COST IS PER ONE 100-SHARE CONTRACT; THE LIVE ORDER PREMIUM "
+            "USES THE SEPARATELY MODELED WHOLE-CONTRACT QTY."
         )
     # The browser virtualizes all LOADED contracts in a fixed-height scroll
     # region. No per-page controls or thousands of Streamlit button widgets.
