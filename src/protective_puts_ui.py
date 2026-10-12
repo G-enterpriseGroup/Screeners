@@ -341,6 +341,8 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 "yfinance first, then Yahoo Finance HTML scraping if yfinance fails."
             )
 
+        if "pp_protection_mode" not in st.session_state:
+            st.session_state["pp_protection_mode"] = "PORTFOLIO HEDGE"
         mode = st.radio(
             "Protection Mode", ("SINGLE HOLDING", "PORTFOLIO HEDGE"),
             horizontal=True, key="pp_protection_mode",
@@ -371,13 +373,21 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
             ).strip().upper()
 
         try:
-            if using_etrade:
+            quote_cache = st.session_state.setdefault("_pp_single_quote_snapshot", {})
+            quote_key = ("ETRADE" if using_etrade else "PUBLIC") + ":" + symbol
+            quote_entry = quote_cache.get(quote_key)
+            if isinstance(quote_entry, dict):
+                quote = dict(quote_entry.get("quote") or {})
+                quote_source = str(quote_entry.get("source") or "CACHE")
+            elif using_etrade:
                 quote = quote_summary(client.get_quote(symbol))
                 touch_session()
                 quote_source = "E*TRADE"
+                quote_cache[quote_key] = {"quote": dict(quote), "source": quote_source}
             else:
                 quote = public_quote(symbol)
                 quote_source = str(quote.get("source") or "PUBLIC")
+                quote_cache[quote_key] = {"quote": dict(quote), "source": quote_source}
             last = float(quote.get("last") or 0.0)
             resolved_name = str(quote.get("description") or company_name(symbol) or "").strip()
             record_lookup(symbol, resolved_name)
@@ -474,60 +484,69 @@ def _render_protective_puts_fragment(client, touch_session) -> None:
                 "LOSS TARGET $0 // SAME-TICKER PUTS ONLY"
             )
 
-        # Limit broker/public chain fetches to the 10 closest expirations;
-        # always include the user-selected date, regardless of target days.
-        nearby = sorted(
-            expirations,
-            key=lambda item: (
-                abs((item - chosen_expiry).days), item
-            ),
-        )[:10]
-        scan_dates = sorted(set([chosen_expiry, *nearby]))
+        # Full-chain rule: the explicit scan loads every future listed
+        # expiration for this ticker. Numeric edits below reuse those raw
+        # chains and only recalculate the analytics locally.
+        scan_dates = list(expirations)
         current_fingerprint = (
-            symbol, round(stock_price, 4), shares,
-            target_dte, chosen_expiry.isoformat(),
-            expiration_source, tuple(scan_dates),
+            symbol, expiration_source, tuple(scan_dates),
         )
         if st.button(
             "FIND LOWEST-LOSS PROTECTIVE PUTS BY EXPIRATION",
             type="primary", width="stretch", key="pp_scan",
         ):
-            progress = st.progress(0.0, text="Comparing listed expiration puts...")
-            frames: list[pd.DataFrame] = []
+            progress = st.progress(0.0, text="Loading every listed put expiration...")
+            raw_chains: list[tuple[date, list[dict[str, Any]], str]] = []
             errors: list[str] = []
             chain_sources: set[str] = set()
             for index, expiry in enumerate(scan_dates, start=1):
                 try:
                     rows, _, chain_source = _put_chain(client, symbol, expiry, touch_session)
                     chain_sources.add(chain_source)
-                    frame = build_put_analysis(
-                        rows, expiry=expiry, stock_price=stock_price,
-                        shares=shares, today=today,
-                    )
-                    if not frame.empty:
-                        frames.append(frame)
+                    raw_chains.append((expiry, list(rows), chain_source))
                 except Exception as exc:
                     errors.append(f"{expiry.isoformat()}: {exc}")
                 progress.progress(
-                    index / len(scan_dates),
-                    text=f"Comparing {expiry:%m-%d-%y} // {index}/{len(scan_dates)}",
+                    index / max(1, len(scan_dates)),
+                    text=f"LOADING {expiry:%m-%d-%y} // {index}/{len(scan_dates)}",
                 )
             progress.empty()
             st.session_state["pp_scan_result"] = {
                 "fingerprint": current_fingerprint,
-                "symbol": symbol, "stock_price": stock_price,
-                "shares": shares, "target_dte": target_dte,
-                "chosen_expiry": chosen_expiry,
-                "frame": pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
-                "errors": errors, "chain_sources": sorted(chain_sources),
+                "symbol": symbol,
+                "raw_chains": raw_chains,
+                "errors": errors,
+                "chain_sources": sorted(chain_sources),
             }
 
         result = st.session_state.get("pp_scan_result")
-        if isinstance(result, dict):
-            if result.get("fingerprint") == current_fingerprint:
-                _render_scan_result(result)
-            else:
-                st.caption("INPUTS CHANGED // run the Protective Put scan again to refresh the table.")
+        if (
+            isinstance(result, dict)
+            and result.get("fingerprint") == current_fingerprint
+            and isinstance(result.get("raw_chains"), list)
+        ):
+            frames: list[pd.DataFrame] = []
+            for expiry, rows, _ in result["raw_chains"]:
+                frame = build_put_analysis(
+                    rows, expiry=expiry, stock_price=stock_price,
+                    shares=shares, today=today,
+                )
+                if not frame.empty:
+                    frames.append(frame)
+            calculated = {
+                **result,
+                "stock_price": stock_price,
+                "shares": shares,
+                "target_dte": target_dte,
+                "chosen_expiry": chosen_expiry,
+                "frame": pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
+            }
+            _render_scan_result(calculated)
+        elif isinstance(result, dict):
+            st.caption(
+                "TICKER OR EXPIRATION CALENDAR CHANGED // run the Protective Put "
+                "scan once to cache the new full chain."
+            )
 
 
 def render_protective_puts(client, touch_session) -> None:
