@@ -609,3 +609,23 @@ background = app_source.split('with st.container(key="terminal_background_hooks"
 assert "_cache_all_account_holdings()" in background.split('if active_tab == "HOLDINGS"', 1)[0]
 
 print("PROTECTIVE PUTS TEST: PASS")
+
+# OptionStrat checked-PUT links carry the exact PUT quantity/ASK and a
+# rounded proxy ETF stock leg, without pretending to hold the real basket.
+from src.protective_puts_portfolio_ui import _optionstrat_protective_put_url
+
+qqq_link = _optionstrat_protective_put_url({
+    "Proxy": "QQQ", "Expiration": "01-15-27", "Strike": 900.0,
+    "Spot": 746.04, "Ask": 155.55, "Contracts": 1,
+}, hedge_exposure=62 * 746.04)
+assert qqq_link == ("https://optionstrat.com/build/protective-put/QQQ/"
+                    "x62@746.04,.QQQ270115P900x1@155.55"), qqq_link
+spy_link = _optionstrat_protective_put_url({
+    "Proxy": "SPY", "Expiration": "12-18-26", "Strike": 550.5,
+    "Spot": 600.0, "Ask": 1.25, "Contracts": 2,
+})
+assert spy_link.endswith("/x200@600.00,.SPY261218P550.5x2@1.25"), spy_link
+assert _optionstrat_protective_put_url({
+    "Proxy": "QQQ/foo", "Expiration": "01-15-27", "Strike": 900.0,
+    "Spot": 746.04, "Ask": 155.55, "Contracts": 1,
+}) == ""
