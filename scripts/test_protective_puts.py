@@ -318,8 +318,8 @@ assert len(sparse) <= 8, sparse
 assert any((x-date(2026,10,11)).days >= 365 for x in sparse)
 assert not _sample_expirations([], date(2026,10,11), 60)
 
-# Native contracts are page-sized, sortable over the whole chain, and never
-# rely on a canvas checkbox or expiration filter for the primary workflow.
+# The virtualized scroller sorts all loaded contracts and keeps exact BUY IDs;
+# the prior native 12-row paging widgets must no longer appear.
 from src.protective_puts_portfolio_ui import (
     _CHAIN_SORT_COLUMNS, _sort_contract_chain, _chain_cell_markup,
 )
@@ -344,13 +344,55 @@ assert "MAX LOSS" in _chain_cell_markup(sort_rows.iloc[0].to_dict()).upper()
 assert "100×(" in _chain_cell_markup({**sort_rows.iloc[0].to_dict(), "Max Loss Calc (Ask)": "max(0, (700.00 + 1.30 - 600.00) × 100)"})
 feature_src = (Path(__file__).resolve().parents[1] /
                "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
-assert "with st.container(key=\"pp_chain_native_grid\"" in feature_src
+assert "_PUT_CHAIN_SCROLL_COMPONENT(" in feature_src
+assert 'st.button("◀ PREV"' not in feature_src
+assert 'st.button("NEXT ▶"' not in feature_src
+scroller_html = (Path(__file__).resolve().parents[1] /
+                 "src" / "components" / "pp_put_chain_scroller_v1" / "index.html").read_text(encoding="utf-8")
+assert 'overflow-y:auto' in scroller_html
+assert 'scroll.addEventListener("scroll"' in scroller_html
+assert '#a3e635' in scroller_html and 'color:#000!important' in scroller_html
 assert 'with st.expander("FULL GHOTRA COLUMNS' not in feature_src
 assert "st.dataframe(" not in feature_src.split("@st.fragment\\ndef _results(", 1)[-1].split("def render_portfolio_hedge(", 1)[0]
 assert 'key="pp_chain_expiry_choice"' not in feature_src
 assert '"Implied Volatility", "Cost of Put (Ask)"' not in feature_src
 assert "LOAD ALL" in feature_src and "REMAINING CHAINS" in feature_src
 assert "_CHAIN_PAGE_SIZE = 12" in feature_src
+
+
+
+# Annual winner is based on ASK-premium-inclusive 100-share max loss for
+# each underlying/calendar year, independent of visible scroll window or sort.
+from src.protective_puts_portfolio_ui import _annual_lowest_loss_ids, _chain_scroll_values
+annual_rows = pd.DataFrame([
+    {"Proxy":"SPY","Expiration":"12-18-26","DTE":68,"Strike":600.0,
+     "Contract":"SPY26A","Ask":3.0,"Cost of Put (Ask)":300.0,
+     "Max Loss (Ask)":10.0,"Orderable":True},
+    {"Proxy":"SPY","Expiration":"11-20-26","DTE":40,"Strike":610.0,
+     "Contract":"SPY26B","Ask":2.0,"Cost of Put (Ask)":200.0,
+     "Max Loss (Ask)":10.0,"Orderable":True},
+    {"Proxy":"SPY","Expiration":"01-15-27","DTE":96,"Strike":620.0,
+     "Contract":"SPY27A","Ask":4.0,"Cost of Put (Ask)":400.0,
+     "Max Loss (Ask)":0.0,"Orderable":True},
+    {"Proxy":"SPY","Expiration":"02-19-27","DTE":131,"Strike":625.0,
+     "Contract":"SPY27BAD","Ask":0.0,"Cost of Put (Ask)":0.0,
+     "Max Loss (Ask)":0.0,"Orderable":True},
+    {"Proxy":"QQQ","Expiration":"12-18-26","DTE":68,"Strike":500.0,
+     "Contract":"QQQ26A","Ask":1.0,"Cost of Put (Ask)":100.0,
+     "Max Loss (Ask)":5.0,"Orderable":True},
+    {"Proxy":"QQQ","Expiration":"12-18-26","DTE":68,"Strike":505.0,
+     "Contract":"QQQ26BLOCKED","Ask":2.0,"Cost of Put (Ask)":200.0,
+     "Max Loss (Ask)":0.0,"Orderable":False},
+])
+best_ids = _annual_lowest_loss_ids(annual_rows)
+assert best_ids == {
+    _contract_identity(annual_rows.iloc[i].to_dict()) for i in (1,2,4)
+}, best_ids
+assert not _annual_lowest_loss_ids(annual_rows.iloc[0:0])
+sample_display = dict(sort_rows.iloc[0].to_dict())
+sample_display["Max Loss Calc (Ask)"] = "max(0, (700.00 + 1.30 - 600.00) × 100)"
+assert "100×(" in _chain_scroll_values(sample_display)["values"][9]
+assert len(_chain_scroll_values(sample_display)["values"]) == 13
 
 
 # A migrated Streamlit session can retain the Raj-default marker while the
