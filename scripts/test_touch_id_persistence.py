@@ -109,6 +109,15 @@ def main() -> None:
     assert "@keyframes bioSweep" in component_source
     assert "prefers-reduced-motion" in component_source
 
+    # On initial page load the document, rather than the iframe, has focus.
+    # The keypad must accept keyboard digits without a click, without taking
+    # over a different text input, and stop listening after the frame unmounts.
+    assert 'document.addEventListener("keydown",handleKeydown)' in component_source
+    assert 'hostDocument.addEventListener("keydown",onPageKeydown)' in component_source
+    assert 'target.isContentEditable' in component_source
+    assert 'window.frameElement.isConnected' in component_source
+    assert 'hostDocument.removeEventListener("keydown",onPageKeydown)' in component_source
+
     app_source = (root / "streamlit_app.py").read_text(encoding="utf-8")
     assert "from src.lock_screen_v2 import render_seamless_lock_screen" in app_source
     assert "render_seamless_lock_screen(globals())" in app_source
