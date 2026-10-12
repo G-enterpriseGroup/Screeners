@@ -275,6 +275,25 @@ def portfolio_hedge_candidates(
     return pd.DataFrame.from_records(records)
 
 
+def etf_equivalent_max_loss(
+    *, spot: float, ask: float, strike: float, basket_value: float,
+) -> tuple[float, float]:
+    """Illustrative matched-ETF loss at PUT expiry on basket-equivalent shares.
+
+    Not a maximum-loss guarantee for a different basket of securities, and
+    not the actual payoff of a separately sized integer-contract PUT order.
+    """
+    import math
+
+    values = (spot, ask, strike, basket_value)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("ETF-equivalent loss inputs must be finite")
+    if spot <= 0 or strike <= 0 or ask < 0 or basket_value < 0:
+        raise ValueError("Invalid ETF quote, put premium, strike or basket value")
+    shares = float(basket_value) / float(spot) if basket_value > 0 else float(CONTRACT_SIZE)
+    return max(0.0, (spot + ask - strike) * shares), shares
+
+
 # ==============================
 # COMPLETE PROXY PUT CHAIN / SCENARIO RANKING
 # ==============================
