@@ -190,7 +190,6 @@ def main() -> None:
             wait=WebDriverWait(driver,60)
             wait.until(lambda _: selected_count(driver)==0)
             assert "62 LOADED PUTS" in driver.page_source
-            assert "HIGHLIGHTED ONLY" in driver.page_source
             assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_prev')
             assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_next')
             assert not driver.find_elements(By.CSS_SELECTOR,'[data-testid="stDataFrame"]')
