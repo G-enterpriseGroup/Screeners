@@ -1260,41 +1260,129 @@ def _render_risk_slide(
     result: dict[str, Any], chosen: list[dict[str, Any]],
     money: Callable, metric_markup: Callable,
 ) -> None:
-    """Compact whole-portfolio market-move view using the exact selected puts."""
-    try:
-        portfolio_value = float(result.get("portfolio_value") or 0.0)
-        exposure = float(result.get("exposure") or 0.0)
-        beta = float(result.get("beta") or 1.0)
-    except (TypeError, ValueError):
-        return
-    if portfolio_value <= 0:
-        return
+    """E*TRADE-style benchmark-move grid + expiry P/L curve for CHECKED PUTS only."""
+    if not chosen:
+        return  # No checked BUY = no risk slide, no imaginary unhedged chart.
+    import plotly.graph_objects as go
 
-    slide = portfolio_risk_slide(
-        portfolio_value=portfolio_value, selected_puts=chosen, beta=beta,
+    options = [_contract_identity(row) for row in chosen]
+    if len(chosen) > 1:
+        selection_hash = hashlib.sha256(repr(sorted(options)).encode("utf-8")).hexdigest()[:12]
+        selected_id = st.selectbox(
+            "RISK SLIDE // CHECKED PUT", options, key="pp_risk_slide_" + selection_hash,
+            format_func=lambda identity: next(
+                (f'{r["Proxy"]} {r["Expiration"]} ${float(r["Strike"]):,.2f} '
+                 f'PUT × {int(r["Contracts"])}' for r in chosen
+                 if _contract_identity(r) == identity), identity,
+            ),
+            help="Only checked PUT rows appear. Each contract is modeled separately, not summed into a fictitious combined portfolio.",
+        )
+        row = next(r for r in chosen if _contract_identity(r) == selected_id)
+    else:
+        row = chosen[0]
+
+    spot, strike, ask = float(row["Spot"]), float(row["Strike"]), float(row["Ask"])
+    contracts = int(row["Contracts"])
+    beta = float(result.get("beta") or 1.0)
+    selected_basket = float(result.get("exposure") or 0.0)
+    basket = selected_basket if selected_basket > 0 else 100.0 * spot
+    shares = basket / spot
+    premium = 100.0 * ask * contracts
+    loss, worst_price = proxy_put_max_loss(
+        spot=spot, strike=strike, ask=ask, contracts=contracts,
+        basket_value=basket, beta=beta,
     )
-    if slide.empty:
-        return
+    strike_move = 100.0 * (strike / spot - 1.0)
+    # Include the strike even if it falls just outside the standard ±20% grid.
+    moves = sorted(set(
+        [-100, -75, -50, -40, -30, -25, -20, -15, -10, -5, -2,
+         0, 2, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
+        + [strike_move, strike_move - .001, strike_move + .001]
+    ))
+    def unhedged_pnl(future: float) -> float:
+        return max(0.0, basket * (1.0 + beta * (future / spot - 1.0))) - basket
 
-    coverage = min(100.0, max(0.0, 100.0 * exposure / portfolio_value))
-    premium = float(slide["Put Premium"].iloc[0]) if "Put Premium" in slide else 0.0
-    st.html('<div class="pp-section">PORTFOLIO RISK SLIDE // MARKET MOVE STRESS</div>')
+    profile = []
+    for move in moves:
+        future = max(0.0, spot * (1.0 + move / 100.0))
+        pnl = proxy_put_expiry_pnl(
+            spot=spot, strike=strike, ask=ask, contracts=contracts,
+            basket_value=basket, expiry_spot=future, beta=beta,
+        )
+        profile.append((move, future, unhedged_pnl(future), pnl))
+    st.html('<div class="pp-section">CHECKED PUT RISK SLIDE // EXPIRATION P/L</div>')
     st.html(metric_markup([
-        ("Equity / ETF Portfolio", money(portfolio_value), "orange"),
-        ("Hedge Basket", money(exposure), "blue"),
-        ("Basket Included", f"{coverage:.1f}%", "green" if coverage >= 99.5 else "blue"),
-        ("Selected Puts", str(len(chosen)), "green" if chosen else "orange"),
-        ("PUT Premium (ASK)", money(premium), "orange"),
+        ("Selected PUT", f'{row["Proxy"]} ${strike:,.2f} P', "orange"),
+        ("ETF-Equivalent Shares", f"{shares:,.2f}", "blue"),
+        ("Whole PUT Contracts", str(contracts), "orange"),
+        ("ASK Premium", money(premium), "orange"),
+        ("Worst @ ETF Price", money(worst_price), "red"),
+        ("Modeled Max Loss*", money(loss), "red" if loss > 0 else "green"),
     ]))
-    chart = slide.set_index("Market Move %")[
-        ["Unhedged Portfolio", "With Selected Puts"]
-    ].copy()
-    st.line_chart(chart, height=260)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[r[0] for r in profile], y=[r[2] for r in profile],
+        name="No PUT / basket", mode="lines",
+        line={"color": "#8d8d97", "width": 2, "dash": "dot"},
+        hovertemplate="S&P 500 move (assumed ETF move) %{x:.1f}%"
+                      "<br>Unhedged basket P/L $%{y:,.2f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[r[0] for r in profile], y=[r[3] for r in profile],
+        name="Basket + checked PUT", mode="lines",
+        line={"color": "#fb8b1e", "width": 3},
+        hovertemplate="S&P 500 move (assumed ETF move) %{x:.1f}%"
+                      "<br>Hedged P/L $%{y:,.2f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="#878787")
+    fig.add_vline(
+        x=strike_move, line_dash="dot", line_color="#a3e635",
+        annotation_text=f"PUT STRIKE {strike:,.0f}",
+        annotation_position="top right",
+    )
+    fig.add_vline(x=0, line_dash="dot", line_color="#4aa5df")
+    fig.update_layout(
+        height=310, margin={"l": 8, "r": 8, "b": 14, "t": 6},
+        paper_bgcolor="#000", plot_bgcolor="#080808",
+        font={"color": "#f5b66e", "family": "Courier New", "size": 11},
+        xaxis={"title": "S&P 500 MOVE (%) // SAME ETF MOVE ASSUMED",
+               "gridcolor": "#262626", "zeroline": False},
+        yaxis={"title": "PROFIT / LOSS ($)", "gridcolor": "#262626",
+               "tickprefix": "$", "tickformat": ",.0f"},
+        legend={"orientation": "h", "y": 1.13, "x": 0},
+        hovermode="x unified",
+    )
+    grid_moves = sorted(set(
+        [-20, -15, -10, -5, -2, 0, 2, 5, 10, 15, 20, round(strike_move, 4)]
+    ))
+    grid_rows = []
+    for move in grid_moves:
+        future = spot * (1.0 + move / 100.0)
+        grid_rows.append({
+            "S&P 500 %*": f"{move:+.2f}%",
+            "ETF PRICE": money(future),
+            "NO PUT P/L": money(unhedged_pnl(future)),
+            "WITH PUT P/L": money(proxy_put_expiry_pnl(
+                spot=spot, strike=strike, ask=ask, contracts=contracts,
+                basket_value=basket, expiry_spot=future, beta=beta,
+            )),
+        })
+    left, right = st.columns([2.0, 1.15], gap="small", vertical_alignment="top")
+    with left:
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    with right:
+        st.dataframe(
+            pd.DataFrame(grid_rows), hide_index=True, height=310, width="stretch",
+        )
     st.caption(
-        "RISK SLIDE // X-AXIS = MARKET MOVE % // UNHEDGED = ELIGIBLE STOCK/ETF "
-        "PORTFOLIO WITH BETA APPLIED // WITH SELECTED PUTS = SAME PORTFOLIO PLUS "
-        "INTRINSIC VALUE OF THE EXACT CHECKED PUTS MINUS THEIR FULL ASK PREMIUM. "
-        "STATIC EXPIRATION-STYLE STRESS MODEL; NOT A FORECAST OR GUARANTEED FLOOR."
+        f'SELECTED CONTRACT ONLY // ${basket:,.2f} BASKET AS {shares:,.2f} '
+        f'{row["Proxy"]}-EQUIVALENT SHARES // {contracts} PUT(S) × 100 SHARES; '
+        f'FULL ${premium:,.2f} ASK PREMIUM INCLUDED. *S&P 500 MOVES ARE A '
+        'SCENARIO AXIS; ETF IS ASSUMED TO MOVE BY THE SAME % AND BASKET BY '
+        f'BETA {beta:.2f}, NOT HISTORICAL CORRELATIONS. '
+        'EXPIRATION INTRINSIC VALUE ONLY: NO CURRENT-DATE GREEKS, IV CHANGES, '
+        'DIVIDENDS OR FEES. NOT E*TRADE\'S PROPRIETARY RISK MODEL OR A '
+        'GUARANTEED LOSS LIMIT FOR MIXED HOLDINGS.'
     )
 
 
