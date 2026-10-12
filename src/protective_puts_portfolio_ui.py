@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import math
 from pathlib import Path
 import re
 import time
@@ -1197,6 +1198,34 @@ def _annual_lowest_loss_ids(data: pd.DataFrame) -> set[str]:
     }
 
 
+def _optionstrat_protective_put_url(
+    row: dict[str, Any], hedge_exposure: float = 0.0,
+) -> str:
+    """Rebuild the checked whole PUT plus a proxy ETF stock leg in OptionStrat."""
+    symbol = str(row.get("Proxy") or "").strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", symbol):
+        return ""
+    try:
+        expiry = pd.to_datetime(str(row["Expiration"]), format="%m-%d-%y", errors="raise")
+        spot, strike, ask = (float(row[key]) for key in ("Spot", "Strike", "Ask"))
+        contracts = int(row["Contracts"])
+        exposure = float(hedge_exposure or 0.0)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return ""
+    if not all(math.isfinite(value) and value > 0 for value in (spot, strike, ask)):
+        return ""
+    if contracts < 1 or not math.isfinite(exposure) or exposure < 0:
+        return ""
+    # OptionStrat stock legs use whole ETF shares; this is a proxy, not the
+    # real mix of portfolio holdings. PUT legs always use real whole contracts.
+    shares = max(1, round(exposure / spot)) if exposure > 0 else 100 * contracts
+    strike_text = f"{strike:.3f}".rstrip("0").rstrip(".")
+    return (
+        f"https://optionstrat.com/build/protective-put/{symbol}/"
+        f"x{shares}@{spot:.2f},.{symbol}{expiry:%y%m%d}P{strike_text}"
+        f"x{contracts}@{ask:.2f}"
+    )
+
 def _chain_scroll_values(
     row: dict[str, Any], hedge_exposure: float = 0.0,
 ) -> dict[str, Any]:
@@ -1274,6 +1303,7 @@ def _chain_scroll_values(
     return {
         "values": values, "calc": expression, "qty_title": qty_title,
         "last": price(row.get("Last")), "volume": str(row.get("Volume") or "—"),
+        "optionstrat_url": _optionstrat_protective_put_url(row, hedge_exposure),
     }
 
 
@@ -1605,6 +1635,12 @@ def _results(
         f"{result.get('listed_count', 0)} LISTED EXPIRATIONS // "
         "LIME GREEN = LOWEST ORDERABLE WHOLE-PUT MODELED LOSS PER ETF / YEAR "
         "(CHEAPEST PUT PREMIUM BREAKS TIES)"
+    )
+    st.caption(
+        "CHECK BUY → OS↗ TO VERIFY IN OPTIONSTRAT // OPENS A NEW TAB WITH "
+        "THE EXACT PUT EXPIRY / STRIKE / WHOLE CONTRACT QTY / ASK DEBIT "
+        "PLUS ROUNDED ETF-EQUIVALENT PROXY SHARES. OPTIONSTRAT DOES NOT "
+        "MODEL YOUR MIXED HOLDINGS OR BETA; ITS RESULTS MAY DIFFER."
     )
     try:
         chosen = _selected_contract_orders(data, checked_ids)
