@@ -55,7 +55,7 @@ for i in range(62):
     row={
         "Proxy":"SPY", "Expiration": "12-18-26" if i<31 else "01-15-27",
         "DTE":68 if i<31 else 96,
-        "Strike": float(550+i), "Bid":1.0, "Ask":1.1,
+        "Strike": float(550+i), "Spot":600.0, "Bid":1.0, "Ask":1.1,
         "Last":1.0, "Cost of Put (Ask)":110.0,
         "Max Loss (Ask)":0.0 if i in (20,53) else 1000.0+i,
         "Stress Remaining Loss":float(i),
@@ -209,6 +209,7 @@ def main() -> None:
             wait=WebDriverWait(driver,60)
             wait.until(lambda _: selected_count(driver)==0)
             assert "62 LOADED PUTS" in driver.page_source
+            assert "CHECKED PUT RISK SLIDE" not in driver.find_element(By.TAG_NAME,"body").text
             assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_prev')
             assert not driver.find_elements(By.CSS_SELECTOR,'.st-key-pp_chain_next')
             assert not driver.find_elements(By.CSS_SELECTOR,'[data-testid="stDataFrame"]')
@@ -276,6 +277,8 @@ def main() -> None:
 
             # LOWEST LOSS default now sorts both annual winners to the top.
             inspect_and_click_row(driver,0,1)
+            wait.until(lambda _: "CHECKED PUT RISK SLIDE" in
+                       driver.find_element(By.TAG_NAME, "body").text)
             inspect_and_click_row(driver,1,2)
 
             def check_saved():
