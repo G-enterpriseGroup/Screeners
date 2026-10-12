@@ -106,7 +106,7 @@ _CSS = """
 }
 .pp-chain-cells{
     box-sizing:border-box;display:grid;align-items:center;
-    grid-template-columns:.48fr 1.75fr .77fr .36fr .72fr .58fr .58fr .85fr 1.02fr 2.02fr 1.05fr .46fr .48fr;
+    grid-template-columns:.48fr 1.75fr .77fr .36fr .72fr .58fr .58fr .85fr 1.02fr 2.02fr .86fr .48fr;
     width:100%;height:43px;min-height:43px;
     background:#080808;color:#f6b56a;
     font:800 .78rem/1.1 "Courier New",monospace;font-variant-numeric:tabular-nums;
@@ -1071,8 +1071,7 @@ _CHAIN_SORT_COLUMNS = {
     "STRIKE": "Strike",
     "ASK": "Ask",
     "PUT COST": "Cost of Put (Ask)",
-    "100SH LOSS": "Max Loss (Ask)",
-    "BASKET LOSS": "Stress Remaining Loss",
+    "MAX LOSS": "ETF-Equivalent Max Loss (Ask)",
     "QTY": "Contracts",
     "OPEN INTEREST": "Open Interest",
 }
@@ -1082,7 +1081,13 @@ def _sort_contract_chain(data: pd.DataFrame, criterion: str, direction: str) -> 
     """Sort all quoted expirations before paging, with contract-stable ties."""
     field = _CHAIN_SORT_COLUMNS.get(criterion)
     if field is None:
-        return data.reset_index(drop=True) if direction == "ASC" else data.iloc[::-1].reset_index(drop=True)
+        metric = ("ETF-Equivalent Max Loss (Ask)" if
+                  "ETF-Equivalent Max Loss (Ask)" in data else "Max Loss (Ask)")
+        return data.sort_values(
+            [metric, "Proxy", "DTE", "Strike", "Contract"],
+            ascending=[direction == "ASC", True, True, True, True],
+            kind="stable", na_position="last",
+        ).reset_index(drop=True)
     return data.sort_values(
         [field, "Proxy", "DTE", "Strike", "Contract"],
         ascending=[direction == "ASC", True, True, True, True],
@@ -1125,7 +1130,6 @@ def _chain_cell_markup(row: dict[str, Any]) -> str:
         ("Cost of Put (Ask)", price(row["Cost of Put (Ask)"])),
         ("Max Loss (Ask)", price(row["Max Loss (Ask)"])),
         ("Max Loss Calc (Ask)", compact_calc),
-        ("Stress Remaining Loss", price(row["Stress Remaining Loss"])),
         ("Contracts", str(int(row["Contracts"]))),
         ("Open Interest", str(int(row["Open Interest"]))
          if pd.notna(row["Open Interest"]) else "—"),
@@ -1142,11 +1146,10 @@ def _chain_cell_markup(row: dict[str, Any]) -> str:
 
 
 def _annual_lowest_loss_ids(data: pd.DataFrame) -> set[str]:
-    """One executable, lowest ASK-based 100-share max-loss put per ETF/year.
+    """One valid lowest ETF-equivalent (or direct 100-share) modeled loss per ETF/year.
 
-    Premium, DTE and contract break equal-loss ties deterministically.
-    This compares only loaded, valid quoted chains; a proxy basket still
-    has scenario risk and is not protected by this 100-share metric.
+    Compare the complete loaded ASK chain, breaking loss ties by lower premium,
+    DTE, strike and exact contract; never claim a basket protection guarantee.
     """
     if data.empty:
         return set()
@@ -1154,7 +1157,9 @@ def _annual_lowest_loss_ids(data: pd.DataFrame) -> set[str]:
     work["_year"] = pd.to_datetime(
         work["Expiration"], format="%m-%d-%y", errors="coerce",
     ).dt.year
-    work["_loss"] = pd.to_numeric(work["Max Loss (Ask)"], errors="coerce")
+    metric = ("ETF-Equivalent Max Loss (Ask)" if
+              "ETF-Equivalent Max Loss (Ask)" in work else "Max Loss (Ask)")
+    work["_loss"] = pd.to_numeric(work[metric], errors="coerce")
     work["_premium"] = pd.to_numeric(work["Cost of Put (Ask)"], errors="coerce")
     work["_ask"] = pd.to_numeric(work["Ask"], errors="coerce")
     work = work.loc[
@@ -1179,23 +1184,13 @@ def _annual_lowest_loss_ids(data: pd.DataFrame) -> set[str]:
 def _chain_scroll_values(
     row: dict[str, Any], hedge_exposure: float = 0.0,
 ) -> dict[str, Any]:
-    """Compact text-only cell payload for the iframe's virtualized grid."""
+    """The virtual grid shows modeled loss on the same ETF shares as QTY / EQ SH."""
     def price(value: Any) -> str:
         try:
             return "—" if pd.isna(value) else f"${float(value):,.2f}"
         except (TypeError, ValueError):
             return "—"
 
-    expression = str(row.get("Max Loss Calc (Ask)") or "—")
-    match = re.search(
-        r"\(\s*([\d.,]+)\s*\+\s*([\d.,]+)\s*-\s*([\d.,]+)\s*\)\s*[×x*]\s*100",
-        expression,
-    )
-    if match:
-        a, b, k = (f"{float(v.replace(',', '')):,.2f}" for v in match.groups())
-        compact_calc = f"100×({a}+{b}−{k})⁺"
-    else:
-        compact_calc = expression
     contracts = int(row["Contracts"])
     try:
         exposure = float(hedge_exposure or 0.0)
@@ -1203,14 +1198,35 @@ def _chain_scroll_values(
     except (TypeError, ValueError):
         exposure, spot = 0.0, 0.0
     if exposure > 0 and spot > 0:
-        equivalent_shares = exposure / spot
+        loss, equivalent_shares = etf_equivalent_max_loss(
+            spot=spot, ask=float(row["Ask"]), strike=float(row["Strike"]),
+            basket_value=exposure,
+        )
+        expression = (
+            f"max(0, ({spot:.2f} + {float(row['Ask']):.2f} - "
+            f"{float(row['Strike']):.2f}) × {equivalent_shares:.4f}) = ${loss:,.2f}"
+        )
+        compact_calc = (
+            f"{equivalent_shares:,.1f}×({spot:.2f}+{float(row['Ask']):.2f}"
+            f"−{float(row['Strike']):.2f})⁺"
+        )
         qty_title = (
             f"PUT QTY {contracts} // SELECTED BASKET ${exposure:,.2f} ÷ "
-            f"{row['Proxy']} SPOT ${spot:,.2f} = {equivalent_shares:,.1f} "
-            "ETF-EQUIVALENT SHARES // EACH PUT CONTRACT REPRESENTS 100 ETF SHARES"
+            f"{row['Proxy']} SPOT ${spot:,.2f} = {equivalent_shares:,.2f} "
+            "ETF-EQUIVALENT SHARES // EACH PUT CONTRACT ACTUALLY COVERS 100 ETF SHARES"
         )
     else:
         equivalent_shares = float(contracts * 100)
+        expression = str(row.get("Max Loss Calc (Ask)") or "—")
+        match = re.search(
+            r"\(\s*([\d.,]+)\s*\+\s*([\d.,]+)\s*-\s*([\d.,]+)\s*\)\s*[×x*]\s*100",
+            expression,
+        )
+        if match:
+            a, b, k = (f"{float(v.replace(',', '')):,.2f}" for v in match.groups())
+            compact_calc = f"100×({a}+{b}−{k})⁺"
+        else:
+            compact_calc = expression
         qty_title = (
             f"PUT QTY {contracts} // {equivalent_shares:,.0f} ETF SHARES REPRESENTED "
             "AT 100 SHARES PER PUT CONTRACT"
@@ -1221,9 +1237,9 @@ def _chain_scroll_values(
         str(row["Proxy"]), str(row.get("Contract") or "—"),
         str(row["Expiration"]), str(int(row["DTE"])),
         price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
-        price(row["Cost of Put (Ask)"]), price(row["Max Loss (Ask)"]),
-        compact_calc, price(row["Stress Remaining Loss"]),
-        qty_value, str(int(oi)) if pd.notna(oi) else "—",
+        price(row["Cost of Put (Ask)"]),
+        price(row.get("ETF-Equivalent Max Loss (Ask)", row["Max Loss (Ask)"])),
+        compact_calc, qty_value, str(int(oi)) if pd.notna(oi) else "—",
     ]
     return {
         "values": values, "calc": expression, "qty_title": qty_title,
@@ -1295,6 +1311,19 @@ def _results(
 ) -> None:
     """Ghotra Married Put columns with ranking, BUY, and explicit broker review."""
     data = result["data"]
+    if isinstance(data, pd.DataFrame) and not data.empty and "ETF-Equivalent Max Loss (Ask)" not in data:
+        data = data.copy()
+        exposure = float(result.get("exposure") or 0.0)
+        if exposure > 0:
+            data["ETF-Equivalent Max Loss (Ask)"] = [
+                etf_equivalent_max_loss(
+                    spot=float(row["Spot"]), ask=float(row["Ask"]),
+                    strike=float(row["Strike"]), basket_value=exposure,
+                )[0] for row in data.to_dict("records")
+            ]
+        else:
+            data["ETF-Equivalent Max Loss (Ask)"] = data["Max Loss (Ask)"]
+        result["data"] = data
     if not isinstance(data, pd.DataFrame) or data.empty:
         st.warning("NO VALID PUT ASKS // Enter another ticker or check option-chain availability.")
         for error in result.get("errors") or []:
@@ -1330,8 +1359,7 @@ def _results(
             ("Hedge Basket", money(result["exposure"]), "blue"),
             ("Basket Included", f"{coverage:.1f}%", "green" if coverage >= 99.5 else "blue"),
             ("Scenario Loss", money(result["stress_loss"]), "red"),
-            ("Lowest Residual", money(top["Stress Remaining Loss"]), "green"
-             if bool(top["Near Zero Scenario"]) else "red"),
+            ("ETF-Equiv Max Loss", money(top["ETF-Equivalent Max Loss (Ask)"]), "red"),
             ("Top Put", f'{top["Proxy"]} {top["Strike"]:.2f} P', "green"),
             ("Premium (ASK)", money(top["Put Cost"]), "orange"),
         ]))
@@ -1339,16 +1367,19 @@ def _results(
             f'MODELED ETF -{result["stress"]:.0f}% / BETA {result["beta"]:.2f} '
             '// NOT A GUARANTEED PORTFOLIO LOSS CAP.'
         )
-    st.caption(
-        "MAX LOSS (100 SHARES) = max(0, (ETF SPOT + PUT ASK - STRIKE) × 100). "
-        "NOT A GUARANTEED FLOOR FOR YOUR BASKET. HOVER CALC FOR FULL NUMBERS."
-    )
-    st.caption(
-        "BASKET LOSS ? // MODELED DOLLARS STILL LOST BY THE SELECTED HOLDINGS "
-        f'BASKET IF THE PROXY MARKET FALLS {float(result["stress"]):.0f}%: '
-        "STARTING BASKET LOSS + FULL PUT ASK PREMIUM − PUT INTRINSIC PAYOUT, "
-        "FLOORED AT $0. THIS IS A STRESS MODEL, NOT A GUARANTEED MAXIMUM LOSS."
-    )
+    if direct_example:
+        st.caption(
+            "MAX LOSS = max(0, (ETF SPOT + PUT ASK − STRIKE) × 100 SHARES). "
+            "MATCHED ETF EXAMPLE ONLY; PUT PURCHASE DOES NOT INCLUDE SHARES."
+        )
+    else:
+        st.caption(
+            "MAX LOSS = max(0, (ETF SPOT + PUT ASK − STRIKE) × "
+            "(SELECTED BASKET VALUE ÷ ETF SPOT)). FULL-PRECISION ETF-EQUIVALENT "
+            "SHARES USED; HOVER LOSS CALC FOR NUMBERS. THIS IS A HYPOTHETICAL "
+            "MATCHED-ETF EXPIRATION LOSS, NOT A GUARANTEED LOSS CAP FOR YOUR "
+            "ACTUAL HOLDINGS OR THE PAYOFF OF THE SHOWN INTEGER PUT ORDER."
+        )
     # The browser virtualizes all LOADED contracts in a fixed-height scroll
     # region. No per-page controls or thousands of Streamlit button widgets.
     scope = (result["scan_id"], result["fingerprint"])
@@ -1379,7 +1410,7 @@ def _results(
                 "FILTER PUT CONTRACTS", ("HIGHLIGHTED ONLY", "ALL CONTRACTS"),
                 index=0, key="pp_chain_highlight_filter",
                 label_visibility="collapsed",
-                help="Highlighted: lowest valid ASK maximum loss for each ETF and expiration year.",
+                help="Highlighted: lowest modeled ETF-equivalent ASK loss for each ETF and expiration year.",
             )
         with indicator:
             st.caption(f"{len(data):,} LOADED PUTS // SCROLL TO REVIEW")
@@ -1427,7 +1458,7 @@ def _results(
         f"{len(scroll_rows):,} DISPLAYED / {len(data):,} QUOTED PUTS // "
         f"{len(checked_ids)} SELECTED ACROSS ALL LOADED CONTRACTS // "
         f"{result.get('listed_count', 0)} LISTED EXPIRATIONS // "
-        "LIME GREEN = LOWEST ORDERABLE ASK MAX LOSS PER ETF / EXPIRATION YEAR "
+        "LIME GREEN = LOWEST ORDERABLE ETF-EQUIV MAX LOSS PER ETF / YEAR "
         "(CHEAPEST PUT PREMIUM BREAKS TIES)"
     )
     try:
