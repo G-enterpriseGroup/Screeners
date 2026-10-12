@@ -5,6 +5,7 @@ from datetime import date
 from src.protective_puts import (
     build_put_analysis, etf_equivalent_max_loss, portfolio_risk_slide,
     protective_put_metrics, proxy_put_expiry_pnl, proxy_put_max_loss,
+    proxy_put_risk_scenarios,
 )
 
 
@@ -45,6 +46,83 @@ assert proxy_put_max_loss(
 assert proxy_put_max_loss(
     spot=100, strike=95, ask=2, contracts=1, basket_value=10000,
 ) == (700.0, 0.0)
+# A beta above one can exhaust the basket before the ETF reaches zero. The
+# worst modeled outcome is then the basket-zero corner, not $0 or the strike.
+assert proxy_put_max_loss(
+    spot=100, strike=95, ask=2, contracts=1,
+    basket_value=10000, beta=2,
+) == (5700.0, 50.0)
+
+# The slide must show current-value changes in both the checked basket and
+# the complete eligible long-equity portfolio. Unchecked equity moves 1:1.
+slide = proxy_put_risk_scenarios(
+    spot=100, strike=95, ask=2, contracts=6,
+    basket_value=60000, portfolio_value=100000,
+)
+assert slide["Market Move %"].tolist() == [
+    -30, -25, -20, -15, -10, -5, -2, 0, 2, 5, 10, 15, 20, 25, 30,
+]
+down_ten = slide.set_index("Market Move %").loc[-10]
+assert down_ten["ETF Price"] == 90
+assert down_ten["Basket P/L No Put"] == -6000
+assert down_ten["Basket P/L With Put"] == -4200
+assert down_ten["Unselected P/L"] == -4000
+assert down_ten["Portfolio Value No Put"] == 90000
+assert down_ten["Portfolio Value With Put"] == 91800
+assert down_ten["Portfolio Change $"] == -8200
+assert down_ten["Portfolio Change %"] == -8.2
+assert down_ten["Put Benefit $"] == 1800
+flat_market = slide.set_index("Market Move %").loc[0]
+assert flat_market["Basket P/L With Put"] == -1200
+assert flat_market["Unselected P/L"] == 0
+assert flat_market["Portfolio Value With Put"] == 98800
+assert flat_market["Put Benefit $"] == -1200
+up_ten = slide.set_index("Market Move %").loc[10]
+assert up_ten["Basket P/L No Put"] == 6000
+assert up_ten["Basket P/L With Put"] == 4800
+assert up_ten["Unselected P/L"] == 4000
+assert up_ten["Portfolio Value With Put"] == 108800
+assert up_ten["Portfolio Change %"] == 8.8
+different_beta = proxy_put_risk_scenarios(
+    spot=100, strike=95, ask=2, contracts=6,
+    basket_value=60000, portfolio_value=100000,
+    beta=2, moves=[-10],
+).iloc[0]
+assert different_beta["Basket P/L No Put"] == -12000
+assert different_beta["Unselected P/L"] == -4000
+assert different_beta["Basket P/L With Put"] == -10200
+assert different_beta["Portfolio Value With Put"] == 85800
+
+# The scenario engine and exact maximum-loss calculator must agree at the
+# worst price. It can show losses above 100% of the selected basket if the
+# full premium on a whole contract is larger than that basket.
+max_loss, worst_spot = proxy_put_max_loss(
+    spot=100, strike=95, ask=2, contracts=1, basket_value=20000,
+)
+at_worst = proxy_put_risk_scenarios(
+    spot=100, strike=95, ask=2, contracts=1,
+    basket_value=20000, portfolio_value=30000, moves=[0, -100],
+)
+assert at_worst["Market Move %"].tolist() == [-100, 0]
+assert at_worst.iloc[0]["ETF Price"] == worst_spot
+assert at_worst.iloc[0]["Basket P/L With Put"] == -max_loss
+assert at_worst.iloc[0]["Unselected P/L"] == -10000
+assert at_worst.iloc[0]["Portfolio Change $"] == -max_loss - 10000
+assert at_worst.iloc[0]["Portfolio Value With Put"] == 9300
+basket_only = proxy_put_risk_scenarios(
+    spot=100, strike=95, ask=2, contracts=1,
+    basket_value=10000, portfolio_value=10000, moves=[-10],
+)
+assert basket_only.iloc[0]["Portfolio Value With Put"] == 9300
+assert basket_only.iloc[0]["Unselected P/L"] == 0
+try:
+    proxy_put_risk_scenarios(
+        spot=100, strike=95, ask=2, contracts=1,
+        basket_value=10000, portfolio_value=9999,
+    )
+    raise AssertionError("Total eligible equity cannot be below its selected basket")
+except ValueError:
+    pass
 assert metrics["contracts"] == 1
 assert metrics["put_cost"] == 200.0
 assert metrics["max_loss"] == 700.0
@@ -420,15 +498,28 @@ assert 'overflow-y:auto' in scroller_html
 assert 'scroll.addEventListener("scroll"' in scroller_html
 assert '#a3e635' in scroller_html and 'color:#000!important' in scroller_html
 assert 'with st.expander("FULL GHOTRA COLUMNS' not in feature_src
-# The option-chain remains a virtualized grid; the checked-only RISK SLIDE
-# intentionally uses a compact scenario dataframe beside its profit/loss graph.
+# The option-chain remains virtualized; the checked-only RISK SLIDE uses a
+# compact, fully visible scenario table beside its profit/loss graph.
 chain_src = feature_src.split("def _results(", 1)[1].split("def render_portfolio_hedge(", 1)[0]
 slide_src = feature_src.split("def _render_risk_slide(", 1)[1].split("@st.fragment", 1)[0]
 assert "st.dataframe(" not in chain_src
-assert "st.dataframe(" in slide_src
+assert "_risk_slide_table_markup(scenarios, money)" in slide_src
+assert "proxy_put_risk_scenarios(" in slide_src
 assert 'key="pp_chain_expiry_choice"' not in feature_src
 assert '"Implied Volatility", "Cost of Put (Ask)"' not in feature_src
 assert "LOAD ALL" not in feature_src and "REMAINING CHAINS" not in feature_src
+
+from src.protective_puts_portfolio_ui import _risk_slide_table_markup
+scenario_markup = _risk_slide_table_markup(
+    proxy_put_risk_scenarios(
+        spot=100.0, strike=95.0, ask=2.0, contracts=1,
+        basket_value=10_000.0, portfolio_value=20_000.0,
+    ), lambda value: f"${float(value):,.2f}",
+)
+assert scenario_markup.count("<tr") == 16  # header plus all 15 requested moves
+assert "-30%" in scenario_markup and "+30%" in scenario_markup
+assert "CHANGE %" in scenario_markup and "WITH PUT" in scenario_markup
+assert "$19,800.00" in scenario_markup  # Flat market: full $200 premium included.
 
 
 
@@ -478,7 +569,7 @@ assert positive_loss["values"][8] == "$40,130.00"  # One PUT covers only 100 of 
 assert "P/L ETF@0" in positive_loss["calc"]
 assert "P/L ETF@STRIKE" in positive_loss["calc"]
 assert "if not chosen:" in ui_source  # The risk slide is absent until a PUT is checked.
-assert "S&P 500 MOVE (%) // SAME ETF MOVE ASSUMED" in ui_source
+assert "MARKET / ETF MOVE (%)" in ui_source
 from src.protective_puts_portfolio_ui import _selected_symbols
 assert _selected_symbols(["SPY", "QQQ", "SPY", "BAD INPUT"]) == ["QQQ", "SPY"]
 assert '_load_selection(account_key)' in ui_source
