@@ -18,7 +18,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import find_number, quote_summary, total_account_value
-from src.protective_puts import portfolio_chain_scenario, rank_portfolio_chain
+from src.protective_puts import (
+    portfolio_chain_scenario, portfolio_risk_slide, rank_portfolio_chain,
+)
 from src.protective_puts_orders import (
     MAX_PUT_CONTRACTS, build_put_preview, build_place_payload,
     preview_details, extract_order_id, selected_put_signature,
@@ -804,7 +806,8 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
             if checked:
                 selected.append(row)
     _write_selection(account_key)
-    return account_key, selected
+    portfolio_value = float(pd.to_numeric(book["Market Value"], errors="coerce").fillna(0).sum())
+    return account_key, selected, portfolio_value, int(len(book))
 
 
 # ==============================
@@ -1211,6 +1214,48 @@ def _toggle_contract_buy(state_key: str, scope_key: str, identity: str) -> None:
     st.session_state[state_key] = state
 
 
+def _render_risk_slide(
+    result: dict[str, Any], chosen: list[dict[str, Any]],
+    money: Callable, metric_markup: Callable,
+) -> None:
+    """Compact whole-portfolio market-move view using the exact selected puts."""
+    try:
+        portfolio_value = float(result.get("portfolio_value") or 0.0)
+        exposure = float(result.get("exposure") or 0.0)
+        beta = float(result.get("beta") or 1.0)
+    except (TypeError, ValueError):
+        return
+    if portfolio_value <= 0:
+        return
+
+    slide = portfolio_risk_slide(
+        portfolio_value=portfolio_value, selected_puts=chosen, beta=beta,
+    )
+    if slide.empty:
+        return
+
+    coverage = min(100.0, max(0.0, 100.0 * exposure / portfolio_value))
+    premium = float(slide["Put Premium"].iloc[0]) if "Put Premium" in slide else 0.0
+    st.html('<div class="pp-section">PORTFOLIO RISK SLIDE // MARKET MOVE STRESS</div>')
+    st.html(metric_markup([
+        ("Equity / ETF Portfolio", money(portfolio_value), "orange"),
+        ("Hedge Basket", money(exposure), "blue"),
+        ("Basket Included", f"{coverage:.1f}%", "green" if coverage >= 99.5 else "blue"),
+        ("Selected Puts", str(len(chosen)), "green" if chosen else "orange"),
+        ("PUT Premium (ASK)", money(premium), "orange"),
+    ]))
+    chart = slide.set_index("Market Move %")[
+        ["Unhedged Portfolio", "With Selected Puts"]
+    ].copy()
+    st.line_chart(chart, height=260)
+    st.caption(
+        "RISK SLIDE // X-AXIS = MARKET MOVE % // UNHEDGED = ELIGIBLE STOCK/ETF "
+        "PORTFOLIO WITH BETA APPLIED // WITH SELECTED PUTS = SAME PORTFOLIO PLUS "
+        "INTRINSIC VALUE OF THE EXACT CHECKED PUTS MINUS THEIR FULL ASK PREMIUM. "
+        "STATIC EXPIRATION-STYLE STRESS MODEL; NOT A FORECAST OR GUARANTEED FLOOR."
+    )
+
+
 @st.fragment
 def _results(
     result: dict[str, Any], money: Callable, metric_markup: Callable,
@@ -1244,8 +1289,15 @@ def _results(
             "A PUT ORDER BY ITSELF DOES NOT INCLUDE OR PROTECT 100 SHARES."
         )
     else:
+        portfolio_value = float(result.get("portfolio_value") or result["exposure"])
+        coverage = (
+            min(100.0, max(0.0, 100.0 * float(result["exposure"]) / portfolio_value))
+            if portfolio_value > 0 else 0.0
+        )
         st.html(metric_markup([
-            ("Hedged Basket", money(result["exposure"]), "orange"),
+            ("Portfolio Holdings", money(portfolio_value), "orange"),
+            ("Hedge Basket", money(result["exposure"]), "blue"),
+            ("Basket Included", f"{coverage:.1f}%", "green" if coverage >= 99.5 else "blue"),
             ("Scenario Loss", money(result["stress_loss"]), "red"),
             ("Lowest Residual", money(top["Stress Remaining Loss"]), "green"
              if bool(top["Near Zero Scenario"]) else "red"),
@@ -1259,6 +1311,12 @@ def _results(
     st.caption(
         "MAX LOSS (100 SHARES) = max(0, (ETF SPOT + PUT ASK - STRIKE) × 100). "
         "NOT A GUARANTEED FLOOR FOR YOUR BASKET. HOVER CALC FOR FULL NUMBERS."
+    )
+    st.caption(
+        "BASKET LOSS ? // MODELED DOLLARS STILL LOST BY THE SELECTED HOLDINGS "
+        f'BASKET IF THE PROXY MARKET FALLS {float(result["stress"]):.0f}%: '
+        "STARTING BASKET LOSS + FULL PUT ASK PREMIUM − PUT INTRINSIC PAYOUT, "
+        "FLOORED AT $0. THIS IS A STRESS MODEL, NOT A GUARANTEED MAXIMUM LOSS."
     )
     # The browser virtualizes all LOADED contracts in a fixed-height scroll
     # region. No per-page controls or thousands of Streamlit button widgets.
@@ -1361,6 +1419,7 @@ def _results(
         client, touch_session, live_etrade, account_key, chosen,
         result["fingerprint"], money,
     )
+    _render_risk_slide(result, chosen, money, metric_markup)
     if result.get("errors"):
         with st.expander(f"DATA WARNINGS // {len(result['errors'])}"):
             for err in result["errors"]:
@@ -1390,10 +1449,19 @@ def render_portfolio_hedge(
                     "before reviewing orders."
                 )
                 book = None
-        account_key, selected = book if book is not None else ("", [])
+        account_key, selected, portfolio_value, holding_count = (
+            book if book is not None else ("", [], 0.0, 0)
+        )
         exposure = sum(float(row["Market Value"]) for row in selected)
         if selected:
-            st.caption(f'PORTFOLIO // {len(selected)} TICKERS // {money(exposure)}')
+            included_pct = (
+                min(100.0, max(0.0, 100.0 * exposure / portfolio_value))
+                if portfolio_value > 0 else 0.0
+            )
+            st.caption(
+                f'PORTFOLIO PROTECTION TARGET // {len(selected)} / {holding_count} HOLDINGS // '
+                f'{money(exposure)} OF {money(portfolio_value)} // {included_pct:.1f}% INCLUDED'
+            )
         else:
             st.caption(
                 "TICKER-ONLY MODE // the Married Put columns illustrate 100 "
@@ -1451,12 +1519,11 @@ def render_portfolio_hedge(
                     if not future:
                         errors.append(f"{sym}: no future put expirations found.")
                         continue
-                    # Quoting every daily expiry at once causes 4,000+ row
-                    # reruns and hundreds of broker calls. Load a spread of
-                    # near/mid/long expiries; the dropdown below exposes ALL
-                    # actual dates and loads any other date on demand.
-                    for expiry in _sample_expirations(future, today, dte):
-                        work.append((sym, spot, expiry))
+                    # Full-chain rule: fetch every future listed expiration
+                    # for every entered ticker during the explicit Enter scan.
+                    # Later sort/filter/selection/risk-slide reruns reuse the
+                    # session + shared broker caches and do not re-fetch.
+                    work.extend((sym, spot, expiry) for expiry in future)
                 except Exception as exc:
                     errors.append(f"{sym} quote/expiry: {exc}")
             raw_frames = []
@@ -1488,15 +1555,8 @@ def render_portfolio_hedge(
             listed_dates = sorted({
                 expiry for _, dates in calendar.values() for expiry in dates
             })
-            # No expiration FILTER. Show the complete market-data calendar and
-            # append quoted chains without hiding any previously loaded dates.
-            loaded_pairs = set(raw.get("attempted_dates") or ())
-            pending = sorted(
-                (sym, spot, expiry)
-                for sym, (spot, dates) in calendar.items()
-                for expiry in dates
-                if (sym, expiry) not in loaded_pairs
-            )
+            # No expiration filter and no lazy-load step: the explicit Enter
+            # scan requests every future expiration for every entered ticker.
             ready_dates = {
                 expiry for _, _, expiry, _, _ in raw.get("frames", [])
             }
@@ -1517,38 +1577,6 @@ def render_portfolio_hedge(
                             for expiry in listed_dates
                         )
                     )
-            if pending:
-                load_small, load_all, _ = st.columns(
-                    [1.3, 1.65, 2.7], gap="small",
-                )
-                with load_small:
-                    next_batch = st.button(
-                        "LOAD NEXT 8 EXPIRATIONS", key="pp_chain_load_next",
-                        width="stretch",
-                    )
-                with load_all:
-                    load_everything = st.button(
-                        f"LOAD ALL {len(pending)} REMAINING CHAINS",
-                        key="pp_chain_load_all", width="stretch",
-                    )
-                if next_batch or load_everything:
-                    batch = pending if load_everything else pending[:8]
-                    progress = st.progress(0.0, text="Loading additional listed put expirations...")
-                    for index, (sym, spot, expiry) in enumerate(batch, start=1):
-                        pair = (sym, expiry)
-                        raw["attempted_dates"].add(pair)
-                        try:
-                            chain, _, source = get_chain(client, sym, expiry, touch_session)
-                            raw["frames"].append((sym, spot, expiry, chain, source))
-                        except Exception as exc:
-                            raw["errors"].append(f"{sym} {expiry:%m-%d-%y}: {exc}")
-                        raw["loaded_version"] += 1
-                        progress.progress(
-                            index / len(batch),
-                            text=f"LOADING {sym} {expiry:%m-%d-%Y} ({index}/{len(batch)})",
-                        )
-                    progress.empty()
-                    st.session_state.pop("pp_hedge_order_preview", None)
             cache_scope = (
                 raw["scan_id"], raw.get("loaded_version", 1),
                 fingerprint, market_today(),
@@ -1594,6 +1622,8 @@ def render_portfolio_hedge(
                 result = {
                     "fingerprint": fingerprint, "data": data,
                     "exposure": exposure,
+                    "portfolio_value": portfolio_value,
+                    "holding_count": holding_count,
                     "stress_loss": min(exposure, exposure * beta * stress / 100),
                     "stress": stress, "beta": beta,
                     "direct_example": direct_example,
@@ -1605,6 +1635,8 @@ def render_portfolio_hedge(
                 st.session_state["_pp_hedge_ranked_result_cache"] = {
                     "scope": cache_scope, "result": result,
                 }
+            result["portfolio_value"] = portfolio_value
+            result["holding_count"] = holding_count
             _results(result, money, metric_markup, client, touch_session,
                      live_etrade, account_key)
         else:
