@@ -86,7 +86,7 @@ def selected_count(driver) -> int:
     labels=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stCaptionContainer"]')
     for el in labels:
         content=el.text
-        found=re.search(r"(\\d+) SELECTED ACROSS ALL LOADED CONTRACTS",content)
+        found=re.search(r"(\d+) SELECTED ACROSS ALL LOADED CONTRACTS",content)
         if found:
             return int(found.group(1))
     return -1
