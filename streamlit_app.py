@@ -156,6 +156,52 @@ def _etrade_client():
     return _live_etrade_client() or _offline_etrade_client()
 
 
+def _cache_all_account_holdings():
+    """Prime every connected account's holdings once, independent of active tab.
+
+    This is deliberately session/connection scoped: ordinary widget and numeric
+    reruns reuse st.session_state plus CachedETradeClient data and do not turn
+    into brokerage refreshes. Manual feature refresh controls remain unchanged.
+    """
+    client = _live_etrade_client()
+    token = st.session_state.get("etrade_access_token")
+    namespace = _etrade_data_cache.session_namespace(token)
+    if client is None or not namespace:
+        return
+
+    marker_key = "_etrade_holdings_cache_namespace"
+    seeded_key = "_etrade_holdings_cached_account_keys"
+    if st.session_state.get(marker_key) != namespace:
+        st.session_state[marker_key] = namespace
+        st.session_state[seeded_key] = set()
+
+    accounts = st.session_state.get("etrade_accounts") or []
+    if not accounts:
+        try:
+            accounts = client.list_accounts()
+            st.session_state["etrade_accounts"] = accounts
+        except Exception:
+            return
+
+    seeded = set(st.session_state.get(seeded_key) or set())
+    holdings = st.session_state.setdefault("etrade_holdings", {})
+    loaded_any = False
+    for account in accounts:
+        account_key = str(account.get("accountIdKey") or "").strip()
+        if not account_key or account_key in seeded:
+            continue
+        try:
+            holdings[account_key] = client.get_portfolio(account_key)
+        except Exception:
+            continue
+        seeded.add(account_key)
+        loaded_any = True
+
+    st.session_state[seeded_key] = seeded
+    if loaded_any:
+        st.session_state["etrade_holdings_last_refresh"] = time.time()
+
+
 def render_etrade_connection():
     """Render the production E*TRADE strip and compact one-row OAuth panel."""
     return render_compact_etrade_connection(
@@ -682,6 +728,7 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
     # forbidden from previewing, placing, changing, or canceling an order.
     # GEX keeps its existing login-triggered refresh behavior.
     with st.container(key="terminal_background_hooks", gap=None):
+        _cache_all_account_holdings()
         maybe_auto_watch_risk_entries(_live_etrade_client())
         if active_tab != "GEX":
             maybe_auto_refresh_gex_on_login()
