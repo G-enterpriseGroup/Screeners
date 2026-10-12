@@ -2639,3 +2639,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS in GitHub Actions run **38318362177**.
 - **Code commit SHAs:** link builder `8aabf9b7e48fc8c389ca59f2b27d4dc01b08002b`; scroller BUY/OS icon `8b2f4f4bbf98a1e0c2ebe68803ddb112d4bad93c`; URL regression `7c0b53a72acd8340f0a4ec789d98400be2253bb7`; browser regression and sorted-row correction `e94fa13441e1e11499b29d91784a6d5f905c598c`, `a4ff18c52d682992cc1eb9861bd1c4371826fb7e`. This changelog-only commit follows.
 - **Lesson:** Build third-party verification links directly from the checked full-chain contract identity, keep outbound actions separate from broker orders, and never imply a proxy ETF stock leg reproduces mixed-stock/beta hedge losses. Browser tests should derive expectations from actual sorted rows rather than unsorted fixture positions.
+
+
+## 2026-10-12 — Protective Put OptionStrat control made visible before selection
+
+- **Feature changed:** Protective Puts → PORTFOLIO HEDGE → virtualized PUT options BUY / OptionStrat verification control.
+- **Exact production files changed:** `src/components/pp_put_chain_scroller_v1/index.html`. Focused regression coverage changed: `scripts/test_protective_puts_paging_browser.py`. Append-only change log updated here.
+- **What was broken / root cause:** The prior OptionStrat implementation hid the entire `OS↗` control until the PUT row was already checked. In the normal unselected table this made the requested OptionStrat button look completely absent, and the active control was only 22px wide after selection.
+- **What changed:** Keep a compact `OS↗` OptionStrat control visibly rendered beside every BUY checkbox. Before selection it is visibly disabled and has no `href`; checking BUY immediately activates the orange OptionStrat deep-link button for that exact row. Unchecking removes the live `href` again. The existing prebuilt URL still carries the exact PUT expiry, strike, whole contract quantity and ASK plus the rounded ETF-equivalent proxy share leg.
+- **Important behavior that must remain:** OptionStrat remains verification-only and opens in a separate tab. BUY selection still owns trade selection; opening OptionStrat never submits an order, resets selection, or bypasses E*TRADE Preview → confirmation → SEND safeguards. Existing rapid-click revisions, scrolling, annual lime highlights, selected Risk Slide and exact-contract identities must remain unchanged.
+- **Files/features intentionally NOT changed:** `streamlit_app.py`, `src/protective_puts_portfolio_ui.py`, `src/protective_puts.py`, `src/protective_puts_orders.py`, OAuth/session, Risk Sizing, GEX, Holdings, navigation, shared theme and all other tabs.
+- **Tests performed:** PENDING pull-request regression run. The focused Selenium regression now asserts the OptionStrat control is visible-but-disabled before BUY and live with the exact sorted PUT deep link after BUY.
+- **Architecture guard result:** PENDING pull-request regression run.
+- **Code commit SHAs:** UI `be073ffe42e4649ebdad1a4ec988a3d3b5473630`; focused browser regression `2e250f2393e44cb59275d59187a890e0c50381e8`. This changelog branch commit follows.
+- **Lesson:** A requested verification action should be visibly discoverable in the default table state. Disable it until the owning selection is active rather than hiding the entire control.
