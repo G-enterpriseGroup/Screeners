@@ -294,6 +294,54 @@ def etf_equivalent_max_loss(
     return max(0.0, (spot + ask - strike) * shares), shares
 
 
+def proxy_put_expiry_pnl(
+    *, spot: float, strike: float, ask: float, contracts: int,
+    basket_value: float, expiry_spot: float, beta: float = 1.0,
+) -> float:
+    """Expiration P/L of the proxy-sized basket PLUS whole listed PUTs.
+
+    Underlying basket is a hypothetical market-value-matched ETF proxy, not
+    actual disparate holdings. Puts are actual 100-share contract multipliers.
+    """
+    import math
+
+    values = (spot, strike, ask, basket_value, expiry_spot, beta)
+    if not all(math.isfinite(float(v)) for v in values):
+        raise ValueError("Proxy PUT P/L inputs must be finite")
+    if (spot <= 0 or strike <= 0 or ask < 0 or basket_value <= 0
+            or expiry_spot < 0 or beta <= 0
+            or type(contracts) is not int or contracts < 1):
+        raise ValueError("Invalid proxy basket or whole-contract PUT position")
+    future_basket = max(
+        0.0, basket_value * (1.0 + beta * (expiry_spot / spot - 1.0)),
+    )
+    put_payoff = max(0.0, strike - expiry_spot) * CONTRACT_SIZE * contracts
+    premium = ask * CONTRACT_SIZE * contracts
+    return future_basket - basket_value + put_payoff - premium
+
+
+def proxy_put_max_loss(
+    *, spot: float, strike: float, ask: float, contracts: int,
+    basket_value: float, beta: float = 1.0,
+) -> tuple[float, float]:
+    """Worst modeled expiration loss across the proxy payoff's linear corners.
+
+    Both the zero-price and strike cases matter: excess puts may create an
+    upside-in-price risk zone with worst outcome *at the strike*, not at $0.
+    """
+    points = {0.0, float(strike)}
+    if beta > 1.0:
+        points.add(max(0.0, spot * (1.0 - 1.0 / beta)))
+    outcomes = [
+        (proxy_put_expiry_pnl(
+            spot=spot, strike=strike, ask=ask, contracts=contracts,
+            basket_value=basket_value, expiry_spot=value, beta=beta,
+        ), value) for value in sorted(points)
+    ]
+    lowest_pl, at_price = min(outcomes)
+    return max(0.0, -lowest_pl), at_price
+
+
 # ==============================
 # COMPLETE PROXY PUT CHAIN / SCENARIO RANKING
 # ==============================
