@@ -305,6 +305,12 @@ _SELECTION_COMPONENT = components.declare_component(
 )
 _SELECTION_STORAGE_PREFIX = "raj-terminal-pp-hedge-selected-v1"
 
+_PUT_CHAIN_SCROLL_COMPONENT = components.declare_component(
+    "raj_pp_put_chain_scroller_v1",
+    path=str(Path(__file__).parent / "components" / "pp_put_chain_scroller_v1"),
+)
+
+
 
 def _preferred_account_index(accounts: list[dict[str, Any]]) -> int:
     """Default to the Raj Singh brokerage account, never a random first account."""
@@ -1123,6 +1129,74 @@ def _chain_cell_markup(row: dict[str, Any]) -> str:
     ) + "</div>"
 
 
+def _annual_lowest_loss_ids(data: pd.DataFrame) -> set[str]:
+    """One executable, lowest ASK-based 100-share max-loss put per ETF/year.
+
+    Premium, DTE and contract break equal-loss ties deterministically.
+    This compares only loaded, valid quoted chains; a proxy basket still
+    has scenario risk and is not protected by this 100-share metric.
+    """
+    if data.empty:
+        return set()
+    work = data.copy()
+    work["_year"] = pd.to_datetime(
+        work["Expiration"], format="%m-%d-%y", errors="coerce",
+    ).dt.year
+    work["_loss"] = pd.to_numeric(work["Max Loss (Ask)"], errors="coerce")
+    work["_premium"] = pd.to_numeric(work["Cost of Put (Ask)"], errors="coerce")
+    work["_ask"] = pd.to_numeric(work["Ask"], errors="coerce")
+    work = work.loc[
+        work["_year"].notna()
+        & work["_loss"].ge(0) & work["_loss"].lt(float("inf"))
+        & work["_premium"].ge(0) & work["_premium"].lt(float("inf"))
+        & work["_ask"].gt(0) & work["_ask"].lt(float("inf"))
+        & work["Orderable"].eq(True)
+    ]
+    if work.empty:
+        return set()
+    ordered = work.sort_values(
+        ["Proxy", "_year", "_loss", "_premium", "DTE", "Strike", "Contract"],
+        ascending=[True] * 7, kind="stable",
+    )
+    return {
+        _contract_identity(row)
+        for row in ordered.drop_duplicates(["Proxy", "_year"]).to_dict("records")
+    }
+
+
+def _chain_scroll_values(row: dict[str, Any]) -> dict[str, Any]:
+    """Compact text-only cell payload for the iframe's virtualized grid."""
+    def price(value: Any) -> str:
+        try:
+            return "—" if pd.isna(value) else f"${float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    expression = str(row.get("Max Loss Calc (Ask)") or "—")
+    match = re.search(
+        r"\(\s*([\d.,]+)\s*\+\s*([\d.,]+)\s*-\s*([\d.,]+)\s*\)\s*[×x*]\s*100",
+        expression,
+    )
+    if match:
+        a, b, k = (f"{float(v.replace(',', '')):,.2f}" for v in match.groups())
+        compact_calc = f"100×({a}+{b}−{k})⁺"
+    else:
+        compact_calc = expression
+    oi = row.get("Open Interest")
+    values = [
+        str(row["Proxy"]), str(row.get("Contract") or "—"),
+        str(row["Expiration"]), str(int(row["DTE"])),
+        price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
+        price(row["Cost of Put (Ask)"]), price(row["Max Loss (Ask)"]),
+        compact_calc, price(row["Stress Remaining Loss"]),
+        str(int(row["Contracts"])), str(int(oi)) if pd.notna(oi) else "—",
+    ]
+    return {
+        "values": values, "calc": expression,
+        "last": price(row.get("Last")), "volume": str(row.get("Volume") or "—"),
+    }
+
+
 def _toggle_contract_buy(state_key: str, scope_key: str, identity: str) -> None:
     """Toggle an exact contract from a full-cell BUY control; never place an order."""
     state = st.session_state.get(state_key)
@@ -1186,7 +1260,8 @@ def _results(
         "MAX LOSS (100 SHARES) = max(0, (ETF SPOT + PUT ASK - STRIKE) × 100). "
         "NOT A GUARANTEED FLOOR FOR YOUR BASKET. HOVER CALC FOR FULL NUMBERS."
     )
-    # Sort the complete loaded chain; render just 25 native checkboxes/page.
+    # The browser virtualizes all LOADED contracts in a fixed-height scroll
+    # region. No per-page controls or thousands of Streamlit button widgets.
     scope = (result["scan_id"], result["fingerprint"])
     scope_key = hashlib.sha256(repr(scope).encode("utf-8")).hexdigest()[:16]
     state_key = "_pp_chain_checked_contracts"
@@ -1194,12 +1269,11 @@ def _results(
     if not isinstance(state, dict) or state.get("scope") != scope_key:
         state = {"scope": scope_key, "ids": set()}
         st.session_state[state_key] = state
-        st.session_state["pp_chain_page"] = 0
     saved_ids = set(state["ids"])
 
     with st.container(key="pp_chain_controls", gap="small"):
-        sc, dc, prev_col, next_col, indicator = st.columns(
-            [1.75, .8, .9, .9, 1.3], gap="small", vertical_alignment="bottom",
+        sc, dc, indicator = st.columns(
+            [1.75, .8, 3.0], gap="small", vertical_alignment="bottom",
         )
         with sc:
             sort_by = st.selectbox(
@@ -1211,51 +1285,47 @@ def _results(
                 "ORDER", ("ASC", "DESC"), key="pp_chain_direction",
                 label_visibility="collapsed",
             )
-        ordered = _sort_contract_chain(data, sort_by, direction)
-        page_count = max(1, (len(ordered) + _CHAIN_PAGE_SIZE - 1) // _CHAIN_PAGE_SIZE)
-        page_index = min(max(0, int(st.session_state.get("pp_chain_page", 0))),
-                         page_count - 1)
-        with prev_col:
-            if st.button("◀ PREV", disabled=page_index == 0,
-                         key="pp_chain_prev", width="stretch"):
-                page_index -= 1
-        with next_col:
-            if st.button("NEXT ▶", disabled=page_index >= page_count - 1,
-                         key="pp_chain_next", width="stretch"):
-                page_index += 1
-        st.session_state["pp_chain_page"] = page_index
         with indicator:
-            st.caption(f"PAGE {page_index + 1}/{page_count} // {len(ordered):,} PUTS")
+            st.caption(f"SCROLL ALL {len(data):,} LOADED PUTS // NO PAGES")
 
-    start = page_index * _CHAIN_PAGE_SIZE
-    page_data = ordered.iloc[start:start + _CHAIN_PAGE_SIZE].copy()
-    page_ids = [_contract_identity(row) for row in page_data.to_dict("records")]
-    head = ["ETF", "CONTRACT", "EXP", "DTE", "STRIKE", "BID", "ASK",
-            "PUT COST", "MAX LOSS", "LOSS CALC", "BASKET LOSS", "QTY", "OI"]
-    with st.container(key="pp_chain_native_grid", gap=None):
-        left, right = st.columns([.66, 9.34], gap=None, vertical_alignment="center")
-        left.html('<div class="pp-chain-buy-head">BUY</div>')
-        right.html(
-            '<div class="pp-chain-cells pp-chain-head">'
-            + "".join("<span>"+v+"</span>" for v in head)+"</div>"
-        )
-        for row, identity in zip(page_data.to_dict("records"), page_ids):
-            left, right = st.columns([.66, 9.34], gap=None, vertical_alignment="center")
-            check_key = "pp_put_buy_"+scope_key+"_"+hashlib.sha256(identity.encode()).hexdigest()[:20]
-            with left:
-                st.button(
-                    "☑" if identity in saved_ids else "☐",
-                    type="primary" if identity in saved_ids else "secondary",
-                    key=check_key, width="stretch",
-                    on_click=_toggle_contract_buy, args=(state_key, scope_key, identity),
-                    help=f"BUY {row['Proxy']} {row['Expiration']} {row['Strike']} PUT // SELECT / DESELECT",
-                )
-            right.html(_chain_cell_markup(row))
-
+    ordered = _sort_contract_chain(data, sort_by, direction)
+    by_id = result.get("_pp_chain_scroll_rows")
+    if not isinstance(by_id, dict):
+        winners = _annual_lowest_loss_ids(data)
+        by_id = {}
+        for row in data.to_dict("records"):
+            identity = _contract_identity(row)
+            payload = _chain_scroll_values(row)
+            by_id[identity] = {
+                "id": identity, **payload,
+                "annual": identity in winners,
+                "priority": bool(row.get("Priority")),
+                "best": bool(row.get("Best / Expiration")),
+            }
+        result["_pp_chain_scroll_rows"] = by_id
+    scroll_rows = [
+        by_id[_contract_identity(row)] for row in ordered.to_dict("records")
+    ]
+    selected_update = _PUT_CHAIN_SCROLL_COMPONENT(
+        scope=scope_key, sort_key=f"{sort_by}|{direction}",
+        rows=scroll_rows, selected_ids=sorted(saved_ids),
+        key="pp_chain_scroll_" + scope_key, default=None,
+    )
+    if isinstance(selected_update, dict) and selected_update.get("scope") == scope_key:
+        incoming = selected_update.get("selected_ids")
+        if isinstance(incoming, list):
+            checked = {item for item in incoming if isinstance(item, str) and item in by_id}
+            if checked != saved_ids:
+                state["ids"] = checked
+                st.session_state[state_key] = state
+                st.session_state.pop("pp_hedge_order_preview", None)
+                st.session_state.pop("pp_hedge_live_confirm", None)
     checked_ids = set(st.session_state[state_key]["ids"])
     st.caption(
-        f"{len(checked_ids)} SELECTED ACROSS ALL PAGES // "
-        f"{len(data):,} LOADED CONTRACTS // {result.get('listed_count', 0)} LISTED EXPIRATIONS"
+        f"{len(checked_ids)} SELECTED ACROSS ALL LOADED CONTRACTS // "
+        f"{len(data):,} QUOTED PUTS // {result.get('listed_count', 0)} LISTED EXPIRATIONS // "
+        "LIME GREEN = LOWEST ORDERABLE ASK MAX LOSS PER ETF / EXPIRATION YEAR "
+        "(CHEAPEST PUT PREMIUM BREAKS TIES)"
     )
     try:
         chosen = _selected_contract_orders(data, checked_ids)
