@@ -19,7 +19,8 @@ import streamlit.components.v1 as components
 
 from src.etrade_client import find_number, quote_summary, total_account_value
 from src.protective_puts import (
-    portfolio_chain_scenario, portfolio_risk_slide, rank_portfolio_chain,
+    etf_equivalent_max_loss, portfolio_chain_scenario, portfolio_risk_slide,
+    rank_portfolio_chain,
 )
 from src.protective_puts_orders import (
     MAX_PUT_CONTRACTS, build_put_preview, build_place_payload,
@@ -341,13 +342,14 @@ def _account_token(account_key: str) -> str:
     return hashlib.sha256(account_key.encode("utf-8")).hexdigest()[:24]
 
 
-def _selected_symbols(value: Any, active_symbols: set[str]) -> list[str]:
-    """Clean browser-saved tickers and drop positions no longer in the account."""
+def _selected_symbols(value: Any) -> list[str]:
+    """Keep valid saved ticker intentions even across partial holdings snapshots."""
     if not isinstance(value, list):
         return []
     return sorted({
         symbol for raw in value
-        if (symbol := str(raw).strip().upper()) in active_symbols
+        if re.fullmatch(r"[A-Z][A-Z0-9.\\-]{0,12}",
+                        symbol := str(raw).strip().upper())
     })
 
 
@@ -355,7 +357,7 @@ def _selection_session_key(account_key: str) -> str:
     return "_pp_hedge_selected_v1::" + _account_token(account_key)
 
 
-def _load_selection(account_key: str, active_symbols: set[str]) -> dict[str, Any] | None:
+def _load_selection(account_key: str) -> dict[str, Any] | None:
     """Read and reconcile browser state before rendering editable checkboxes."""
     token = _account_token(account_key)
     session_key = _selection_session_key(account_key)
@@ -371,7 +373,7 @@ def _load_selection(account_key: str, active_symbols: set[str]) -> dict[str, Any
             return None  # Never draw unchecked boxes before storage is hydrated.
         browser_state = restored.get("state") if isinstance(restored.get("state"), dict) else {}
         stored = browser_state.get("tickers")
-        selected = _selected_symbols(stored, active_symbols)
+        selected = _selected_symbols(stored)
         try:
             revision = max(0, int(browser_state.get("revision") or 0))
         except (TypeError, ValueError, OverflowError):
@@ -381,7 +383,7 @@ def _load_selection(account_key: str, active_symbols: set[str]) -> dict[str, Any
         st.session_state[session_key] = {"revision": revision, "tickers": selected}
 
     state = st.session_state[session_key]
-    selected = _selected_symbols(state.get("tickers"), active_symbols)
+    selected = _selected_symbols(state.get("tickers"))
     if selected != state.get("tickers"):
         state = {"revision": int(state.get("revision") or 0) + 1, "tickers": selected}
         st.session_state[session_key] = state
@@ -712,11 +714,11 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
         book, account_total=total, long_term_tickers=long_term_tickers,
         gain_threshold=gain_threshold, tactical_pct=tactical_pct,
     )
-    memory = _load_selection(account_key, set(book["Symbol"].tolist()))
+    memory = _load_selection(account_key)
     if memory is None:
         st.caption("RESTORING YOUR SAVED HEDGE SELECTIONS...")
         return None
-    checked_symbols = set(memory["tickers"])
+    checked_symbols = set(memory["tickers"]) & set(book["Symbol"].tolist())
     st.caption(
         "SELECT INVESTMENTS // SAME E*TRADE P&L + CLASSIFICATION RULE AS RISK SIZING // "
         "HEDGE CHECKMARKS SAVED IN THIS BROWSER PER ACCOUNT"
@@ -807,6 +809,13 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
                 selected.append(row)
     _write_selection(account_key)
     portfolio_value = float(pd.to_numeric(book["Market Value"], errors="coerce").fillna(0).sum())
+    hedge_value = sum(float(row["Market Value"]) for row in selected)
+    hedge_pct = min(100.0, 100.0 * hedge_value / portfolio_value) if portfolio_value > 0 else 0.0
+    st.caption(
+        f"LIVE HEDGE BASKET // {len(selected)} / {len(book)} CHECKED // "
+        f"${hedge_value:,.2f} OF ${portfolio_value:,.2f} // {hedge_pct:.1f}% "
+        "// SAVED PER ACCOUNT IN THIS BROWSER"
+    )
     return account_key, selected, portfolio_value, int(len(book))
 
 
