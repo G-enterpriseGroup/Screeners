@@ -1167,7 +1167,9 @@ def _annual_lowest_loss_ids(data: pd.DataFrame) -> set[str]:
     }
 
 
-def _chain_scroll_values(row: dict[str, Any]) -> dict[str, Any]:
+def _chain_scroll_values(
+    row: dict[str, Any], hedge_exposure: float = 0.0,
+) -> dict[str, Any]:
     """Compact text-only cell payload for the iframe's virtualized grid."""
     def price(value: Any) -> str:
         try:
@@ -1185,6 +1187,26 @@ def _chain_scroll_values(row: dict[str, Any]) -> dict[str, Any]:
         compact_calc = f"100×({a}+{b}−{k})⁺"
     else:
         compact_calc = expression
+    contracts = int(row["Contracts"])
+    try:
+        exposure = float(hedge_exposure or 0.0)
+        spot = float(row.get("Spot") or 0.0)
+    except (TypeError, ValueError):
+        exposure, spot = 0.0, 0.0
+    if exposure > 0 and spot > 0:
+        equivalent_shares = exposure / spot
+        qty_title = (
+            f"PUT QTY {contracts} // SELECTED BASKET ${exposure:,.2f} ÷ "
+            f"{row['Proxy']} SPOT ${spot:,.2f} = {equivalent_shares:,.1f} "
+            "ETF-EQUIVALENT SHARES // EACH PUT CONTRACT REPRESENTS 100 ETF SHARES"
+        )
+    else:
+        equivalent_shares = float(contracts * 100)
+        qty_title = (
+            f"PUT QTY {contracts} // {equivalent_shares:,.0f} ETF SHARES REPRESENTED "
+            "AT 100 SHARES PER PUT CONTRACT"
+        )
+    qty_value = f"{contracts} / {equivalent_shares:,.0f} SH"
     oi = row.get("Open Interest")
     values = [
         str(row["Proxy"]), str(row.get("Contract") or "—"),
@@ -1192,10 +1214,10 @@ def _chain_scroll_values(row: dict[str, Any]) -> dict[str, Any]:
         price(row["Strike"]), price(row["Bid"]), price(row["Ask"]),
         price(row["Cost of Put (Ask)"]), price(row["Max Loss (Ask)"]),
         compact_calc, price(row["Stress Remaining Loss"]),
-        str(int(row["Contracts"])), str(int(oi)) if pd.notna(oi) else "—",
+        qty_value, str(int(oi)) if pd.notna(oi) else "—",
     ]
     return {
-        "values": values, "calc": expression,
+        "values": values, "calc": expression, "qty_title": qty_title,
         "last": price(row.get("Last")), "volume": str(row.get("Volume") or "—"),
     }
 
@@ -1360,7 +1382,9 @@ def _results(
         by_id = {}
         for row in data.to_dict("records"):
             identity = _contract_identity(row)
-            payload = _chain_scroll_values(row)
+            payload = _chain_scroll_values(
+                row, hedge_exposure=float(result.get("exposure") or 0.0),
+            )
             by_id[identity] = {
                 "id": identity, **payload,
                 "annual": identity in winners,
