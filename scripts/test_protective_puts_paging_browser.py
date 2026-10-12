@@ -72,6 +72,9 @@ frame=pd.DataFrame(data)
 result={
     "data":frame, "direct_example":True, "scan_id":963321,
     "fingerprint":("test","SPY"), "exposure":0,
+    # Include a second $60k eligible sleeve to verify the portfolio table
+    # models unselected equities moving at beta 1, while grid QTY stays direct.
+    "portfolio_value":120000.0,
     "stress_loss":0, "stress":15.0, "beta":1.0,
     "chains":1, "errors":[],
 }
@@ -281,6 +284,121 @@ def main() -> None:
                 assert "LOSS CALC" in info["header"],info
             check_virtualized()
             assert "62 DISPLAYED / 62 QUOTED PUTS" in driver.page_source
+
+            def rapid_toggle_pair(expected):
+                # Two clicks in one browser turn outrun a fragment round trip.
+                # The iframe and Python must agree after the rerender settles.
+                def click_pair():
+                    pressed=driver.execute_script(
+                        """
+                        const first=document.querySelector('.row[data-index="0"] .buy');
+                        const second=document.querySelector('.row[data-index="1"] .buy');
+                        if (!first || !second) return null;
+                        first.click(); second.click();
+                        return [first.getAttribute('aria-pressed'),
+                                second.getAttribute('aria-pressed')];
+                        """
+                    )
+                    assert pressed==[str(expected>0).lower()]*2, pressed
+                in_scroll_iframe(driver,click_pair)
+                wait.until(lambda _: selected_count(driver)==expected)
+                def check_pair():
+                    return driver.execute_script(
+                        """
+                        return [0,1].map(i=>document.querySelector(
+                          `.row[data-index="${i}"] .buy`
+                        )?.getAttribute('aria-pressed'));
+                        """
+                    )
+                wait.until(lambda _: in_scroll_iframe(driver,check_pair)
+                           ==[str(expected>0).lower()]*2)
+
+            rapid_toggle_pair(2)
+            slide=wait.until(lambda _: next((
+                el for el in driver.find_elements(By.CSS_SELECTOR,"table.pp-risk-table")
+                if el.is_displayed()
+            ),None))
+            labels=[el.text for el in slide.find_elements(By.CSS_SELECTOR,"tbody tr th")]
+            assert labels==[
+                "-30%","-25%","-20%","-15%","-10%","-5%","-2%",
+                "+0%","+2%","+5%","+10%","+15%","+20%","+25%","+30%",
+            ],labels
+            assert [el.text for el in slide.find_elements(By.CSS_SELECTOR,"thead th")]==[
+                "MOVE","NO PUT","WITH PUT","CHANGE $","CHANGE %",
+            ]
+            row_by_move={
+                row.find_element(By.CSS_SELECTOR,"th").text:
+                [cell.text for cell in row.find_elements(By.CSS_SELECTOR,"td")]
+                for row in slide.find_elements(By.CSS_SELECTOR,"tbody tr")
+            }
+            # Row 0 is the $570 strike / $1.10 ASK SPY PUT. At -30%, the
+            # selected 100-share basket loses $18k, the other sleeve loses
+            # $18k, and the put returns $15k less its $110 premium.
+            assert row_by_move["-30%"]==[
+                "$84,000.00","$98,890.00","-$21,110.00","-17.59%",
+            ],row_by_move["-30%"]
+            assert row_by_move["+0%"][1:]==[
+                "$119,890.00","-$110.00","-0.09%",
+            ],row_by_move["+0%"]
+            geometry=driver.execute_script(
+                """
+                const t=arguments[0], r=t.getBoundingClientRect();
+                return {tableWidth:r.width, tableRight:r.right,
+                        viewportWidth:document.documentElement.clientWidth,
+                        tableScroll:t.scrollWidth-t.clientWidth,
+                        pageScroll:document.documentElement.scrollWidth-
+                                   document.documentElement.clientWidth};
+                """,slide,
+            )
+            assert geometry["tableRight"]<=geometry["viewportWidth"]+2,geometry
+            assert geometry["tableScroll"]<=2,geometry
+            assert geometry["pageScroll"]<=2,geometry
+            wait.until(lambda _: "PORTFOLIO CHANGE ($)" in
+                       driver.find_element(By.TAG_NAME,"body").text)
+            chart_at_minus_30=wait.until(lambda _: driver.execute_script(
+                """
+                const plot=document.querySelector('.js-plotly-plot');
+                if (!plot || !plot.data || !plot.calcdata ||
+                    plot.data.length<2 || plot.calcdata.length<2) return null;
+                return plot.data.slice(0,2).map((trace,i)=>{
+                  const point=plot.calcdata[i].find(p=>Number(p.x)===-30);
+                  return {name:trace.name, change:point?Number(point.y):null};
+                });
+                """
+            ))
+            assert chart_at_minus_30==[
+                {"name":"No PUT","change":-36000.0},
+                {"name":"With checked PUT","change":-21110.0},
+            ],chart_at_minus_30
+            driver.set_window_size(1100,1000)
+            compact=wait.until(lambda _: driver.execute_script(
+                """
+                const t=document.querySelector('table.pp-risk-table');
+                if (!t) return null;
+                const r=t.getBoundingClientRect();
+                return {right:r.right,
+                  viewport:document.documentElement.clientWidth,
+                  pageOverflow:document.documentElement.scrollWidth-
+                               document.documentElement.clientWidth,
+                  tableOverflow:t.scrollWidth-t.clientWidth,
+                  cellOverflow:Math.max(...[...t.querySelectorAll('th,td')]
+                    .map(cell=>cell.scrollWidth-cell.clientWidth)),
+                  clippedCells:[...t.querySelectorAll('th,td')]
+                    .filter(cell=>cell.scrollWidth-cell.clientWidth>2)
+                    .map(cell=>({text:cell.textContent,
+                      column:cell.cellIndex, width:cell.clientWidth,
+                      contentWidth:cell.scrollWidth})),
+                  visibleRows:[...t.querySelectorAll('tbody tr')]
+                    .filter(row=>row.getBoundingClientRect().height>0).length};
+                """
+            ))
+            assert compact["right"]<=compact["viewport"]+2,compact
+            assert compact["pageOverflow"]<=2,compact
+            assert compact["tableOverflow"]<=2,compact
+            assert compact["cellOverflow"]<=2,compact
+            assert compact["visibleRows"]==15,compact
+            driver.set_window_size(1450,1000)
+            rapid_toggle_pair(0)
 
             # LOWEST LOSS default now sorts both annual winners to the top.
             inspect_and_click_row(driver,0,1)

@@ -342,6 +342,69 @@ def proxy_put_max_loss(
     return max(0.0, -lowest_pl), at_price
 
 
+def proxy_put_risk_scenarios(
+    *, spot: float, strike: float, ask: float, contracts: int,
+    basket_value: float, portfolio_value: float, beta: float = 1.0,
+    moves: Iterable[float] | None = None,
+) -> pd.DataFrame:
+    """Show expiration P/L from one whole-contract proxy PUT across market moves.
+
+    The selected basket follows the proxy ETF move times ``beta``. Other
+    eligible long holdings follow the market move one-for-one. This is an
+    explicit one-factor scenario, not an estimate of historical correlation.
+    The PUT payoff uses intrinsic value and deducts the entire ASK premium.
+    For a ticker-only illustration, callers pass the same amount for both
+    portfolio and basket. This is not a guaranteed loss bound.
+    """
+    import math
+
+    base = float(portfolio_value)
+    selected = float(basket_value)
+    if not math.isfinite(base) or base < selected:
+        raise ValueError("Portfolio value must be finite and cover the selected basket")
+    unselected = base - selected
+    # This also validates the quote, basket, beta, and whole-contract quantity
+    # when a caller supplies an empty custom move list.
+    proxy_put_expiry_pnl(
+        spot=spot, strike=strike, ask=ask, contracts=contracts,
+        basket_value=selected, expiry_spot=spot, beta=beta,
+    )
+    if moves is None:
+        moves = (-30, -25, -20, -15, -10, -5, -2, 0,
+                 2, 5, 10, 15, 20, 25, 30)
+
+    records: list[dict[str, float]] = []
+    for raw_move in moves:
+        move = float(raw_move)
+        if not math.isfinite(move) or move < -100:
+            raise ValueError("Market moves must be finite and at least -100%")
+        future_spot = float(spot) * (1.0 + move / 100.0)
+        no_put = max(0.0, selected * (1.0 + float(beta) * move / 100.0)) - selected
+        unselected_pl = unselected * move / 100.0
+        with_put = proxy_put_expiry_pnl(
+            spot=spot, strike=strike, ask=ask, contracts=contracts,
+            basket_value=selected, expiry_spot=future_spot, beta=beta,
+        )
+        records.append({
+            "Market Move %": move,
+            "ETF Price": future_spot,
+            "Basket P/L No Put": no_put,
+            "Basket P/L With Put": with_put,
+            "Unselected P/L": unselected_pl,
+            "Portfolio Value No Put": base + no_put + unselected_pl,
+            "Portfolio Value With Put": base + with_put + unselected_pl,
+            "Portfolio Change $": with_put + unselected_pl,
+            "Portfolio Change %": 100.0 * (with_put + unselected_pl) / base,
+            "Put Benefit $": with_put - no_put,
+        })
+    return pd.DataFrame.from_records(records, columns=(
+        "Market Move %", "ETF Price", "Basket P/L No Put",
+        "Basket P/L With Put", "Unselected P/L", "Portfolio Value No Put",
+        "Portfolio Value With Put", "Portfolio Change $",
+        "Portfolio Change %", "Put Benefit $",
+    )).sort_values("Market Move %", kind="stable").reset_index(drop=True)
+
+
 # ==============================
 # COMPLETE PROXY PUT CHAIN / SCENARIO RANKING
 # ==============================
@@ -527,6 +590,7 @@ __all__ = [
     "portfolio_hedge_candidates",
     "portfolio_chain_scenario",
     "portfolio_risk_slide",
+    "proxy_put_risk_scenarios",
     "rank_portfolio_chain",
     "validate_share_quantity",
 ]
