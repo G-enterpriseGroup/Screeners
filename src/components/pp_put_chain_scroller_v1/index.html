@@ -9,7 +9,7 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 #head{height:43px;background:#fb8b1e;color:#000;font-size:.78rem;font-weight:900}
 #head>span,.row>.cell{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 4px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16}
 #head>span{border-top:1px solid #fb8b1e}
-#head>span:first-child,.row>.buy{border-left:1px solid #fb8b1e;justify-content:center}
+#head>span:first-child,.row>.buy-group{border-left:1px solid #fb8b1e;justify-content:center}
 #head>span:nth-child(n+5),.row>.cell:nth-child(n+5){justify-content:flex-end}
 #head>span:nth-child(11),.row>.cell:nth-child(11){justify-content:flex-start;font-size:.69rem}
 #head>span:nth-child(2),.row>.cell:nth-child(2){justify-content:flex-start}
@@ -20,13 +20,18 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 .row.priority>.cell{background:#fb8b1e;color:#000;font-weight:900}
 .row.best>.cell{background:#10130d;color:#4af6c3}
 .row.annual>.cell{background:#a3e635!important;color:#000!important;-webkit-text-fill-color:#000!important;font-weight:900!important}
+.buy-group{display:flex;align-items:stretch;width:100%;height:43px;min-width:0;background:#000}
+.buy-group .buy{flex:1;min-width:35px;width:auto}
 .buy{height:43px;width:100%;padding:0!important;display:flex;align-items:center;justify-content:center;background:#000;border:0;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;color:transparent;cursor:pointer;border-radius:0}
 .buy:hover{background:#120a02}
 .buy:focus-visible{outline:2px solid #fff;outline-offset:-3px}
-.row.annual>.buy{background:#a3e635}
-.row.annual>.buy:hover{background:#c9fc73}
+.row.annual .buy-group,.row.annual .buy{background:#a3e635}
+.row.annual .buy:hover{background:#c9fc73}
 .square{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid #fb8b1e;border-radius:0;background:#000;color:transparent;flex:none;font:bold 12px/1 "Courier New",monospace}
 .buy[aria-pressed="true"] .square{background:#fb8b1e;color:#000}
+.os-link{flex:0 0 22px;display:flex;align-items:center;justify-content:center;visibility:hidden;pointer-events:none;background:#0c0c0c;color:#fb8b1e;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;text-decoration:none;font:900 11px/1 "Courier New",monospace}
+.buy-group.checked .os-link{visibility:visible;pointer-events:auto}
+.os-link:hover,.os-link:focus-visible{background:#fb8b1e;color:#000;outline:1px solid #fff;outline-offset:-1px}
 #empty{padding:18px;font-size:13px;color:#fb8b1e;display:none}
 </style>
 </head>
@@ -58,12 +63,23 @@ function makeRow(row,index){
  const line=document.createElement("div");
  line.className="row"+(row.annual?" annual":row.priority?" priority":row.best?" best":"");
  line.dataset.index=String(index);
+ const group=document.createElement("div");
+ group.className="buy-group"+(selected.has(row.id)?" checked":"");
  const buy=document.createElement("button");
  buy.type="button";buy.className="buy";buy.dataset.index=String(index);
  buy.setAttribute("aria-label","BUY "+row.values[0]+" "+row.values[2]+" "+row.values[4]+" PUT // SELECT / DESELECT");
  buy.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
  buy.title="Select or deselect exact put contract; no order is sent";
- const square=document.createElement("span");square.className="square";square.textContent="✓";square.setAttribute("aria-hidden","true");buy.appendChild(square);line.appendChild(buy);
+ const square=document.createElement("span");square.className="square";square.textContent="✓";square.setAttribute("aria-hidden","true");buy.appendChild(square);group.appendChild(buy);
+ if(typeof row.optionstrat_url==="string" && /^https:\/\/optionstrat\.com\/build\/protective-put\//.test(row.optionstrat_url)){
+  const link=document.createElement("a");link.className="os-link";
+  link.href=row.optionstrat_url;link.target="_blank";link.rel="noopener noreferrer";
+  link.textContent="OS↗";
+  link.title="Open this checked PUT with rounded ETF-equivalent shares in OptionStrat (proxy, not your exact holdings)";
+  link.setAttribute("aria-label","Verify checked "+row.values[0]+" PUT "+row.values[2]+" in OptionStrat");
+  group.appendChild(link);
+ }
+ line.appendChild(group);
  for(let i=0;i<row.values.length;i++){
    const cell=document.createElement("span");cell.className="cell";
    cell.textContent=String(row.values[i]??"—");
@@ -88,6 +104,7 @@ visible.addEventListener("click",event=>{
  const row=rows[Number(buy.dataset.index)];if(!row)return;
  if(selected.has(row.id))selected.delete(row.id);else selected.add(row.id);
  buy.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
+ buy.parentElement.classList.toggle("checked",selected.has(row.id));
  pendingSelection=new Set(selected);
  revision=Math.max(revision,acknowledgedRevision)+1;
  pendingRevision=revision;
