@@ -313,10 +313,16 @@ def main() -> None:
             # The SAME browser-backed checkbox memory used by the real hedge
             # must survive partial holdings and a full Streamlit page refresh.
             def visible_hedge_label(text):
-                return next((
-                    el for el in driver.find_elements(By.CSS_SELECTOR, "label")
-                    if text in el.text and el.is_displayed()
-                ), None)
+                # Query atomically inside Chrome while Streamlit swaps DOM nodes;
+                # looping over WebElements during a rerun can raise stale-element.
+                return driver.execute_script(
+                    """
+                    return [...document.querySelectorAll("label")].find(
+                      el => el.offsetParent !== null
+                         && el.textContent.includes(arguments[0])
+                    ) || null;
+                    """, text,
+                )
             hedge=wait.until(lambda _: visible_hedge_label("TEST HEDGE SPY"))
             hedge.click()
             wait.until(lambda _: "SPY SAVED IN BROWSER MEMORY" in
