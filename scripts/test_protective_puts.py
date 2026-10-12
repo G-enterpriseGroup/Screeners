@@ -508,7 +508,7 @@ assert '_pp_single_quote_snapshot' in single_ui_source
 assert "run the Protective Put scan again to refresh the table" not in single_ui_source
 
 assert '"BASKET LOSS ?"' not in scroller_html
-assert "Illustrative matched-ETF expiration loss" in scroller_html
+assert "displayed integer PUT quantity (100 underlying shares per contract)" in scroller_html
 
 app_source = (Path(__file__).resolve().parents[1] /
               "streamlit_app.py").read_text(encoding="utf-8")
