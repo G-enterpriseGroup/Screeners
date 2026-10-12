@@ -29,9 +29,9 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 .row.annual .buy:hover{background:#c9fc73}
 .square{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid #fb8b1e;border-radius:0;background:#000;color:transparent;flex:none;font:bold 12px/1 "Courier New",monospace}
 .buy[aria-pressed="true"] .square{background:#fb8b1e;color:#000}
-.os-link{flex:0 0 22px;display:flex;align-items:center;justify-content:center;visibility:hidden;pointer-events:none;background:#0c0c0c;color:#fb8b1e;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;text-decoration:none;font:900 11px/1 "Courier New",monospace}
-.buy-group.checked .os-link{visibility:visible;pointer-events:auto}
-.os-link:hover,.os-link:focus-visible{background:#fb8b1e;color:#000;outline:1px solid #fff;outline-offset:-1px}
+.os-link{flex:0 0 34px;display:flex;align-items:center;justify-content:center;background:#0c0c0c;color:#fb8b1e;border:1px solid #fb8b1e;border-top:0;border-left:0;text-decoration:none;font:900 11px/1 "Courier New",monospace;opacity:.72;cursor:not-allowed}
+.buy-group.checked .os-link{background:#fb8b1e;color:#000;opacity:1;cursor:pointer}
+.buy-group.checked .os-link:hover,.buy-group.checked .os-link:focus-visible{background:#ff9d35;color:#000;outline:1px solid #fff;outline-offset:-1px}
 #empty{padding:18px;font-size:13px;color:#fb8b1e;display:none}
 </style>
 </head>
@@ -73,10 +73,12 @@ function makeRow(row,index){
  const square=document.createElement("span");square.className="square";square.textContent="✓";square.setAttribute("aria-hidden","true");buy.appendChild(square);group.appendChild(buy);
  if(typeof row.optionstrat_url==="string" && /^https:\/\/optionstrat\.com\/build\/protective-put\//.test(row.optionstrat_url)){
   const link=document.createElement("a");link.className="os-link";
-  link.href=row.optionstrat_url;link.target="_blank";link.rel="noopener noreferrer";
+  link.dataset.href=row.optionstrat_url;link.target="_blank";link.rel="noopener noreferrer";
   link.textContent="OS↗";
-  link.title="Open this checked PUT with rounded ETF-equivalent shares in OptionStrat (proxy, not your exact holdings)";
-  link.setAttribute("aria-label","Verify checked "+row.values[0]+" PUT "+row.values[2]+" in OptionStrat");
+  link.title="Select this PUT, then open the exact expiry / strike / quantity / ASK setup in OptionStrat";
+  link.setAttribute("aria-label","OptionStrat verification for "+row.values[0]+" PUT "+row.values[2]);
+  if(selected.has(row.id)){link.href=row.optionstrat_url;link.setAttribute("aria-disabled","false");}
+  else{link.removeAttribute("href");link.setAttribute("aria-disabled","true");link.tabIndex=-1;}
   group.appendChild(link);
  }
  line.appendChild(group);
@@ -104,7 +106,20 @@ visible.addEventListener("click",event=>{
  const row=rows[Number(buy.dataset.index)];if(!row)return;
  if(selected.has(row.id))selected.delete(row.id);else selected.add(row.id);
  buy.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
- buy.parentElement.classList.toggle("checked",selected.has(row.id));
+ const group=buy.parentElement;
+ group.classList.toggle("checked",selected.has(row.id));
+ const osLink=group.querySelector("a.os-link");
+ if(osLink){
+   if(selected.has(row.id)){
+     osLink.href=osLink.dataset.href||"";
+     osLink.setAttribute("aria-disabled","false");
+     osLink.tabIndex=0;
+   }else{
+     osLink.removeAttribute("href");
+     osLink.setAttribute("aria-disabled","true");
+     osLink.tabIndex=-1;
+   }
+ }
  pendingSelection=new Set(selected);
  revision=Math.max(revision,acknowledgedRevision)+1;
  pendingRevision=revision;
