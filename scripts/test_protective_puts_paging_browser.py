@@ -102,13 +102,20 @@ def wait_health(proc: subprocess.Popen) -> None:
 
 
 def selected_count(driver) -> int:
-    labels=driver.find_elements(By.CSS_SELECTOR, '[data-testid="stCaptionContainer"]')
-    for el in labels:
-        content=el.text
-        found=re.search(r"(\d+) SELECTED ACROSS ALL LOADED CONTRACTS",content)
-        if found:
-            return int(found.group(1))
-    return -1
+    # Streamlit replaces the entire fragment during BUY/risk-slide rerenders.
+    # Read all captions in one synchronous browser script, not via stale
+    # WebElement instances that can disappear while iterating.
+    return driver.execute_script(
+        """
+        for (const el of document.querySelectorAll(
+          '[data-testid="stCaptionContainer"]'
+        )) {
+          const m=el.textContent.match(/(\\d+) SELECTED ACROSS ALL LOADED CONTRACTS/);
+          if(m) return Number(m[1]);
+        }
+        return -1;
+        """
+    )
 
 
 def in_scroll_iframe(driver, callback):
