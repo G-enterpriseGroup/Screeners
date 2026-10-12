@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-family:"Courier New",monospace}
+#head,.row{display:grid;grid-template-columns:6.6% 4.5% 16.35% 7.2% 3.4% 6.7% 5.4% 5.4% 7.9% 9.5% 18.8% 9.8% 4.3% 4.3%;width:100%}
+#head{height:43px;background:#fb8b1e;color:#000;font-size:.78rem;font-weight:900}
+#head>span,.row>.cell{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 4px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16}
+#head>span{border-top:1px solid #fb8b1e}
+#head>span:first-child,.row>.buy{border-left:1px solid #fb8b1e;justify-content:center}
+#head>span:nth-child(n+5),.row>.cell:nth-child(n+5){justify-content:flex-end}
+#head>span:nth-child(11),.row>.cell:nth-child(11){justify-content:flex-start;font-size:.69rem}
+#head>span:nth-child(2),.row>.cell:nth-child(2){justify-content:flex-start}
+#scroll{height:516px;overflow-y:auto;overflow-x:hidden;scrollbar-color:#fb8b1e #111;overscroll-behavior:contain}
+#space{position:relative;width:100%}
+#visible{position:absolute;left:0;right:0;top:0}
+.row{height:43px;min-height:43px;font-size:.78rem;font-weight:800;background:#080808;color:#f6b56a;font-variant-numeric:tabular-nums}
+.row.priority>.cell{background:#fb8b1e;color:#000;font-weight:900}
+.row.best>.cell{background:#10130d;color:#4af6c3}
+.row.annual>.cell{background:#a3e635!important;color:#000!important;-webkit-text-fill-color:#000!important;font-weight:900!important}
+.buy{height:43px;width:100%;padding:0!important;display:flex;align-items:center;justify-content:center;background:#000;border:0;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;color:transparent;cursor:pointer;border-radius:0}
+.buy:hover{background:#120a02}
+.buy:focus-visible{outline:2px solid #fff;outline-offset:-3px}
+.row.annual>.buy{background:#a3e635}
+.row.annual>.buy:hover{background:#c9fc73}
+.square{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid #fb8b1e;border-radius:0;background:#000;color:transparent;flex:none;font:bold 12px/1 "Courier New",monospace}
+.buy[aria-pressed="true"] .square{background:#fb8b1e;color:#000}
+#empty{padding:18px;font-size:13px;color:#fb8b1e;display:none}
+</style>
+</head>
+<body>
+<div id="head" aria-label="Protective put option columns"></div>
+<div id="scroll" role="region" aria-label="Scrollable protective put contracts" tabindex="0">
+  <div id="space"><div id="visible"></div></div>
+  <div id="empty">NO QUOTED PUT CONTRACTS</div>
+</div>
+<script>
+(()=>{
+"use strict";
+const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","BASKET LOSS","QTY","OI"];
+const head=document.getElementById("head"), scroll=document.getElementById("scroll"), space=document.getElementById("space"), visible=document.getElementById("visible"), empty=document.getElementById("empty");
+let scope="", sortKey="", rows=[], selected=new Set(), start=-1, end=-1, revision=0;
+function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
+function syncHeight(){post("streamlit:setFrameHeight",{height:560});}
+for(const title of HEAD){const cell=document.createElement("span");cell.textContent=title;head.appendChild(cell);}
+function makeRow(row,index){
+ const line=document.createElement("div");
+ line.className="row"+(row.annual?" annual":row.priority?" priority":row.best?" best":"");
+ line.dataset.index=String(index);
+ const buy=document.createElement("button");
+ buy.type="button";buy.className="buy";buy.dataset.index=String(index);
+ buy.setAttribute("aria-label","BUY "+row.values[0]+" "+row.values[2]+" "+row.values[4]+" PUT // SELECT / DESELECT");
+ buy.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
+ buy.title="Select or deselect exact put contract; no order is sent";
+ const square=document.createElement("span");square.className="square";square.textContent="✓";square.setAttribute("aria-hidden","true");buy.appendChild(square);line.appendChild(buy);
+ for(let i=0;i<row.values.length;i++){
+   const cell=document.createElement("span");cell.className="cell";
+   cell.textContent=String(row.values[i]??"—");
+   cell.title=i===9?("Max Loss Calc (Ask): "+row.calc):i===1?("CONTRACT // LAST "+row.last+" // VOL "+row.volume):HEAD[i+1]+": "+cell.textContent;
+   line.appendChild(cell);
+ }
+ return line;
+}
+function paint(force=false){
+ const first=Math.max(0,Math.floor(scroll.scrollTop/ROW_HEIGHT)-5);
+ const last=Math.min(rows.length,first+Math.ceil(scroll.clientHeight/ROW_HEIGHT)+12);
+ if(!force&&first===start&&last===end)return;
+ start=first;end=last;visible.style.transform="translateY("+(start*ROW_HEIGHT)+"px)";
+ const fragment=document.createDocumentFragment();
+ for(let i=first;i<last;i++)fragment.appendChild(makeRow(rows[i],i));
+ visible.replaceChildren(fragment);
+}
+scroll.addEventListener("scroll",()=>paint(),{passive:true});
+visible.addEventListener("click",event=>{
+ const buy=event.target.closest("button.buy");
+ if(!buy)return;
+ const row=rows[Number(buy.dataset.index)];if(!row)return;
+ if(selected.has(row.id))selected.delete(row.id);else selected.add(row.id);
+ buy.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
+ revision+=1;
+ post("streamlit:setComponentValue",{value:{scope,selected_ids:[...selected],revision},dataType:"json"});
+});
+window.addEventListener("message",event=>{
+ if(!event.data||event.data.type!=="streamlit:render")return;
+ const args=event.data.args||{};
+ const newScope=String(args.scope||"");
+ const newSort=String(args.sort_key||"");
+ const needsReset=newScope!==scope||newSort!==sortKey;
+ scope=newScope;sortKey=newSort;
+ rows=Array.isArray(args.rows)?args.rows:[];
+ selected=new Set(Array.isArray(args.selected_ids)?args.selected_ids:[]);
+ if(needsReset)scroll.scrollTop=0;
+ space.style.height=(rows.length*ROW_HEIGHT)+"px";
+ empty.style.display=rows.length?"none":"block";
+ start=-1;end=-1;
+ paint(true);
+ syncHeight();
+});
+post("streamlit:componentReady",{apiVersion:1});
+syncHeight();
+})();
+</script>
+</body>
+</html>
