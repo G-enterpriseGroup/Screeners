@@ -325,13 +325,15 @@ def main() -> None:
                     return {visible:style.visibility, pointer:style.pointerEvents,
                             href:link.getAttribute('href')||"",
                             disabled:link.getAttribute('aria-disabled'),
-                            label:link.textContent, target:link.target, rel:link.rel};
+                            tabIndex:link.tabIndex, label:link.textContent,
+                            target:link.target, rel:link.rel};
                 """)
             os_link=in_scroll_iframe(driver,check_optionstrat_link)
             assert os_link is not None, os_link
             assert os_link["visible"]=="visible", os_link
             assert os_link["label"]=="OS↗", os_link
             assert os_link["disabled"]=="true", os_link
+            assert os_link["tabIndex"]==-1, os_link
             assert os_link["href"]=="", os_link
 
             rapid_toggle_pair(2)
@@ -339,6 +341,7 @@ def main() -> None:
             assert os_link is not None, os_link
             assert os_link["visible"]=="visible", os_link
             assert os_link["disabled"]=="false", os_link
+            assert os_link["tabIndex"]==0, os_link
             assert os_link["target"]=="_blank", os_link
             assert "noopener" in os_link["rel"], os_link
             assert os_link["href"].startswith(

@@ -44,7 +44,7 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 <script>
 (()=>{
 "use strict";
-const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","QTY / EQ SH","OI"];
+const ROW_HEIGHT=43, HEAD=["BUY/OS","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","QTY / EQ SH","OI"];
 const head=document.getElementById("head"), scroll=document.getElementById("scroll"), space=document.getElementById("space"), visible=document.getElementById("visible"), empty=document.getElementById("empty");
 let scope="", sortKey="", rows=[], selected=new Set(), pendingSelection=null;
 let start=-1, end=-1, revision=0, pendingRevision=0, acknowledgedRevision=0;
