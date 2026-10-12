@@ -5,7 +5,7 @@
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-family:"Courier New",monospace}
-#head,.row{display:grid;grid-template-columns:6% 4.2% 15% 6.9% 3.3% 6.4% 5.1% 5.1% 7.4% 8.1% 16% 8.1% 4.2% 4.2%;width:100%}
+#head,.row{display:grid;grid-template-columns:5.6% 4.5% 15% 7% 4% 7% 5.2% 5.2% 8.2% 9.2% 15.1% 9.5% 4.5%;width:100%}
 #head{height:43px;background:#fb8b1e;color:#000;font-size:.78rem;font-weight:900}
 #head>span,.row>.cell{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 4px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16}
 #head>span{border-top:1px solid #fb8b1e}
@@ -39,17 +39,17 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 <script>
 (()=>{
 "use strict";
-const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","BASKET LOSS ?","QTY / EQ SH","OI"];
+const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","QTY / EQ SH","OI"];
 const head=document.getElementById("head"), scroll=document.getElementById("scroll"), space=document.getElementById("space"), visible=document.getElementById("visible"), empty=document.getElementById("empty");
 let scope="", sortKey="", rows=[], selected=new Set(), pendingSelection=null, start=-1, end=-1, revision=0;
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
 function syncHeight(){head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";post("streamlit:setFrameHeight",{height:560});}
 for(const title of HEAD){
  const cell=document.createElement("span");cell.textContent=title;
- if(title==="BASKET LOSS ?"){
-   cell.title="Modeled dollars still lost by the selected holdings basket after the full PUT ASK premium and the put intrinsic payout at the configured stress move. This is not a guaranteed maximum loss.";
+ if(title==="MAX LOSS"){
+   cell.title="Illustrative matched-ETF expiration loss at the ETF-equivalent shares of the selected basket, including ASK premium per share. Not a guaranteed actual-portfolio loss cap or the payoff of an integer-contract PUT order.";
  }else if(title==="QTY / EQ SH"){
-   cell.title="PUT contract quantity / selected basket market value expressed as equivalent ETF shares at the current ETF spot. Each PUT contract itself represents 100 ETF shares.";
+   cell.title="PUT order contract quantity / selected basket market value expressed as equivalent ETF shares at the current ETF spot. Each PUT contract covers 100 ETF shares.";
  }
  head.appendChild(cell);
 }
@@ -66,7 +66,7 @@ function makeRow(row,index){
  for(let i=0;i<row.values.length;i++){
    const cell=document.createElement("span");cell.className="cell";
    cell.textContent=String(row.values[i]??"—");
-   cell.title=i===9?("Max Loss Calc (Ask): "+row.calc):i===1?("CONTRACT // LAST "+row.last+" // VOL "+row.volume):i===11&&row.qty_title?row.qty_title:HEAD[i+1]+": "+cell.textContent;
+   cell.title=i===9?("Max Loss Calc (Ask): "+row.calc):i===1?("CONTRACT // LAST "+row.last+" // VOL "+row.volume):i===10&&row.qty_title?row.qty_title:HEAD[i+1]+": "+cell.textContent;
    line.appendChild(cell);
  }
  return line;
