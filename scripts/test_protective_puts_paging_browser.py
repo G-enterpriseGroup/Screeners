@@ -91,17 +91,34 @@ def selected_count(driver) -> int:
 
 
 def in_scroll_iframe(driver, callback):
-    """Interact with the actual, independently scrolling Streamlit component."""
-    wait=WebDriverWait(driver, 45)
-    frame=wait.until(lambda _: next((
-        el for el in driver.find_elements(
-            By.CSS_SELECTOR, '[data-testid="stCustomComponentV1"] iframe'
-        ) if el.is_displayed()
-    ), None))
-    driver.switch_to.frame(frame)
+    """Find the real Streamlit component iframe regardless of wrapper markup."""
+    wait=WebDriverWait(driver, 25)
+
+    def enter(_):
+        driver.switch_to.default_content()
+        for frame in driver.find_elements(By.TAG_NAME,"iframe"):
+            try:
+                driver.switch_to.frame(frame)
+                if driver.find_elements(By.ID,"scroll"):
+                    return True
+            except Exception:
+                pass
+            driver.switch_to.default_content()
+        return False
+
     try:
-        wait.until(lambda _: driver.find_elements(By.CSS_SELECTOR, "#scroll .row"))
+        wait.until(enter)
         return callback()
+    except Exception:
+        driver.switch_to.default_content()
+        frames=[
+            (f.get_attribute("title"), f.get_attribute("src"))
+            for f in driver.find_elements(By.TAG_NAME,"iframe")
+        ]
+        raise AssertionError(
+            f"Scrollable option component check failed; iframes={frames}; "
+            f"host={driver.find_element(By.TAG_NAME,'body').text[-600:]}"
+        )
     finally:
         driver.switch_to.default_content()
 
