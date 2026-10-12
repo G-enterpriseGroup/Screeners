@@ -1272,8 +1272,8 @@ def _results(
     saved_ids = set(state["ids"])
 
     with st.container(key="pp_chain_controls", gap="small"):
-        sc, dc, indicator = st.columns(
-            [1.75, .8, 3.0], gap="small", vertical_alignment="bottom",
+        sc, dc, fc, indicator = st.columns(
+            [1.65, .75, 1.55, 2.0], gap="small", vertical_alignment="bottom",
         )
         with sc:
             sort_by = st.selectbox(
@@ -1285,8 +1285,15 @@ def _results(
                 "ORDER", ("ASC", "DESC"), key="pp_chain_direction",
                 label_visibility="collapsed",
             )
+        with fc:
+            show_rows = st.selectbox(
+                "FILTER PUT CONTRACTS", ("HIGHLIGHTED ONLY", "ALL CONTRACTS"),
+                index=0, key="pp_chain_highlight_filter",
+                label_visibility="collapsed",
+                help="Highlighted: lowest valid ASK maximum loss for each ETF and expiration year.",
+            )
         with indicator:
-            st.caption(f"SCROLL ALL {len(data):,} LOADED PUTS // NO PAGES")
+            st.caption(f"{len(data):,} LOADED PUTS // SCROLL TO REVIEW")
 
     ordered = _sort_contract_chain(data, sort_by, direction)
     by_id = result.get("_pp_chain_scroll_rows")
@@ -1305,9 +1312,10 @@ def _results(
         result["_pp_chain_scroll_rows"] = by_id
     scroll_rows = [
         by_id[_contract_identity(row)] for row in ordered.to_dict("records")
+        if show_rows == "ALL CONTRACTS" or by_id[_contract_identity(row)]["annual"]
     ]
     selected_update = _PUT_CHAIN_SCROLL_COMPONENT(
-        scope=scope_key, sort_key=f"{sort_by}|{direction}",
+        scope=scope_key, sort_key=f"{sort_by}|{direction}|{show_rows}",
         rows=scroll_rows, selected_ids=sorted(saved_ids),
         key="pp_chain_scroll_" + scope_key, default=None,
     )
@@ -1325,8 +1333,9 @@ def _results(
                 st.rerun(scope="fragment")
     checked_ids = set(st.session_state[state_key]["ids"])
     st.caption(
+        f"{len(scroll_rows):,} DISPLAYED / {len(data):,} QUOTED PUTS // "
         f"{len(checked_ids)} SELECTED ACROSS ALL LOADED CONTRACTS // "
-        f"{len(data):,} QUOTED PUTS // {result.get('listed_count', 0)} LISTED EXPIRATIONS // "
+        f"{result.get('listed_count', 0)} LISTED EXPIRATIONS // "
         "LIME GREEN = LOWEST ORDERABLE ASK MAX LOSS PER ETF / EXPIRATION YEAR "
         "(CHEAPEST PUT PREMIUM BREAKS TIES)"
     )
