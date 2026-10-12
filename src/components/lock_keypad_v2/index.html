@@ -129,7 +129,38 @@
   touch.onclick=async()=>{if(remaining>0)return;if(firefoxNeedsSetup){ffhelp.hidden=false;setFeedback("FIREFOX TOUCH ID NEEDS ONE PROFILE SETTING // FOLLOW THE STEPS BELOW, RESTART FIREFOX, THEN RETURN HERE","error");height();return}if(!touchSupported)return;if(registrationOptions){await runRegistration();return}if(touchRegistered&&authenticationOptions){await runAuthentication(false);return}beginMacEnrollment()};
   reenroll.onclick=()=>{if(remaining>0||touchBusy||firefoxNeedsSetup)return;beginMacEnrollment()};
 
-  document.addEventListener("keydown",e=>{if(remaining>0)return;if(/^\d$/.test(e.key)){addDigit(e.key);e.preventDefault()}else if(e.key==="Backspace"){backspace();e.preventDefault()}else if(e.key==="Escape"){clearBuffer();e.preventDefault()}else if(e.key==="Enter"&&!unlock.disabled){unlock.click();e.preventDefault()}});
+  // Keys must work as soon as the terminal opens, even while the Streamlit page
+  // (not this component iframe) owns keyboard focus. Do not intercept other inputs.
+  function handleKeydown(e){
+    if(remaining>0||e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey)return;
+    const target=e.target;
+    if(target&&(target.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))return;
+    if(/^\d$/.test(e.key)){addDigit(e.key);e.preventDefault()}
+    else if(e.key==="Backspace"){backspace();e.preventDefault()}
+    else if(e.key==="Escape"){clearBuffer();e.preventDefault()}
+    else if(e.key==="Enter"&&!unlock.disabled){unlock.click();e.preventDefault()}
+  }
+  document.addEventListener("keydown",handleKeydown);
+  if(window.parent!==window){
+    try{
+      const hostDocument=window.parent.document;
+      const onPageKeydown=e=>{
+        // Streamlit may remount the iframe on a rerun. Detached keypads must not
+        // consume keystrokes or stack listeners in the unlocked terminal.
+        if(!window.frameElement||!window.frameElement.isConnected){
+          hostDocument.removeEventListener("keydown",onPageKeydown);
+          return;
+        }
+        handleKeydown(e);
+      };
+      hostDocument.addEventListener("keydown",onPageKeydown);
+      window.addEventListener("pagehide",()=>hostDocument.removeEventListener("keydown",onPageKeydown),{once:true});
+    }catch(_){
+      // A cross-origin embed cannot inspect its parent. Focus this keypad when
+      // permitted by the browser; the local key handler remains functional.
+      window.addEventListener("load",()=>{document.body.tabIndex=-1;document.body.focus({preventScroll:true})},{once:true});
+    }
+  }
 
   async function checkTouch(manual=false){const host=credentialHost();const PKC=host.PublicKeyCredential;const info=uaInfo();firefoxMac=Boolean(info.isMac&&info.firefoxVersion>0);touchChecked=true;touchSupported=Boolean(host.isSecureContext&&PKC&&host.navigator&&host.navigator.credentials);touchPlatformReported=false;try{if(touchSupported&&PKC.isUserVerifyingPlatformAuthenticatorAvailable){touchPlatformReported=await PKC.isUserVerifyingPlatformAuthenticatorAvailable()}}catch(_){touchPlatformReported=false}
     if(firefoxMac&&!touchPlatformReported){showFirefoxHelp(info);biohint.textContent="FIREFOX IS SUPPORTED // MAC PASSKEY SERVICE IS OFF OR DID NOT INITIALIZE IN THIS PROFILE";if(manual)setFeedback("FIREFOX STILL REPORTS MAC TOUCH ID AS OFF // SET security.webauthn.enable_macos_passkeys=true AND FULLY QUIT/REOPEN FIREFOX","error")}
