@@ -346,6 +346,10 @@ assert "MAX LOSS" in _chain_cell_markup(sort_rows.iloc[0].to_dict()).upper()
 assert "100×(" in _chain_cell_markup({**sort_rows.iloc[0].to_dict(), "Max Loss Calc (Ask)": "max(0, (700.00 + 1.30 - 600.00) × 100)"})
 feature_src = (Path(__file__).resolve().parents[1] /
                "src" / "protective_puts_portfolio_ui.py").read_text(encoding="utf-8")
+assert '("HIGHLIGHTED ONLY", "ALL CONTRACTS")' in feature_src
+assert 'index=0, key="pp_chain_highlight_filter"' in feature_src
+assert 'by_id[_contract_identity(row)]["annual"]' in feature_src
+assert 'sort_key=f"{sort_by}|{direction}|{show_rows}"' in feature_src
 assert "_PUT_CHAIN_SCROLL_COMPONENT(" in feature_src
 assert 'st.button("◀ PREV"' not in feature_src
 assert 'st.button("NEXT ▶"' not in feature_src
