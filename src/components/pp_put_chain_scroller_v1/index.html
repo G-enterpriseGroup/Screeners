@@ -41,7 +41,7 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 "use strict";
 const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","BASKET LOSS","QTY","OI"];
 const head=document.getElementById("head"), scroll=document.getElementById("scroll"), space=document.getElementById("space"), visible=document.getElementById("visible"), empty=document.getElementById("empty");
-let scope="", sortKey="", rows=[], selected=new Set(), start=-1, end=-1, revision=0;
+let scope="", sortKey="", rows=[], selected=new Set(), pendingSelection=null, start=-1, end=-1, revision=0;
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
 function syncHeight(){head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";post("streamlit:setFrameHeight",{height:560});}
 for(const title of HEAD){const cell=document.createElement("span");cell.textContent=title;head.appendChild(cell);}
@@ -79,6 +79,7 @@ visible.addEventListener("click",event=>{
  const row=rows[Number(buy.dataset.index)];if(!row)return;
  if(selected.has(row.id))selected.delete(row.id);else selected.add(row.id);
  buy.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
+ pendingSelection=new Set(selected);
  revision+=1;
  post("streamlit:setComponentValue",{value:{scope,selected_ids:[...selected],revision},dataType:"json"});
 });
@@ -88,9 +89,16 @@ window.addEventListener("message",event=>{
  const newScope=String(args.scope||"");
  const newSort=String(args.sort_key||"");
  const needsReset=newScope!==scope||newSort!==sortKey;
+ const scopeChanged=newScope!==scope;
  scope=newScope;sortKey=newSort;
  rows=Array.isArray(args.rows)?args.rows:[];
- selected=new Set(Array.isArray(args.selected_ids)?args.selected_ids:[]);
+ const serverSelection=new Set(Array.isArray(args.selected_ids)?args.selected_ids:[]);
+ if(scopeChanged)pendingSelection=null;
+ if(!pendingSelection){selected=serverSelection;}
+ else if(serverSelection.size===pendingSelection.size &&
+         [...serverSelection].every(id=>pendingSelection.has(id))){
+   selected=serverSelection;pendingSelection=null;
+ }
  if(needsReset)scroll.scrollTop=0;
  space.style.height=(rows.length*ROW_HEIGHT)+"px";
  empty.style.display=rows.length?"none":"block";
