@@ -422,7 +422,7 @@ assert '#a3e635' in scroller_html and 'color:#000!important' in scroller_html
 assert 'with st.expander("FULL GHOTRA COLUMNS' not in feature_src
 # The option-chain remains a virtualized grid; the checked-only RISK SLIDE
 # intentionally uses a compact scenario dataframe beside its profit/loss graph.
-chain_src = feature_src.split("@st.fragment\\ndef _results(", 1)[-1].split("def render_portfolio_hedge(", 1)[0]
+chain_src = feature_src.split("def _results(", 1)[1].split("def render_portfolio_hedge(", 1)[0]
 slide_src = feature_src.split("def _render_risk_slide(", 1)[1].split("@st.fragment", 1)[0]
 assert "st.dataframe(" not in chain_src
 assert "st.dataframe(" in slide_src
