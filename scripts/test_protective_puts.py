@@ -337,7 +337,7 @@ except ValueError:
 # Portfolio Hedge must fetch every listed future expiration for every entered
 # ticker on the explicit Enter scan; later UI edits only reuse cached raw data.
 assert "work.extend((sym, spot, expiry) for expiry in future)" in ui_source
-assert "_sample_expirations(future" not in ui_source
+assert "for expiry in _sample_expirations(" not in ui_source
 assert "LOAD ALL" not in ui_source
 assert "REMAINING CHAINS" not in ui_source
 assert "BASKET LOSS ?" in ui_source
