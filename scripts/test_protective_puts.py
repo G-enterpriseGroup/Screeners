@@ -4,7 +4,7 @@ from datetime import date
 
 from src.protective_puts import (
     build_put_analysis, etf_equivalent_max_loss, portfolio_risk_slide,
-    protective_put_metrics,
+    protective_put_metrics, proxy_put_expiry_pnl, proxy_put_max_loss,
 )
 
 
@@ -23,6 +23,28 @@ assert etf_equivalent_max_loss(
 assert etf_equivalent_max_loss(
     spot=500, ask=3, strike=550, basket_value=100000,
 ) == (0.0, 200.0)
+# OptionStrat-style example: 62 QQQ proxy shares and ONE full 100-share PUT.
+# At the strike, the put expires worthless; below strike the 38 extra
+# put-covered shares make the position profitable as QQQ falls further.
+qqq_spot, qqq_k, qqq_ask = 746.04, 900.0, 155.55
+qqq_basket = 62 * qqq_spot
+assert round(proxy_put_expiry_pnl(
+    spot=qqq_spot, strike=qqq_k, ask=qqq_ask, contracts=1,
+    basket_value=qqq_basket, expiry_spot=qqq_k,
+), 2) == -6009.48
+assert tuple(round(v, 2) for v in proxy_put_max_loss(
+    spot=qqq_spot, strike=qqq_k, ask=qqq_ask, contracts=1,
+    basket_value=qqq_basket,
+)) == (6009.48, 900.0)
+# One put cannot fully protect 200 ETF-equivalent shares; maximum loss
+# instead occurs at ETF=$0, after deducting its entire purchase premium.
+assert proxy_put_max_loss(
+    spot=100, strike=95, ask=2, contracts=1, basket_value=20000,
+) == (10700.0, 0.0)
+# Matching 100 shares and one contract has the conventional married-put floor.
+assert proxy_put_max_loss(
+    spot=100, strike=95, ask=2, contracts=1, basket_value=10000,
+) == (700.0, 0.0)
 assert metrics["contracts"] == 1
 assert metrics["put_cost"] == 200.0
 assert metrics["max_loss"] == 700.0
@@ -440,14 +462,18 @@ direct_payload = _chain_scroll_values(sample_display)
 portfolio_payload = _chain_scroll_values(sample_display, hedge_exposure=100000.0)
 assert "100×(" in direct_payload["values"][9]
 assert direct_payload["values"][10] == "1 / 100 SH"
-assert portfolio_payload["values"][10] == "1 / 200 SH"
+assert portfolio_payload["values"][10] == "1 / 200.0 SH"
 assert portfolio_payload["values"][8] == "$0.00"  # Premium+spot below strike.
-assert "× 200.0000" in portfolio_payload["calc"]
+assert "200.0000 SHARES" in portfolio_payload["calc"]
 assert "SELECTED BASKET $100,000.00" in portfolio_payload["qty_title"]
 assert len(portfolio_payload["values"]) == 12
 positive_proxy = {**sample_display, "Spot": 700.0}
 positive_loss = _chain_scroll_values(positive_proxy, hedge_exposure=100000.0)
-assert positive_loss["values"][8] == "$14,471.43"  # 101.3 × (100,000/700)
+assert positive_loss["values"][8] == "$40,130.00"  # One PUT covers only 100 of 142.9 proxy shares.
+assert "P/L ETF@0" in positive_loss["calc"]
+assert "P/L ETF@STRIKE" in positive_loss["calc"]
+assert "if not chosen:" in ui_source  # The risk slide is absent until a PUT is checked.
+assert "S&P 500 MOVE (%) // SAME ETF MOVE ASSUMED" in ui_source
 from src.protective_puts_portfolio_ui import _selected_symbols
 assert _selected_symbols(["SPY", "QQQ", "SPY", "BAD INPUT"]) == ["QQQ", "SPY"]
 assert '_load_selection(account_key)' in ui_source
