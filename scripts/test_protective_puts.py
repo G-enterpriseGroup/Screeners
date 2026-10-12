@@ -3,7 +3,8 @@
 from datetime import date
 
 from src.protective_puts import (
-    build_put_analysis, portfolio_risk_slide, protective_put_metrics,
+    build_put_analysis, etf_equivalent_max_loss, portfolio_risk_slide,
+    protective_put_metrics,
 )
 
 
@@ -13,6 +14,15 @@ metrics = protective_put_metrics(
     premium_per_share=2.0,
     shares=100,
 )
+assert etf_equivalent_max_loss(
+    spot=500, ask=3, strike=480, basket_value=100000,
+) == (4600.0, 200.0)
+assert etf_equivalent_max_loss(
+    spot=500, ask=3, strike=480, basket_value=0,
+) == (2300.0, 100.0)
+assert etf_equivalent_max_loss(
+    spot=500, ask=3, strike=550, basket_value=100000,
+) == (0.0, 200.0)
 assert metrics["contracts"] == 1
 assert metrics["put_cost"] == 200.0
 assert metrics["max_loss"] == 700.0
@@ -279,6 +289,8 @@ scroller_html = (Path(__file__).resolve().parents[1] /
                  "src" / "components" / "pp_put_chain_scroller_v1" / "index.html").read_text(encoding="utf-8")
 assert '"LOSS CALC"' in scroller_html
 assert '"QTY / EQ SH"' in scroller_html
+assert '"BASKET LOSS ?"' not in scroller_html
+assert 'i===10&&row.qty_title' in scroller_html
 assert "if not account_key:" in ui_source
 assert "SUBMIT {len(selected)} LIVE PUT ORDER(S)" in ui_source
 
@@ -341,7 +353,9 @@ assert "work.extend((sym, spot, expiry) for expiry in future)" in ui_source
 assert "for expiry in _sample_expirations(" not in ui_source
 assert "LOAD ALL" not in ui_source
 assert "REMAINING CHAINS" not in ui_source
-assert "BASKET LOSS ?" in ui_source
+assert "BASKET LOSS ?" not in ui_source
+assert "LIVE HEDGE BASKET //" in ui_source
+assert "ETF-Equivalent Max Loss (Ask)" in ui_source
 assert "_render_risk_slide(result, chosen, money, metric_markup)" in ui_source
 
 # The virtualized scroller sorts all loaded contracts and keeps exact BUY IDs;
@@ -363,7 +377,9 @@ assert "EXPIRATION" in _CHAIN_SORT_COLUMNS
 assert _sort_contract_chain(sort_rows, "EXPIRATION", "ASC").iloc[0]["DTE"] == 7
 assert _sort_contract_chain(sort_rows, "EXPIRATION", "DESC").iloc[0]["DTE"] == 68
 assert _sort_contract_chain(sort_rows, "OPEN INTEREST", "DESC").iloc[0]["Open Interest"] == 900
-assert _sort_contract_chain(sort_rows, "100SH LOSS", "ASC").iloc[0]["Strike"] == 650
+sort_rows["ETF-Equivalent Max Loss (Ask)"] = [500.0, 20.0]
+assert _sort_contract_chain(sort_rows, "MAX LOSS", "ASC").iloc[0]["Strike"] == 650
+assert "BASKET LOSS" not in _CHAIN_SORT_COLUMNS
 assert "pp-chain-top" in _chain_cell_markup(sort_rows.iloc[1].to_dict())
 assert "pp-chain-cells" in _chain_cell_markup(sort_rows.iloc[0].to_dict())
 assert "MAX LOSS" in _chain_cell_markup(sort_rows.iloc[0].to_dict()).upper()
@@ -423,10 +439,19 @@ sample_display["Spot"] = 500.0
 direct_payload = _chain_scroll_values(sample_display)
 portfolio_payload = _chain_scroll_values(sample_display, hedge_exposure=100000.0)
 assert "100×(" in direct_payload["values"][9]
-assert direct_payload["values"][11] == "1 / 100 SH"
-assert portfolio_payload["values"][11] == "1 / 200 SH"
+assert direct_payload["values"][10] == "1 / 100 SH"
+assert portfolio_payload["values"][10] == "1 / 200 SH"
+assert portfolio_payload["values"][8] == "$0.00"  # Premium+spot below strike.
+assert "× 200.0000" in portfolio_payload["calc"]
 assert "SELECTED BASKET $100,000.00" in portfolio_payload["qty_title"]
-assert len(portfolio_payload["values"]) == 13
+assert len(portfolio_payload["values"]) == 12
+positive_proxy = {**sample_display, "Spot": 700.0}
+positive_loss = _chain_scroll_values(positive_proxy, hedge_exposure=100000.0)
+assert positive_loss["values"][8] == "$14,471.43"  # 101.3 × (100,000/700)
+from src.protective_puts_portfolio_ui import _selected_symbols
+assert _selected_symbols(["SPY", "QQQ", "SPY", "BAD INPUT"]) == ["QQQ", "SPY"]
+assert '_load_selection(account_key)' in ui_source
+assert 'checked_symbols = set(memory["tickers"]) & set(book["Symbol"].tolist())' in ui_source
 
 
 # A migrated Streamlit session can retain the Raj-default marker while the
