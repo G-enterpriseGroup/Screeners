@@ -39,12 +39,18 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 <script>
 (()=>{
 "use strict";
-const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","BASKET LOSS","QTY","OI"];
+const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","ASK","PUT COST","MAX LOSS","LOSS CALC","BASKET LOSS ?","QTY","OI"];
 const head=document.getElementById("head"), scroll=document.getElementById("scroll"), space=document.getElementById("space"), visible=document.getElementById("visible"), empty=document.getElementById("empty");
 let scope="", sortKey="", rows=[], selected=new Set(), pendingSelection=null, start=-1, end=-1, revision=0;
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
 function syncHeight(){head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";post("streamlit:setFrameHeight",{height:560});}
-for(const title of HEAD){const cell=document.createElement("span");cell.textContent=title;head.appendChild(cell);}
+for(const title of HEAD){
+ const cell=document.createElement("span");cell.textContent=title;
+ if(title==="BASKET LOSS ?"){
+   cell.title="Modeled dollars still lost by the selected holdings basket after the full PUT ASK premium and the put intrinsic payout at the configured stress move. This is not a guaranteed maximum loss.";
+ }
+ head.appendChild(cell);
+}
 function makeRow(row,index){
  const line=document.createElement("div");
  line.className="row"+(row.annual?" annual":row.priority?" priority":row.best?" best":"");
