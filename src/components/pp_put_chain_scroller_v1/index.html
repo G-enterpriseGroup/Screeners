@@ -5,7 +5,7 @@
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-family:"Courier New",monospace}
-#head,.row{display:grid;grid-template-columns:6.6% 4.5% 16.35% 7.2% 3.4% 6.7% 5.4% 5.4% 7.9% 9.5% 18.8% 9.8% 4.3% 4.3%;width:100%}
+#head,.row{display:grid;grid-template-columns:6% 4.2% 15% 6.9% 3.3% 6.4% 5.1% 5.1% 7.4% 8.1% 16% 8.1% 4.2% 4.2%;width:100%}
 #head{height:43px;background:#fb8b1e;color:#000;font-size:.78rem;font-weight:900}
 #head>span,.row>.cell{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:0 4px;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16}
 #head>span{border-top:1px solid #fb8b1e}
@@ -43,7 +43,7 @@ const ROW_HEIGHT=43, HEAD=["BUY","ETF","CONTRACT","EXP","DTE","STRIKE","BID","AS
 const head=document.getElementById("head"), scroll=document.getElementById("scroll"), space=document.getElementById("space"), visible=document.getElementById("visible"), empty=document.getElementById("empty");
 let scope="", sortKey="", rows=[], selected=new Set(), start=-1, end=-1, revision=0;
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
-function syncHeight(){post("streamlit:setFrameHeight",{height:560});}
+function syncHeight(){head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";post("streamlit:setFrameHeight",{height:560});}
 for(const title of HEAD){const cell=document.createElement("span");cell.textContent=title;head.appendChild(cell);}
 function makeRow(row,index){
  const line=document.createElement("div");
