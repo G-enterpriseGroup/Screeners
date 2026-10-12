@@ -468,9 +468,9 @@ portfolio_payload = _chain_scroll_values(sample_display, hedge_exposure=100000.0
 assert "100×(" in direct_payload["values"][9]
 assert direct_payload["values"][10] == "1 / 100 SH"
 assert portfolio_payload["values"][10] == "1 / 200.0 SH"
-assert portfolio_payload["values"][8] == "$0.00"  # Premium+spot below strike.
+assert portfolio_payload["values"][8] == "$40,130.00"  # Only 100 of 200 proxy shares are put-covered.
 assert "200.0000 SHARES" in portfolio_payload["calc"]
-assert "SELECTED BASKET $100,000.00" in portfolio_payload["qty_title"]
+assert "BASKET $100,000.00" in portfolio_payload["qty_title"]
 assert len(portfolio_payload["values"]) == 12
 positive_proxy = {**sample_display, "Spot": 700.0}
 positive_loss = _chain_scroll_values(positive_proxy, hedge_exposure=100000.0)
