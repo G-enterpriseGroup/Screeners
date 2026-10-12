@@ -206,7 +206,7 @@ def main() -> None:
                                 ids:[...s.querySelectorAll(".row")].map(el=>el.dataset.index),
                                 values:[...s.querySelectorAll(".row .cell:nth-child(3)")]
                                        .map(el=>el.textContent),
-                                qty:[...s.querySelectorAll(".row .cell:nth-child(13)")]
+                                qty:[...s.querySelectorAll(".row .cell:nth-child(12)")]
                                     .map(el=>el.textContent),
                                 header:document.getElementById("head").textContent};
                         """,scroll,
@@ -221,6 +221,7 @@ def main() -> None:
             assert only["qty"] == ["1 / 100 SH", "1 / 100 SH"], only
             assert "LOSS CALC" in only["header"], only
             assert "QTY / EQ SH" in only["header"], only
+            assert "BASKET LOSS" not in only["header"], only
             assert "2 DISPLAYED / 62 QUOTED PUTS" in driver.page_source
 
             def set_filter(choice):
@@ -254,22 +255,26 @@ def main() -> None:
             check_virtualized()
             assert "62 DISPLAYED / 62 QUOTED PUTS" in driver.page_source
 
-            inspect_and_click_row(driver,20,1)
-            inspect_and_click_row(driver,53,2)
+            # LOWEST LOSS default now sorts both annual winners to the top.
+            inspect_and_click_row(driver,0,1)
+            inspect_and_click_row(driver,1,2)
 
             def check_saved():
                 scroll=driver.find_element(By.ID,"scroll")
                 driver.execute_script(
+                    "arguments[0].scrollTop=40*43;"
+                    "arguments[0].dispatchEvent(new Event('scroll'));",scroll,
+                )
+                assert WebDriverWait(driver,20).until(lambda _: next((
+                    el for el in driver.find_elements(By.CSS_SELECTOR,'.row[data-index="40"]')
+                    if el.is_displayed()
+                ), None))
+                driver.execute_script(
                     "arguments[0].scrollTop=0;"
                     "arguments[0].dispatchEvent(new Event('scroll'));",scroll,
                 )
-                assert scroll.find_elements(By.CSS_SELECTOR, ".row")
-                driver.execute_script(
-                    "arguments[0].scrollTop=20*43;"
-                    "arguments[0].dispatchEvent(new Event('scroll'));",scroll,
-                )
                 row=WebDriverWait(driver,20).until(lambda _: next((
-                    el for el in driver.find_elements(By.CSS_SELECTOR,'.row[data-index="20"]')
+                    el for el in driver.find_elements(By.CSS_SELECTOR,'.row[data-index="0"]')
                     if el.is_displayed()
                 ), None))
                 assert row.find_element(By.CSS_SELECTOR,"button.buy").get_attribute("aria-pressed")=="true"
