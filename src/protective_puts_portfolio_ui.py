@@ -1193,40 +1193,60 @@ def _chain_scroll_values(
             return "—"
 
     contracts = int(row["Contracts"])
-    spot, strike, ask = (
-        float(row["Spot"]), float(row["Strike"]), float(row["Ask"])
-    )
     exposure = float(hedge_exposure or 0.0)
-    basket_value = exposure if exposure > 0 else spot * 100.0
-    equivalent_shares = basket_value / spot
-    beta = float(row.get("Model Beta") or 1.0)
-    max_loss, worst_spot = proxy_put_max_loss(
-        spot=spot, strike=strike, ask=ask,
-        contracts=contracts, basket_value=basket_value, beta=beta,
-    )
-    zero_pl = proxy_put_expiry_pnl(
-        spot=spot, strike=strike, ask=ask, contracts=contracts,
-        basket_value=basket_value, expiry_spot=0.0, beta=beta,
-    )
-    strike_pl = proxy_put_expiry_pnl(
-        spot=spot, strike=strike, ask=ask, contracts=contracts,
-        basket_value=basket_value, expiry_spot=strike, beta=beta,
-    )
-    expression = (
-        f"MAX LOSS = max(0, -min(P/L ETF@0 ${zero_pl:,.2f}, "
-        f"P/L ETF@STRIKE ${strike_pl:,.2f}"
-        + (f", P/L @ BETA FLOOR" if beta > 1 else "")
-        + f")) = ${max_loss:,.2f} // WORST ETF PRICE ${worst_spot:,.2f}"
-        f" // FULL PUT PREMIUM ${ask * 100 * contracts:,.2f}"
-        f" // BASKET ${basket_value:,.2f} / ETF SPOT ${spot:,.2f}"
-        f" = {equivalent_shares:.4f} SHARES; {contracts} x 100-SH PUTS"
-    )
-    compact_calc = f"0/K: {max(0,-zero_pl):,.0f}/{max(0,-strike_pl):,.0f}"
-    qty_title = (
-        f"PUT QTY {contracts} (EACH PUT COVERS 100 SHARES) // "
-        f"BASKET ${basket_value:,.2f} ÷ ETF SPOT ${spot:,.2f} "
-        f"= {equivalent_shares:,.2f} ETF-EQUIVALENT SHARES"
-    )
+    if exposure > 0:
+        spot, strike, ask = (
+            float(row["Spot"]), float(row["Strike"]), float(row["Ask"])
+        )
+        equivalent_shares = exposure / spot
+        beta = float(row.get("Model Beta") or 1.0)
+        max_loss, worst_spot = proxy_put_max_loss(
+            spot=spot, strike=strike, ask=ask,
+            contracts=contracts, basket_value=exposure, beta=beta,
+        )
+        zero_pl = proxy_put_expiry_pnl(
+            spot=spot, strike=strike, ask=ask, contracts=contracts,
+            basket_value=exposure, expiry_spot=0.0, beta=beta,
+        )
+        strike_pl = proxy_put_expiry_pnl(
+            spot=spot, strike=strike, ask=ask, contracts=contracts,
+            basket_value=exposure, expiry_spot=strike, beta=beta,
+        )
+        expression = (
+            f"MAX LOSS = max(0, -min(P/L ETF@0 ${zero_pl:,.2f}, "
+            f"P/L ETF@STRIKE ${strike_pl:,.2f}"
+            + (f", P/L @ BETA FLOOR" if beta > 1 else "")
+            + f")) = ${max_loss:,.2f} // WORST ETF PRICE ${worst_spot:,.2f}"
+            f" // FULL PUT PREMIUM ${ask * 100 * contracts:,.2f}"
+            f" // BASKET ${exposure:,.2f} / ETF SPOT ${spot:,.2f}"
+            f" = {equivalent_shares:.4f} SHARES; {contracts} x 100-SH PUTS"
+        )
+        compact_calc = f"0/K: {max(0,-zero_pl):,.0f}/{max(0,-strike_pl):,.0f}"
+        display_loss = max_loss
+        qty_title = (
+            f"PUT QTY {contracts} (EACH PUT COVERS 100 SHARES) // "
+            f"BASKET ${exposure:,.2f} ÷ ETF SPOT ${spot:,.2f} "
+            f"= {equivalent_shares:,.2f} ETF-EQUIVALENT SHARES"
+        )
+    else:
+        # Direct 100-share example already has the exact whole-contract
+        # matched-ETF maximum loss calculated in portfolio_chain_scenario.
+        equivalent_shares = 100.0 * contracts
+        display_loss = row["Max Loss (Ask)"]
+        expression = str(row.get("Max Loss Calc (Ask)") or "—")
+        match = re.search(
+            r"\(\s*([\d.,]+)\s*\+\s*([\d.,]+)\s*-\s*([\d.,]+)\s*\)\s*[×x*]\s*100",
+            expression,
+        )
+        if match:
+            a, b, k = (f"{float(v.replace(',', '')):,.2f}" for v in match.groups())
+            compact_calc = f"100×({a}+{b}−{k})⁺"
+        else:
+            compact_calc = expression
+        qty_title = (
+            f"PUT QTY {contracts} // {equivalent_shares:,.0f} ETF SHARES REPRESENTED "
+            "AT 100 SHARES PER PUT CONTRACT"
+        )
     qty_value = f"{contracts} / {equivalent_shares:,.1f} SH"
     oi = row.get("Open Interest")
     values = [
@@ -1399,14 +1419,16 @@ def _results(
         exposure = float(result.get("exposure") or 0.0)
         beta = float(result.get("beta") or 1.0)
         data["Model Beta"] = beta
-        data["ETF-Equivalent Max Loss (Ask)"] = [
-            proxy_put_max_loss(
-                spot=float(row["Spot"]), ask=float(row["Ask"]),
-                strike=float(row["Strike"]), contracts=int(row["Contracts"]),
-                basket_value=exposure if exposure > 0 else float(row["Spot"]) * 100.0,
-                beta=beta,
-            )[0] for row in data.to_dict("records")
-        ]
+        if exposure > 0:
+            data["ETF-Equivalent Max Loss (Ask)"] = [
+                proxy_put_max_loss(
+                    spot=float(row["Spot"]), ask=float(row["Ask"]),
+                    strike=float(row["Strike"]), contracts=int(row["Contracts"]),
+                    basket_value=exposure, beta=beta,
+                )[0] for row in data.to_dict("records")
+            ]
+        else:
+            data["ETF-Equivalent Max Loss (Ask)"] = data["Max Loss (Ask)"]
         result["data"] = data
     if not isinstance(data, pd.DataFrame) or data.empty:
         st.warning("NO VALID PUT ASKS // Enter another ticker or check option-chain availability.")
