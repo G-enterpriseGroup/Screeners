@@ -28,9 +28,28 @@ BASE = f"http://127.0.0.1:{PORT}"
 FIXTURE = '''
 import pandas as pd
 import streamlit as st
-from src.protective_puts_portfolio_ui import _CSS, _results
+from src.protective_puts_portfolio_ui import (
+    _CSS, _results, _load_selection, _write_selection,
+    _toggle_selection, _account_token,
+)
 
 st.set_page_config(layout="wide", page_title="Put chain selection regression")
+account_key="test-hedge-persistence"
+partial=st.checkbox("SIMULATE PARTIAL HOLDINGS", key="test_partial_holdings")
+memory=_load_selection(account_key)
+if memory is not None:
+    for symbol in (("QQQ",) if partial else ("SPY","QQQ")):
+        widget_key=f"pp_hedge_holding::{_account_token(account_key)}::{symbol}"
+        desired=symbol in set(memory["tickers"])
+        if st.session_state.get(widget_key)!=desired:
+            st.session_state[widget_key]=desired
+        st.checkbox(
+            "TEST HEDGE "+symbol, key=widget_key,
+            on_change=_toggle_selection, args=(account_key,symbol,widget_key),
+        )
+    _write_selection(account_key)
+    if "SPY" in memory["tickers"]:
+        st.caption("SPY SAVED IN BROWSER MEMORY")
 data=[]
 for i in range(62):
     row={
@@ -290,7 +309,29 @@ def main() -> None:
                 lambda _: visible_stats()["total"] > visible_stats()["client"] * 3
             )
             assert selected_count(driver)==2
-            print("PROTECTIVE PUTS DEFAULT YEARLY FILTER / SCROLL / BUY: PASS")
+
+            # The SAME browser-backed checkbox memory used by the real hedge
+            # must survive partial holdings and a full Streamlit page refresh.
+            def visible_hedge_label(text):
+                return next((
+                    el for el in driver.find_elements(By.CSS_SELECTOR, "label")
+                    if text in el.text and el.is_displayed()
+                ), None)
+            hedge=wait.until(lambda _: visible_hedge_label("TEST HEDGE SPY"))
+            hedge.click()
+            wait.until(lambda _: "SPY SAVED IN BROWSER MEMORY" in
+                       driver.find_element(By.TAG_NAME, "body").text)
+            partial=wait.until(lambda _: visible_hedge_label("SIMULATE PARTIAL HOLDINGS"))
+            partial.click()
+            wait.until(lambda _: visible_hedge_label("TEST HEDGE SPY") is None)
+            wait.until(lambda _: visible_hedge_label("SIMULATE PARTIAL HOLDINGS")).click()
+            wait.until(lambda _: visible_hedge_label("TEST HEDGE SPY") is not None)
+            assert "SPY SAVED IN BROWSER MEMORY" in driver.find_element(By.TAG_NAME,"body").text
+            driver.refresh()
+            wait.until(lambda _: "SPY SAVED IN BROWSER MEMORY" in
+                       driver.find_element(By.TAG_NAME, "body").text)
+            assert visible_hedge_label("TEST HEDGE SPY") is not None
+            print("PROTECTIVE PUTS SORT / SCROLL / BUY / BROWSER SELECTION RELOAD: PASS")
         finally:
             if driver is not None:
                 driver.quit()
