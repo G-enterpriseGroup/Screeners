@@ -74,10 +74,9 @@ class StubETrade:
             def option(side, last):
                 return {
                     "strikePrice": strike, "lastPrice": last,
-                    # Deliberately asymmetric spreads: a bid/ask midpoint must
-                    # never override the selected contract's Last-based debit.
+                    # Asymmetric quotes: natural ASK differs from Last and MID.
                     "bid": last - .02,
-                    "ask": last + .02 + .05 * (strike - 90),
+                    "ask": last + .02 + .002 * (strike - 90),
                     "osiKey": f"{symbol}{expiry_code}{side}{strike}",
                 }
             pairs.append({"Call": option("C", call_last),
@@ -269,7 +268,9 @@ def test() -> None:
                        row["foreground"] == "rgb(0, 0, 0)" for row in best["rows"]), best
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
-            assert "RISK:REWARD" in best["header"] and not best["horizontalOverflow"], best
+            assert "RISK:REWARD" in best["header"] and "FILL" in best["header"], best
+            assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
+            assert not best["horizontalOverflow"], best
             assert best["height"] == 3 * 43, best
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
@@ -385,14 +386,24 @@ def test() -> None:
             assert request["orderType"] == "SPREADS" and len(request["Order"]) == 1, request
             order = request["Order"][0]
             assert order["priceType"] == "NET_DEBIT" and len(order["Instrument"]) == 2, order
-            # Compare E*TRADE's exact preview payload with the checked grid row,
-            # never with a retained widget value or an executable bid/ask midpoint.
+            # Quote-based scanner and E*TRADE preview must share the same exact
+            # selected debit, regardless of stale pre-fix 4.35 session input.
             selected_values = best["rows"][0]["values"]
             def dollars(value):
                 return float(value.replace("$", "").replace(",", ""))
-            expected_last_debit = round(dollars(selected_values[5]) - dollars(selected_values[6]), 2)
-            assert order["limitPrice"] == expected_last_debit, (
-                "E*TRADE limit diverged from checked Last prices", order["limitPrice"], expected_last_debit
+            buy_strike = float(selected_values[3])
+            expected_natural = round(
+                dollars(selected_values[5]) + .02 + .002 * (buy_strike - 90)
+                - (dollars(selected_values[6]) - .02), 2
+            )
+            assert selected_values[-1] == "ASK", selected_values
+            assert order["limitPrice"] == expected_natural, (
+                "E*TRADE preview price diverged from selected ASK spread",
+                order["limitPrice"], expected_natural
+            )
+            assert order["limitPrice"] == round(dollars(selected_values[7]) / 100, 2), order
+            assert len([item for item in events(event_path) if item["event"] == "chain"]) == 4, (
+                "E*TRADE review must requote only the checked expiration once"
             )
             buy, sell = order["Instrument"]
             selected_values = best["rows"][0]["values"]

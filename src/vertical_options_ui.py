@@ -47,6 +47,7 @@ from src.vertical_options import (
     extract_order_id,
     new_vertical_client_order_id,
     preview_details,
+    price_vertical_quote,
     scan_vertical_candidates,
     validate_vertical,
 )
@@ -506,6 +507,7 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[s
             _money(candidate["buy_last"]), _money(candidate["sell_last"]),
             _money(candidate["cost"]), _money(candidate["breakeven"]),
             f"1:{candidate['reward_risk']:.2f}", _money(candidate["max_profit"]),
+            candidate["basis"],
         ],
     }
 
@@ -613,14 +615,17 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             f'{result["source"]} LAST AS OF '
             f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
             'BOTH CALL + PUT DEBIT SPREADS // '
-            'MINIMUM RISK:REWARD 1:2 // THEN CLOSEST TARGET BREAKEVEN // THEN LOWEST COST // '
-            f'COST ≤ {_money(result["max_cost"])} FOR ONE SPREAD. '
-            'LAST IS A HISTORICAL TRADE PRICE, NOT AN EXECUTABLE QUOTE; '
-            'OPTIONSTRAT RECALCULATES WITH ITS OWN PRICES.'
+            'MINIMUM RISK:REWARD 1:2 AT THE SELECTED ORDER PRICE // '
+            'PRIORITY: ASK (NATURAL) > IN-MARKET LAST > MID > UNQUOTED LAST*; '
+            'THEN CLOSEST BREAKEVEN AND LOWEST COST. '
+            f'MAX COST {_money(result["max_cost"])} PER SPREAD. '
+            'ASK = BUY ASK MINUS SELL BID; MID = TWO-LEG MARKET MIDPOINT. '
+            'LAST* HAS NO RELIABLE LIVE SPREAD QUOTE AND CANNOT BE ORDERED. '
+            'NO PRICING BASIS GUARANTEES A FILL.'
         )
         candidates = result["candidates"]
         if not candidates:
-            st.info("No call or put debit spreads met the 1:2 ratio and maximum cost across the loaded years.")
+            st.info("No call or put debit spreads met the 1:2 ratio and maximum cost at a qualifying quoted price across the loaded years.")
         else:
             annual_ids = set(result["annual_ids"])
             by_id = {row["id"]: row for row in candidates}
@@ -665,6 +670,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 f'FROM {result["loaded_expirations"]} COMPLETE CHAINS // '
                 f'{len(checked_ids)} CHECKED // LIME GREEN = BEST MATCH PER CALENDAR YEAR. '
                 'ALL TOP MATCHES KEEPS THE BEST 20 PER EXPIRATION. '
+                'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). '
                 'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'
             )
             if len(checked_ids) == 1:
@@ -696,6 +702,9 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     """Keep the existing reviewed, explicit multi-account order path optional."""
     if not broker_live or result["source"] != "E*TRADE":
         st.info("Reconnect E*TRADE and run a fresh E*TRADE scan before reviewing a live order.")
+        return
+    if not candidate.get("orderable", False):
+        st.warning("LAST* HAS NO VERIFIED LIVE BID/ASK // This row is informational only. Choose a quoted ASK, LAST or MID spread to review an E*TRADE order.")
         return
     if time.time() - float(result["loaded_at"]) >= _SCAN_CACHE_SECONDS:
         st.warning("MARKET SNAPSHOT EXPIRED // Scan again before reviewing a live order.")
@@ -790,19 +799,55 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         + html.escape(
             f'{symbol} // {call_put} DEBIT // BUY {quantity} {_date_label(expiry)} {buy_strike:g} '
             f'+ SELL {quantity} {_date_label(expiry)} {sell_strike:g} // '
-            f'CHECKED LAST DEBIT {_money(limit_price)} PER SPREAD // '
+            f'CHECKED {candidate["basis"]} DEBIT {_money(limit_price)} PER SPREAD // '
             f'TOTAL ORDER DEBIT {_money(limit_price * 100 * quantity)} // '
             f'{len(account_keys)} ACCOUNT(S)'
         ) + "</div>",
         unsafe_allow_html=True,
     )
-    st.caption("Order price = checked spread BUY Last − SELL Last. Historical Last prices may not fill as a live NET_DEBIT limit.")
+    st.caption(
+        f'Pricing: {candidate["basis"]} // spread market BID {_money(candidate.get("spread_bid"))} / '
+        f'MID {_money(candidate.get("spread_mid"))} / ASK {_money(candidate.get("spread_ask"))}. '
+        'ASK = BUY option ask − SELL option bid. MID/LAST can remain unfilled; '
+        'quotes will be rechecked before E*TRADE preview.'
+    )
     preview_click = st.button(
         f"REVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
         key="vo_preview", type="primary", use_container_width=True,
         disabled=bool(validation_error) or not account_keys,
     )
     if preview_click:
+        # Requote only on an explicit Review click: no broker traffic on
+        # checkbox, filter, order quantity, or OptionStrat interactions.
+        try:
+            latest = _chain(client, symbol, expiry, touch_session)
+            def exact_leg(strike: float, osi: str) -> dict[str, Any]:
+                for row in latest:
+                    if (row.get("call_put") == call_put
+                            and abs(float(row.get("strike") or 0) - strike) < 1e-5
+                            and str(row.get("osi") or "") == str(osi or "")):
+                        return row
+                raise ValueError("Selected contract no longer has a current chain quote.")
+            buy_leg = exact_leg(buy_strike, candidate.get("buy_osi", ""))
+            sell_leg = exact_leg(sell_strike, candidate.get("sell_osi", ""))
+            checked_price = price_vertical_quote(
+                buy_last=buy_leg.get("last"), sell_last=sell_leg.get("last"),
+                buy_bid=buy_leg.get("bid"), buy_ask=buy_leg.get("ask"),
+                sell_bid=sell_leg.get("bid"), sell_ask=sell_leg.get("ask"),
+                width=candidate["width"], max_cost=result["max_cost"],
+            )
+            if (not checked_price or not checked_price["orderable"]
+                    or checked_price["debit"] != limit_price
+                    or checked_price["basis"] != candidate["basis"]):
+                raise ValueError(
+                    "The current executable spread quote changed or no longer meets "
+                    "your 1:2 and cost criteria. SCAN ALL YEARS again before reviewing."
+                )
+        except Exception as exc:
+            st.session_state.pop("vo_review_bundle", None)
+            st.session_state.pop("vo_live_confirm", None)
+            st.error(f"LIVE SPREAD REQUOTE BLOCKED // {exc}")
+            return
         previews: dict[str, Any] = {}
         errors: list[str] = []
         for account_key in account_keys:

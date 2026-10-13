@@ -21,17 +21,17 @@ class VerticalOptionsTests(unittest.TestCase):
             "osi": osi or f"{side}-{expiry}-{strike}",
         }
 
-    def test_scan_both_canonical_sides_with_last_not_bid_ask(self):
+    def test_scan_both_canonical_sides_use_ask_when_it_meets_constraints(self):
         expiry = date(2027, 1, 15)
         rows = [
-            self._row(expiry, "CALL", 100, 3, bid=.10, ask=10),
-            self._row(expiry, "CALL", 105, 2, bid=9, ask=12),
-            self._row(expiry, "PUT", 95, 2, bid=.01, ask=11),
-            self._row(expiry, "PUT", 100, 3, bid=8, ask=13),
+            self._row(expiry, "CALL", 100, 3, bid=2.70, ask=3.10),
+            self._row(expiry, "CALL", 105, 2, bid=1.95, ask=2.30),
+            self._row(expiry, "PUT", 95, 2, bid=1.95, ask=2.30),
+            self._row(expiry, "PUT", 100, 3, bid=2.70, ask=3.10),
         ]
         found, annual = scan_vertical_candidates(
             symbol="spy", spot_last=102.50, option_rows=rows,
-            target_breakeven=101, max_cost=100,
+            target_breakeven=101.15, max_cost=150,
         )
         self.assertEqual(len(found), 2)
         call, put = found
@@ -39,15 +39,67 @@ class VerticalOptionsTests(unittest.TestCase):
                          ("CALL", 100, 105))
         self.assertEqual((put["call_put"], put["buy_strike"], put["sell_strike"]),
                          ("PUT", 100, 95))
-        self.assertEqual((call["debit"], call["cost"], call["max_profit"],
-                          call["max_loss"], call["breakeven"], call["reward_risk"]),
-                         (1, 100, 400, 100, 101, 4))
-        self.assertEqual(put["breakeven"], 99)
+        self.assertEqual((call["basis"], call["orderable"], call["debit"]), ("ASK", True, 1.15))
+        self.assertEqual((call["cost"], call["max_profit"], call["max_loss"]),
+                         (115, 385, 115))
+        self.assertEqual(call["breakeven"], 101.15)
+        self.assertEqual(put["breakeven"], 98.85)
         self.assertEqual((call["buy_last"], call["buy_bid"], call["buy_ask"]),
-                         (3, .10, 10))
+                         (3, 2.70, 3.10))
         self.assertEqual((call["sell_last"], call["sell_bid"], call["sell_ask"]),
-                         (2, 9, 12))
+                         (2, 1.95, 2.30))
         self.assertEqual(annual, {call["id"]})
+
+    def test_msft_stale_last_below_mid_is_not_ranked_as_likely_fill(self):
+        expiry = date(2029, 1, 19)
+        rows = [
+            self._row(expiry, "CALL", 550, 128.20, bid=125.80, ask=128.60),
+            self._row(expiry, "CALL", 560, 125.85, bid=120.90, ask=123.70),
+        ]
+        from src.vertical_options import price_vertical_quote
+        priced = price_vertical_quote(
+            buy_last=128.20, sell_last=125.85,
+            buy_bid=125.80, buy_ask=128.60,
+            sell_bid=120.90, sell_ask=123.70,
+            width=10, max_cost=1000,
+        )
+        self.assertIsNone(priced)  # ASK=7.70 and MID=4.90 fail 1:2.
+        found, annual = scan_vertical_candidates(
+            symbol="MSFT", spot_last=545.34, option_rows=rows,
+            target_breakeven=552.35, max_cost=1000,
+        )
+        self.assertEqual((found, annual), ([], set()))
+
+    def test_in_market_last_is_chosen_ahead_of_mid_for_fill(self):
+        from src.vertical_options import price_vertical_quote
+        priced = price_vertical_quote(
+            buy_last=4.5, sell_last=3.0, buy_bid=4.0, buy_ask=5.0,
+            sell_bid=3.0, sell_ask=3.7, width=5, max_cost=150,
+        )
+        self.assertEqual((priced["basis"], priced["debit"], priced["cost"]), ("LAST", 1.5, 150))
+        self.assertTrue(priced["orderable"])
+        self.assertEqual(priced["spread_ask"], 2.0)
+        self.assertEqual(priced["spread_mid"], 1.15)
+
+    def test_mid_is_used_if_natural_and_stale_last_fail(self):
+        from src.vertical_options import price_vertical_quote
+        priced = price_vertical_quote(
+            buy_last=4.6, sell_last=3.8, buy_bid=4.0, buy_ask=5.0,
+            sell_bid=3.1, sell_ask=3.8, width=5, max_cost=150,
+        )
+        self.assertEqual((priced["basis"], priced["debit"], priced["orderable"]),
+                         ("MID", 1.05, True))
+        self.assertEqual(priced["spread_ask"], 1.9)
+
+    def test_unquoted_last_is_informational_only(self):
+        from src.vertical_options import price_vertical_quote
+        priced = price_vertical_quote(
+            buy_last=3.0, sell_last=2.0,
+            buy_bid=None, buy_ask=None, sell_bid=None, sell_ask=None,
+            width=5, max_cost=200,
+        )
+        self.assertEqual((priced["basis"], priced["orderable"], priced["debit"]),
+                         ("LAST*", False, 1.0))
 
     def test_scan_ratio_boundary_and_cost_cap(self):
         exact = date(2027, 2, 19)

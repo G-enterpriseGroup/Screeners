@@ -97,6 +97,68 @@ def _finite_number(value: Any, *, positive: bool = False) -> float | None:
     return number
 
 
+def price_vertical_quote(
+    *,
+    buy_last: float | None,
+    sell_last: float | None,
+    buy_bid: float | None,
+    buy_ask: float | None,
+    sell_bid: float | None,
+    sell_ask: float | None,
+    width: float,
+    max_cost: float,
+) -> dict[str, Any] | None:
+    """Choose the most execution-friendly debit that STILL meets 1:2 and cost.
+
+    ASK is the two-leg natural debit (BUY ask - SELL bid), not one option's
+    ask. LAST is eligible only if it is within the current spread market
+    at or above its midpoint; an old Last below MID is not a likely fill.
+    Missing bid/ask yields a visible LAST* estimate only, never an order.
+    No quote basis is a guarantee of execution or liquidity.
+    """
+    spread_width = _finite_number(width, positive=True)
+    budget = _finite_number(max_cost, positive=True)
+    if spread_width is None or budget is None:
+        return None
+    last_buy = _finite_number(buy_last, positive=True)
+    last_sell = _finite_number(sell_last, positive=True)
+    last_debit = (last_buy - last_sell
+                  if last_buy is not None and last_sell is not None else None)
+    bb, ba = _finite_number(buy_bid), _finite_number(buy_ask, positive=True)
+    sb, sa = _finite_number(sell_bid), _finite_number(sell_ask, positive=True)
+    quoted = all(value is not None for value in (bb, ba, sb, sa))
+    choices: list[tuple[str, float, int, bool]] = []
+    quote_bid = quote_mid = quote_ask = None
+    if quoted:
+        if bb > ba or sb > sa:
+            return None  # Inverted/stale single-leg markets must not be trusted.
+        quote_bid = round(bb - sa, 4)
+        quote_ask = round(ba - sb, 4)
+        quote_mid = round((quote_bid + quote_ask) / 2, 4)
+        choices.append(("ASK", quote_ask, 0, True))
+        if (last_debit is not None
+                and quote_mid - .005 <= last_debit <= quote_ask + .005):
+            choices.append(("LAST", last_debit, 1, True))
+        choices.append(("MID", quote_mid, 2, True))
+    elif last_debit is not None:
+        choices.append(("LAST*", last_debit, 3, False))
+
+    for basis, raw_debit, grade, orderable in choices:
+        debit = round(raw_debit, 2)  # E*TRADE orderable two-decimal limit.
+        cost = round(100 * debit, 2)
+        if (not math.isfinite(debit) or not .01 <= debit < spread_width
+                or cost > budget + 1e-8
+                or spread_width - debit + 1e-8 < _MIN_REWARD_RISK * debit):
+            continue
+        return {
+            "debit": debit, "cost": cost, "basis": basis,
+            "grade": grade, "orderable": orderable,
+            "spread_bid": quote_bid, "spread_mid": quote_mid,
+            "spread_ask": quote_ask, "last_debit": last_debit,
+        }
+    return None
+
+
 def scan_vertical_candidates(
     *,
     symbol: str,
@@ -108,13 +170,12 @@ def scan_vertical_candidates(
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
 
-    Prices use each option leg's E*TRADE Last, never bid/ask or midpoint.
-    Both canonical directions are scanned: CALL buys the lower strike and
-    PUT buys the higher strike. Keep only the top ``max_per_expiration``
-    matches per expiration for the table, while finding each calendar year's
-    winner from the complete qualifying pair set before that cap is applied.
-    The fixed 1:2 ratio is an eligibility gate; qualifying rows rank by
-    breakeven distance, then cost, then higher reward:risk.
+    Per spread, attempt the natural ASK debit first, then a current-market
+    LAST (only if >= MID), then MID, then unquoted LAST* (display-only).
+    Each candidate's risk/reward, breakeven, cost, and live order price use
+    the SAME selected debit. Prefer execution grades before breakeven and cost.
+    Both canonical CALL and PUT directions are scanned. Annual winners are
+    selected from the complete pair set, before the per-expiration cap.
     """
     ticker = str(symbol or "").strip().upper()
     spot = _finite_number(spot_last, positive=True)
@@ -139,7 +200,12 @@ def scan_vertical_candidates(
         last = _finite_number(raw.get("last"), positive=True)
         if not isinstance(expiry, date) or side not in {"CALL", "PUT"}:
             continue
-        if strike is None or last is None:
+        if strike is None:
+            continue
+        # A live bid/ask pair can be usable even when Last is missing.
+        if last is None and not all(
+            _finite_number(raw.get(key)) is not None for key in ("bid", "ask")
+        ):
             continue
         contract = {
             "strike": strike,
@@ -154,7 +220,7 @@ def scan_vertical_candidates(
         # Duplicate transport rows for one contract must not create duplicate
         # spread IDs. Use a quote-value tie break independent of input order.
         quote_key = lambda row: (
-            row["last"],
+            row["last"] if row["last"] is not None else math.inf,
             row["bid"] if row["bid"] is not None else math.inf,
             row["ask"] if row["ask"] is not None else math.inf,
         )
@@ -171,16 +237,18 @@ def scan_vertical_candidates(
                 if lower["strike"] == higher["strike"]:
                     continue
                 buy, sell = (lower, higher) if side == "CALL" else (higher, lower)
-                debit = round(buy["last"] - sell["last"], 6)
                 width = round(higher["strike"] - lower["strike"], 6)
-                if not 0 < debit < width:
+                price = price_vertical_quote(
+                    buy_last=buy["last"], sell_last=sell["last"],
+                    buy_bid=buy["bid"], buy_ask=buy["ask"],
+                    sell_bid=sell["bid"], sell_ask=sell["ask"],
+                    width=width, max_cost=budget,
+                )
+                if price is None:
                     continue
-                cost = round(100.0 * debit, 4)
-                profit = round(100.0 * (width - debit), 4)
-                if not math.isfinite(cost) or not math.isfinite(profit):
-                    continue
-                if cost > budget or profit < _MIN_REWARD_RISK * cost:
-                    continue
+                debit = price["debit"]
+                cost = price["cost"]
+                profit = round(100.0 * (width - debit), 2)
                 breakeven = round(
                     buy["strike"] + debit if side == "CALL" else buy["strike"] - debit,
                     6,
@@ -194,7 +262,7 @@ def scan_vertical_candidates(
                     buy["osi"], sell["osi"],
                 ))
                 rank = (
-                    abs(breakeven - target), cost, -ratio, expiry,
+                    price["grade"], abs(breakeven - target), cost, -ratio, expiry,
                     side, buy["strike"], sell["strike"],
                     buy["osi"], sell["osi"],
                 )
@@ -210,7 +278,7 @@ def scan_vertical_candidates(
                     "buy_osi": buy["osi"], "sell_osi": sell["osi"],
                     "buy_last": buy["last"], "buy_bid": buy["bid"], "buy_ask": buy["ask"],
                     "sell_last": sell["last"], "sell_bid": sell["bid"], "sell_ask": sell["ask"],
-                    "debit": debit, "width": width, "cost": cost,
+                    **price, "width": width,
                     "max_profit": profit, "max_loss": cost,
                     "breakeven": breakeven, "reward_risk": ratio,
                 }
