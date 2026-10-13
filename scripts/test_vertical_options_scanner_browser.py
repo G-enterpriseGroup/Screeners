@@ -101,6 +101,8 @@ class StubETrade:
         raise AssertionError("Checkbox selection must never place an order")
 
 st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
+# Simulate the exact stale manually entered debit from a pre-fix session.
+st.session_state.setdefault("vo_limit_price", 4.35)
 render_vertical_options(StubETrade(), lambda: None)
 '''
 
