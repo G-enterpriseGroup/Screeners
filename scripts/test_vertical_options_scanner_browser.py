@@ -1,0 +1,411 @@
+"""Browser regression for the production Vertical Options all-year scanner.
+
+Runs the real Streamlit renderer and virtual grid against deterministic,
+read-only E*TRADE-shaped quotes. No brokerage login or order is made.
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+from selenium import webdriver
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+    StaleElementReferenceException,
+)
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+FIXTURE = r'''
+import json
+import os
+from datetime import date
+from pathlib import Path
+
+import streamlit as st
+from src.vertical_options_ui import render_vertical_options
+
+LOG = Path(os.environ["VO_SCANNER_TEST_LOG"])
+EXPIRIES = [date(date.today().year + offset, 6, 20) for offset in (1, 2, 3)]
+
+def record(event, **details):
+    with LOG.open("a", encoding="utf-8") as output:
+        output.write(json.dumps({"event": event, **details}) + "\n")
+
+class StubETrade:
+    is_offline = False
+
+    def get_quote(self, symbol):
+        record("quote", symbol=symbol)
+        return {"QuoteResponse": {"QuoteData": [{
+            "symbol": symbol, "companyName": "SPDR Test Fund",
+            "lastTrade": 100.0, "bid": 99.99, "ask": 100.01,
+        }]}}
+
+    def get_option_expirations(self, symbol):
+        record("expirations", symbol=symbol)
+        return {"OptionExpireDateResponse": {"ExpirationDate": [
+            {"year": day.year, "month": day.month, "day": day.day}
+            for day in EXPIRIES
+        ]}}
+
+    def get_option_chain(self, symbol, year, month, day,
+                         no_of_strikes=100, chain_type="CALLPUT"):
+        record("chain", symbol=symbol, year=year, month=month, day=day,
+               no_of_strikes=no_of_strikes, chain_type=chain_type)
+        expiry_code = f"{year % 100:02d}{month:02d}{day:02d}"
+        pairs = []
+        for strike in (90, 95, 100, 105, 110):
+            call_last = (115 - strike) / 5 + 1
+            put_last = (strike - 85) / 5 + 1
+            def option(side, last):
+                return {
+                    "strikePrice": strike, "lastPrice": last,
+                    "bid": last - .10, "ask": last + .10,
+                    "osiKey": f"{symbol}{expiry_code}{side}{strike}",
+                }
+            pairs.append({"Call": option("C", call_last),
+                          "Put": option("P", put_last)})
+        return {"OptionChainResponse": {"OptionPair": pairs}}
+
+    def list_accounts(self):
+        record("accounts")
+        return [{"accountIdKey": "stub-key", "accountId": "12345474",
+                 "accountDesc": "Test Account"}]
+
+    def preview_order(self, account_key, payload):
+        record("preview", account_key=account_key, payload=payload)
+        return {"PreviewOrderResponse": {
+            "PreviewIds": [{"previewId": 123456}],
+            "totalOrderValue": 100.0, "estimatedCommission": 0.0,
+        }}
+
+    def place_order(self, *args, **kwargs):
+        record("place")
+        raise AssertionError("Checkbox selection must never place an order")
+
+st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
+render_vertical_options(StubETrade(), lambda: None)
+'''
+
+
+def free_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def wait_for_server(server: subprocess.Popen, base: str, log_path: Path) -> None:
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        if server.poll() is not None:
+            raise AssertionError(
+                f"Streamlit fixture exited ({server.returncode}): "
+                + log_path.read_text(encoding="utf-8")[-3000:]
+            )
+        try:
+            with urllib.request.urlopen(base + "/_stcore/health", timeout=2) as response:
+                if response.status == 200:
+                    return
+        except Exception:
+            time.sleep(.4)
+    raise AssertionError("Vertical scanner fixture never became healthy")
+
+
+def events(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def in_grid(driver: webdriver.Chrome, callback):
+    """Find and enter the real Streamlit component iframe after each rerun."""
+    def enter(_):
+        driver.switch_to.default_content()
+        for frame in driver.find_elements(By.TAG_NAME, "iframe"):
+            try:
+                driver.switch_to.frame(frame)
+                if driver.find_elements(By.ID, "scroll"):
+                    return True
+            except Exception:
+                pass
+            driver.switch_to.default_content()
+        return False
+
+    try:
+        WebDriverWait(driver, 25).until(enter)
+        return callback()
+    finally:
+        driver.switch_to.default_content()
+
+
+def grid_snapshot(driver: webdriver.Chrome) -> dict:
+    return in_grid(driver, lambda: driver.execute_script(
+        """
+        const scroll=document.getElementById('scroll');
+        const rows=[...document.querySelectorAll('.row')];
+        return {
+          rows:rows.map(row=>({
+            annual:row.classList.contains('annual'),
+            values:[...row.querySelectorAll('.cell')].map(cell=>cell.textContent),
+            selected:row.querySelector('.select').getAttribute('aria-pressed'),
+            background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
+            foreground:getComputedStyle(row.querySelector('.cell')).color,
+            href:row.querySelector('.open[href]')?.href||'',
+            target:row.querySelector('.open[href]')?.target||'',
+          })),
+          height:scroll.offsetHeight,
+          horizontalOverflow:scroll.scrollWidth>scroll.clientWidth||
+            document.documentElement.scrollWidth>document.documentElement.clientWidth,
+          header:document.getElementById('head').textContent,
+        };
+        """
+    ))
+
+
+def checked_count(driver: webdriver.Chrome) -> int:
+    return driver.execute_script(
+        """
+        for(const caption of document.querySelectorAll('[data-testid="stCaptionContainer"]')){
+          const match=caption.textContent.match(/(\\d+) CHECKED \\/\\/ LIME GREEN/);
+          if(match)return Number(match[1]);
+        }
+        return -1;
+        """
+    )
+
+
+def exact_optionstrat_url(values: list[str]) -> str:
+    symbol, side, expiration, buy, sell = values[:5]
+    code = datetime.strptime(expiration, "%b-%d-%y").strftime("%y%m%d")
+    option_type = "C" if side == "CALL" else "P"
+    long_leg = f".{symbol}{code}{option_type}{float(buy):g}"
+    short_leg = f"-.{symbol}{code}{option_type}{float(sell):g}"
+    strategy = "bull-call-spread" if side == "CALL" else "bear-put-spread"
+    legs = f"{long_leg},{short_leg}" if side == "CALL" else f"{short_leg},{long_leg}"
+    return f"https://optionstrat.com/build/{strategy}/{symbol}/{legs}"
+
+
+def test() -> None:
+    with tempfile.TemporaryDirectory(prefix="vo_scanner_browser_") as temporary:
+        folder = Path(temporary)
+        app_path = folder / "app.py"
+        app_path.write_text(FIXTURE, encoding="utf-8")
+        event_path = folder / "broker_events.jsonl"
+        event_path.write_text("", encoding="utf-8")
+        server_log = folder / "streamlit.log"
+        port = free_port()
+        base = f"http://127.0.0.1:{port}"
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
+        environment["VO_SCANNER_TEST_LOG"] = str(event_path)
+        with server_log.open("w", encoding="utf-8") as output:
+            server = subprocess.Popen(
+                [sys.executable, "-m", "streamlit", "run", str(app_path),
+                 "--server.port", str(port), "--server.headless", "true",
+                 "--browser.gatherUsageStats", "false"],
+                cwd=ROOT, env=environment, stdout=output, stderr=subprocess.STDOUT,
+            )
+        driver = None
+        try:
+            wait_for_server(server, base, server_log)
+            options = Options()
+            options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--force-device-scale-factor=1")
+            options.add_argument("--window-size=1440,900")
+            driver = webdriver.Chrome(options=options)
+            driver.get(base)
+            wait = WebDriverWait(driver, 60)
+
+            form = wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '[data-testid="stForm"]'))
+            labels = driver.execute_script(
+                "return [...arguments[0].querySelectorAll('input')]"
+                ".filter(input=>!input.disabled&&input.type==='text')"
+                ".map(input=>input.getAttribute('aria-label'))", form,
+            )
+            assert labels == ["Ticker", "Target Breakeven", "Max Cost"], labels
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]').send_keys("SPY")
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').send_keys("100")
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("500")
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+
+            wait.until(lambda _: checked_count(driver) == 0)
+            assert "30" in driver.find_element(By.TAG_NAME, "body").text, "Expected 30 parsed option contracts"
+            chain_calls = [item for item in events(event_path) if item["event"] == "chain"]
+            assert len(chain_calls) == 3, chain_calls
+            assert len({item["year"] for item in chain_calls}) == 3, chain_calls
+            assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
+                       for item in chain_calls), chain_calls
+
+            best = grid_snapshot(driver)
+            assert len(best["rows"]) == 3, best
+            assert all(row["annual"] for row in best["rows"]), best
+            assert len({row["values"][2][-2:] for row in best["rows"]}) == 3, best
+            assert all(row["background"] == "rgb(163, 230, 53)" and
+                       row["foreground"] == "rgb(0, 0, 0)" for row in best["rows"]), best
+            assert all(row["href"].startswith("https://optionstrat.com/build/") and
+                       row["target"] == "_blank" for row in best["rows"]), best
+            assert "RISK:REWARD" in best["header"] and not best["horizontalOverflow"], best
+            assert best["height"] == 3 * 43, best
+
+            in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
+            wait.until(lambda _: checked_count(driver) == 1)
+            wait.until(lambda _: grid_snapshot(driver)["rows"][0]["selected"] == "true")
+
+            expected_url = exact_optionstrat_url(best["rows"][0]["values"])
+            assert best["rows"][0]["href"] == expected_url, best["rows"][0]
+            original_tab = driver.current_window_handle
+            in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .open').click())
+            new_tab = wait.until(lambda _: next(
+                (handle for handle in driver.window_handles if handle != original_tab), None
+            ))
+            driver.switch_to.window(new_tab)
+            wait.until(lambda _: driver.current_url.startswith("https://optionstrat.com/build/"))
+            assert driver.current_url.rstrip("/") == expected_url, driver.current_url
+            driver.close()
+            driver.switch_to.window(original_tab)
+            assert checked_count(driver) == 1, "Opening OptionStrat changed the selected spread"
+
+            driver.find_element(By.XPATH, '//label[contains(., "ALL TOP MATCHES")]').click()
+            wait.until(lambda _: "60 TOP MATCHES" in driver.find_element(By.TAG_NAME, "body").text)
+            def expanded_grid(_):
+                snapshot = grid_snapshot(driver)
+                return snapshot if len(snapshot["rows"]) > 3 else False
+            all_rows = wait.until(expanded_grid)
+            assert not all_rows["horizontalOverflow"], all_rows
+            assert checked_count(driver) == 1
+
+            def all_types_and_strikes():
+                def inspect():
+                    return driver.execute_script(
+                        """
+                        const scroll=document.getElementById('scroll');
+                        const types=new Set(),strikes=new Set();
+                        for(let offset=0;offset<=scroll.scrollHeight;offset+=scroll.clientHeight){
+                          scroll.scrollTop=offset;scroll.dispatchEvent(new Event('scroll'));
+                          for(const row of document.querySelectorAll('.row')){
+                            const cells=row.querySelectorAll('.cell');
+                            types.add(cells[1].textContent);
+                            strikes.add(cells[3].textContent);
+                            strikes.add(cells[4].textContent);
+                          }
+                        }
+                        scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));
+                        return {types:[...types],strikes:[...strikes]};
+                        """
+                    )
+                return in_grid(driver, inspect)
+            coverage = all_types_and_strikes()
+            assert set(coverage["types"]) == {"CALL", "PUT"}, coverage
+            assert {"90", "110"}.issubset(set(coverage["strikes"])), coverage
+
+            driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            wait.until(lambda _: grid_snapshot(driver)["rows"][0]["selected"] == "true")
+            assert checked_count(driver) == 1
+            assert len([item for item in events(event_path) if item["event"] == "chain"]) == 3
+            assert not any(item["event"] in {"preview", "place"} for item in events(event_path))
+
+            order_expander = driver.find_element(
+                By.XPATH,
+                '//div[@data-testid="stExpander"]//summary[contains(., "OPTIONAL E*TRADE LIVE ORDER REVIEW")]',
+            )
+            order_expander.click()
+            review = wait.until(lambda _: next((
+                button for button in driver.find_elements(
+                    By.XPATH, '//button[contains(., "REVIEW WITH E*TRADE")]',
+                ) if button.is_displayed() and button.is_enabled()
+            ), None))
+            chip = wait.until(lambda _: driver.execute_script(
+                """
+                const chip=document.querySelector(
+                  '.st-key-vertical_options_workspace [data-testid="stMultiSelect"] [data-tag]'
+                );
+                if(!chip)return null;
+                const title=chip.querySelector('[title]')||chip;
+                return {label:title.textContent,
+                        background:getComputedStyle(chip).backgroundColor,
+                        foreground:getComputedStyle(title).color};
+                """
+            ))
+            assert "Test Account" in chip["label"], chip
+            assert chip["background"] == "rgb(251, 139, 30)" and chip["foreground"] == "rgb(0, 0, 0)", chip
+            assert not any(item["event"] in {"preview", "place"} for item in events(event_path)), (
+                "Opening the optional order expander sent a broker order call"
+            )
+            def click_review(_):
+                try:
+                    button = next((item for item in driver.find_elements(
+                        By.XPATH, '//button[contains(., "REVIEW WITH E*TRADE")]',
+                    ) if item.is_displayed() and item.is_enabled()), None)
+                    if button is None:
+                        return False
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'})", button)
+                    button.click()
+                    return True
+                except (ElementClickInterceptedException, ElementNotInteractableException,
+                        StaleElementReferenceException):
+                    return False
+            wait.until(click_review)
+            wait.until(lambda _: len([item for item in events(event_path)
+                                      if item["event"] == "preview"]) == 1)
+            wait.until(lambda _: "PREVIEW ACCEPTED FOR ALL SELECTED ACCOUNTS"
+                       in driver.find_element(By.TAG_NAME, "body").text)
+            preview = next(item for item in events(event_path) if item["event"] == "preview")
+            assert preview["account_key"] == "stub-key", preview
+            request = preview["payload"]["PreviewOrderRequest"]
+            assert request["orderType"] == "SPREADS" and len(request["Order"]) == 1, request
+            order = request["Order"][0]
+            assert order["priceType"] == "NET_DEBIT" and len(order["Instrument"]) == 2, order
+            buy, sell = order["Instrument"]
+            selected_values = best["rows"][0]["values"]
+            selected_expiry = datetime.strptime(selected_values[2], "%b-%d-%y")
+            assert [leg["orderAction"] for leg in (buy, sell)] == ["BUY_OPEN", "SELL_OPEN"]
+            assert [leg["Product"]["strikePrice"] for leg in (buy, sell)] == [
+                float(selected_values[3]), float(selected_values[4]),
+            ]
+            assert all(
+                leg["Product"]["symbol"] == selected_values[0]
+                and leg["Product"]["callPut"] == selected_values[1]
+                and (leg["Product"]["expiryYear"], leg["Product"]["expiryMonth"],
+                     leg["Product"]["expiryDay"]) ==
+                (selected_expiry.year, selected_expiry.month, selected_expiry.day)
+                and leg["orderedQuantity"] == 1
+                for leg in (buy, sell)
+            ), order
+            assert driver.find_element(
+                By.XPATH, '//button[contains(., "SEND LIVE TO")]',
+            ).get_attribute("disabled") is not None, "SEND must need affirmative confirmation"
+            assert not any(item["event"] == "place" for item in events(event_path)), (
+                "Preview alone placed an order"
+            )
+            print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
+        except Exception:
+            print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
+            raise
+        finally:
+            if driver is not None:
+                driver.quit()
+            server.terminate()
+            try:
+                server.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=5)
+
+
+if __name__ == "__main__":
+    test()

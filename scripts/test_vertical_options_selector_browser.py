@@ -123,7 +123,7 @@ def main() -> None:
             wait.until(lambda _: driver.find_elements(By.CSS_SELECTOR, listbox + ' [role="option"]'))
             option = next(
                 (el for el in driver.find_elements(By.CSS_SELECTOR, listbox + ' [role="option"]')
-                 if second in el.text),
+                 if second in (el.get_attribute("textContent") or "")),
                 None,
             )
             assert option is not None, "Other brokerage account missing from selector"

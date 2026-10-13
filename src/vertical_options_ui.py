@@ -3,7 +3,8 @@
 OWNERSHIP / EDITING NOTES
 -------------------------
 EDIT THIS FILE FOR:
-- Vertical Options ticker/type/strike/quantity/account controls;
+- Vertical Options ticker/breakeven/cost scanner and full-year chain presentation;
+- automated spread selection, OptionStrat links, and optional order controls;
 - live option quote presentation and NET DEBIT limit entry;
 - multi-account E*TRADE preview + explicit live send workflow;
 - Vertical Options-only compact styling.
@@ -24,14 +25,20 @@ LAYOUT RULES
 from __future__ import annotations
 
 import html
+import hashlib
+import math
+from pathlib import Path
+import re
 import time
 from datetime import date
 from typing import Any
+from urllib.parse import quote as url_quote
 
 import streamlit as st
+import streamlit.components.v1 as components
 
-from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
-from src.option_book import contract_quote, extract_option_rows, net_price_snapshot, strikes_for
+from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
+from src.option_book import extract_option_rows, net_price_snapshot
 from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
@@ -40,12 +47,18 @@ from src.vertical_options import (
     extract_order_id,
     new_vertical_client_order_id,
     preview_details,
+    scan_vertical_candidates,
     validate_vertical,
 )
 
 
 _PREVIEW_FRESH_SECONDS = 150.0
 _DEFAULT_ACCOUNT_SUFFIX = "5474"
+_SCAN_CACHE_SECONDS = 300.0
+_SPREAD_SCROLL_COMPONENT = components.declare_component(
+    "raj_vo_spread_scroller_v1",
+    path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
+)
 
 _VERTICAL_OPTIONS_CSS = """
 <style>
@@ -265,12 +278,6 @@ def _date_label(value: date) -> str:
     return value.strftime("%b-%d-%y")
 
 
-def _normalize_vertical_ticker() -> None:
-    """Normalize the Vertical Options ticker after direct text entry."""
-    value = str(st.session_state.get("vo_symbol_value") or "").strip().upper()
-    st.session_state["vo_symbol_value"] = value or "SPY"
-
-
 def _company_display_markup(symbol: str, resolved_name: str = "") -> str:
     name = str(resolved_name or company_name(symbol) or "").strip() or "—"
     safe = html.escape(name)
@@ -311,10 +318,6 @@ def _default_account_keys(accounts: list[dict[str, Any]]) -> list[str]:
         if digits.endswith(_DEFAULT_ACCOUNT_SUFFIX):
             return [_account_key(account)]
     return [_account_key(accounts[0])] if accounts else []
-
-
-def _closest_index(values: list[float], spot: float) -> int:
-    return min(range(len(values)), key=lambda i: abs(float(values[i]) - float(spot)))
 
 
 def _metric_markup(items: list[tuple[str, str, str]]) -> str:
@@ -388,432 +391,523 @@ def _reviews_are_fresh(review_bundle: dict[str, Any] | None, fingerprint: tuple[
     return 0.0 <= age <= _PREVIEW_FRESH_SECONDS
 
 
+# ==============================
+# ALL-YEAR CHAIN SCAN / OPTIONSTRAT LINKS
+# ==============================
+def _entered_price(value: str, label: str) -> float:
+    try:
+        amount = float(str(value).strip().replace("$", "").replace(",", ""))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Enter a valid {label}.") from exc
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError(f"{label} must be greater than zero.")
+    return amount
+
+
+def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False) -> dict[str, Any]:
+    source = "E*TRADE" if client is not None and not bool(getattr(client, "is_offline", False)) else "PUBLIC"
+    cache_key = f"{source}:{symbol}"
+    cache = st.session_state.setdefault("_vo_chain_cache", {})
+    now = time.time()
+    for old_key, old_value in list(cache.items()):
+        if (not isinstance(old_value, dict)
+                or now - float(old_value.get("loaded_at") or 0) >= _SCAN_CACHE_SECONDS):
+            cache.pop(old_key, None)
+    cached = cache.get(cache_key)
+    if (not refresh and isinstance(cached, dict)
+            and now - float(cached.get("loaded_at") or 0) < _SCAN_CACHE_SECONDS):
+        return cached
+
+    market_client = options_market_client(client)
+    quote_payload = market_client.get_quote(symbol)
+    quote = quote_summary(quote_payload)
+    touch_session()
+    spot = _entered_price(
+        find_number(quote_payload, "lastTrade", "lastPrice"),
+        "E*TRADE Last price" if source == "E*TRADE" else "public Last price",
+    )
+    name = str(quote.get("description") or company_name(symbol) or "").strip()
+    record_lookup(symbol, name)
+    expirations = [item for item in _expirations(market_client, symbol, touch_session) if item >= date.today()]
+    if not expirations:
+        raise ValueError(f"No future listed option expirations are available for {symbol}.")
+
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    loaded = 0
+    progress = st.progress(0, text=f"LOADING {len(expirations)} EXPIRATION CHAINS // {symbol}")
+    try:
+        for index, expiry in enumerate(expirations, 1):
+            try:
+                chain_rows = _chain(market_client, symbol, expiry, touch_session)
+                if chain_rows:
+                    rows.extend(chain_rows)
+                    loaded += 1
+                else:
+                    errors.append(f"{_date_label(expiry)} // no quoted contracts returned")
+            except Exception as exc:
+                errors.append(f"{_date_label(expiry)} // {exc}")
+            progress.progress(
+                index / len(expirations),
+                text=f"LOADED {loaded} / {len(expirations)} EXPIRATION CHAINS // {symbol}",
+            )
+    finally:
+        progress.empty()
+    if not rows:
+        raise ValueError("No option contracts could be loaded from the listed expirations.")
+    result = {
+        "loaded_at": time.time(), "scan_id": time.time_ns(),
+        "source": source, "symbol": symbol, "spot": spot, "name": name,
+        "expirations": expirations, "loaded_expirations": loaded,
+        "rows": rows, "errors": errors,
+    }
+    cache[cache_key] = result
+    return result
+
+
+def _optionstrat_url(candidate: dict[str, Any]) -> str:
+    """Open the exact two-leg debit spread in OptionStrat's strategy builder."""
+    symbol = str(candidate["symbol"]).strip().upper()
+    expiry = candidate["expiry"].strftime("%y%m%d")
+    def leg(strike: float, side: str, osi: str, short: bool = False) -> str:
+        strike_text = f"{float(strike):.8f}".rstrip("0").rstrip(".")
+        root = symbol
+        # Standard OCC symbols can have a different option root than the
+        # underlying (for example SPX weekly options use SPXW).
+        match = re.fullmatch(
+            r"([A-Z][A-Z0-9.\-]*?)(\d{6})([CP])(\d{1,8}(?:\.\d+)?)",
+            str(osi or "").upper().replace(" ", "").lstrip("."),
+        )
+        if match and match.group(2) == expiry and match.group(3) == side:
+            raw_strike = match.group(4)
+            parsed_strike = float(raw_strike) / 1000 if len(raw_strike) == 8 else float(raw_strike)
+            if abs(parsed_strike - float(strike)) < .0001:
+                root = match.group(1).rstrip("-") or symbol
+        return ("-" if short else "") + f".{root}{expiry}{side}{strike_text}"
+    if candidate["call_put"] == "CALL":
+        strategy = "bull-call-spread"
+        legs = (leg(candidate["buy_strike"], "C", candidate.get("buy_osi", "")) + ","
+                + leg(candidate["sell_strike"], "C", candidate.get("sell_osi", ""), True))
+    else:
+        strategy = "bear-put-spread"
+        legs = (leg(candidate["sell_strike"], "P", candidate.get("sell_osi", ""), True) + ","
+                + leg(candidate["buy_strike"], "P", candidate.get("buy_osi", "")))
+    return f"https://optionstrat.com/build/{strategy}/{url_quote(symbol, safe='')}/{url_quote(legs, safe='.,-')}"
+
+
+def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[str, Any]:
+    return {
+        "id": candidate["id"],
+        "annual": candidate["id"] in annual_ids,
+        "optionstrat_url": _optionstrat_url(candidate),
+        "values": [
+            candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
+            f"{candidate['buy_strike']:g}", f"{candidate['sell_strike']:g}",
+            _money(candidate["buy_last"]), _money(candidate["sell_last"]),
+            _money(candidate["cost"]), _money(candidate["breakeven"]),
+            f"1:{candidate['reward_risk']:.2f}", _money(candidate["max_profit"]),
+        ],
+    }
+
+
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session) -> None:
     with st.container(key="vertical_options_workspace"):
         st.markdown(
-            '<div class="vo-note">LIVE VERTICAL ORDER ENTRY // '
-            '<span class="muted">WIDGET CHANGES RERUN THIS TICKET ONLY // SEND ALWAYS REQUIRES YOUR CLICK</span></div>',
+            '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
+            '<span class="muted">ENTER TICKER, TARGET BREAKEVEN, AND MAX COST // PRESS ENTER TO SCAN</span></div>',
             unsafe_allow_html=True,
         )
-
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
-        market_client = options_market_client(client)
         if not broker_live:
             st.warning(
-                "YFINANCE OPTIONS FALLBACK // public quote + option chains are available // "
-                "E*TRADE preview and live placement remain disabled until the broker reconnects."
+                "PUBLIC OPTIONS FALLBACK // E*TRADE is disconnected. Public Last prices are labeled "
+                "as such; broker preview and live placement remain disabled."
             )
 
-        accounts = [
-            account
-            for account in (st.session_state.get("etrade_accounts") or [])
-            if isinstance(account, dict) and _account_key(account)
-        ]
-        if not broker_live:
-            accounts = []
-        elif not accounts:
-            try:
-                accounts = [
-                    account
-                    for account in client.list_accounts()
-                    if isinstance(account, dict) and _account_key(account)
-                ]
-                touch_session()
-            except Exception as exc:
-                st.error(f"E*TRADE accounts unavailable: {exc}")
-                return
-        by_account = {_account_key(account): account for account in accounts}
-
-        top = st.columns([1.0, 2.1, 1.0, .72, 1.15], gap="small")
-        with top[0]:
-            current = str(st.session_state.get("vo_symbol_value", "SPY") or "SPY").strip().upper() or "SPY"
-            if "vo_symbol_value" not in st.session_state:
-                st.session_state["vo_symbol_value"] = current
-            raw_symbol = st.text_input(
-                "Ticker",
-                key="vo_symbol_value",
-                placeholder="SPY",
-                help="Enter the ticker symbol only. Company / ETF name appears automatically.",
-                on_change=_normalize_vertical_ticker,
-            )
-            symbol = str(raw_symbol or current).strip().upper() or current
-
-        with top[2]:
-            call_put = st.selectbox(
-                "Vertical",
-                ["CALL", "PUT"],
-                key="vo_call_put",
-                format_func=lambda value: "Call Debit" if value == "CALL" else "Put Debit",
-            )
-        with top[3]:
-            quantity = int(
-                st.number_input(
-                    "Qty",
-                    min_value=1,
-                    max_value=5000,
-                    value=int(st.session_state.get("vo_qty", 1) or 1),
-                    step=1,
-                    key="vo_qty",
+        last_result = st.session_state.get("vo_scan_result") or {}
+        with st.form("vo_scan_form", clear_on_submit=False):
+            fields = st.columns([1.05, 1.8, 1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
+            with fields[0]:
+                symbol_text = st.text_input(
+                    "Ticker", key="vo_symbol_value", placeholder="SPY",
+                    help="Enter the ticker symbol; company / ETF name appears automatically.",
                 )
-            )
+            symbol = str(symbol_text or "").strip().upper()
+            with fields[1]:
+                st.html(_company_display_markup(symbol, last_result.get("name", "")
+                                                if last_result.get("symbol") == symbol else ""))
+            with fields[2]:
+                breakeven_text = st.text_input(
+                    "Target Breakeven", key="vo_target_breakeven", placeholder="Underlying price",
+                    help="Rank qualifying spreads by closeness to this underlying price at expiration.",
+                )
+            with fields[3]:
+                cost_text = st.text_input(
+                    "Max Cost", key="vo_max_cost", placeholder="$ per spread",
+                    help="Maximum one-spread debit based on BUY Last minus SELL Last, times 100 shares.",
+                )
+            with fields[4]:
+                scan_clicked = st.form_submit_button(
+                    "SCAN ALL YEARS", type="primary", use_container_width=True,
+                )
 
-        try:
-            quote = quote_summary(market_client.get_quote(symbol))
-            touch_session()
-            spot = float(quote.get("last") or 0.0)
-            name = str(quote.get("description") or company_name(symbol) or "").strip()
-            record_lookup(symbol, name)
-        except Exception as exc:
-            name = str(company_name(symbol) or "").strip()
-            with top[1]:
-                st.html(_company_display_markup(symbol, name))
-            st.error(f"Quote unavailable for {symbol}: {exc}")
-            return
-
-        with top[1]:
-            st.html(_company_display_markup(symbol, name))
-
-        try:
-            expirations = _expirations(market_client, symbol, touch_session)
-        except Exception as exc:
-            st.error(f"Option expirations unavailable for {symbol}: {exc}")
-            return
-        if not expirations:
-            st.info("No option expirations are available for this symbol.")
-            return
-
-        expiry_key = "vo_expiry"
-        if st.session_state.get(expiry_key) not in expirations:
-            today = date.today()
-            st.session_state[expiry_key] = next(
-                (item for item in expirations if (item - today).days >= 14),
-                expirations[0],
-            )
-        with top[4]:
-            expiry = st.selectbox(
-                "Expiration",
-                expirations,
-                key=expiry_key,
-                format_func=_date_label,
-            )
-
-        try:
-            rows = _chain(market_client, symbol, expiry, touch_session)
-        except Exception as exc:
-            st.error(f"Option chain unavailable for {_date_label(expiry)}: {exc}")
-            return
-        strikes = strikes_for(rows, call_put)
-        if len(strikes) < 2:
-            st.error("At least two strikes are required to build a vertical spread.")
-            return
-
-        structure_signature = f"{symbol}|{call_put}|{expiry.isoformat()}"
-        if st.session_state.get("_vo_structure_seed") != structure_signature:
-            atm = _closest_index(strikes, spot)
-            if call_put == "CALL":
-                buy_idx = min(atm, len(strikes) - 2)
-                sell_idx = buy_idx + 1
-            else:
-                buy_idx = max(1, atm)
-                sell_idx = buy_idx - 1
-            st.session_state["vo_buy_strike"] = float(strikes[buy_idx])
-            st.session_state["vo_sell_strike"] = float(strikes[sell_idx])
-            st.session_state["_vo_structure_seed"] = structure_signature
-            st.session_state.pop("_vo_price_seed", None)
-
-        if st.session_state.get("vo_buy_strike") not in strikes:
-            st.session_state["vo_buy_strike"] = float(strikes[_closest_index(strikes, spot)])
-        if st.session_state.get("vo_sell_strike") not in strikes:
-            st.session_state["vo_sell_strike"] = float(strikes[_closest_index(strikes, spot)])
-
-        st.markdown('<div class="vo-section">VERTICAL LEGS</div>', unsafe_allow_html=True)
-        leg_cols = st.columns([1.15, .95, .95, 1.15, .95, .95], gap="small")
-        buy_strike = float(
-            leg_cols[0].selectbox(
-                "BUY Strike",
-                strikes,
-                key="vo_buy_strike",
-                format_func=lambda value: f"{value:,.2f}",
-            )
-        )
-        buy_market = contract_quote(rows, call_put, buy_strike) or {}
-        leg_cols[1].text_input("BUY Bid", value=_money(buy_market.get("bid")), disabled=True)
-        leg_cols[2].text_input("BUY Ask", value=_money(buy_market.get("ask")), disabled=True)
-
-        sell_strike = float(
-            leg_cols[3].selectbox(
-                "SELL Strike",
-                strikes,
-                key="vo_sell_strike",
-                format_func=lambda value: f"{value:,.2f}",
-            )
-        )
-        sell_market = contract_quote(rows, call_put, sell_strike) or {}
-        leg_cols[4].text_input("SELL Bid", value=_money(sell_market.get("bid")), disabled=True)
-        leg_cols[5].text_input("SELL Ask", value=_money(sell_market.get("ask")), disabled=True)
-
-        validation_error = ""
-        try:
-            validate_vertical(
-                call_put=call_put,
-                buy_strike=buy_strike,
-                sell_strike=sell_strike,
-                quantity=quantity,
-            )
-        except ValueError as exc:
-            validation_error = str(exc)
-            st.error(validation_error)
-
-        legs = [
-            {
-                "action": "BUY_OPEN",
-                "quantity": quantity,
-                "expiry": expiry,
-                "call_put": call_put,
-                "strike": buy_strike,
-                "bid": buy_market.get("bid"),
-                "ask": buy_market.get("ask"),
-            },
-            {
-                "action": "SELL_OPEN",
-                "quantity": quantity,
-                "expiry": expiry,
-                "call_put": call_put,
-                "strike": sell_strike,
-                "bid": sell_market.get("bid"),
-                "ask": sell_market.get("ask"),
-            },
-        ]
-        net = net_price_snapshot(legs)
-        natural = net.get("natural")
-        mid = net.get("mid")
-
-        price_signature = (
-            symbol,
-            call_put,
-            expiry.isoformat(),
-            buy_strike,
-            sell_strike,
-            quantity,
-        )
-        if st.session_state.get("_vo_price_seed") != price_signature:
-            seed = None
-            if mid is not None:
-                seed = abs(float(mid))
-            elif natural is not None:
-                seed = abs(float(natural))
-            st.session_state["vo_limit_price"] = max(.01, round(seed or .01, 2))
-            st.session_state["_vo_price_seed"] = price_signature
-
-        st.markdown(
-            _metric_markup(
-                [
-                    ("LAST", _money(quote.get("last")), "green"),
-                    ("BUY ASK", _money(buy_market.get("ask")), "green"),
-                    ("SELL BID", _money(sell_market.get("bid")), "green"),
-                    ("NATURAL DEBIT", _money(abs(float(natural))) if natural is not None else "—", "orange"),
-                    ("MID DEBIT", _money(abs(float(mid))) if mid is not None else "—", "green"),
-                    ("WIDTH", _money(abs(sell_strike - buy_strike)), "blue"),
-                ]
-            ),
-            unsafe_allow_html=True,
-        )
-
-        st.markdown('<div class="vo-section">LIMIT + ACCOUNTS</div>', unsafe_allow_html=True)
-        account_options = list(by_account)
-        current_accounts = [
-            key for key in (st.session_state.get("vo_accounts") or []) if key in by_account
-        ]
-        if not current_accounts:
-            current_accounts = _default_account_keys(accounts)
-            st.session_state["vo_accounts"] = current_accounts
-
-        order_row = st.columns([.9, .85, 3.25], gap="small")
-        limit_price = float(
-            order_row[0].number_input(
-                "Debit Limit",
-                min_value=.01,
-                step=.01,
-                format="%.2f",
-                key="vo_limit_price",
-            )
-        )
-        order_term = order_row[1].selectbox(
-            "Duration",
-            ["GOOD_FOR_DAY", "GOOD_UNTIL_CANCEL"],
-            key="vo_duration",
-            format_func=lambda value: "DAY" if value == "GOOD_FOR_DAY" else "GTC",
-        )
-        selected_accounts = order_row[2].multiselect(
-            "Accounts",
-            account_options,
-            key="vo_accounts",
-            format_func=lambda key: _account_label(by_account[key]),
-            help="Choose one or multiple E*TRADE accounts. The same reviewed vertical is sent once to each selected account.",
-        )
-
-        account_keys = [key for key in selected_accounts if key in by_account]
-        fingerprint = _review_fingerprint(
-            symbol=symbol,
-            call_put=call_put,
-            expiry=expiry,
-            buy_strike=buy_strike,
-            sell_strike=sell_strike,
-            quantity=quantity,
-            limit_price=limit_price,
-            order_term=order_term,
-            account_keys=account_keys,
-        )
-        review_bundle = st.session_state.get("vo_review_bundle")
-        if isinstance(review_bundle, dict) and review_bundle.get("fingerprint") != fingerprint:
+        if scan_clicked:
+            st.session_state.pop("vo_scan_result", None)
             st.session_state.pop("vo_review_bundle", None)
             st.session_state.pop("vo_live_confirm", None)
-            review_bundle = None
-
-        spread_name = "CALL DEBIT" if call_put == "CALL" else "PUT DEBIT"
-        st.markdown('<div class="vo-section">ORDER REVIEW</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="vo-summary">'
-            + html.escape(
-                f"{symbol} // {spread_name} // BUY {quantity} {_date_label(expiry)} {buy_strike:g} {call_put} "
-                f"+ SELL {quantity} {_date_label(expiry)} {sell_strike:g} {call_put} // "
-                f"NET DEBIT LIMIT {_money(limit_price)} // {'DAY' if order_term == 'GOOD_FOR_DAY' else 'GTC'} // "
-                f"{len(account_keys)} ACCOUNT(S)"
-            )
-            + "</div>",
-            unsafe_allow_html=True,
-        )
-
-        preview_click = st.button(
-            f"REVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
-            key="vo_preview",
-            type="primary",
-            width="stretch",
-            disabled=bool(validation_error) or not account_keys,
-        )
-        if preview_click:
-            previews: dict[str, Any] = {}
-            errors: list[str] = []
-            for account_key in account_keys:
-                try:
-                    preview_payload = build_vertical_preview_payload(
-                        symbol=symbol,
-                        call_put=call_put,
-                        expiry=expiry,
-                        buy_strike=buy_strike,
-                        sell_strike=sell_strike,
-                        quantity=quantity,
-                        limit_price=limit_price,
-                        order_term=order_term,
-                        client_order_id=new_vertical_client_order_id("VO"),
-                    )
-                    response = client.preview_order(account_key, preview_payload)
-                    touch_session()
-                    details = preview_details(response)
-                    if details.get("preview_id") in (None, ""):
-                        raise ETradeError("E*TRADE preview returned no preview ID.")
-                    previews[account_key] = {
-                        "preview_payload": preview_payload,
-                        "place_payload": build_place_payload(preview_payload, details["preview_id"]),
-                        "details": details,
-                        "account_label": _account_label(by_account[account_key]),
-                    }
-                except Exception as exc:
-                    errors.append(_account_label(by_account[account_key]) + " // " + str(exc))
-
-            if errors:
-                st.session_state.pop("vo_review_bundle", None)
-                st.error("MULTI-ACCOUNT PREVIEW BLOCKED // every selected account must preview successfully.")
-                for error in errors:
-                    st.warning(error)
-            elif len(previews) == len(account_keys):
-                st.session_state["vo_review_bundle"] = {
-                    "fingerprint": fingerprint,
-                    "previewed_at": time.time(),
-                    "previews": previews,
+            st.session_state.pop("_vo_order_candidate", None)
+            st.session_state.pop("vo_last_send_results", None)
+            try:
+                if not symbol:
+                    raise ValueError("Enter a ticker to scan.")
+                target = _entered_price(breakeven_text, "target breakeven")
+                max_cost = _entered_price(cost_text, "maximum cost")
+                repeat_scan = (
+                    last_result.get("symbol") == symbol
+                    and last_result.get("target") == target
+                    and last_result.get("max_cost") == max_cost
+                )
+                raw = _scan_all_years(client, symbol, touch_session, refresh=repeat_scan)
+                candidates, annual_ids = scan_vertical_candidates(
+                    symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
+                    target_breakeven=target, max_cost=max_cost,
+                )
+                scope = hashlib.sha256(
+                    repr((raw["scan_id"], target, max_cost)).encode("utf-8")
+                ).hexdigest()[:16]
+                st.session_state["vo_scan_result"] = {
+                    "symbol": symbol, "name": raw["name"], "source": raw["source"],
+                    "spot": raw["spot"], "target": target, "max_cost": max_cost,
+                    "loaded_at": raw["loaded_at"],
+                    "scope": scope, "candidates": candidates, "annual_ids": annual_ids,
+                    "loaded_expirations": raw["loaded_expirations"],
+                    "listed_expirations": len(raw["expirations"]),
+                    "listed_years": len({item.year for item in raw["expirations"]}),
+                    "contract_count": len(raw["rows"]), "errors": raw["errors"],
                 }
-                st.session_state.pop("vo_live_confirm", None)
-                review_bundle = st.session_state["vo_review_bundle"]
-                st.success("E*TRADE PREVIEW ACCEPTED FOR ALL SELECTED ACCOUNTS // NO ORDER SENT YET")
+                st.session_state["vo_results_view"] = "BEST PER YEAR"
+                st.rerun(scope="fragment")
+            except Exception as exc:
+                st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
+                return
 
-        review_bundle = st.session_state.get("vo_review_bundle")
-        review_fresh = _reviews_are_fresh(review_bundle, fingerprint)
-        if review_bundle and not review_fresh:
+        result = st.session_state.get("vo_scan_result")
+        if not isinstance(result, dict):
+            return
+        if result["source"] == "E*TRADE" and not broker_live:
+            st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
+        st.markdown(
+            _metric_markup([
+                ("UNDERLYING LAST", _money(result["spot"]), "green"),
+                ("LISTED YEARS", str(result["listed_years"]), "blue"),
+                ("CHAINS LOADED", f'{result["loaded_expirations"]}/{result["listed_expirations"]}', "orange"),
+                ("CONTRACTS READ", f'{result["contract_count"]:,}', "green"),
+                ("QUALIFIED MATCHES", f'{len(result["candidates"]):,}', "green"),
+                ("ANNUAL BEST", str(len(result["annual_ids"])), "blue"),
+            ]),
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="vo-section">BEST VERTICAL SPREADS BY YEAR</div>', unsafe_allow_html=True)
+        st.caption(
+            f'{result["source"]} LAST AS OF '
+            f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
+            'BOTH CALL + PUT DEBIT SPREADS // '
+            'MINIMUM RISK:REWARD 1:2 // THEN CLOSEST TARGET BREAKEVEN // THEN LOWEST COST // '
+            f'COST ≤ {_money(result["max_cost"])} FOR ONE SPREAD. '
+            'LAST IS A HISTORICAL TRADE PRICE, NOT AN EXECUTABLE QUOTE; '
+            'OPTIONSTRAT RECALCULATES WITH ITS OWN PRICES.'
+        )
+        candidates = result["candidates"]
+        if not candidates:
+            st.info("No call or put debit spreads met the 1:2 ratio and maximum cost across the loaded years.")
+        else:
+            annual_ids = set(result["annual_ids"])
+            by_id = {row["id"]: row for row in candidates}
+            scope = result["scope"]
+            state = st.session_state.get("_vo_checked_spreads")
+            if not isinstance(state, dict) or state.get("scope") != scope:
+                state = {"scope": scope, "ids": set(), "revision": 0}
+                st.session_state["_vo_checked_spreads"] = state
+            saved_ids = set(state["ids"])
+            view = st.radio(
+                "RESULTS", ("BEST PER YEAR", "ALL TOP MATCHES"),
+                key="vo_results_view", horizontal=True, label_visibility="collapsed",
+            )
+            displayed = [
+                _spread_table_row(row, annual_ids) for row in candidates
+                if view == "ALL TOP MATCHES" or row["id"] in annual_ids
+            ]
+            selected_update = _SPREAD_SCROLL_COMPONENT(
+                scope=scope, sort_key=view, rows=displayed,
+                selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
+                key="vo_spread_scroll_" + scope, default=None,
+            )
+            if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
+                incoming = selected_update.get("selected_ids")
+                if isinstance(incoming, list):
+                    checked = {item for item in incoming if isinstance(item, str) and item in by_id}
+                    try:
+                        incoming_revision = int(selected_update.get("revision", 0))
+                    except (TypeError, ValueError, OverflowError):
+                        incoming_revision = 0
+                    if incoming_revision > int(state["revision"]):
+                        state["ids"] = checked
+                        state["revision"] = incoming_revision
+                        st.session_state["_vo_checked_spreads"] = state
+                        st.session_state.pop("vo_review_bundle", None)
+                        st.session_state.pop("vo_live_confirm", None)
+                        st.session_state.pop("vo_last_send_results", None)
+                        st.rerun(scope="fragment")
+            checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
+            st.caption(
+                f'{len(displayed):,} DISPLAYED // {len(candidates):,} TOP MATCHES '
+                f'FROM {result["loaded_expirations"]} COMPLETE CHAINS // '
+                f'{len(checked_ids)} CHECKED // LIME GREEN = BEST MATCH PER CALENDAR YEAR. '
+                'ALL TOP MATCHES KEEPS THE BEST 20 PER EXPIRATION. '
+                'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'
+            )
+            if len(checked_ids) == 1:
+                chosen = by_id[next(iter(checked_ids))]
+                st.link_button(
+                    "OPEN CHECKED SPREAD IN OPTIONSTRAT",
+                    _optionstrat_url(chosen), use_container_width=True,
+                )
+                with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // CHECKED SPREAD", expanded=False):
+                    _render_selected_order(client, touch_session, chosen, result, broker_live)
+            elif len(checked_ids) > 1:
+                st.info("Multiple spreads checked. Use each row's OPEN link; check exactly one for optional E*TRADE order review.")
+
+        if result["errors"]:
+            st.warning(
+                f'{len(result["errors"])} of {result["listed_expirations"]} listed chains could not load. '
+                'Annual highlights cover only the successfully loaded chains.'
+            )
+            with st.expander("CHAIN DATA WARNINGS"):
+                for error in result["errors"]:
+                    st.warning(error)
+
+
+# ==============================
+# OPTIONAL REVIEWED E*TRADE ORDER
+# ==============================
+def _render_selected_order(client, touch_session, candidate: dict[str, Any],
+                           result: dict[str, Any], broker_live: bool) -> None:
+    """Keep the existing reviewed, explicit multi-account order path optional."""
+    if not broker_live or result["source"] != "E*TRADE":
+        st.info("Reconnect E*TRADE and run a fresh E*TRADE scan before reviewing a live order.")
+        return
+    if time.time() - float(result["loaded_at"]) >= _SCAN_CACHE_SECONDS:
+        st.warning("MARKET SNAPSHOT EXPIRED // Scan again before reviewing a live order.")
+        return
+    accounts = [
+        account for account in (st.session_state.get("etrade_accounts") or [])
+        if isinstance(account, dict) and _account_key(account)
+    ]
+    if not accounts:
+        try:
+            accounts = [
+                account for account in client.list_accounts()
+                if isinstance(account, dict) and _account_key(account)
+            ]
+            touch_session()
+        except Exception as exc:
+            st.error(f"E*TRADE accounts unavailable: {exc}")
+            return
+    by_account = {_account_key(account): account for account in accounts}
+    if not by_account:
+        st.warning("No E*TRADE accounts are available for order review.")
+        return
+
+    symbol = candidate["symbol"]
+    call_put = candidate["call_put"]
+    expiry = candidate["expiry"]
+    buy_strike = candidate["buy_strike"]
+    sell_strike = candidate["sell_strike"]
+    order_seed = candidate["id"]
+    if st.session_state.get("_vo_order_candidate") != order_seed:
+        legs = [
+            {"action": "BUY_OPEN", "quantity": 1, "bid": candidate["buy_bid"], "ask": candidate["buy_ask"]},
+            {"action": "SELL_OPEN", "quantity": 1, "bid": candidate["sell_bid"], "ask": candidate["sell_ask"]},
+        ]
+        snapshot = net_price_snapshot(legs)
+        mid = snapshot.get("mid")
+        natural = snapshot.get("natural")
+        seed = next(
+            (float(price) for price in (mid, natural, candidate["debit"])
+             if price is not None and 0 < float(price) < candidate["width"]),
+            candidate["debit"],
+        )
+        st.session_state["vo_limit_price"] = max(.01, round(min(seed, result["max_cost"] / 100), 2))
+        st.session_state["vo_qty"] = 1
+        st.session_state["vo_duration"] = "GOOD_FOR_DAY"
+        st.session_state["_vo_order_candidate"] = order_seed
+        st.session_state.pop("vo_review_bundle", None)
+        st.session_state.pop("vo_live_confirm", None)
+        st.session_state.pop("vo_last_send_results", None)
+
+    account_options = list(by_account)
+    current_accounts = [key for key in (st.session_state.get("vo_accounts") or []) if key in by_account]
+    st.session_state["vo_accounts"] = current_accounts or _default_account_keys(accounts)
+    controls = st.columns([.85, .9, .9, 2.5], gap="small")
+    quantity = int(controls[0].number_input(
+        "Qty", min_value=1, max_value=5000, step=1, key="vo_qty",
+    ))
+    limit_price = float(controls[1].number_input(
+        "Debit Limit", min_value=.01, step=.01, format="%.2f", key="vo_limit_price",
+    ))
+    order_term = controls[2].selectbox(
+        "Duration", ["GOOD_FOR_DAY", "GOOD_UNTIL_CANCEL"], key="vo_duration",
+        format_func=lambda value: "DAY" if value == "GOOD_FOR_DAY" else "GTC",
+    )
+    selected_accounts = controls[3].multiselect(
+        "Accounts", account_options, key="vo_accounts",
+        format_func=lambda key: _account_label(by_account[key]),
+        help="The same reviewed vertical is sent once to each selected account.",
+    )
+    account_keys = [key for key in selected_accounts if key in by_account]
+    try:
+        validate_vertical(
+            call_put=call_put, buy_strike=buy_strike,
+            sell_strike=sell_strike, quantity=quantity,
+        )
+        validation_error = ""
+    except ValueError as exc:
+        validation_error = str(exc)
+        st.error(validation_error)
+    if limit_price >= candidate["width"]:
+        validation_error = "Debit limit must stay below the selected spread width."
+        st.error(validation_error)
+    elif limit_price * 100 > result["max_cost"] + 1e-6:
+        validation_error = "Debit limit exceeds your maximum cost per spread."
+        st.error(validation_error)
+
+    fingerprint = _review_fingerprint(
+        symbol=symbol, call_put=call_put, expiry=expiry,
+        buy_strike=buy_strike, sell_strike=sell_strike, quantity=quantity,
+        limit_price=limit_price, order_term=order_term, account_keys=account_keys,
+    )
+    review_bundle = st.session_state.get("vo_review_bundle")
+    if isinstance(review_bundle, dict) and review_bundle.get("fingerprint") != fingerprint:
+        st.session_state.pop("vo_review_bundle", None)
+        st.session_state.pop("vo_live_confirm", None)
+        review_bundle = None
+
+    st.markdown(
+        '<div class="vo-summary">'
+        + html.escape(
+            f'{symbol} // {call_put} DEBIT // BUY {quantity} {_date_label(expiry)} {buy_strike:g} '
+            f'+ SELL {quantity} {_date_label(expiry)} {sell_strike:g} // '
+            f'LAST EST. {_money(candidate["debit"])} PER SPREAD // '
+            f'NET DEBIT LIMIT {_money(limit_price)} // '
+            f'TOTAL LIMIT DEBIT {_money(limit_price * 100 * quantity)} // '
+            f'{len(account_keys)} ACCOUNT(S)'
+        ) + "</div>",
+        unsafe_allow_html=True,
+    )
+    preview_click = st.button(
+        f"REVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
+        key="vo_preview", type="primary", use_container_width=True,
+        disabled=bool(validation_error) or not account_keys,
+    )
+    if preview_click:
+        previews: dict[str, Any] = {}
+        errors: list[str] = []
+        for account_key in account_keys:
+            try:
+                preview_payload = build_vertical_preview_payload(
+                    symbol=symbol, call_put=call_put, expiry=expiry,
+                    buy_strike=buy_strike, sell_strike=sell_strike,
+                    quantity=quantity, limit_price=limit_price,
+                    order_term=order_term,
+                    client_order_id=new_vertical_client_order_id("VO"),
+                )
+                response = client.preview_order(account_key, preview_payload)
+                touch_session()
+                details = preview_details(response)
+                if details.get("preview_id") in (None, ""):
+                    raise ETradeError("E*TRADE preview returned no preview ID.")
+                previews[account_key] = {
+                    "preview_payload": preview_payload,
+                    "place_payload": build_place_payload(preview_payload, details["preview_id"]),
+                    "details": details,
+                    "account_label": _account_label(by_account[account_key]),
+                }
+            except Exception as exc:
+                errors.append(_account_label(by_account[account_key]) + " // " + str(exc))
+        if errors:
             st.session_state.pop("vo_review_bundle", None)
+            st.error("MULTI-ACCOUNT PREVIEW BLOCKED // every selected account must preview successfully.")
+            for error in errors:
+                st.warning(error)
+        elif len(previews) == len(account_keys):
+            st.session_state["vo_review_bundle"] = {
+                "fingerprint": fingerprint, "previewed_at": time.time(), "previews": previews,
+            }
             st.session_state.pop("vo_live_confirm", None)
-            st.warning("PREVIEW EXPIRED // Review again before sending live orders.")
-            review_bundle = None
+            st.success("E*TRADE PREVIEW ACCEPTED FOR ALL SELECTED ACCOUNTS // NO ORDER SENT YET")
 
-        if review_bundle and review_fresh:
-            previews = review_bundle.get("previews") or {}
+    review_bundle = st.session_state.get("vo_review_bundle")
+    review_fresh = _reviews_are_fresh(review_bundle, fingerprint)
+    if review_bundle and not review_fresh:
+        st.session_state.pop("vo_review_bundle", None)
+        st.session_state.pop("vo_live_confirm", None)
+        st.warning("PREVIEW EXPIRED // Review again before sending live orders.")
+        review_bundle = None
+    if review_bundle and review_fresh:
+        previews = review_bundle.get("previews") or {}
+        for account_key in account_keys:
+            review = previews.get(account_key) or {}
+            details = review.get("details") or {}
+            st.caption(
+                f'{review.get("account_label") or _account_label(by_account[account_key])} // '
+                f'Preview ID {details.get("preview_id") or "N/A"} // '
+                f'Est. Value {_money(details.get("total_order_value"))} // '
+                f'Est. Commission {_money(details.get("estimated_commission"))}'
+            )
+            for message in details.get("messages") or []:
+                st.warning("E*TRADE PREVIEW // " + str(message))
+        confirmed = st.checkbox(
+            "I CONFIRM THIS EXACT LIVE VERTICAL ORDER FOR EVERY SELECTED ACCOUNT SHOWN ABOVE",
+            key="vo_live_confirm",
+        )
+        send_click = st.button(
+            f"SEND LIVE TO {len(account_keys)} ACCOUNT(S)",
+            key="vo_send", type="primary", use_container_width=True, disabled=not confirmed,
+        )
+        if send_click:
+            if not _reviews_are_fresh(st.session_state.get("vo_review_bundle"), fingerprint):
+                st.error("PREVIEW EXPIRED // Review again. No order was sent.")
+                return
+            results: list[dict[str, Any]] = []
             for account_key in account_keys:
                 review = previews.get(account_key) or {}
-                details = review.get("details") or {}
-                st.caption(
-                    f"{review.get('account_label') or _account_label(by_account[account_key])} // "
-                    f"Preview ID {details.get('preview_id') or 'N/A'} // "
-                    f"Est. Value {_money(details.get('total_order_value'))} // "
-                    f"Est. Commission {_money(details.get('estimated_commission'))}"
-                )
-                for message in details.get("messages") or []:
-                    st.warning("E*TRADE PREVIEW // " + str(message))
-
-            confirmed = st.checkbox(
-                "I CONFIRM THIS EXACT LIVE VERTICAL ORDER FOR EVERY SELECTED ACCOUNT SHOWN ABOVE",
-                key="vo_live_confirm",
+                try:
+                    response = client.place_order(account_key, review["place_payload"])
+                    touch_session()
+                    order_id = extract_order_id(response)
+                    if order_id in (None, ""):
+                        raise ETradeError("E*TRADE returned no order ID after placement.")
+                    results.append({
+                        "account": _account_label(by_account[account_key]),
+                        "order_id": order_id, "status": "SUBMITTED",
+                    })
+                except Exception as exc:
+                    results.append({
+                        "account": _account_label(by_account[account_key]),
+                        "order_id": "", "status": "UNCERTAIN / FAILED", "error": str(exc),
+                    })
+            st.session_state["vo_last_send_results"] = results
+            st.session_state.pop("vo_review_bundle", None)
+            st.session_state.pop("vo_live_confirm", None)
+    for sent in st.session_state.get("vo_last_send_results") or []:
+        if sent.get("status") == "SUBMITTED":
+            st.success(f'{sent["account"]} // E*TRADE ORDER {sent["order_id"]} // SUBMITTED')
+        else:
+            st.error(
+                f'{sent["account"]} // SUBMISSION STATUS UNCERTAIN // '
+                f'{sent.get("error") or "Check E*TRADE Orders before retrying."}'
             )
-            send_click = st.button(
-                f"SEND LIVE TO {len(account_keys)} ACCOUNT(S)",
-                key="vo_send",
-                type="primary",
-                width="stretch",
-                disabled=not confirmed,
-            )
-            if send_click:
-                if not _reviews_are_fresh(st.session_state.get("vo_review_bundle"), fingerprint):
-                    st.error("PREVIEW EXPIRED // Review again. No order was sent.")
-                    return
-
-                results: list[dict[str, Any]] = []
-                for account_key in account_keys:
-                    review = previews.get(account_key) or {}
-                    try:
-                        response = client.place_order(account_key, review["place_payload"])
-                        touch_session()
-                        order_id = extract_order_id(response)
-                        if order_id in (None, ""):
-                            raise ETradeError("E*TRADE returned no order ID after placement.")
-                        results.append(
-                            {
-                                "account": _account_label(by_account[account_key]),
-                                "order_id": order_id,
-                                "status": "SUBMITTED",
-                            }
-                        )
-                    except Exception as exc:
-                        results.append(
-                            {
-                                "account": _account_label(by_account[account_key]),
-                                "order_id": "",
-                                "status": "UNCERTAIN / FAILED",
-                                "error": str(exc),
-                            }
-                        )
-
-                st.session_state["vo_last_send_results"] = results
-                st.session_state.pop("vo_review_bundle", None)
-                st.session_state.pop("vo_live_confirm", None)
-
-        for result in st.session_state.get("vo_last_send_results") or []:
-            if result.get("status") == "SUBMITTED":
-                st.success(
-                    f"{result['account']} // E*TRADE ORDER {result['order_id']} // SUBMITTED"
-                )
-            else:
-                st.error(
-                    f"{result['account']} // SUBMISSION STATUS UNCERTAIN // {result.get('error') or 'Check E*TRADE Orders before retrying.'}"
-                )
 
 
 def render_vertical_options(client, touch_session) -> None:
