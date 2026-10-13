@@ -29,6 +29,9 @@ from src.protective_puts_orders import (
     preview_details, extract_order_id, selected_put_signature,
 )
 from src.protective_puts_sources import public_quote
+from src.protective_puts_holdings import (
+    load_holdings_memory, remember_holdings, save_holdings_memory,
+)
 from src.risk_sizing import (
     CROWN_DEFAULT_TACTICAL_SLEEVE_PCT,
     classify_holdings, is_protected_long_term_holding,
@@ -477,17 +480,25 @@ def _risk_long_term_tickers(account_key: str) -> set[str] | None:
 
 
 def _account_value(account_key: str, client: Any, live_etrade: Callable,
-                   touch_session: Callable, refresh: bool) -> float | None:
+                   touch_session: Callable, refresh: bool,
+                   cached_total: float | None = None) -> float | None:
     """Use broker account NAV for % ACCT; never invent a total from selected rows."""
     balances = st.session_state.setdefault("etrade_balances", {})
     if not isinstance(balances, dict):
         balances = {}
     payload = balances.get(account_key)
-    if live_etrade(client) and (refresh or not isinstance(payload, dict)):
+    if not refresh and not isinstance(payload, dict) and cached_total is not None:
+        return cached_total
+    attempted = st.session_state.setdefault("_pp_balance_reads_v1", set())
+    if client is not None and (refresh or (not isinstance(payload, dict)
+                                           and account_key not in attempted)):
+        attempted.add(account_key)
         try:
-            payload = client.get_balance(account_key)
+            payload = (client.get_balance(account_key, force_refresh=True)
+                       if refresh and live_etrade(client) else client.get_balance(account_key))
             st.session_state.setdefault("etrade_balances", {})[account_key] = payload
-            touch_session()
+            if live_etrade(client):
+                touch_session()
         except Exception:
             pass  # An unavailable account NAV must not prevent reading positions.
     if isinstance(payload, dict):
@@ -640,14 +651,20 @@ def _shown_number(value: Any, *, prefix: str = "", suffix: str = "") -> str:
 
 
 def _holdings(client, touch_session: Callable, live_etrade: Callable):
+    memory = load_holdings_memory()
+    if memory is None:
+        st.caption("RESTORING SAVED HOLDINGS...")
+        return None
     accounts = st.session_state.get("etrade_accounts") or []
-    if not accounts and live_etrade(client):
+    if not accounts and client is not None and (not memory["accounts"] or not live_etrade(client)):
         try:
             accounts = client.list_accounts()
             st.session_state["etrade_accounts"] = accounts
-            touch_session()
+            if live_etrade(client):
+                touch_session()
         except Exception as exc:
             st.warning(f"E*TRADE accounts unavailable: {exc}")
+    accounts = accounts or memory["accounts"]
     if not accounts:
         st.info("Connect E*TRADE to access your holdings.")
         return None
@@ -657,6 +674,14 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
         accounts, st.session_state.get("pp_hedge_account"),
         bool(st.session_state.get("_pp_hedge_raj_default_v2")),
     )
+    account_keys = [str(account.get("accountIdKey") or "") for account in accounts]
+    prior_keys = st.session_state.get("_pp_hedge_account_keys_v1")
+    if (st.session_state.get("pp_hedge_account") != selected_index
+            or (prior_keys is not None and prior_keys != account_keys)):
+        selected_index = next((i for i, account in enumerate(accounts)
+                               if account.get("accountIdKey") == memory["selected_account"]),
+                              selected_index)
+    st.session_state["_pp_hedge_account_keys_v1"] = account_keys
     st.session_state["pp_hedge_account"] = selected_index
     st.session_state["_pp_hedge_raj_default_v2"] = True
     a, b = st.columns([4.0, 1.4], gap="small", vertical_alignment="bottom")
@@ -669,26 +694,75 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
             ), key="pp_hedge_account",
         )
     with b:
-        refresh = st.button("REFRESH HOLDINGS", width="stretch", key="pp_hedge_refresh")
+        refresh = st.button(
+            "REFRESH HOLDINGS", width="stretch", key="pp_hedge_refresh",
+            disabled=not live_etrade(client),
+            help="Use saved holdings until positions change. Connect E*TRADE only to fetch an update.",
+        )
     account_key = str(accounts[idx].get("accountIdKey") or "").strip()
     if not account_key:
         st.warning("The selected account has no account key.")
         return None
     cache = st.session_state.setdefault("etrade_holdings", {})
-    if live_etrade(client) and (refresh or cache.get(account_key) is None):
+    saved = memory["holdings"].get(account_key)
+    if client is not None and (refresh or (cache.get(account_key) is None
+                                           and (saved is None or not live_etrade(client)))):
         try:
-            cache[account_key] = client.get_portfolio(account_key)
-            touch_session()
-        except Exception as exc:
-            st.warning(f"E*TRADE holdings refresh failed: {exc}")
-    if cache.get(account_key) is None:
+            cache[account_key] = (client.get_portfolio(account_key, force_refresh=True)
+                                  if refresh else client.get_portfolio(account_key))
+            st.session_state["etrade_holdings_last_refresh"] = time.time()
+            if live_etrade(client):
+                touch_session()
+        except Exception:
+            st.warning("E*TRADE holdings refresh failed; keeping saved holdings. Reconnect to try again.")
+    # Adopt all already-loaded account snapshots. This performs no broker read;
+    # fresh Holdings/Risk data is reused on the next Protective Put render.
+    for account in accounts:
+        key = str(account.get("accountIdKey") or "").strip()
+        raw = cache.get(key)
+        if not isinstance(raw, list):
+            continue
+        try:
+            frame = _normalized_holdings(raw)
+            if len(frame) != len(raw):
+                continue  # A malformed response cannot erase good holdings.
+            prior = memory["holdings"].get(key) or {}
+            loaded_at = float(st.session_state.get("etrade_holdings_last_refresh")
+                              or prior.get("loaded_at") or time.time())
+            cache_age = getattr(client, "cache_age", None)
+            if callable(cache_age):
+                age = cache_age("portfolio", key)
+                if age is not None:
+                    loaded_at = round(time.time() - max(0.0, float(age)), 3)
+            event = st.session_state.get("_etrade_cache_last_event") or {}
+            if (refresh and key == account_key and event.get("resource") == "portfolio"
+                    and event.get("stale")):
+                st.warning("E*TRADE returned saved holdings; refresh did not fetch a new snapshot.")
+            known_total = _account_value(key, None, live_etrade, touch_session, False,
+                                         cached_total=prior.get("account_total"))
+            memory = remember_holdings(memory, accounts, key, frame, loaded_at, known_total)
+        except Exception:
+            continue  # Retain last-known-good data if a cached payload is bad.
+    memory["selected_account"] = account_key
+    saved = memory["holdings"].get(account_key)
+    total = None
+    if saved is not None:
+        total = _account_value(account_key, client, live_etrade, touch_session, refresh,
+                               cached_total=saved.get("account_total"))
+        if total is None:
+            total = saved.get("account_total")
+        else:
+            saved["account_total"] = total
+    save_holdings_memory(memory)
+    if saved is None:
         st.info("No cached holdings for this account. Reconnect E*TRADE and refresh.")
         return None
-    try:
-        book = _normalized_holdings(cache.get(account_key) or [])
-    except Exception as exc:
-        st.warning(f"Holdings normalization failed: {exc}")
-        return None
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    stamp = float(saved.get("loaded_at") or 0)
+    as_of = datetime.fromtimestamp(stamp, ZoneInfo("America/New_York")).strftime("%m-%d-%Y %I:%M %p ET") if stamp else "UNKNOWN"
+    st.caption(f"SAVED HOLDINGS // AS OF {as_of} // REFRESH WHEN POSITIONS CHANGE")
+    book = pd.DataFrame(saved["rows"])
     if book.empty:
         st.info("This account has no positions.")
         return None
@@ -713,7 +787,6 @@ def _holdings(client, touch_session: Callable, live_etrade: Callable):
     if long_term_tickers is None:
         st.caption("RESTORING SAVED RISK SLEEVE CLASSIFICATIONS...")
         return None
-    total = _account_value(account_key, client, live_etrade, touch_session, refresh)
     settings = st.session_state.get("_risk_book_snapshot_v1") or {}
     saved_settings = (
         settings.get("settings") if isinstance(settings, dict)

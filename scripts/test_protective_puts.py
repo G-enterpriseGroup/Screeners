@@ -629,3 +629,65 @@ assert _optionstrat_protective_put_url({
     "Proxy": "QQQ/foo", "Expiration": "01-15-27", "Strike": 900.0,
     "Spot": 746.04, "Ask": 155.55, "Contracts": 1,
 }) == ""
+
+# Durable Protective Put snapshots retain quantities, account isolation and
+# true source time; malformed/older data cannot erase a good remembered book.
+from src.protective_puts_holdings import clean_holdings_memory, remember_holdings
+
+cached_accounts = [
+    {"accountIdKey": "raj-cache", "accountName": "Raj Singh", "accountId": "private-number"},
+    {"accountIdKey": "other-cache", "accountName": "Other"},
+]
+cached_row = {
+    "Symbol": "AAA", "Type": "EQ", "Quantity": 10, "Last": 100,
+    "Market Value": 1000, "Gain/Loss": 100, "Gain/Loss %": 11.11,
+    "Total Cost": 900, "CUSIP": "", "oauth_token": "must-never-be-saved",
+}
+cached_memory = remember_holdings(
+    {}, cached_accounts, "raj-cache", pd.DataFrame([cached_row]), 1000, 1500,
+)
+cached_memory = remember_holdings(
+    cached_memory, cached_accounts, "other-cache",
+    pd.DataFrame([{**cached_row, "Symbol": "BBB", "Quantity": 5}]), 1200, 2000,
+)
+assert cached_memory["holdings"]["raj-cache"]["rows"][0]["Quantity"] == 10
+assert cached_memory["holdings"]["other-cache"]["rows"][0]["Symbol"] == "BBB"
+assert "oauth_token" not in repr(cached_memory)
+assert "private-number" not in repr(cached_memory)
+older_memory = remember_holdings(
+    cached_memory, cached_accounts, "raj-cache", pd.DataFrame(), 900,
+)
+assert older_memory == cached_memory
+malformed_memory = remember_holdings(
+    cached_memory, cached_accounts, "raj-cache", pd.DataFrame([{"garbage": 1}]), 1400,
+)
+assert malformed_memory == cached_memory
+partial_memory = remember_holdings(
+    cached_memory, cached_accounts, "raj-cache",
+    pd.DataFrame([cached_row, {"garbage": 1}]), 1400,
+)
+assert partial_memory == cached_memory
+same_source_memory = remember_holdings(
+    cached_memory, cached_accounts, "raj-cache", pd.DataFrame([cached_row]), 1000.001,
+)
+assert same_source_memory == cached_memory
+updated_memory = remember_holdings(
+    cached_memory, cached_accounts, "raj-cache",
+    pd.DataFrame([{**cached_row, "Quantity": 25, "Market Value": 2500}]), 1400,
+)
+assert updated_memory["holdings"]["raj-cache"]["rows"][0]["Quantity"] == 25
+assert updated_memory["holdings"]["raj-cache"]["account_total"] == 1500
+assert updated_memory["holdings"]["other-cache"] == cached_memory["holdings"]["other-cache"]
+empty_memory = remember_holdings(
+    updated_memory, cached_accounts, "raj-cache", pd.DataFrame(), 1600,
+)
+assert empty_memory["holdings"]["raj-cache"]["rows"] == []
+assert empty_memory["holdings"]["other-cache"] == cached_memory["holdings"]["other-cache"]
+assert clean_holdings_memory(None)["holdings"] == {}
+assert clean_holdings_memory({"accounts": "corrupted", "holdings": []})["accounts"] == []
+finite_memory = clean_holdings_memory({
+    **cached_memory,
+    "holdings": {"raj-cache": {"rows": [{**cached_row, "Gain/Loss": float("nan")}]}},
+})
+assert finite_memory["holdings"]["raj-cache"]["rows"][0]["Gain/Loss"] is None
+print("PROTECTIVE PUTS DURABLE HOLDINGS: PASS")
