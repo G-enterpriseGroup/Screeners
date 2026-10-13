@@ -74,7 +74,10 @@ class StubETrade:
             def option(side, last):
                 return {
                     "strikePrice": strike, "lastPrice": last,
-                    "bid": last - .10, "ask": last + .10,
+                    # Deliberately asymmetric spreads: a bid/ask midpoint must
+                    # never override the selected contract's Last-based debit.
+                    "bid": last - .02,
+                    "ask": last + .02 + .05 * (strike - 90),
                     "osiKey": f"{symbol}{expiry_code}{side}{strike}",
                 }
             pairs.append({"Call": option("C", call_last),
@@ -98,6 +101,8 @@ class StubETrade:
         raise AssertionError("Checkbox selection must never place an order")
 
 st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
+# Simulate the exact stale manually entered debit from a pre-fix session.
+st.session_state.setdefault("vo_limit_price", 4.35)
 render_vertical_options(StubETrade(), lambda: None)
 '''
 
@@ -230,13 +235,19 @@ def test() -> None:
             driver.get(base)
             wait = WebDriverWait(driver, 60)
 
-            form = wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '[data-testid="stForm"]'))
-            labels = driver.execute_script(
-                "return [...arguments[0].querySelectorAll('input')]"
-                ".filter(input=>!input.disabled&&input.type==='text')"
-                ".map(input=>input.getAttribute('aria-label'))", form,
-            )
-            assert labels == ["Ticker", "Target Breakeven", "Max Cost"], labels
+            expected_labels = ["Ticker", "Target Breakeven", "Max Cost"]
+            def ready_scanner_form(_):
+                # Streamlit can mount stForm before its inputs hydrate on CI.
+                forms = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
+                if not forms:
+                    return False
+                labels = driver.execute_script(
+                    "return [...arguments[0].querySelectorAll('input')]"
+                    ".filter(input=>!input.disabled&&input.type==='text')"
+                    ".map(input=>input.getAttribute('aria-label'))", forms[0],
+                )
+                return forms[0] if labels == expected_labels else False
+            form = wait.until(ready_scanner_form)
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]').send_keys("SPY")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').send_keys("100")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("500")
@@ -343,6 +354,10 @@ def test() -> None:
             ))
             assert "Test Account" in chip["label"], chip
             assert chip["background"] == "rgb(251, 139, 30)" and chip["foreground"] == "rgb(0, 0, 0)", chip
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Debit Limit"]'), (
+                "Debit Limit must not be editable in the optional order review"
+            )
+            assert "TOTAL ORDER DEBIT" in driver.find_element(By.TAG_NAME, "body").text
             assert not any(item["event"] in {"preview", "place"} for item in events(event_path)), (
                 "Opening the optional order expander sent a broker order call"
             )
@@ -370,6 +385,15 @@ def test() -> None:
             assert request["orderType"] == "SPREADS" and len(request["Order"]) == 1, request
             order = request["Order"][0]
             assert order["priceType"] == "NET_DEBIT" and len(order["Instrument"]) == 2, order
+            # Compare E*TRADE's exact preview payload with the checked grid row,
+            # never with a retained widget value or an executable bid/ask midpoint.
+            selected_values = best["rows"][0]["values"]
+            def dollars(value):
+                return float(value.replace("$", "").replace(",", ""))
+            expected_last_debit = round(dollars(selected_values[5]) - dollars(selected_values[6]), 2)
+            assert order["limitPrice"] == expected_last_debit, (
+                "E*TRADE limit diverged from checked Last prices", order["limitPrice"], expected_last_debit
+            )
             buy, sell = order["Instrument"]
             selected_values = best["rows"][0]["values"]
             selected_expiry = datetime.strptime(selected_values[2], "%b-%d-%y")

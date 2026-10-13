@@ -5,7 +5,7 @@ OWNERSHIP / EDITING NOTES
 EDIT THIS FILE FOR:
 - Vertical Options ticker/breakeven/cost scanner and full-year chain presentation;
 - automated spread selection, OptionStrat links, and optional order controls;
-- live option quote presentation and NET DEBIT limit entry;
+- live option quote presentation and selected-spread LAST-based debit calculation;
 - multi-account E*TRADE preview + explicit live send workflow;
 - Vertical Options-only compact styling.
 
@@ -38,7 +38,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
-from src.option_book import extract_option_rows, net_price_snapshot
+from src.option_book import extract_option_rows
 from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
@@ -726,19 +726,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     sell_strike = candidate["sell_strike"]
     order_seed = candidate["id"]
     if st.session_state.get("_vo_order_candidate") != order_seed:
-        legs = [
-            {"action": "BUY_OPEN", "quantity": 1, "bid": candidate["buy_bid"], "ask": candidate["buy_ask"]},
-            {"action": "SELL_OPEN", "quantity": 1, "bid": candidate["sell_bid"], "ask": candidate["sell_ask"]},
-        ]
-        snapshot = net_price_snapshot(legs)
-        mid = snapshot.get("mid")
-        natural = snapshot.get("natural")
-        seed = next(
-            (float(price) for price in (mid, natural, candidate["debit"])
-             if price is not None and 0 < float(price) < candidate["width"]),
-            candidate["debit"],
-        )
-        st.session_state["vo_limit_price"] = max(.01, round(min(seed, result["max_cost"] / 100), 2))
+        st.session_state.pop("vo_limit_price", None)  # Remove the old editable debit's stale value.
         st.session_state["vo_qty"] = 1
         st.session_state["vo_duration"] = "GOOD_FOR_DAY"
         st.session_state["_vo_order_candidate"] = order_seed
@@ -749,18 +737,19 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     account_options = list(by_account)
     current_accounts = [key for key in (st.session_state.get("vo_accounts") or []) if key in by_account]
     st.session_state["vo_accounts"] = current_accounts or _default_account_keys(accounts)
-    controls = st.columns([.85, .9, .9, 2.5], gap="small")
+    # E*TRADE spread orders require a NET_DEBIT limit, but its value must come
+    # solely from the checked row's BUY Last minus SELL Last, never a stale
+    # manual input or an unrelated bid/ask midpoint.
+    limit_price = round(float(candidate["debit"]), 2)
+    controls = st.columns([.85, .9, 2.5], gap="small")
     quantity = int(controls[0].number_input(
         "Qty", min_value=1, max_value=5000, step=1, key="vo_qty",
     ))
-    limit_price = float(controls[1].number_input(
-        "Debit Limit", min_value=.01, step=.01, format="%.2f", key="vo_limit_price",
-    ))
-    order_term = controls[2].selectbox(
+    order_term = controls[1].selectbox(
         "Duration", ["GOOD_FOR_DAY", "GOOD_UNTIL_CANCEL"], key="vo_duration",
         format_func=lambda value: "DAY" if value == "GOOD_FOR_DAY" else "GTC",
     )
-    selected_accounts = controls[3].multiselect(
+    selected_accounts = controls[2].multiselect(
         "Accounts", account_options, key="vo_accounts",
         format_func=lambda key: _account_label(by_account[key]),
         help="The same reviewed vertical is sent once to each selected account.",
@@ -775,11 +764,14 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     except ValueError as exc:
         validation_error = str(exc)
         st.error(validation_error)
-    if limit_price >= candidate["width"]:
-        validation_error = "Debit limit must stay below the selected spread width."
+    if not math.isfinite(limit_price) or limit_price < .01:
+        validation_error = "Checked spread's Last debit is too small to order. Rescan."
+        st.error(validation_error)
+    elif limit_price >= candidate["width"]:
+        validation_error = "Checked spread's Last debit must stay below its width. Rescan."
         st.error(validation_error)
     elif limit_price * 100 > result["max_cost"] + 1e-6:
-        validation_error = "Debit limit exceeds your maximum cost per spread."
+        validation_error = "Checked spread's rounded Last debit exceeds your maximum cost. Rescan."
         st.error(validation_error)
 
     fingerprint = _review_fingerprint(
@@ -798,13 +790,13 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         + html.escape(
             f'{symbol} // {call_put} DEBIT // BUY {quantity} {_date_label(expiry)} {buy_strike:g} '
             f'+ SELL {quantity} {_date_label(expiry)} {sell_strike:g} // '
-            f'LAST EST. {_money(candidate["debit"])} PER SPREAD // '
-            f'NET DEBIT LIMIT {_money(limit_price)} // '
-            f'TOTAL LIMIT DEBIT {_money(limit_price * 100 * quantity)} // '
+            f'CHECKED LAST DEBIT {_money(limit_price)} PER SPREAD // '
+            f'TOTAL ORDER DEBIT {_money(limit_price * 100 * quantity)} // '
             f'{len(account_keys)} ACCOUNT(S)'
         ) + "</div>",
         unsafe_allow_html=True,
     )
+    st.caption("Order price = checked spread BUY Last − SELL Last. Historical Last prices may not fill as a live NET_DEBIT limit.")
     preview_click = st.button(
         f"REVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
         key="vo_preview", type="primary", use_container_width=True,
