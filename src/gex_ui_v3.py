@@ -542,6 +542,8 @@ _CBOE_SNAPSHOT_CSS = """
 def _decorate_cboe_overview_markup(
     markup: str,
     result_map: dict[str, Any],
+    *,
+    include_trash: bool = True,
 ) -> str:
     """Match E*TRADE Overview geometry and expose the exact CBOE snapshot id."""
     if 'class="gexv3-summary"' not in markup:
@@ -607,7 +609,8 @@ def _decorate_cboe_overview_markup(
         return "<tr>" + inner + "</tr>"
 
     markup = re.sub(r"<tr>(.*?)</tr>", decorate_row, markup, flags=re.DOTALL)
-    markup = _proven._inject_row_trash(markup)
+    if include_trash:
+        markup = _proven._inject_row_trash(markup)
     return _CBOE_SNAPSHOT_CSS + markup
 
 def _render_txt_control(source_label: str, url: str) -> None:
@@ -735,11 +738,11 @@ def _render_cboe_overview(
 def _parse_morningstar_tickers(raw: str) -> list[str]:
     """Match Vertical Options' paste-list formats without coupling the features."""
     tickers: list[str] = []
-    for item in re.split(r"[\\s,;|]+", str(raw or "").replace("`", "")):
+    for item in re.split(r"[\s,;|]+", str(raw or "").replace("`", "")):
         symbol = item.strip().upper()
         if not symbol or symbol in {"TICKER", "SYMBOL"} or re.fullmatch(r":?-+:?", symbol):
             continue
-        if len(symbol) > 12 or not re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\\-][A-Z0-9]+)*", symbol):
+        if len(symbol) > 12 or not re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)*", symbol):
             raise ValueError(f"Invalid ticker in Morningstar list: {symbol}.")
         if symbol not in tickers:
             tickers.append(symbol)
@@ -861,6 +864,7 @@ def _render_morningstar_gex(
     result_map = cboe_results(basket_key)
     st.html(_decorate_cboe_overview_markup(
         overview_renderer(morningstar_state, result_map), result_map,
+        include_trash=False,
     ))
     completed = [ticker for ticker in tickers if ticker in result_map]
     if completed:
