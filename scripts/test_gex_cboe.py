@@ -324,6 +324,67 @@ class CboeGexTests(unittest.TestCase):
         state["master_a6_source"] = "invalid"
         self.assertEqual(core._clean_state(state)["master_a6_source"], "CBOE")
 
+    def test_morningstar_ticker_import_and_full_strike_csv(self):
+        import csv
+        import io
+
+        self.assertEqual(
+            ui._parse_morningstar_tickers(
+                "| Ticker |\n| ------ |\n| MSFT |\n| AAPL |\nMSFT; BRK.B"
+            ),
+            ["MSFT", "AAPL", "BRK.B"],
+        )
+        with self.assertRaisesRegex(ValueError, "Invalid ticker"):
+            ui._parse_morningstar_tickers("MSFT, BAD_TICKER")
+        with self.assertRaisesRegex(ValueError, "Paste at least one"):
+            ui._parse_morningstar_tickers("| Ticker |\n| --- |")
+
+        result_map = {
+            "MSFT": {
+                "spot": 500.0, "maxDte": 90, "gammaFlip": 495.0,
+                "putWall": {"strike": 480.0},
+                "callWall": {"strike": 520.0},
+                "netCurrent": 120000.0,
+                "contractsUsed": 200, "snapshotFingerprint": "ABCDEF",
+                "rawRows": [
+                    {"strike": 490.0, "call_oi": 100, "put_oi": 150,
+                     "call_gex": 42, "put_gex": -55, "net_gex": -13,
+                     "cum_gex": -13},
+                    {"strike": 500.0, "call_oi": 200, "put_oi": 175,
+                     "call_gex": 60, "put_gex": -30, "net_gex": 30,
+                     "cum_gex": 17},
+                ],
+            },
+        }
+        rows = list(csv.DictReader(io.StringIO(
+            ui._morningstar_gex_csv(["MSFT", "AAPL"], result_map)
+        )))
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["Ticker"] == "MSFT" for row in rows))
+        self.assertTrue(all(row["Source"] == "CBOE DELAYED" for row in rows))
+        self.assertEqual([row["Strike"] for row in rows], ["490.0", "500.0"])
+        self.assertEqual(rows[0]["Gamma Flip"], "495.0")
+        self.assertEqual(rows[0]["CBOE Fingerprint"], "ABCDEF")
+        self.assertEqual(rows[1]["Net Strike GEX"], "30")
+
+    def test_morningstar_refresh_never_publishes_regular_cboe_bridge(self):
+        saved = {"results": {}, "failures": {}}
+        result = {"symbol": "MSFT", "spot": 500.0}
+        with (
+            patch.object(ui, "build_cboe_gex", return_value=result),
+            patch.object(ui, "cboe_snapshot", return_value=saved),
+            patch.object(ui, "save_cboe_refresh"),
+            patch.object(ui, "_publish_cboe_master_a6") as publish,
+            patch.object(ui.st, "progress"),
+        ):
+            updated, failed = ui._refresh_cboe_batch(
+                "isolated:morningstar", dict(core.DEFAULT_STATE),
+                ["MSFT"], replace_all=True, publish_master=False,
+            )
+        self.assertEqual(updated, {"MSFT": result})
+        self.assertEqual(failed, {})
+        publish.assert_not_called()
+
     def test_source_urls_and_tabs_are_separate(self):
         root = Path(__file__).resolve().parents[1]
         base = (root / "src/gex_ui_v3_base.py").read_text(encoding="utf-8")

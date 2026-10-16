@@ -948,6 +948,16 @@ def _render_cboe_overview(
 # ==============================
 # PUBLIC GEX RENDERER
 # ==============================
+def _remember_gex_subtab() -> None:
+    """Keep the last GEX subtab when the top-level terminal route changes."""
+    st.session_state["_gex_last_subtab"] = st.session_state["gexv3_active_subtab"]
+
+
+def _render_morningstar_gex(vault_key: str, state: dict[str, Any]) -> None:
+    """Production adapter supplies the CBOE-powered Morningstar workspace."""
+    del vault_key, state
+
+
 def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     _css()
     vault_key = str(vault_key or "default")
@@ -1097,16 +1107,23 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     if cboe_refresh_all:
         _run_cboe_refresh_all(vault_key, state)
 
-    etrade_overview_tab, cboe_overview_tab, analytics_tab, raw_tab, tv_tab, settings_tab, notes_tab = st.tabs(
-        [
-            "E*TRADE OVERVIEW",
-            "CBOE OVERVIEW",
-            "ANALYTICS",
-            "RAW STRIKES",
-            "TRADINGVIEW",
-            "SETTINGS",
-            "NOTES",
-        ]
+    subtab_names = [
+        "E*TRADE OVERVIEW",
+        "CBOE OVERVIEW",
+        "MORNINGSTAR GEX",
+        "ANALYTICS",
+        "RAW STRIKES",
+        "TRADINGVIEW",
+        "SETTINGS",
+        "NOTES",
+    ]
+    last_subtab = st.session_state.get("_gex_last_subtab", subtab_names[0])
+    if last_subtab not in subtab_names:
+        last_subtab = subtab_names[0]
+    (etrade_overview_tab, cboe_overview_tab, morningstar_tab,
+     analytics_tab, raw_tab, tv_tab, settings_tab, notes_tab) = st.tabs(
+        subtab_names, default=last_subtab, key="gexv3_active_subtab",
+        on_change=_remember_gex_subtab,
     )
 
     with etrade_overview_tab:
@@ -1114,6 +1131,9 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
 
     with cboe_overview_tab:
         _render_cboe_overview(vault_key, state)
+
+    with morningstar_tab:
+        _render_morningstar_gex(vault_key, state)
 
     with analytics_tab:
         _render_analytics(client, vault_key, touch_session, state, result_map)

@@ -575,6 +575,13 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                     st.error(str(exc))
                 else:
                     st.session_state["vo_ticker_list"] = symbols
+                    previous_targets = st.session_state.get("vo_ticker_targets") or {}
+                    st.session_state["vo_ticker_targets"] = {
+                        ticker: str(previous_targets.get(ticker) or "") for ticker in symbols
+                    }
+                    st.session_state["vo_ticker_editor_revision"] = (
+                        st.session_state.get("vo_ticker_editor_revision", 0) + 1
+                    )
                     st.session_state["vo_list_selection"] = symbols[0]
                     st.session_state["_vo_last_list_selection"] = None
                     st.session_state["vo_list_open"] = False
@@ -582,6 +589,58 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
 
         loaded_tickers = st.session_state.get("vo_ticker_list") or []
         if loaded_tickers:
+            # Per-symbol targets remain independent; blank means the live spot
+            # default when that particular symbol is scanned.
+            target_map = dict(st.session_state.get("vo_ticker_targets") or {})
+            with st.expander(
+                f"EDIT TICKER BREAKEVENS // {len(loaded_tickers)} LOADED",
+                expanded=False,
+            ):
+                st.caption("BLANK = CURRENT SPOT // EDIT INDIVIDUAL SYMBOL TARGETS // NO AUTO SCANS")
+                edited = st.data_editor(
+                    [
+                        {"Ticker": ticker, "Breakeven ($)": target_map.get(ticker, "")}
+                        for ticker in loaded_tickers
+                    ],
+                    disabled=["Ticker"], hide_index=True, num_rows="fixed",
+                    height=240, width="stretch",
+                    column_config={
+                        "Ticker": st.column_config.TextColumn("TICKER", width="small"),
+                        "Breakeven ($)": st.column_config.TextColumn(
+                            "TARGET BREAKEVEN ($)", help="Blank uses the ticker's spot price at scan."
+                        ),
+                    },
+                    key=f"vo_ticker_editor_{st.session_state.get('vo_ticker_editor_revision', 0)}",
+                )
+                updated_targets = {
+                    str(row["Ticker"]): str(row.get("Breakeven ($)") or "").strip()
+                    for row in (edited if isinstance(edited, list) else edited.to_dict("records"))
+                }
+                try:
+                    for ticker, value in updated_targets.items():
+                        if value:
+                            _entered_price(value, f"{ticker} breakeven")
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    if updated_targets != target_map:
+                        changed_targets = {
+                            ticker for ticker in loaded_tickers
+                            if updated_targets.get(ticker, "") != target_map.get(ticker, "")
+                        }
+                        st.session_state["vo_ticker_targets"] = updated_targets
+                        target_map = updated_targets
+                        if st.session_state.get("vo_list_selection") in changed_targets:
+                            selected_target = st.session_state["vo_list_selection"]
+                            st.session_state["vo_target_breakeven"] = target_map.get(selected_target, "")
+                            st.session_state.pop("_vo_auto_target", None)
+                            st.session_state.pop("_vo_auto_target_pending", None)
+                            for state_key in (
+                                "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
+                                "_vo_order_candidate", "vo_last_send_results",
+                            ):
+                                st.session_state.pop(state_key, None)
+
             with paste_cols[1]:
                 picked_ticker = st.selectbox(
                     f"LOADED TICKERS ({len(loaded_tickers)}) // SELECT TO PREFILL",
@@ -590,15 +649,13 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             if picked_ticker != st.session_state.get("_vo_last_list_selection"):
                 st.session_state["_vo_last_list_selection"] = picked_ticker
                 st.session_state["vo_symbol_value"] = picked_ticker
+                st.session_state["vo_target_breakeven"] = target_map.get(picked_ticker, "")
                 for state_key in (
                     "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
                     "_vo_order_candidate", "vo_last_send_results",
                 ):
                     st.session_state.pop(state_key, None)
-                previous_auto = st.session_state.pop("_vo_auto_target", None)
-                if (isinstance(previous_auto, dict)
-                        and st.session_state.get("vo_target_breakeven") == previous_auto.get("text")):
-                    st.session_state["vo_target_breakeven"] = ""
+                st.session_state.pop("_vo_auto_target", None)
                 st.session_state.pop("_vo_auto_target_pending", None)
 
         pending_target = st.session_state.pop("_vo_auto_target_pending", None)
@@ -680,6 +737,10 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                     "contract_count": len(raw["rows"]), "errors": raw["errors"],
                 }
                 st.session_state["vo_results_view"] = "BEST PER YEAR"
+                if symbol in (st.session_state.get("vo_ticker_list") or []):
+                    st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
+                        "" if use_spot_target else entered_target
+                    )
                 if use_spot_target:
                     # Seed the editable widget before it renders on the next pass.
                     st.session_state["_vo_auto_target_pending"] = (symbol, target)
