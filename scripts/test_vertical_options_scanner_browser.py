@@ -486,8 +486,18 @@ def test() -> None:
             form = wait.until(ready_scanner_form)
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').clear()
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').clear()
+            print("BLANK INPUT BEFORE CLICK:", driver.execute_script(
+                "return [...document.querySelectorAll('input')]"
+                ".filter(el=>['Target Breakeven','Max Cost'].includes(el.getAttribute('aria-label')))"
+                ".map(el=>[el.getAttribute('aria-label'),el.value]);"
+            ), flush=True)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "MAX COST NO CEILING" in driver.find_element(By.TAG_NAME, "body").text)
+            try:
+                wait.until(lambda _: "MAX COST NO CEILING" in driver.find_element(By.TAG_NAME, "body").text)
+            except Exception:
+                print("BLANK SCAN BODY:", driver.find_element(By.TAG_NAME, "body").text[-4200:], flush=True)
+                print("BLANK SCAN EVENTS:", events(event_path)[-12:], flush=True)
+                raise
             wait.until(lambda _: "TARGET BREAKEVEN $100.00 (SPOT DEFAULT)"
                        in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(
