@@ -468,7 +468,7 @@ def test() -> None:
             textarea = wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'textarea[aria-label^="PASTE TICKERS"]',
             ))
-            textarea.send_keys("| Ticker |\\n| ------ |\\n| MSFT |\\n| SPY |\\n| GOOGL |\\n| MSFT |")
+            textarea.send_keys("| Ticker |\n| ------ |\n| MSFT |\n| SPY |\n| GOOGL |\n| MSFT |")
             driver.find_element(By.XPATH, '//button[contains(., "LOAD TICKERS")]').click()
             def list_loaded(_):
                 inputs = driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
