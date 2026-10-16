@@ -482,6 +482,32 @@ def test() -> None:
             # Loading a list resets the prior ticker's result without scanning.
             assert driver.find_elements(By.CSS_SELECTOR, '[data-testid="stSelectbox"]')
             assert "BEST VERTICAL SPREADS BY YEAR" not in driver.find_element(By.TAG_NAME, "body").text
+            # Empty inputs use the current underlying Last and impose no cost cap.
+            form = wait.until(ready_scanner_form)
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').clear()
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').clear()
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "MAX COST NO CEILING" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "TARGET BREAKEVEN $100.00 (SPOT DEFAULT)"
+                       in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: driver.find_element(
+                By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
+            ).get_attribute("value") == "100.0")
+            assert grid_snapshot(driver)["rows"]
+            assert not any(item["event"] == "place" for item in events(event_path))
+
+            # The seeded spot target can be overwritten with an explicit target
+            # and the cost ceiling restored without changing the one-ticker flow.
+            form = wait.until(ready_scanner_form)
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').clear()
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').send_keys("103")
+            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("150")
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "TARGET BREAKEVEN $103.00 (CUSTOM)" in
+                       driver.find_element(By.TAG_NAME, "body").text)
+            assert "MAX COST $150.00" in driver.find_element(By.TAG_NAME, "body").text
+            assert not any(item["event"] == "place" for item in events(event_path))
+
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
