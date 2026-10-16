@@ -614,7 +614,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 )
                 updated_targets = {
                     str(row["Ticker"]): str(row.get("Breakeven ($)") or "").strip()
-                    for row in edited.to_dict("records")
+                    for row in (edited if isinstance(edited, list) else edited.to_dict("records"))
                 }
                 try:
                     for ticker, value in updated_targets.items():
