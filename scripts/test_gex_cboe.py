@@ -367,6 +367,100 @@ class CboeGexTests(unittest.TestCase):
         self.assertEqual(rows[0]["CBOE Fingerprint"], "ABCDEF")
         self.assertEqual(rows[1]["Net Strike GEX"], "30")
 
+    def test_cboe_and_morningstar_overview_sort_by_column_without_state_mutation(self):
+        state = copy.deepcopy(core.DEFAULT_STATE)
+        tickers = ["MSFT", "AAPL", "FAILED"]
+        state["tickers"] = list(tickers)
+        rows = {
+            "MSFT": {
+                "spot": 500.0, "maxDte": 60, "gammaFlip": 550.0,
+                "putWall": {"strike": 490.0}, "callWall": {"strike": 520.0},
+                "snapshotFetchedAt": "2026-10-16T16:35:00-04:00",
+            },
+            "AAPL": {
+                "spot": 250.0, "maxDte": 30, "gammaFlip": 240.0,
+                "putWall": {"strike": 220.0}, "callWall": {"strike": 260.0},
+                "snapshotFetchedAt": "2026-10-16T16:40:00-04:00",
+            },
+        }
+        sort = ui._gex_overview_sorted_tickers
+        self.assertEqual(sort(tickers, rows, state, "WATCHLIST ORDER", "ASC"), tickers)
+        self.assertEqual(sort(tickers, rows, state, "TICKER", "ASC"),
+                         ["AAPL", "FAILED", "MSFT"])
+        self.assertEqual(sort(tickers, rows, state, "SPOT", "DESC"),
+                         ["MSFT", "AAPL", "FAILED"])
+        self.assertEqual(sort(tickers, rows, state, "PUT WALL", "ASC"),
+                         ["AAPL", "MSFT", "FAILED"])
+        self.assertEqual(sort(tickers, rows, state, "DTE", "ASC"),
+                         ["AAPL", "MSFT", "FAILED"])
+        self.assertEqual(sort(tickers, rows, state, "RANGE Δ %", "ASC"),
+                         ["MSFT", "AAPL", "FAILED"])
+        self.assertEqual(sort(tickers, rows, state, "UPDATED", "DESC"),
+                         ["AAPL", "MSFT", "FAILED"])
+        self.assertEqual(state["tickers"], tickers)
+
+    def test_morningstar_exports_match_visible_columns_order_and_range(self):
+        import csv
+        import io
+
+        state = copy.deepcopy(core.DEFAULT_STATE)
+        state["tickers"] = ["MSFT", "AAPL", "FAILED"]
+        results = {
+            "MSFT": {
+                "spot": 500.0, "maxDte": 60,
+                "gammaFlip": 550.0,
+                "putWall": {"strike": 490.0},
+                "callWall": {"strike": 520.0},
+                "snapshotFetchedAt": "2026-10-16T16:35:00-04:00",
+                "snapshotFingerprint": "ABCDEF1234567890",
+                "updated": "2026-10-16T16:35:00-04:00",
+            },
+            "AAPL": {
+                "spot": 250.0, "maxDte": 60,
+                "gammaFlip": 240.0,
+                "putWall": {"strike": 220.0},
+                "callWall": {"strike": 260.0},
+                "snapshotFetchedAt": "2026-10-16T16:40:00-04:00",
+                "snapshotFingerprint": "1234567890ABCDEF",
+                "updated": "2026-10-16T16:40:00-04:00",
+            },
+        }
+        sorted_tickers = ui._gex_overview_sorted_tickers(
+            state["tickers"], results, state, "SPOT", "ASC"
+        )
+        sorted_state = copy.deepcopy(state)
+        sorted_state["tickers"] = sorted_tickers
+        rows = list(csv.reader(io.StringIO(
+            ui._morningstar_overview_csv(sorted_tickers, results, sorted_state)
+        )))
+        self.assertEqual(rows[0], [
+            "TICKER", "DTE", "SPOT", "PUT WALL", "GAMMA FLIP",
+            "CALL WALL", "RANGE", "UPDATED",
+        ])
+        self.assertEqual([row[0] for row in rows[1:]],
+                         ["AAPL", "MSFT", "FAILED"])
+        self.assertEqual(rows[1][2:6],
+                         ["$250.00", "$220.00", "$240.00", "$260.00"])
+        self.assertIn("POSITIVE GAMMA // Δ +4.17%", rows[1][6])
+        self.assertIn("NEGATIVE GAMMA // Δ -9.09%", rows[2][6])
+        self.assertIn("FP 1234567890AB", rows[1][7])
+        self.assertEqual(rows[3][6], "REFRESH")
+
+        markup = ui._decorate_cboe_overview_markup(
+            base._overview_html(sorted_state, results), results,
+            include_trash=False,
+        )
+        exported = ui._morningstar_visual_html(markup, len(sorted_tickers))
+        self.assertIn("MORNINGSTAR GEX // CBOE OVERVIEW", exported)
+        self.assertIn("gexv3-range-dot", exported)
+        self.assertIn("gexv3-range-zone", exported)
+        self.assertIn("gexv3-snapshot-fp", exported)
+        self.assertIn("print-color-adjust:exact", exported)
+        self.assertNotIn("gexv3-trash-link\" href=", exported)
+        aapl_pos = exported.index('class="sym">AAPL')
+        msft_pos = exported.index('class="sym">MSFT')
+        self.assertLess(aapl_pos, msft_pos)
+
     def test_morningstar_refresh_never_publishes_regular_cboe_bridge(self):
         saved = {"results": {}, "failures": {}}
         result = {"symbol": "MSFT", "spot": 500.0}
