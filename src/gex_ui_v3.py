@@ -888,6 +888,89 @@ def _morningstar_gex_csv(tickers: list[str], result_map: dict[str, Any]) -> str:
     return buffer.getvalue()
 
 
+
+def _morningstar_overview_csv(
+    tickers: list[str],
+    result_map: dict[str, Any],
+    state: dict[str, Any],
+) -> str:
+    """Export the same eight columns and sorted ticker rows as the visible table."""
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow((
+        "TICKER", "DTE", "SPOT", "PUT WALL", "GAMMA FLIP",
+        "CALL WALL", "RANGE", "UPDATED",
+    ))
+    fmt = _proven._base._fmt_money
+    for ticker in tickers:
+        result = result_map.get(ticker)
+        dte = state.get("dte_overrides", {}).get(ticker, state.get("global_dte", 45))
+        if not isinstance(result, dict):
+            writer.writerow((ticker, dte, "—", "—", "—", "—", "REFRESH", "—"))
+            continue
+        regime, _ = _proven._gamma_regime(result)
+        try:
+            spot = float(result["spot"])
+            flip = float(result["gammaFlip"])
+            distance = f"{((spot / flip) - 1.0) * 100:+.2f}%" if flip > 0 else "—"
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            distance = "—"
+        range_text = (
+            f"GF {fmt(result.get('gammaFlip'))} // {regime} GAMMA // Δ {distance}"
+        )
+        updated = str(result.get("snapshotFetchedAt") or result.get("updated") or "")
+        updated_text = _proven._base._short_updated(updated)
+        fingerprint = str(result.get("snapshotFingerprint") or "").strip().upper()
+        if fingerprint:
+            updated_text += f" // FP {fingerprint[:12]}"
+        writer.writerow((
+            ticker, result.get("maxDte"), fmt(result.get("spot")),
+            fmt((result.get("putWall") or {}).get("strike")),
+            fmt(result.get("gammaFlip")),
+            fmt((result.get("callWall") or {}).get("strike")),
+            range_text, updated_text,
+        ))
+    return buffer.getvalue()
+
+
+def _morningstar_visual_html(markup: str, count: int) -> str:
+    """Self-contained, printer-friendly copy of the actual styled overview HTML."""
+    return (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Morningstar GEX | Raj's Terminal</title>"
+        "<style>"
+        "html,body{margin:0;padding:0;background:#020202;color:#e8e8e8;"
+        "font-family:'Courier New',monospace;}"
+        "body{padding:16px;}"
+        "h1{font-size:17px;color:#fb8b1e;margin:0 0 6px;}"
+        ".export-meta{font-size:11px;color:#b87621;margin:0 0 12px;}"
+        ".gexv3-summary{width:100%;border-collapse:collapse;table-layout:fixed;"
+        "background:#020202;font:800 11.25pt/1.18 'Courier New',monospace;}"
+        ".gexv3-summary th{color:#fb8b1e;background:#090909;"
+        "border:1px solid #5d3605;padding:.42rem .30rem;"
+        "text-align:center;white-space:normal;}"
+        ".gexv3-summary td{border:1px solid #3f290c;padding:.40rem .28rem;"
+        "text-align:center;color:#e8e8e8;overflow:hidden;"
+        "text-overflow:ellipsis;white-space:nowrap;}"
+        ".gexv3-summary td.sym{color:#4af6c3;font-weight:900;}"
+        ".gexv3-summary td.red{color:#ff5757;}"
+        ".gexv3-summary td.green{color:#4af6c3;}"
+        ".gexv3-summary td.orange{color:#fb8b1e;}"
+        "@page{size:landscape;margin:10mm;}"
+        "@media print{*{-webkit-print-color-adjust:exact!important;"
+        "print-color-adjust:exact!important;}}"
+        "</style>"
+        + _proven._ROW_ACTION_CSS
+        + "</head><body>"
+        "<h1>MORNINGSTAR GEX // CBOE OVERVIEW</h1>"
+        f"<div class='export-meta'>{count} TICKERS // CBOE DELAYED OPTIONS // "
+        f"{datetime.now():%Y-%m-%d %H:%M}</div>"
+        + markup +
+        "</body></html>"
+    )
+
+
 def _render_morningstar_gex(
     vault_key: str,
     state: dict[str, Any],
@@ -956,21 +1039,48 @@ def _render_morningstar_gex(
             st.success(f"MORNINGSTAR CBOE GEX // {len(tickers)} TICKERS UPDATED")
 
     result_map = cboe_results(basket_key)
-    st.html(_decorate_cboe_overview_markup(
-        overview_renderer(morningstar_state, result_map), result_map,
+    displayed_tickers = _gex_overview_sort_controls(
+        "gex_morningstar", tickers, result_map, morningstar_state,
+    )
+    display_state = copy.deepcopy(morningstar_state)
+    display_state["tickers"] = displayed_tickers
+    markup = _decorate_cboe_overview_markup(
+        overview_renderer(display_state, result_map), result_map,
         include_trash=False,
-    ))
-    completed = [ticker for ticker in tickers if ticker in result_map]
+    )
+    st.html(markup)
+    completed = [ticker for ticker in displayed_tickers if ticker in result_map]
     if completed:
-        st.download_button(
-            "EXPORT MORNINGSTAR GEX CSV",
-            data=_morningstar_gex_csv(completed, result_map),
-            file_name=f"morningstar_gex_{datetime.now():%Y%m%d}.csv",
-            mime="text/csv", key="gex_morningstar_export",
+        export_col, html_col, strikes_col = st.columns(
+            [1.75, 1.65, 1.45], gap="small",
         )
+        with export_col:
+            st.download_button(
+                "EXPORT OVERVIEW CSV",
+                data=_morningstar_overview_csv(displayed_tickers, result_map, display_state),
+                file_name=f"morningstar_gex_overview_{datetime.now():%Y%m%d}.csv",
+                mime="text/csv", key="gex_morningstar_export",
+                width="stretch",
+            )
+        with html_col:
+            st.download_button(
+                "EXPORT VISUAL HTML",
+                data=_morningstar_visual_html(markup, len(displayed_tickers)),
+                file_name=f"morningstar_gex_visual_{datetime.now():%Y%m%d}.html",
+                mime="text/html", key="gex_morningstar_visual_export",
+                width="stretch",
+            )
+        with strikes_col:
+            st.download_button(
+                "ALL STRIKES CSV",
+                data=_morningstar_gex_csv(completed, result_map),
+                file_name=f"morningstar_gex_strikes_{datetime.now():%Y%m%d}.csv",
+                mime="text/csv", key="gex_morningstar_strikes_export",
+                width="stretch",
+            )
         st.caption(
-            f"CSV // {len(completed)}/{len(tickers)} TICKERS // ALL CALCULATED STRIKES "
-            "// SOURCE, WALLS, FLIP, GEX, OI, SNAPSHOT ID"
+            f"{len(completed)}/{len(tickers)} TICKERS UPDATED // "
+            "OVERVIEW EXPORT FOLLOWS THE VISIBLE SORT // VISUAL HTML PRESERVES COLORS + RANGE BARS"
         )
     failures = cboe_snapshot(basket_key).get("failures") or {}
     if failures:
