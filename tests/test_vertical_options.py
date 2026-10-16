@@ -266,6 +266,27 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertEqual(first_annual, reverse_annual)
         self.assertEqual(len(first), 2)
 
+    def test_optional_cost_has_no_ceiling_but_preserves_two_to_one_ratio(self):
+        from src.vertical_options import price_vertical_quote
+        quote = dict(
+            buy_last=5, sell_last=2, buy_bid=4.9, buy_ask=5,
+            sell_bid=2, sell_ask=2.1, width=10,
+        )
+        self.assertIsNone(price_vertical_quote(**quote, max_cost=200))
+        eligible = price_vertical_quote(**quote, max_cost=None)
+        self.assertEqual(eligible["cost"], 300)
+        self.assertEqual(eligible["basis"], "ASK")
+        expiry = date(2029, 1, 19)
+        rows = [self._row(expiry, "CALL", 100, 5, bid=4.9, ask=5),
+                self._row(expiry, "CALL", 110, 2, bid=2, ask=2.1)]
+        candidates, _ = scan_vertical_candidates(
+            symbol="SPY", spot_last=105, option_rows=rows,
+            target_breakeven=105, max_cost=None,
+        )
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0]["cost"], 300)
+        self.assertGreaterEqual(candidates[0]["reward_risk"], 2)
+
     def test_scan_validates_controls(self):
         arguments = dict(symbol="SPY", spot_last=100, option_rows=[],
                          target_breakeven=100, max_cost=100)

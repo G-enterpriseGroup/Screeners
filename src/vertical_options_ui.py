@@ -595,6 +595,18 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                     "_vo_order_candidate", "vo_last_send_results",
                 ):
                     st.session_state.pop(state_key, None)
+                previous_auto = st.session_state.pop("_vo_auto_target", None)
+                if (isinstance(previous_auto, dict)
+                        and st.session_state.get("vo_target_breakeven") == previous_auto.get("text")):
+                    st.session_state["vo_target_breakeven"] = ""
+                st.session_state.pop("_vo_auto_target_pending", None)
+
+        pending_target = st.session_state.pop("_vo_auto_target_pending", None)
+        if (isinstance(pending_target, tuple) and len(pending_target) == 2
+                and pending_target[0] == str(st.session_state.get("vo_symbol_value") or "").strip().upper()):
+            seeded_text = str(pending_target[1])
+            st.session_state["vo_target_breakeven"] = seeded_text
+            st.session_state["_vo_auto_target"] = {"symbol": pending_target[0], "text": seeded_text}
 
         last_result = st.session_state.get("vo_scan_result") or {}
         with st.form("vo_scan_form", clear_on_submit=False):
@@ -610,13 +622,13 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                                                 if last_result.get("symbol") == symbol else ""))
             with fields[2]:
                 breakeven_text = st.text_input(
-                    "Target Breakeven", key="vo_target_breakeven", placeholder="Underlying price",
-                    help="Rank qualifying spreads by closeness to this underlying price at expiration.",
+                    "Target Breakeven", key="vo_target_breakeven", placeholder="AUTO: CURRENT SPOT",
+                    help="Leave blank to use current underlying Last; edit to target a specific breakeven.",
                 )
             with fields[3]:
                 cost_text = st.text_input(
-                    "Max Cost", key="vo_max_cost", placeholder="$ per spread",
-                    help="Maximum one-spread debit based on BUY Last minus SELL Last, times 100 shares.",
+                    "Max Cost", key="vo_max_cost", placeholder="NO CEILING",
+                    help="Optional maximum one-spread debit in dollars. Blank means no cost ceiling.",
                 )
             with fields[4]:
                 scan_clicked = st.form_submit_button(
@@ -632,14 +644,24 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             try:
                 if not symbol:
                     raise ValueError("Enter a ticker to scan.")
-                target = _entered_price(breakeven_text, "target breakeven")
-                max_cost = _entered_price(cost_text, "maximum cost")
+                entered_target = str(breakeven_text or "").strip()
+                previous_auto = st.session_state.get("_vo_auto_target")
+                use_spot_target = not entered_target or (
+                    isinstance(previous_auto, dict)
+                    and entered_target == previous_auto.get("text")
+                )
+                custom_target = None if use_spot_target else _entered_price(
+                    entered_target, "target breakeven"
+                )
+                max_cost = (None if not str(cost_text or "").strip()
+                            else _entered_price(cost_text, "maximum cost"))
                 repeat_scan = (
                     last_result.get("symbol") == symbol
-                    and last_result.get("target") == target
                     and last_result.get("max_cost") == max_cost
+                    and (use_spot_target or last_result.get("target") == custom_target)
                 )
                 raw = _scan_all_years(client, symbol, touch_session, refresh=repeat_scan)
+                target = raw["spot"] if use_spot_target else custom_target
                 candidates, annual_ids = scan_vertical_candidates(
                     symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
                     target_breakeven=target, max_cost=max_cost,
@@ -650,7 +672,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 st.session_state["vo_scan_result"] = {
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
-                    "loaded_at": raw["loaded_at"],
+                    "target_defaulted": use_spot_target, "loaded_at": raw["loaded_at"],
                     "scope": scope, "candidates": candidates, "annual_ids": annual_ids,
                     "loaded_expirations": raw["loaded_expirations"],
                     "listed_expirations": len(raw["expirations"]),
@@ -658,6 +680,11 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                     "contract_count": len(raw["rows"]), "errors": raw["errors"],
                 }
                 st.session_state["vo_results_view"] = "BEST PER YEAR"
+                if use_spot_target:
+                    # Seed the editable widget before it renders on the next pass.
+                    st.session_state["_vo_auto_target_pending"] = (symbol, target)
+                else:
+                    st.session_state.pop("_vo_auto_target", None)
                 st.rerun(scope="fragment")
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
@@ -687,14 +714,18 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             'MINIMUM RISK:REWARD 1:2 AT THE SELECTED ORDER PRICE // '
             'PRIORITY: ASK (NATURAL) > IN-MARKET LAST > MID > UNQUOTED LAST*; '
             'THEN CLOSEST BREAKEVEN AND LOWEST COST. '
-            f'MAX COST {_money(result["max_cost"])} PER SPREAD. '
+            f'TARGET BREAKEVEN {_money(result["target"])}'
+            f' ({"SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM"}). '
+            f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "NO CEILING"} PER SPREAD. '
             'ASK = BUY ASK MINUS SELL BID; MID = TWO-LEG MARKET MIDPOINT. '
             'LAST* HAS NO RELIABLE LIVE SPREAD QUOTE AND CANNOT BE ORDERED. '
             'NO PRICING BASIS GUARANTEES A FILL.'
         )
         candidates = result["candidates"]
         if not candidates:
-            st.info("No call or put debit spreads met the 1:2 ratio and maximum cost at a qualifying quoted price across the loaded years.")
+            st.info("No call or put debit spreads met the 1:2 ratio"
+                    + (" and maximum cost" if result["max_cost"] is not None else "")
+                    + " at a qualifying quoted price across the loaded years.")
         else:
             annual_ids = set(result["annual_ids"])
             by_id = {row["id"]: row for row in candidates}
@@ -848,7 +879,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     elif limit_price >= candidate["width"]:
         validation_error = "Checked spread's Last debit must stay below its width. Rescan."
         st.error(validation_error)
-    elif limit_price * 100 > result["max_cost"] + 1e-6:
+    elif result["max_cost"] is not None and limit_price * 100 > result["max_cost"] + 1e-6:
         validation_error = "Checked spread's rounded Last debit exceeds your maximum cost. Rescan."
         st.error(validation_error)
 
