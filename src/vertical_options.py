@@ -106,7 +106,7 @@ def price_vertical_quote(
     sell_bid: float | None,
     sell_ask: float | None,
     width: float,
-    max_cost: float,
+    max_cost: float | None,
 ) -> dict[str, Any] | None:
     """Choose the most execution-friendly debit that STILL meets 1:2 and cost.
 
@@ -117,8 +117,8 @@ def price_vertical_quote(
     No quote basis is a guarantee of execution or liquidity.
     """
     spread_width = _finite_number(width, positive=True)
-    budget = _finite_number(max_cost, positive=True)
-    if spread_width is None or budget is None:
+    budget = None if max_cost is None else _finite_number(max_cost, positive=True)
+    if spread_width is None or (max_cost is not None and budget is None):
         return None
     last_buy = _finite_number(buy_last, positive=True)
     last_sell = _finite_number(sell_last, positive=True)
@@ -147,7 +147,7 @@ def price_vertical_quote(
         debit = round(raw_debit, 2)  # E*TRADE orderable two-decimal limit.
         cost = round(100 * debit, 2)
         if (not math.isfinite(debit) or not .01 <= debit < spread_width
-                or cost > budget + 1e-8
+                or (budget is not None and cost > budget + 1e-8)
                 or spread_width - debit + 1e-8 < _MIN_REWARD_RISK * debit):
             continue
         return {
@@ -165,7 +165,7 @@ def scan_vertical_candidates(
     spot_last: float,
     option_rows: Iterable[dict[str, Any]],
     target_breakeven: float,
-    max_cost: float,
+    max_cost: float | None,
     max_per_expiration: int = 20,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
@@ -180,8 +180,8 @@ def scan_vertical_candidates(
     ticker = str(symbol or "").strip().upper()
     spot = _finite_number(spot_last, positive=True)
     target = _finite_number(target_breakeven, positive=True)
-    budget = _finite_number(max_cost)
-    if not ticker or spot is None or target is None or budget is None:
+    budget = None if max_cost is None else _finite_number(max_cost)
+    if not ticker or spot is None or target is None or (max_cost is not None and budget is None):
         raise ValueError("Ticker, underlying Last, breakeven, and cost must be valid.")
     if type(max_per_expiration) is not int or max_per_expiration < 1:
         raise ValueError("max_per_expiration must be a positive integer.")
