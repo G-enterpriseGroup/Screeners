@@ -30,6 +30,7 @@ import copy
 import csv
 import html
 import io
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
@@ -666,6 +667,95 @@ def _run_cboe_refresh_all(
     st.rerun()
 
 
+
+# ==============================
+# CBOE + MORNINGSTAR OVERVIEW SORTING
+# ==============================
+_GEX_OVERVIEW_SORT_COLUMNS = (
+    "WATCHLIST ORDER", "TICKER", "DTE", "SPOT", "PUT WALL",
+    "GAMMA FLIP", "CALL WALL", "RANGE Δ %", "UPDATED",
+)
+
+
+def _gex_overview_sorted_tickers(
+    tickers: list[str],
+    result_map: dict[str, Any],
+    state: dict[str, Any],
+    column: str,
+    direction: str,
+) -> list[str]:
+    """Sort rendered CBOE cohorts only, keeping missing quotes at the bottom."""
+    original = list(tickers)
+    if column == "WATCHLIST ORDER":
+        return original
+
+    def value(ticker: str):
+        if column == "TICKER":
+            return ticker
+        result = result_map.get(ticker)
+        if not isinstance(result, dict):
+            return None
+        if column == "UPDATED":
+            raw = str(result.get("snapshotFetchedAt") or result.get("updated") or "")
+            try:
+                return datetime.fromisoformat(raw).timestamp()
+            except (ValueError, OverflowError):
+                return None
+        if column == "RANGE Δ %":
+            try:
+                spot = float(result["spot"])
+                flip = float(result["gammaFlip"])
+                return ((spot / flip) - 1.0) * 100.0 if flip > 0 else None
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                return None
+        field = {
+            "DTE": "maxDte", "SPOT": "spot",
+            "PUT WALL": "putWall", "GAMMA FLIP": "gammaFlip",
+            "CALL WALL": "callWall",
+        }.get(column)
+        try:
+            if field in {"putWall", "callWall"}:
+                result_value = result[field]["strike"]
+            else:
+                result_value = result[field]
+            numeric = float(result_value)
+            return numeric if math.isfinite(numeric) else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    available = []
+    missing = []
+    for ticker in original:
+        score = value(ticker)
+        (available if score is not None else missing).append((ticker, score))
+    sorted_available = sorted(
+        available, key=lambda pair: pair[1], reverse=direction == "DESC",
+    )
+    return [ticker for ticker, _ in sorted_available + missing]
+
+
+def _gex_overview_sort_controls(
+    key_prefix: str,
+    tickers: list[str],
+    result_map: dict[str, Any],
+    state: dict[str, Any],
+) -> list[str]:
+    """Use compact native sort controls instead of injecting scripts into st.html."""
+    sort_col, direction_col, _ = st.columns([1.65, 1.05, 3.3], gap="small")
+    with sort_col:
+        column = st.selectbox(
+            "SORT BY", _GEX_OVERVIEW_SORT_COLUMNS,
+            key=f"{key_prefix}_sort_column",
+        )
+    with direction_col:
+        direction = st.selectbox(
+            "ORDER", ("ASC", "DESC"), key=f"{key_prefix}_sort_direction",
+        )
+    return _gex_overview_sorted_tickers(
+        tickers, result_map, state, column, direction,
+    )
+
+
 def _render_cboe_overview(
     vault_key: str,
     state: dict[str, Any],
@@ -679,9 +769,13 @@ def _render_cboe_overview(
     ]
     result_map = cboe_results(vault_key)
 
-    # Match the E*TRADE overview interaction contract: the DTE cell opens the
-    # same saved per-ticker DTE editor. Only the data source remains different.
-    markup = _inject_dte_editor_links(overview_renderer(state, result_map))
+    # Sort a presentation-only copy; do not reorder the persisted GEX watchlist.
+    display_state = copy.deepcopy(state)
+    display_state["tickers"] = _gex_overview_sort_controls(
+        "gexv3_cboe", tickers, result_map, state,
+    )
+    # DTE editing and per-ticker refresh still address the original symbol.
+    markup = _inject_dte_editor_links(overview_renderer(display_state, result_map))
     st.html(_decorate_cboe_overview_markup(markup, result_map))
 
     if tickers:
