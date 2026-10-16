@@ -505,7 +505,8 @@ def test() -> None:
             form = wait.until(ready_scanner_form)
             breakeven_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
             breakeven_input.click()
-            breakeven_input.send_keys(Keys.CONTROL, "a", "103")
+            breakeven_input.send_keys(Keys.CONTROL, "a")
+            breakeven_input.send_keys("103")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("150")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "TARGET BREAKEVEN 103.00 (CUSTOM)" in
