@@ -488,7 +488,8 @@ def test() -> None:
             for label in ("Target Breakeven", "Max Cost"):
                 field = form.find_element(By.CSS_SELECTOR, f'input[aria-label="{label}"]')
                 field.click()
-                field.send_keys(Keys.CONTROL, "a", Keys.BACKSPACE)
+                field.send_keys(Keys.CONTROL, "a")
+                field.send_keys(Keys.BACKSPACE)
                 assert field.get_attribute("value") == "", (label, field.get_attribute("value"))
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "MAX COST NO CEILING" in driver.find_element(By.TAG_NAME, "body").text)
