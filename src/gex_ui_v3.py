@@ -27,7 +27,9 @@ full per-ticker TradingView transport as the default copy payload.
 from __future__ import annotations
 
 import copy
+import csv
 import html
+import io
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
@@ -444,6 +446,7 @@ def _refresh_cboe_batch(
     tickers: list[str],
     *,
     replace_all: bool,
+    publish_master: bool = True,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Fetch CBOE tickers concurrently; Streamlit updates stay on the UI thread."""
     normalized: list[str] = []
@@ -516,7 +519,8 @@ def _refresh_cboe_batch(
         merged_failures,
         str(state.get("timezone") or "America/New_York"),
     )
-    _publish_cboe_master_a6(vault_key, state)
+    if publish_master:
+        _publish_cboe_master_a6(vault_key, state)
     progress.empty()
     return results, failures
 
@@ -719,6 +723,160 @@ def _render_cboe_overview(
         )
     if failures:
         with st.expander(f"CBOE ERRORS // {len(failures)}", expanded=False):
+            for ticker in tickers:
+                if ticker in failures:
+                    st.caption(f"{ticker} // {failures[ticker]}")
+
+
+
+# ==============================
+# MORNINGSTAR BASKET // CBOE GEX // CSV
+# ==============================
+def _parse_morningstar_tickers(raw: str) -> list[str]:
+    """Match Vertical Options' paste-list formats without coupling the features."""
+    tickers: list[str] = []
+    for item in re.split(r"[\\s,;|]+", str(raw or "").replace("`", "")):
+        symbol = item.strip().upper()
+        if not symbol or symbol in {"TICKER", "SYMBOL"} or re.fullmatch(r":?-+:?", symbol):
+            continue
+        if len(symbol) > 12 or not re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\\-][A-Z0-9]+)*", symbol):
+            raise ValueError(f"Invalid ticker in Morningstar list: {symbol}.")
+        if symbol not in tickers:
+            tickers.append(symbol)
+        if len(tickers) > 100:
+            raise ValueError("Morningstar GEX supports up to 100 unique tickers.")
+    if not tickers:
+        raise ValueError("Paste at least one ticker.")
+    return tickers
+
+
+def _morningstar_gex_csv(tickers: list[str], result_map: dict[str, Any]) -> str:
+    """Export every calculated CBOE strike with its source and summary levels."""
+    headers = [
+        "Ticker", "Source", "Spot", "Max DTE", "Put Wall", "Gamma Flip",
+        "Call Wall", "Net Current GEX", "Contracts Used", "Updated",
+        "Snapshot Fetched", "CBOE Fingerprint", "Strike", "Call OI",
+        "Put OI", "Call GEX", "Put GEX", "Net Strike GEX", "Cumulative GEX",
+    ]
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=headers)
+    writer.writeheader()
+    for ticker in tickers:
+        result = result_map.get(ticker)
+        if not isinstance(result, dict):
+            continue
+        base = {
+            "Ticker": ticker, "Source": "CBOE DELAYED",
+            "Spot": result.get("spot"), "Max DTE": result.get("maxDte"),
+            "Put Wall": (result.get("putWall") or {}).get("strike"),
+            "Gamma Flip": result.get("gammaFlip"),
+            "Call Wall": (result.get("callWall") or {}).get("strike"),
+            "Net Current GEX": result.get("netCurrent"),
+            "Contracts Used": result.get("contractsUsed"),
+            "Updated": result.get("updated"),
+            "Snapshot Fetched": result.get("snapshotFetchedAt"),
+            "CBOE Fingerprint": result.get("snapshotFingerprint"),
+        }
+        for strike in result.get("rawRows") or [{}]:
+            writer.writerow({
+                **base,
+                "Strike": strike.get("strike"),
+                "Call OI": strike.get("call_oi"),
+                "Put OI": strike.get("put_oi"),
+                "Call GEX": strike.get("call_gex"),
+                "Put GEX": strike.get("put_gex"),
+                "Net Strike GEX": strike.get("net_gex"),
+                "Cumulative GEX": strike.get("cum_gex"),
+            })
+    return buffer.getvalue()
+
+
+def _render_morningstar_gex(
+    vault_key: str,
+    state: dict[str, Any],
+    overview_renderer: Callable[[dict[str, Any], dict[str, Any]], str],
+) -> None:
+    """Run a separate Morningstar ticker basket through the normal CBOE engine."""
+    basket_key = f"{vault_key}:morningstar"
+    tickers = list(st.session_state.get("gex_morningstar_tickers") or [])
+    controls = st.columns([1.5, 1.1, 3.4], gap="small", vertical_alignment="bottom")
+    with controls[0]:
+        if st.button("PASTE TICKER LIST", key="gex_morningstar_toggle", width="stretch"):
+            st.session_state["gex_morningstar_paste_open"] = not st.session_state.get(
+                "gex_morningstar_paste_open", False
+            )
+    with controls[1]:
+        run_clicked = st.button(
+            "RUN GEX", key="gex_morningstar_run", type="primary",
+            width="stretch", disabled=not tickers,
+        )
+    with controls[2]:
+        st.caption(
+            f"MORNINGSTAR BASKET // {len(tickers)} TICKERS // CBOE DELAYED OPTIONS"
+        )
+
+    if st.session_state.get("gex_morningstar_paste_open", False):
+        with st.container(key="gex_morningstar_paste"):
+            st.html(
+                "<style>.st-key-gex_morningstar_paste textarea{"
+                "background:#050505!important;color:#fb8b1e!important;"
+                "border:1px solid #fb8b1e!important;font-family:Courier New,monospace!important;"
+                "}</style>"
+            )
+            pasted = st.text_area(
+                "PASTE MORNINGSTAR TICKERS // LINES, COMMAS OR MARKDOWN TABLE",
+                key="gex_morningstar_text", height=150,
+                placeholder="| Ticker |\\n| ------ |\\n| MSFT |\\n| AAPL |",
+            )
+            if st.button("LOAD TICKERS", key="gex_morningstar_load"):
+                try:
+                    symbols = _parse_morningstar_tickers(pasted)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["gex_morningstar_tickers"] = symbols
+                    st.session_state["gex_morningstar_paste_open"] = False
+                    st.rerun()
+
+    tickers = list(st.session_state.get("gex_morningstar_tickers") or [])
+    if not tickers:
+        st.info("PASTE TICKER LIST → LOAD TICKERS → RUN GEX. The existing CBOE watchlist is unchanged.")
+        return
+
+    morningstar_state = copy.deepcopy(state)
+    morningstar_state["tickers"] = tickers
+    if run_clicked:
+        _, failures = _refresh_cboe_batch(
+            basket_key, morningstar_state, tickers,
+            replace_all=True, publish_master=False,
+        )
+        if failures:
+            st.warning(
+                f"MORNINGSTAR CBOE GEX // {len(tickers) - len(failures)}/{len(tickers)} UPDATED"
+                f" // {len(failures)} ERRORS"
+            )
+        else:
+            st.success(f"MORNINGSTAR CBOE GEX // {len(tickers)} TICKERS UPDATED")
+
+    result_map = cboe_results(basket_key)
+    st.html(_decorate_cboe_overview_markup(
+        overview_renderer(morningstar_state, result_map), result_map,
+    ))
+    completed = [ticker for ticker in tickers if ticker in result_map]
+    if completed:
+        st.download_button(
+            "EXPORT MORNINGSTAR GEX CSV",
+            data=_morningstar_gex_csv(completed, result_map),
+            file_name=f"morningstar_gex_{datetime.now():%Y%m%d}.csv",
+            mime="text/csv", key="gex_morningstar_export",
+        )
+        st.caption(
+            f"CSV // {len(completed)}/{len(tickers)} TICKERS // ALL CALCULATED STRIKES "
+            "// SOURCE, WALLS, FLIP, GEX, OI, SNAPSHOT ID"
+        )
+    failures = cboe_snapshot(basket_key).get("failures") or {}
+    if failures:
+        with st.expander(f"MORNINGSTAR ERRORS // {len(failures)}", expanded=False):
             for ticker in tickers:
                 if ticker in failures:
                     st.caption(f"{ticker} // {failures[ticker]}")
@@ -1286,6 +1444,7 @@ def render_gex(
     original_cboe_refresh_control = _proven._base._render_cboe_refresh_all_control
     original_cboe_refresh_runner = _proven._base._run_cboe_refresh_all
     original_render_cboe_overview = _proven._base._render_cboe_overview
+    original_render_morningstar = _proven._base._render_morningstar_gex
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
     original_background_status = _proven._render_background_status
@@ -1490,6 +1649,7 @@ def render_gex(
     _proven._base._render_cboe_refresh_all_control = _render_cboe_refresh_all_control
     _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
+    _proven._base._render_morningstar_gex = lambda key, value: _render_morningstar_gex(key, value, original_overview)
     _proven._base._render_settings = render_settings_with_auto_refresh
     _proven._decorate_overview = decorate_without_iv_rank
     _proven._render_tradingview_pine = render_tradingview_with_sources
@@ -1509,6 +1669,7 @@ def render_gex(
         _proven._decorate_overview = original_decorate
         _proven._base._render_settings = original_render_settings
         _proven._base._render_cboe_overview = original_render_cboe_overview
+        _proven._base._render_morningstar_gex = original_render_morningstar
         _proven._base._run_cboe_refresh_all = original_cboe_refresh_runner
         _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
         _proven._base._render_cboe_txt_control = original_cboe_txt_control
