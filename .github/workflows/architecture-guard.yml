@@ -50,6 +50,11 @@ jobs:
           python scripts/test_risk_intent_override.py
           python scripts/test_tab_layout.py
 
+      - name: Test CBOE and Morningstar GEX source isolation
+        run: |
+          python -m py_compile src/gex_ui_v3.py src/gex_ui_v3_base.py scripts/test_gex_cboe.py
+          python scripts/test_gex_cboe.py
+
       - name: Test Risk live-order helpers without broker submission
         run: python scripts/test_risk_live_order_helpers.py
 
