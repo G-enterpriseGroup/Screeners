@@ -2706,3 +2706,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS (GitHub Actions run 38951981586).
 - **Code commit SHA:** `1fc90102ec57f692c5f1e39fb2cb64f6a0cfeec7`; changelog and production merge commit follow.
 - **Lesson:** Distinguish debit-spread sides only inside the Vertical Options scroller; preserve the annual ranking and quote/order math when changing visual emphasis.
+
+## 2026-10-16 — Compact multi-ticker paste list for Vertical Options
+
+- **Feature / production route:** Vertical Options only; `streamlit_app.py` → `src/vertical_options_ui.py`.
+- **Production file changed:** `src/vertical_options_ui.py`. Focused regressions: `tests/test_vertical_options.py`, `scripts/test_vertical_options_scanner_browser.py`; this append-only changelog.
+- **What was missing / root cause:** Scanner supported manually typing only one ticker, requiring users with a pasted Markdown ticker table to retype or repeatedly copy each symbol.
+- **Minimum change:** Add `PASTE TICKER LIST` toggle opening a compact locally themed orange-on-black textbox; accept Markdown `| Ticker |` tables, comma/semicolon/whitespace-separated and line-separated symbols; deduplicate preserving order, validate and cap at 100 symbols, persist the list in Streamlit session; `LOAD TICKERS` collapses the textbox and exposes a compact dropdown of imported tickers that pre-fills the existing `Ticker` field. Changing the selected ticker clears stale prior-symbol result/order-review state. Scanning remains a deliberate one-symbol-at-a-time `SCAN ALL YEARS` action because each underlying has its own spot/breakeven; importing does not generate 21× all-year E*TRADE requests or broker actions.
+- **Behavior preserved:** All-year calls/puts, 1:2 minimum R:R, breakeven and cost filters, fill-aware spread pricing, 20-per-expiry/annual winner rankings, lime CALL/red PUT highlighting, bold-underlined numeric columns, OptionStrat, persistent checked IDs within a scan, E*TRADE Preview → confirmation → separate SEND, broker quote source/fallback.
+- **Features intentionally NOT changed:** Scanner math in `src/vertical_options.py`; other tabs, E*TRADE connection/session, Risk Sizing, Protective Puts, GEX, navigation, global theme, `streamlit_app.py`, `src/terminal_core.py`, spread table component.
+- **Tests performed:** Pull request #102 architecture workflow **38953388088 PASS** for parser's exact supplied 21-symbol table, invalid/duplicate formats, other Vertical Options pricing/order tests, production syntax/architecture and neighboring-tab checks. Focused Selenium test updated to verify paste/load and no background broker chain/order requests; the push-triggered real-browser check runs after main merge and is reported separately.
+- **Architecture guard:** PASS in run 38953388088.
+- **Code commit SHAs:** UI/parser `8d95d8503ec18f00811dcaf43f3ba63a35a0577f`; scoped textbox theme `7a747083fae777e4bbafdbf1333c621518996f8b`; focused test `3a3ffe823f37b75bff6efac05d473b171124afe4`; changelog / production merge follow.
+- **Lesson:** Batch entry should not imply batch brokerage activity. Reuse the existing single-symbol scanner and prevent stale previous-ticker results on symbol selection changes.

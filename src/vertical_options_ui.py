@@ -99,6 +99,15 @@ _VERTICAL_OPTIONS_CSS = """
     font-family:"Courier New",monospace!important;
     font-weight:900!important;
 }
+/* Paste-list editor uses the same local orange-on-black terminal treatment. */
+.st-key-vertical_options_workspace textarea{
+    border:1px solid var(--vo-orange)!important;
+    border-radius:0!important;
+    background:#050505!important;
+    color:var(--vo-orange)!important;
+    -webkit-text-fill-color:var(--vo-orange)!important;
+    font-family:"Courier New",monospace!important;
+}
 /* Streamlit 1.61+ multiselect uses React Aria, not BaseWeb tags.
    The actual selected chips are [data-tag] and the text is [title].
    Keep this fix inside Vertical Options; no global dropdown overrides. */
@@ -393,8 +402,28 @@ def _reviews_are_fresh(review_bundle: dict[str, Any] | None, fingerprint: tuple[
 
 
 # ==============================
-# ALL-YEAR CHAIN SCAN / OPTIONSTRAT LINKS
+# TICKER LIST / ALL-YEAR CHAIN SCAN
 # ==============================
+def _parse_ticker_list(raw: str) -> list[str]:
+    """Read pasted Markdown ticker tables, CSV, or whitespace-separated symbols."""
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[\s,;|]+", str(raw or "").replace("`", "")):
+        symbol = token.strip().upper()
+        if not symbol or symbol in {"TICKER", "SYMBOL"} or re.fullmatch(r":?-+:?", symbol):
+            continue
+        if len(symbol) > 12 or not re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)*", symbol):
+            raise ValueError(f"Invalid ticker in pasted list: {symbol}.")
+        if symbol not in seen:
+            tickers.append(symbol)
+            seen.add(symbol)
+        if len(tickers) > 100:
+            raise ValueError("Ticker list is limited to 100 unique symbols.")
+    if not tickers:
+        raise ValueError("Paste at least one ticker symbol.")
+    return tickers
+
+
 def _entered_price(value: str, label: str) -> float:
     try:
         amount = float(str(value).strip().replace("$", "").replace(",", ""))
@@ -526,6 +555,46 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 "PUBLIC OPTIONS FALLBACK // E*TRADE is disconnected. Public Last prices are labeled "
                 "as such; broker preview and live placement remain disabled."
             )
+
+        # Optional ticker list stays collapsed until requested. Selecting from
+        # the list only pre-fills the existing one-ticker scanner; no chain calls.
+        paste_cols = st.columns([1.15, 3.85], gap="small", vertical_alignment="bottom")
+        with paste_cols[0]:
+            if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
+                st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
+        if st.session_state.get("vo_list_open"):
+            pasted = st.text_area(
+                "PASTE TICKERS // ONE PER LINE, COMMA-SEPARATED OR MARKDOWN TABLE",
+                key="vo_list_paste", height=150,
+                placeholder="| Ticker |\n| ------ |\n| FER |\n| RELX |\n| SONY |",
+            )
+            if st.button("LOAD TICKERS", key="vo_list_load"):
+                try:
+                    symbols = _parse_ticker_list(pasted)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["vo_ticker_list"] = symbols
+                    st.session_state["vo_list_selection"] = symbols[0]
+                    st.session_state["_vo_last_list_selection"] = None
+                    st.session_state["vo_list_open"] = False
+                    st.rerun(scope="fragment")
+
+        loaded_tickers = st.session_state.get("vo_ticker_list") or []
+        if loaded_tickers:
+            with paste_cols[1]:
+                picked_ticker = st.selectbox(
+                    f"LOADED TICKERS ({len(loaded_tickers)}) // SELECT TO PREFILL",
+                    loaded_tickers, key="vo_list_selection",
+                )
+            if picked_ticker != st.session_state.get("_vo_last_list_selection"):
+                st.session_state["_vo_last_list_selection"] = picked_ticker
+                st.session_state["vo_symbol_value"] = picked_ticker
+                for state_key in (
+                    "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
+                    "_vo_order_candidate", "vo_last_send_results",
+                ):
+                    st.session_state.pop(state_key, None)
 
         last_result = st.session_state.get("vo_scan_result") or {}
         with st.form("vo_scan_form", clear_on_submit=False):
