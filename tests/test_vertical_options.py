@@ -13,6 +13,44 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_pasted_ticker_table_parses_deduplicates_and_preserves_order(self):
+        from src.vertical_options_ui import _parse_ticker_list
+        table = """| Ticker |
+| ------ |
+| FER |
+| RELX |
+| SONY |
+| PEP |
+| SCHW |
+| LOW |
+| GOOG |
+| GOOGL |
+| SPGI |
+| APH |
+| LMT |
+| AMZN |
+| BMY |
+| RTX |
+| MCD |
+| MSFT |
+| ABEV |
+| AZN |
+| LIN |
+| SYK |
+| RHHBY |
+"""
+        self.assertEqual(_parse_ticker_list(table), [
+            "FER", "RELX", "SONY", "PEP", "SCHW", "LOW", "GOOG", "GOOGL",
+            "SPGI", "APH", "LMT", "AMZN", "BMY", "RTX", "MCD", "MSFT",
+            "ABEV", "AZN", "LIN", "SYK", "RHHBY",
+        ])
+        self.assertEqual(_parse_ticker_list("msft, aapl; BRK.B\nMSFT | spy"),
+                         ["MSFT", "AAPL", "BRK.B", "SPY"])
+        with self.assertRaisesRegex(ValueError, "Invalid ticker"):
+            _parse_ticker_list("MSFT\nNOT_A_TICKER")
+        with self.assertRaisesRegex(ValueError, "Paste at least one"):
+            _parse_ticker_list("| Ticker |\n| ----- |")
+
     @staticmethod
     def _row(expiry, side, strike, last, *, bid=None, ask=None, osi=""):
         return {
