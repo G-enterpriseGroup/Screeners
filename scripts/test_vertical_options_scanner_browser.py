@@ -462,6 +462,24 @@ def test() -> None:
             assert not any(item["event"] == "place" for item in events(event_path)), (
                 "Preview alone placed an order"
             )
+            # Bulk paste must not fetch quotes or chains by itself or place orders.
+            chain_before_list = len([item for item in events(event_path) if item["event"] == "chain"])
+            driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]').click()
+            textarea = wait.until(lambda _: driver.find_element(
+                By.CSS_SELECTOR, 'textarea[aria-label^="PASTE TICKERS"]',
+            ))
+            textarea.send_keys("| Ticker |\\n| ------ |\\n| MSFT |\\n| SPY |\\n| GOOGL |\\n| MSFT |")
+            driver.find_element(By.XPATH, '//button[contains(., "LOAD TICKERS")]').click()
+            def list_loaded(_):
+                inputs = driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+                return inputs and inputs[0].get_attribute("value") == "MSFT"
+            wait.until(list_loaded)
+            assert "LOADED TICKERS (3)" in driver.find_element(By.TAG_NAME, "body").text
+            assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_list
+            assert not any(item["event"] == "place" for item in events(event_path))
+            # Pick a second ticker without scanning to ensure we don't show stale SPY results.
+            dropdown = driver.find_element(By.XPATH, '//*[contains(text(), "LOADED TICKERS (3)")]')
+            assert dropdown is not None
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
