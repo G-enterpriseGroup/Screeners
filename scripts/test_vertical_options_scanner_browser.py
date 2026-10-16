@@ -477,9 +477,9 @@ def test() -> None:
             assert "LOADED TICKERS (3)" in driver.find_element(By.TAG_NAME, "body").text
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_list
             assert not any(item["event"] == "place" for item in events(event_path))
-            # Pick a second ticker without scanning to ensure we don't show stale SPY results.
-            dropdown = driver.find_element(By.XPATH, '//*[contains(text(), "LOADED TICKERS (3)")]')
-            assert dropdown is not None
+            # Loading a list resets the prior ticker's result without scanning.
+            assert driver.find_elements(By.CSS_SELECTOR, '[data-testid="stSelectbox"]')
+            assert "BEST VERTICAL SPREADS BY YEAR" not in driver.find_element(By.TAG_NAME, "body").text
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
