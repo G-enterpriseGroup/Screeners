@@ -166,6 +166,10 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             selected:row.querySelector('.select').getAttribute('aria-pressed'),
             background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
             foreground:getComputedStyle(row.querySelector('.cell')).color,
+            emphasis:[7,8,10].map(i=>({
+              weight:getComputedStyle(row.querySelectorAll('.cell')[i]).fontWeight,
+              decoration:getComputedStyle(row.querySelectorAll('.cell')[i]).textDecorationLine,
+            })),
             href:row.querySelector('.open[href]')?.href||'',
             target:row.querySelector('.open[href]')?.target||'',
           })),
@@ -264,8 +268,17 @@ def test() -> None:
             assert len(best["rows"]) == 3, best
             assert all(row["annual"] for row in best["rows"]), best
             assert len({row["values"][2][-2:] for row in best["rows"]}) == 3, best
-            assert all(row["background"] == "rgb(163, 230, 53)" and
-                       row["foreground"] == "rgb(0, 0, 0)" for row in best["rows"]), best
+            assert all(
+                row["background"] == ("rgb(234, 1, 1)" if row["values"][1] == "PUT"
+                                      else "rgb(163, 230, 53)")
+                and row["foreground"] == "rgb(0, 0, 0)"
+                for row in best["rows"]
+            ), best
+            assert all(
+                all(value["weight"] == "900" and "underline" in value["decoration"]
+                    for value in row["emphasis"])
+                for row in best["rows"]
+            ), best
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
             assert "RISK:REWARD" in best["header"] and "FILL" in best["header"], best
@@ -322,6 +335,28 @@ def test() -> None:
                 return in_grid(driver, inspect)
             coverage = all_types_and_strikes()
             assert set(coverage["types"]) == {"CALL", "PUT"}, coverage
+            put_style = in_grid(driver, lambda: driver.execute_script("""
+                const scroller=document.getElementById('scroll');
+                let put=null;
+                for(let offset=0;offset<=scroller.scrollHeight;offset+=scroller.clientHeight){
+                  scroller.scrollTop=offset;scroller.dispatchEvent(new Event('scroll'));
+                  put=[...document.querySelectorAll('.row.put')].find(
+                    row=>row.querySelectorAll('.cell')[1].textContent==='PUT');
+                  if(put)break;
+                }
+                if(!put)return null;
+                put.classList.add('annual');
+                return {
+                  background:getComputedStyle(put.querySelector('.cell')).backgroundColor,
+                  foreground:getComputedStyle(put.querySelector('.cell')).color,
+                  button:getComputedStyle(put.querySelector('.select')).backgroundColor
+                };
+            """))
+            assert put_style == {
+                "background": "rgb(234, 1, 1)",
+                "foreground": "rgb(0, 0, 0)",
+                "button": "rgb(234, 1, 1)",
+            }, put_style
             assert {"90", "110"}.issubset(set(coverage["strikes"])), coverage
 
             driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
