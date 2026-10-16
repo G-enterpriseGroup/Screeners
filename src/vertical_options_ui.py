@@ -99,6 +99,15 @@ _VERTICAL_OPTIONS_CSS = """
     font-family:"Courier New",monospace!important;
     font-weight:900!important;
 }
+/* Paste-list editor uses the same local orange-on-black terminal treatment. */
+.st-key-vertical_options_workspace textarea{
+    border:1px solid var(--vo-orange)!important;
+    border-radius:0!important;
+    background:#050505!important;
+    color:var(--vo-orange)!important;
+    -webkit-text-fill-color:var(--vo-orange)!important;
+    font-family:"Courier New",monospace!important;
+}
 /* Streamlit 1.61+ multiselect uses React Aria, not BaseWeb tags.
    The actual selected chips are [data-tag] and the text is [title].
    Keep this fix inside Vertical Options; no global dropdown overrides. */
