@@ -22,12 +22,16 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 #visible{position:absolute;left:0;right:0;top:0}
 .row{height:43px;min-height:43px;font-size:.73rem;font-weight:800;background:#080808;color:#f6b56a;font-variant-numeric:tabular-nums}
 .row.annual>.cell{background:#a3e635!important;color:#000!important;-webkit-text-fill-color:#000!important;font-weight:900!important}
+.row.annual.put>.cell{background:#ea0101!important}
+.row>.cell:nth-child(10),.row>.cell:nth-child(11),.row>.cell:nth-child(13){font-weight:900!important;text-decoration:underline;text-underline-offset:2px}
 .select,.open{height:43px;width:100%;padding:0!important;display:flex;align-items:center;justify-content:center;border:0;border-right:1px solid #a65c16;border-bottom:1px solid #a65c16;border-radius:0;font:900 .7rem/1 "Courier New",monospace}
 .select{background:#000;cursor:pointer}
 .select:hover{background:#120a02}
 .select:focus-visible,.open:focus-visible{outline:2px solid #fff;outline-offset:-3px}
 .row.annual>.select,.row.annual>.open{background:#a3e635}
 .row.annual>.select:hover,.row.annual>.open:hover{background:#c9fc73}
+.row.annual.put>.select,.row.annual.put>.open{background:#ea0101}
+.row.annual.put>.select:hover,.row.annual.put>.open:hover{background:#ff3838}
 .square{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border:2px solid #fb8b1e;border-radius:0;background:#000;color:transparent;flex:none;font:bold 12px/1 "Courier New",monospace}
 .select[aria-pressed="true"] .square{background:#fb8b1e;color:#000}
 .open{color:#fb8b1e;text-decoration:underline;background:#000}
@@ -66,8 +70,8 @@ for(const title of HEAD){
 }
 function makeRow(row,index){
  const line=document.createElement("div");
- line.className="row"+(row.annual?" annual":"");line.dataset.index=String(index);
  const values=Array.isArray(row.values)?row.values:[];
+ line.className="row"+(row.annual?" annual":"")+(values[1]==="PUT"?" put":"");line.dataset.index=String(index);
  const description=[values[0],values[1],values[2],"BUY",values[3],"SELL",values[4]].filter(Boolean).join(" ");
  const select=document.createElement("button");
  select.type="button";select.className="select";select.dataset.index=String(index);

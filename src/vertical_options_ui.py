@@ -668,7 +668,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             st.caption(
                 f'{len(displayed):,} DISPLAYED // {len(candidates):,} TOP MATCHES '
                 f'FROM {result["loaded_expirations"]} COMPLETE CHAINS // '
-                f'{len(checked_ids)} CHECKED // LIME GREEN = BEST MATCH PER CALENDAR YEAR. '
+                f'{len(checked_ids)} CHECKED // LIME GREEN = BEST CALL; TONINO RED = BEST PUT PER CALENDAR YEAR. '
                 'ALL TOP MATCHES KEEPS THE BEST 20 PER EXPIRATION. '
                 'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). '
                 'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'

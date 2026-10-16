@@ -2693,3 +2693,16 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS in PR run **38425947576**.
 - **Code commit SHAs:** math `751effeb51195f7e68fb1c6347e5f1a61881892d`; UI `6cd22cb316947d63540f130251ff23329f995ef8`; grid `29736984d035fba5548c4f77d7ac310344d137f1`; unit tests `72b0c9dea4018d86354c1da0b3b367a2574d8370`; browser test `20bdee567d73b253443943b1457e049bbb33a124`; production merge follows.
 - **Lesson:** Do not rank a debit spread's 1:2 R:R, max loss or breakeven at leg Last prices when the live spread market makes that debit unlikely to fill. Quote and order-review prices must agree, and the selected spread is requoted before preview.
+
+## 2026-10-16 — Vertical Options CALL/PUT winner colors and key-value emphasis
+
+- **Feature / production route:** Vertical Options only; `streamlit_app.py` → `src/vertical_options_ui.py` → `src/components/vo_spread_scroller_v1/index.html`.
+- **Production files changed:** `src/components/vo_spread_scroller_v1/index.html` (side-specific table styling), `src/vertical_options_ui.py` (matching legend). Focused browser regression: `scripts/test_vertical_options_scanner_browser.py`; this append-only changelog.
+- **What was broken / root cause:** The annual-best styling did not distinguish CALL from PUT spreads: both were lime. Cost, Breakeven, and Max Profit values were not underlined or specially emphasized outside annual winners.
+- **Minimum change:** Keep CALL annual winners lime (#A3E635); mark PUT rows locally and show annual PUT winners in Tonino red (#EA0101) with black text; retain the existing compact table shape, selection and OptionStrat links. Bold and underline the Cost, Breakeven and Max Profit numeric cells for all visible rows. Update legend and Selenium CSS assertions.
+- **Behaviors to preserve:** Annual winner identities, CALL/PUT pricing, scanner ranking, per-year results, checked selections, scrolling, OptionStrat URLs and explicit E*TRADE Preview / SEND safeguards remain exactly unchanged.
+- **Intentionally NOT changed:** `src/vertical_options.py` formulas/quotes; Risk Sizing, Protective Puts, GEX, OAuth, Holdings, navigation, other tab views, `streamlit_app.py`, `src/terminal_core.py`, and shared theme.
+- **Tests performed:** PR #101 architecture workflow **38951981586 PASS**: production syntax and architecture, Vertical Options unit/payload tests and other top-level Risk/Heatmaps/Protective Puts/Performance/option-fallback checks. PR condition skips browser-only tests; added targeted Selenium assertion for the real grid, to be checked on push workflow. Reviewed exact PR diff.
+- **Architecture guard result:** PASS (GitHub Actions run 38951981586).
+- **Code commit SHA:** `1fc90102ec57f692c5f1e39fb2cb64f6a0cfeec7`; changelog and production merge commit follow.
+- **Lesson:** Distinguish debit-spread sides only inside the Vertical Options scroller; preserve the annual ranking and quote/order math when changing visual emphasis.
