@@ -464,7 +464,9 @@ def test() -> None:
             )
             # Bulk paste must not fetch quotes or chains by itself or place orders.
             chain_before_list = len([item for item in events(event_path) if item["event"] == "chain"])
-            driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]').click()
+            paste_button = driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", paste_button)
+            paste_button.click()
             textarea = wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'textarea[aria-label^="PASTE TICKERS"]',
             ))
