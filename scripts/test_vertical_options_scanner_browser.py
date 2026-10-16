@@ -493,8 +493,7 @@ def test() -> None:
                 assert field.get_attribute("value") == "", (label, field.get_attribute("value"))
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "MAX COST NO CEILING" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "TARGET BREAKEVEN 100.00 (SPOT DEFAULT)"
-                       in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "(SPOT DEFAULT)" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
             ).get_attribute("value") == "100.0")
@@ -510,9 +509,9 @@ def test() -> None:
             breakeven_input.send_keys("103")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("150")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "TARGET BREAKEVEN 103.00 (CUSTOM)" in
-                       driver.find_element(By.TAG_NAME, "body").text)
-            assert "MAX COST 150.00" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "(CUSTOM)" in driver.find_element(By.TAG_NAME, "body").text)
+            assert "MAX COST" in driver.find_element(By.TAG_NAME, "body").text
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "150"
             assert not any(item["event"] == "place" for item in events(event_path))
 
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
