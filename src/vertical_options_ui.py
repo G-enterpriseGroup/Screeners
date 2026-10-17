@@ -24,8 +24,10 @@ LAYOUT RULES
 
 from __future__ import annotations
 
+import csv
 import html
 import hashlib
+import io
 import math
 from pathlib import Path
 import re
@@ -402,6 +404,125 @@ def _reviews_are_fresh(review_bundle: dict[str, Any] | None, fingerprint: tuple[
 
 
 # ==============================
+# SESSION-ONLY VERTICAL SPREAD DRAFTS (NEVER SENDS BROKER ORDERS)
+# ==============================
+def _saved_drafts_csv(drafts: dict[str, dict[str, Any]]) -> str:
+    """Export all saved spread identities/prices without broker credentials."""
+    output = io.StringIO()
+    columns = (
+        "Ticker", "Side", "Expiration", "Buy Strike", "Sell Strike",
+        "Quantity", "Price Basis", "Limit Debit", "Est. Cost",
+        "Breakeven", "Reward/Risk", "Quote Source", "Saved At", "Status",
+    )
+    writer = csv.DictWriter(output, fieldnames=columns)
+    writer.writeheader()
+    for saved in drafts.values():
+        row = saved["candidate"]
+        quantity = int(saved.get("quantity", 1))
+        writer.writerow({
+            "Ticker": row["symbol"], "Side": row["call_put"],
+            "Expiration": row["expiry"].isoformat(),
+            "Buy Strike": row["buy_strike"], "Sell Strike": row["sell_strike"],
+            "Quantity": quantity, "Price Basis": row["basis"],
+            "Limit Debit": row["debit"],
+            "Est. Cost": round(float(row["cost"]) * quantity, 2),
+            "Breakeven": row["breakeven"],
+            "Reward/Risk": round(float(row["reward_risk"]), 3),
+            "Quote Source": saved.get("source", "UNKNOWN"),
+            "Saved At": saved.get("saved_at", ""),
+            "Status": "TERMINAL SESSION DRAFT - NOT SENT",
+        })
+    return output.getvalue()
+
+
+def _save_checked_spreads(
+    drafts: dict[str, dict[str, Any]],
+    checked: list[dict[str, Any]],
+    source: str,
+) -> int:
+    """Save independent spread snapshots; no E*TRADE methods are called."""
+    new_count = 0
+    for candidate in checked:
+        identity = str(candidate["id"])
+        if identity not in drafts:
+            drafts[identity] = {
+                "candidate": dict(candidate),
+                "quantity": 1,
+                "source": source,
+                "saved_at": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            }
+            new_count += 1
+    return new_count
+
+
+def _render_saved_spread_drafts() -> None:
+    drafts = st.session_state.get("vo_saved_spread_drafts") or {}
+    if not drafts:
+        return
+    with st.expander(f"TERMINAL SAVED SPREAD DRAFTS // {len(drafts)}", expanded=False):
+        st.caption(
+            "SAVED IN THIS TERMINAL SESSION ONLY // NOT SAVED AT E*TRADE // "
+            "NOT QUEUED OR SENT. Export CSV to keep a copy after this session ends. "
+            "Prices are snapshots; rescan and obtain a fresh E*TRADE preview before trading."
+        )
+        draft_ids = list(drafts)
+        rows = []
+        for identity in draft_ids:
+            item = drafts[identity]
+            candidate = item["candidate"]
+            rows.append({
+                "Ticker": candidate["symbol"], "Side": candidate["call_put"],
+                "Expiration": _date_label(candidate["expiry"]),
+                "Buy": candidate["buy_strike"], "Sell": candidate["sell_strike"],
+                "Qty": item.get("quantity", 1),
+                "Debit": _money(candidate["debit"]),
+                "Cost": _money(float(candidate["cost"]) * int(item.get("quantity", 1))),
+                "R:R": f'1:{candidate["reward_risk"]:.2f}',
+            })
+        edited = st.data_editor(
+            rows, hide_index=True, num_rows="fixed", width="stretch",
+            height=min(44 + len(rows) * 35, 290),
+            disabled=["Ticker", "Side", "Expiration", "Buy", "Sell", "Debit", "Cost", "R:R"],
+            column_config={
+                "Qty": st.column_config.NumberColumn("QTY", min_value=1, max_value=5000, step=1),
+            },
+            key="vo_session_draft_grid",
+        )
+        edited_rows = edited if isinstance(edited, list) else edited.to_dict("records")
+        for identity, row in zip(draft_ids, edited_rows):
+            try:
+                raw = float(row.get("Qty"))
+                qty = int(raw)
+                if raw != qty or not 1 <= qty <= 5000:
+                    raise ValueError
+            except (ValueError, TypeError, OverflowError):
+                st.error("Draft quantity must be a whole number between 1 and 5000.")
+                break
+            drafts[identity]["quantity"] = qty
+        controls = st.columns([1, 2.2, 1], gap="small", vertical_alignment="bottom")
+        controls[0].download_button(
+            "EXPORT DRAFTS CSV", data=_saved_drafts_csv(drafts),
+            file_name="terminal8_vertical_spread_drafts.csv", mime="text/csv",
+            use_container_width=True,
+        )
+        remove_id = controls[1].selectbox(
+            "Remove draft", draft_ids,
+            format_func=lambda identity: (
+                f'{drafts[identity]["candidate"]["symbol"]} '
+                f'{drafts[identity]["candidate"]["call_put"]} '
+                f'{_date_label(drafts[identity]["candidate"]["expiry"])} '
+                f'{drafts[identity]["candidate"]["buy_strike"]:g}/'
+                f'{drafts[identity]["candidate"]["sell_strike"]:g}'
+            ),
+            key="vo_remove_saved_draft",
+        )
+        if controls[2].button("REMOVE DRAFT", key="vo_remove_draft_button", use_container_width=True):
+            drafts.pop(remove_id, None)
+            st.session_state["vo_saved_spread_drafts"] = drafts
+            st.rerun(scope="fragment")
+
+
+# ==============================
 # TICKER LIST / ALL-YEAR CHAIN SCAN
 # ==============================
 def _parse_ticker_list(raw: str) -> list[str]:
@@ -544,6 +665,7 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[s
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session) -> None:
     with st.container(key="vertical_options_workspace"):
+        _render_saved_spread_drafts()
         st.markdown(
             '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
             '<span class="muted">ENTER TICKER, TARGET BREAKEVEN, AND MAX COST // PRESS ENTER TO SCAN</span></div>',
@@ -834,16 +956,42 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). '
                 'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'
             )
-            if len(checked_ids) == 1:
-                chosen = by_id[next(iter(checked_ids))]
+            if checked_ids:
+                checked_rows = [row for row in candidates if row["id"] in checked_ids]
+                if st.button(
+                    f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
+                    key="vo_save_checked_spread_drafts", use_container_width=True,
+                ):
+                    drafts = st.session_state.setdefault("vo_saved_spread_drafts", {})
+                    _save_checked_spreads(drafts, checked_rows, result["source"])
+                    st.rerun(scope="fragment")
+                if len(checked_rows) == 1:
+                    chosen = checked_rows[0]
+                else:
+                    selected_id = st.selectbox(
+                        f"OPTIONAL E*TRADE REVIEW // CHOOSE ONE OF {len(checked_rows)} CHECKED SPREADS",
+                        [row["id"] for row in checked_rows],
+                        format_func=lambda identity: (
+                            f'{by_id[identity]["symbol"]} '
+                            f'{by_id[identity]["call_put"]} '
+                            f'{_date_label(by_id[identity]["expiry"])} '
+                            f'{by_id[identity]["buy_strike"]:g}/{by_id[identity]["sell_strike"]:g}'
+                        ),
+                        key=f"vo_multi_review_choice_{scope}",
+                    )
+                    chosen = by_id[selected_id]
                 st.link_button(
-                    "OPEN CHECKED SPREAD IN OPTIONSTRAT",
+                    "OPEN SELECTED SPREAD IN OPTIONSTRAT",
                     _optionstrat_url(chosen), use_container_width=True,
                 )
-                with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // CHECKED SPREAD", expanded=False):
+                with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
                     _render_selected_order(client, touch_session, chosen, result, broker_live)
-            elif len(checked_ids) > 1:
-                st.info("Multiple spreads checked. Use each row's OPEN link; check exactly one for optional E*TRADE order review.")
+                if len(checked_rows) > 1:
+                    st.caption(
+                        "ALL CHECKED SPREADS CAN BE SAVED TOGETHER. E*TRADE PREVIEW AND "
+                        "LIVE SEND REMAIN ONE REVIEWED SPREAD AT A TIME; NO BATCH BROKER "
+                        "ORDER IS GENERATED BY CHECKING OR SAVING DRAFTS."
+                    )
 
         if result["errors"]:
             st.warning(
