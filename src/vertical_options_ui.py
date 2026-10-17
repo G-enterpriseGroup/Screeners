@@ -1006,6 +1006,19 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
 # ==============================
 # OPTIONAL REVIEWED E*TRADE ORDER
 # ==============================
+def _vertical_preview_error(exc: Exception) -> str:
+    """Explain known E*TRADE account rejections without suggesting a bypass."""
+    message = str(exc)
+    if re.search(r"\b3031\b", message) or "unapproved options position" in message.lower():
+        return (
+            "E*TRADE ERROR 3031 // THIS ACCOUNT CANNOT OPEN THIS SPREAD "
+            "WITH ITS OPTIONS APPROVAL AND/OR EXISTING POSITIONS/OPEN ORDERS. "
+            "Debit spreads generally require Level 3 options approval and margin. "
+            "Check this selected account's approval, positions, and open orders "
+            "with E*TRADE. Preview rejected; no order was placed."
+        )
+    return message
+
 def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                            result: dict[str, Any], broker_live: bool) -> None:
     """Keep the existing reviewed, explicit multi-account order path optional."""
@@ -1070,7 +1083,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     selected_accounts = controls[2].multiselect(
         "Accounts", account_options, key="vo_accounts",
         format_func=lambda key: _account_label(by_account[key]),
-        help="The same reviewed vertical is sent once to each selected account.",
+        help="For live submission, the same reviewed spread is placed once in EACH selected account. Saving Terminal drafts never sends to E*TRADE.",
     )
     account_keys = [key for key in selected_accounts if key in by_account]
     try:
@@ -1119,6 +1132,12 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         f'MID {_money(candidate.get("spread_mid"))} / ASK {_money(candidate.get("spread_ask"))}. '
         'ASK = BUY option ask − SELL option bid. MID/LAST can remain unfilled; '
         'quotes will be rechecked before E*TRADE preview.'
+    )
+    st.caption(
+        "SAVE CHECKED SPREADS = TERMINAL-ONLY DRAFT; NOT SAVED AT E*TRADE. "
+        "REVIEW WITH E*TRADE = PREVIEW ONLY. PLACE LIVE ORDER = BROKER "
+        "SUBMISSION THAT MAY APPEAR AS QUEUED AND MAY EXECUTE. "
+        "The E*TRADE public API cannot create broker-side Saved orders."
     )
     preview_click = st.button(
         f"REVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
@@ -1180,10 +1199,15 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                     "account_label": _account_label(by_account[account_key]),
                 }
             except Exception as exc:
-                errors.append(_account_label(by_account[account_key]) + " // " + str(exc))
+                errors.append(_account_label(by_account[account_key]) + " // " + _vertical_preview_error(exc))
         if errors:
             st.session_state.pop("vo_review_bundle", None)
-            st.error("MULTI-ACCOUNT PREVIEW BLOCKED // every selected account must preview successfully.")
+            st.session_state.pop("vo_live_confirm", None)
+            st.error(
+                f"PREVIEW BLOCKED // {len(errors)} OF {len(account_keys)} SELECTED ACCOUNT(S) "
+                "REJECTED. NO BROKER ORDER PLACED. All accounts must pass preview "
+                "before live submission can be enabled."
+            )
             for error in errors:
                 st.warning(error)
         elif len(previews) == len(account_keys):
@@ -1214,11 +1238,11 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             for message in details.get("messages") or []:
                 st.warning("E*TRADE PREVIEW // " + str(message))
         confirmed = st.checkbox(
-            "I CONFIRM THIS EXACT LIVE VERTICAL ORDER FOR EVERY SELECTED ACCOUNT SHOWN ABOVE",
+            "I AUTHORIZE A LIVE E*TRADE ORDER IN EVERY SELECTED ACCOUNT (MAY QUEUE OR EXECUTE; NOT SAVED)",
             key="vo_live_confirm",
         )
         send_click = st.button(
-            f"SEND LIVE TO {len(account_keys)} ACCOUNT(S)",
+            f"PLACE LIVE ORDER // {len(account_keys)} ACCOUNT(S) (MAY QUEUE)",
             key="vo_send", type="primary", use_container_width=True, disabled=not confirmed,
         )
         if send_click:
@@ -1248,7 +1272,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             st.session_state.pop("vo_live_confirm", None)
     for sent in st.session_state.get("vo_last_send_results") or []:
         if sent.get("status") == "SUBMITTED":
-            st.success(f'{sent["account"]} // E*TRADE ORDER {sent["order_id"]} // SUBMITTED')
+            st.success(f'{sent["account"]} // E*TRADE ORDER {sent["order_id"]} // SUBMITTED LIVE (MAY QUEUE/EXECUTE; NOT SAVED)')
         else:
             st.error(
                 f'{sent["account"]} // SUBMISSION STATUS UNCERTAIN // '
