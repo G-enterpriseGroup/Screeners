@@ -2772,3 +2772,5 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** Pending CI on PR #110 at initial entry.
 - **Code commit SHAs:** UI `fad5054b5392e548183e6b9d52d1681e82fef2d4`; tests `ad563c5c84080fab6e7db6bd36cfd3b580bc5d4c`; final merge to be recorded after passing checks.
 - **Lesson:** E*TRADE broker-side Saved/Queued UI states do not imply a public Saved Orders creation API; never pretend a live Place order is a saved draft. Keep multi-row analytical selection separate from explicit per-order trade authorization.
+
+- **Verification update (2026-10-17):** PR #110 Terminal Architecture Guard run **39001788898 PASS**: 27 workflow steps completed successfully, including syntax, production architecture guard, Vertical Options payload/draft regression, and neighboring top-level tab smoke checks. This is CI validation, not a live E*TRADE order test or production-browser confirmation. Last feature/test commit SHAs above.
