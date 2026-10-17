@@ -2789,3 +2789,4 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** Pending PR CI.
 - **Code commits:** UI `5d1a8946ab135833dd00fb13156320717cb6238e`; tests `9b86282ee7b22edf16a1c6049271381ba0719b25`; production SHA added at merge.
 - **Lesson:** Distinguish broker approval errors from UI bugs. Never present a real queued live order as a draft; public API's Preview is not Saved and Place is not Saved.
+- **Production verification (2026-10-17):** PR #111 CI workflow **39002786233 PASS**, including Python syntax, `python scripts/validate_architecture.py`, focused Vertical Options tests, and adjacent top-level-tab coverage. Squash-merged on `main` as `0849283c48229a5f7660762cc86a873d2ef8ad40`. No broker orders were sent; E*TRADE account permissions not modified. Streamlit Cloud fresh-process reboot, HTTP health, and authenticated browser runtime could not be verified from this environment.
