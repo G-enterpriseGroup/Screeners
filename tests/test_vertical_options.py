@@ -233,26 +233,26 @@ class VerticalOptionsTests(unittest.TestCase):
         )
         expiry = date(2029, 1, 19)
         rows = (
-            [self._row(expiry, "CALL", 100 + n, 30 - .3 * n) for n in range(8)]
-            + [self._row(expiry, "PUT", 100 + n, 5 + .3 * n) for n in range(8)]
+            [self._row(expiry, "CALL", 100 + n, 30 - .3 * n) for n in range(22)]
+            + [self._row(expiry, "PUT", 100 + n, 5 + .3 * n) for n in range(22)]
         )
         candidates, annual = scan_vertical_candidates(
             symbol="SPY", spot_last=103, option_rows=rows,
             target_breakeven=103, max_cost=None, max_per_expiration=None,
         )
-        self.assertEqual(len(candidates), 56)  # 28 per side, not top 20.
+        self.assertEqual(len(candidates), 462)  # 231 per side; exceeds 200-row screen page.
         self.assertIn("EXPIRATION", _QUALIFIED_SORT_FIELDS)
         ordered = _sort_qualified_spreads(candidates, "R:R", "DESC", 103)
         calls = [item for item in ordered if item["call_put"] == "CALL"]
-        self.assertEqual(len(calls), 28)
+        self.assertEqual(len(calls), 231)
         kwargs = dict(
             annual_ids=annual, source="E*TRADE", loaded_at=1800000000,
             target=103.0, max_cost=None,
         )
         full = list(csv.DictReader(io.StringIO(_qualified_spreads_csv(ordered, **kwargs))))
         subset = list(csv.DictReader(io.StringIO(_qualified_spreads_csv(calls, **kwargs))))
-        self.assertEqual(len(full), 56)
-        self.assertEqual(len(subset), 28)
+        self.assertEqual(len(full), 462)
+        self.assertEqual(len(subset), 231)
         self.assertEqual(set(item["Type"] for item in full), {"CALL", "PUT"})
         self.assertTrue(all(item["Type"] == "CALL" for item in subset))
         self.assertEqual([item["Risk Reward (to 1)"] for item in full],
