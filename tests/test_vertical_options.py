@@ -51,6 +51,42 @@ class VerticalOptionsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Paste at least one"):
             _parse_ticker_list("| Ticker |\n| ----- |")
 
+    def test_save_multiple_spreads_as_local_drafts_without_broker_actions(self):
+        import csv
+        import io
+        from src.vertical_options_ui import _save_checked_spreads, _saved_drafts_csv
+        candidates = [
+            {
+                "id": "MSFT|2029-01-19|CALL|500|520",
+                "symbol": "MSFT", "call_put": "CALL",
+                "expiry": date(2029, 1, 19), "buy_strike": 500,
+                "sell_strike": 520, "basis": "ASK", "debit": 4.25,
+                "cost": 425, "breakeven": 504.25, "reward_risk": 3.7,
+            },
+            {
+                "id": "SONY|2028-01-21|PUT|30|25",
+                "symbol": "SONY", "call_put": "PUT",
+                "expiry": date(2028, 1, 21), "buy_strike": 30,
+                "sell_strike": 25, "basis": "MID", "debit": 1.0,
+                "cost": 100, "breakeven": 29, "reward_risk": 4.0,
+            },
+        ]
+        drafts = {}
+        self.assertEqual(_save_checked_spreads(drafts, candidates, "E*TRADE"), 2)
+        self.assertEqual(_save_checked_spreads(drafts, candidates, "E*TRADE"), 0)
+        self.assertEqual(len(drafts), 2)
+        self.assertEqual(drafts[candidates[0]["id"]]["quantity"], 1)
+        drafts[candidates[0]["id"]]["quantity"] = 3
+        values = list(csv.DictReader(io.StringIO(_saved_drafts_csv(drafts))))
+        self.assertEqual([item["Ticker"] for item in values], ["MSFT", "SONY"])
+        self.assertEqual(values[0]["Quantity"], "3")
+        self.assertEqual(values[0]["Est. Cost"], "1275.0")
+        self.assertEqual(values[0]["Status"], "TERMINAL SESSION DRAFT - NOT SENT")
+        self.assertEqual(values[1]["Expiration"], "2028-01-21")
+        self.assertEqual(values[1]["Quote Source"], "E*TRADE")
+        self.assertNotIn("preview_id", str(drafts))
+        self.assertNotIn("place_payload", str(drafts))
+
     @staticmethod
     def _row(expiry, side, strike, last, *, bid=None, ask=None, osi=""):
         return {
