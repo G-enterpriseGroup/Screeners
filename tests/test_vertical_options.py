@@ -225,6 +225,92 @@ class VerticalOptionsTests(unittest.TestCase):
         )
         self.assertEqual((over_budget, winners), ([], set()))
 
+    def test_all_qualified_csv_includes_every_page_and_exact_filter_scope(self):
+        import csv
+        import io
+        from src.vertical_options_ui import (
+            _qualified_spreads_csv, _sort_qualified_spreads, _QUALIFIED_SORT_FIELDS,
+        )
+        expiry = date(2029, 1, 19)
+        rows = (
+            [self._row(expiry, "CALL", 100 + n, 30 - .3 * n) for n in range(22)]
+            + [self._row(expiry, "PUT", 100 + n, 5 + .3 * n) for n in range(22)]
+        )
+        candidates, annual = scan_vertical_candidates(
+            symbol="SPY", spot_last=103, option_rows=rows,
+            target_breakeven=103, max_cost=None, max_per_expiration=None,
+        )
+        self.assertEqual(len(candidates), 462)  # 231 per side; exceeds 200-row screen page.
+        self.assertIn("EXPIRATION", _QUALIFIED_SORT_FIELDS)
+        ordered = _sort_qualified_spreads(candidates, "R:R", "DESC", 103)
+        calls = [item for item in ordered if item["call_put"] == "CALL"]
+        self.assertEqual(len(calls), 231)
+        kwargs = dict(
+            annual_ids=annual, source="E*TRADE", loaded_at=1800000000,
+            target=103.0, max_cost=None,
+        )
+        full = list(csv.DictReader(io.StringIO(_qualified_spreads_csv(ordered, **kwargs))))
+        subset = list(csv.DictReader(io.StringIO(_qualified_spreads_csv(calls, **kwargs))))
+        self.assertEqual(len(full), 462)
+        self.assertEqual(len(subset), 231)
+        self.assertEqual(set(item["Type"] for item in full), {"CALL", "PUT"})
+        self.assertTrue(all(item["Type"] == "CALL" for item in subset))
+        self.assertEqual([item["Risk Reward (to 1)"] for item in full],
+                         sorted([item["Risk Reward (to 1)"] for item in full],
+                                key=float, reverse=True))
+        self.assertEqual(full[0]["Quote Source"], "E*TRADE")
+        self.assertEqual(full[0]["Max Cost Filter ($)"], "")
+        self.assertEqual(full[0]["Orderable"], "NO")  # LAST* is informational only.
+        self.assertEqual(full[0]["Fill Basis"], "LAST*")
+        self.assertTrue(full[0]["OptionStrat URL"].startswith("https://optionstrat.com/"))
+        self.assertEqual(sum(item["Annual Best"] == "YES" for item in full), len(annual))
+        self.assertTrue(full[0]["Quote Snapshot"].startswith("2027-"))
+
+    def test_qualified_sort_is_deterministic_and_does_not_mutate_scan_order(self):
+        from src.vertical_options_ui import _sort_qualified_spreads
+        expiry1, expiry2 = date(2027, 1, 15), date(2029, 1, 19)
+        values = [
+            dict(id="A", grade=2, cost=200, reward_risk=2.5,
+                 breakeven=103, max_profit=500, expiry=expiry2,
+                 buy_strike=100, sell_strike=105, buy_last=4, sell_last=2, width=5),
+            dict(id="B", grade=0, cost=100, reward_risk=5.0,
+                 breakeven=99, max_profit=900, expiry=expiry1,
+                 buy_strike=90, sell_strike=105, buy_last=7, sell_last=6, width=15),
+            dict(id="C", grade=1, cost=150, reward_risk=3.5,
+                 breakeven=101, max_profit=600, expiry=expiry2,
+                 buy_strike=95, sell_strike=110, buy_last=6, sell_last=4.5, width=15),
+        ]
+        original = [item["id"] for item in values]
+        self.assertEqual(
+            [item["id"] for item in _sort_qualified_spreads(values, "COST", "ASC", 100)],
+            ["B", "C", "A"],
+        )
+        self.assertEqual(
+            [item["id"] for item in _sort_qualified_spreads(values, "COST", "DESC", 100)],
+            ["A", "C", "B"],
+        )
+        self.assertEqual(
+            [item["id"] for item in _sort_qualified_spreads(values, "R:R", "DESC", 100)],
+            ["B", "C", "A"],
+        )
+        self.assertEqual(
+            [item["id"] for item in _sort_qualified_spreads(values, "FILL + TARGET", "ASC", 100)],
+            ["B", "C", "A"],
+        )
+        self.assertEqual(
+            [item["id"] for item in _sort_qualified_spreads(values, "TARGET DISTANCE", "ASC", 100)],
+            ["B", "C", "A"],
+        )
+        self.assertEqual(
+            [item["id"] for item in _sort_qualified_spreads(values, "EXPIRATION", "ASC", 100)],
+            ["B", "A", "C"],
+        )
+        self.assertEqual([item["id"] for item in values], original)
+        with self.assertRaises(ValueError):
+            _sort_qualified_spreads(values, "UNSUPPORTED", "ASC", 100)
+        with self.assertRaises(ValueError):
+            _sort_qualified_spreads(values, "COST", "BACKWARD", 100)
+
     def test_exhaustive_pairing_returns_every_unique_call_and_put_vertical(self):
         # 8 distinct strikes -> nC2 = 28 legal combinations per side.
         # Reversing a leg pair would be a credit spread, not another debit.
