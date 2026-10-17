@@ -844,6 +844,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 candidates, annual_ids = scan_vertical_candidates(
                     symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
                     target_breakeven=target, max_cost=max_cost,
+                    max_per_expiration=None,  # Enumerate all qualifying canonical pairs.
                 )
                 scope = hashlib.sha256(
                     repr((raw["scan_id"], target, max_cost)).encode("utf-8")
@@ -884,12 +885,12 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 ("LISTED YEARS", str(result["listed_years"]), "blue"),
                 ("CHAINS LOADED", f'{result["loaded_expirations"]}/{result["listed_expirations"]}', "orange"),
                 ("CONTRACTS READ", f'{result["contract_count"]:,}', "green"),
-                ("QUALIFIED MATCHES", f'{len(result["candidates"]):,}', "green"),
+                ("QUALIFIED PAIRS", f'{len(result["candidates"]):,}', "green"),
                 ("ANNUAL BEST", str(len(result["annual_ids"])), "blue"),
             ]),
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="vo-section">BEST VERTICAL SPREADS BY YEAR</div>', unsafe_allow_html=True)
+        st.markdown('<div class="vo-section">VERTICAL SPREADS // ALL QUALIFYING PAIRS</div>', unsafe_allow_html=True)
         st.caption(
             f'{result["source"]} LAST AS OF '
             f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
@@ -919,15 +920,61 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 st.session_state["_vo_checked_spreads"] = state
             saved_ids = set(state["ids"])
             view = st.radio(
-                "RESULTS", ("BEST PER YEAR", "ALL TOP MATCHES"),
+                "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
                 key="vo_results_view", horizontal=True, label_visibility="collapsed",
             )
-            displayed = [
-                _spread_table_row(row, annual_ids) for row in candidates
-                if view == "ALL TOP MATCHES" or row["id"] in annual_ids
-            ]
+            view_identity = view
+            if view == "BEST PER YEAR":
+                displayed_candidates = [row for row in candidates if row["id"] in annual_ids]
+            else:
+                expirations = sorted({row["expiry"] for row in candidates})
+                filter_cols = st.columns([1.6, 1.0, 1.65, .85], gap="small", vertical_alignment="bottom")
+                expiry_filter = filter_cols[0].selectbox(
+                    "EXPIRATION", ["ALL"] + expirations, key="vo_all_pair_expiry",
+                    format_func=lambda value: "ALL EXPIRATIONS" if value == "ALL" else _date_label(value),
+                )
+                side_filter = filter_cols[1].selectbox(
+                    "TYPE", ("CALL + PUT", "CALL", "PUT"), key="vo_all_pair_side",
+                )
+                sort_filter = filter_cols[2].selectbox(
+                    "SORT", ("FILL + TARGET", "R:R HIGHEST", "COST LOWEST", "BREAKEVEN CLOSEST"),
+                    key="vo_all_pair_sort",
+                )
+                matching = [
+                    row for row in candidates
+                    if (expiry_filter == "ALL" or row["expiry"] == expiry_filter)
+                    and (side_filter == "CALL + PUT" or row["call_put"] == side_filter)
+                ]
+                if sort_filter == "R:R HIGHEST":
+                    matching.sort(key=lambda row: (-row["reward_risk"], row["grade"],
+                                                    abs(row["breakeven"] - result["target"]), row["id"]))
+                elif sort_filter == "COST LOWEST":
+                    matching.sort(key=lambda row: (row["cost"], row["grade"],
+                                                    abs(row["breakeven"] - result["target"]), row["id"]))
+                elif sort_filter == "BREAKEVEN CLOSEST":
+                    matching.sort(key=lambda row: (abs(row["breakeven"] - result["target"]),
+                                                    row["grade"], row["cost"], row["id"]))
+                # Only the current page is passed into the browser component.
+                # Full candidate results stay in the scanner's session cache.
+                pages = max(1, (len(matching) + 199) // 200)
+                page_scope = hashlib.sha256(
+                    repr((scope, expiry_filter, side_filter, sort_filter)).encode("utf-8")
+                ).hexdigest()[:12]
+                page = int(filter_cols[3].number_input(
+                    f"PAGE / {pages:,}", min_value=1, max_value=pages, step=1,
+                    value=1, key="vo_all_pair_page_" + page_scope,
+                ))
+                offset = (page - 1) * 200
+                displayed_candidates = matching[offset:offset + 200]
+                view_identity = f"{view}|{expiry_filter}|{side_filter}|{sort_filter}|{page}"
+                st.caption(
+                    f"ALL {len(matching):,} QUALIFIED IN FILTER // PAGE {page:,}/{pages:,} "
+                    f"// ROWS {offset + 1:,}–{offset + len(displayed_candidates):,} "
+                    "// NO TOP-20 TRUNCATION // PAGE/FILTER CHANGES NEVER CONTACT E*TRADE."
+                )
+            displayed = [_spread_table_row(row, annual_ids) for row in displayed_candidates]
             selected_update = _SPREAD_SCROLL_COMPONENT(
-                scope=scope, sort_key=view, rows=displayed,
+                scope=scope, sort_key=view_identity, rows=displayed,
                 selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
                 key="vo_spread_scroll_" + scope, default=None,
             )
@@ -949,10 +996,11 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                         st.rerun(scope="fragment")
             checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
             st.caption(
-                f'{len(displayed):,} DISPLAYED // {len(candidates):,} TOP MATCHES '
+                f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
                 f'FROM {result["loaded_expirations"]} COMPLETE CHAINS // '
-                f'{len(checked_ids)} CHECKED // LIME GREEN = BEST CALL; TONINO RED = BEST PUT PER CALENDAR YEAR. '
-                'ALL TOP MATCHES KEEPS THE BEST 20 PER EXPIRATION. '
+                f'{len(checked_ids)} CHECKED // LIME GREEN = ANNUAL BEST CALL; TONINO RED = ANNUAL BEST PUT. '
+                'ALL QUALIFIED TESTS EVERY UNIQUE VALID STRIKE PAIR PER EXPIRATION '
+                '(BUY LOWER/SELL HIGHER CALL OR BUY HIGHER/SELL LOWER PUT). '
                 'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). '
                 'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'
             )

@@ -166,7 +166,7 @@ def scan_vertical_candidates(
     option_rows: Iterable[dict[str, Any]],
     target_breakeven: float,
     max_cost: float | None,
-    max_per_expiration: int = 20,
+    max_per_expiration: int | None = 20,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
 
@@ -175,7 +175,10 @@ def scan_vertical_candidates(
     Each candidate's risk/reward, breakeven, cost, and live order price use
     the SAME selected debit. Prefer execution grades before breakeven and cost.
     Both canonical CALL and PUT directions are scanned. Annual winners are
-    selected from the complete pair set, before the per-expiration cap.
+    selected from the complete pair set, before any optional display cap.
+    Pass max_per_expiration=None for exhaustive, untruncated enumeration of
+    every canonical pair satisfying the minimum reward/risk and cost rules.
+    Reversing the legs creates a credit spread, not a second debit spread.
     """
     ticker = str(symbol or "").strip().upper()
     spot = _finite_number(spot_last, positive=True)
@@ -183,8 +186,8 @@ def scan_vertical_candidates(
     budget = None if max_cost is None else _finite_number(max_cost)
     if not ticker or spot is None or target is None or (max_cost is not None and budget is None):
         raise ValueError("Ticker, underlying Last, breakeven, and cost must be valid.")
-    if type(max_per_expiration) is not int or max_per_expiration < 1:
-        raise ValueError("max_per_expiration must be a positive integer.")
+    if max_per_expiration is not None and (type(max_per_expiration) is not int or max_per_expiration < 1):
+        raise ValueError("max_per_expiration must be a positive integer or None for exhaustive scanning.")
 
     # One normalized chain row per exact contract. This bounds memory by the
     # input chain size, rather than the quadratic number of possible spreads.
@@ -269,7 +272,7 @@ def scan_vertical_candidates(
                 yearly = annual_best.get(expiry.year)
                 if yearly is None or rank < yearly[0]:
                     annual_best[expiry.year] = (rank, identity)
-                if len(top) == max_per_expiration and rank >= top[-1][0]:
+                if max_per_expiration is not None and len(top) == max_per_expiration and rank >= top[-1][0]:
                     continue
                 candidate = {
                     "id": identity, "symbol": ticker, "spot_last": spot,
@@ -282,13 +285,18 @@ def scan_vertical_candidates(
                     "max_profit": profit, "max_loss": cost,
                     "breakeven": breakeven, "reward_risk": ratio,
                 }
-                insert_at = next(
-                    (index for index, (saved_rank, _) in enumerate(top)
-                     if rank < saved_rank), len(top),
-                )
-                top.insert(insert_at, (rank, candidate))
-                if len(top) > max_per_expiration:
-                    top.pop()
+                if max_per_expiration is None:
+                    # Exhaustive case: append O(1), then sort globally once.
+                    # Inserting each row into a ranked list would be O(M²).
+                    top.append((rank, candidate))
+                else:
+                    insert_at = next(
+                        (index for index, (saved_rank, _) in enumerate(top)
+                         if rank < saved_rank), len(top),
+                    )
+                    top.insert(insert_at, (rank, candidate))
+                    if len(top) > max_per_expiration:
+                        top.pop()
 
     ranked = sorted(
         (item for top in retained.values() for item in top),

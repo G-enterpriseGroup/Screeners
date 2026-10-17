@@ -305,7 +305,7 @@ def test() -> None:
             driver.switch_to.window(original_tab)
             assert checked_count(driver) == 1, "Opening OptionStrat changed the selected spread"
 
-            driver.find_element(By.XPATH, '//label[contains(., "ALL TOP MATCHES")]').click()
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             wait.until(lambda _: "60 TOP MATCHES" in driver.find_element(By.TAG_NAME, "body").text)
             def expanded_grid(_):
                 snapshot = grid_snapshot(driver)
