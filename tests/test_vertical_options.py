@@ -225,6 +225,68 @@ class VerticalOptionsTests(unittest.TestCase):
         )
         self.assertEqual((over_budget, winners), ([], set()))
 
+    def test_exhaustive_pairing_returns_every_unique_call_and_put_vertical(self):
+        # 8 distinct strikes -> nC2 = 28 legal combinations per side.
+        # Reversing a leg pair would be a credit spread, not another debit.
+        expiry = date(2029, 1, 19)
+        rows = [
+            self._row(expiry, "CALL", 100 + index, 30 - .3 * index)
+            for index in range(8)
+        ] + [
+            self._row(expiry, "PUT", 100 + index, 5 + .3 * index)
+            for index in range(8)
+        ]
+        limited, _ = scan_vertical_candidates(
+            symbol="SPY", spot_last=103, option_rows=rows,
+            target_breakeven=103, max_cost=None,
+        )
+        exhaustive, winners = scan_vertical_candidates(
+            symbol="SPY", spot_last=103, option_rows=rows,
+            target_breakeven=103, max_cost=None,
+            max_per_expiration=None,
+        )
+        self.assertEqual(len(limited), 20)
+        self.assertEqual(len(exhaustive), 56)
+        self.assertEqual(
+            {side: sum(row["call_put"] == side for row in exhaustive)
+             for side in ("CALL", "PUT")},
+            {"CALL": 28, "PUT": 28},
+        )
+        self.assertEqual(len({row["id"] for row in exhaustive}), 56)
+        self.assertTrue(winners.issubset({row["id"] for row in exhaustive}))
+        self.assertTrue(all(row["reward_risk"] >= 2 for row in exhaustive))
+        self.assertTrue(all(
+            row["buy_strike"] < row["sell_strike"] if row["call_put"] == "CALL"
+            else row["buy_strike"] > row["sell_strike"] for row in exhaustive
+        ))
+        reversed_rows, reversed_winners = scan_vertical_candidates(
+            symbol="SPY", spot_last=103, option_rows=reversed(rows),
+            target_breakeven=103, max_cost=None, max_per_expiration=None,
+        )
+        self.assertEqual([row["id"] for row in exhaustive],
+                         [row["id"] for row in reversed_rows])
+        self.assertEqual(winners, reversed_winners)
+
+    def test_exhaustive_pairing_respects_budget_and_exact_two_to_one_cutoff(self):
+        expiry = date(2029, 1, 19)
+        rows = [
+            self._row(expiry, "CALL", 100, 3),
+            self._row(expiry, "CALL", 103, 2),
+            self._row(expiry, "CALL", 106, 1),
+        ]
+        candidates, _ = scan_vertical_candidates(
+            symbol="SPY", spot_last=101, option_rows=rows,
+            target_breakeven=101, max_cost=100, max_per_expiration=None,
+        )
+        self.assertEqual(len(candidates), 2)  # 100/103 and 103/106, not 100/106.
+        self.assertTrue(all(row["reward_risk"] >= 2 for row in candidates))
+        self.assertTrue(all(row["cost"] <= 100 for row in candidates))
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            scan_vertical_candidates(
+                symbol="SPY", spot_last=101, option_rows=rows,
+                target_breakeven=101, max_cost=None, max_per_expiration=0,
+            )
+
     def test_scan_annual_winners_use_all_qualifying_pairs_before_cap(self):
         early = date(2026, 11, 20)
         late = date(2026, 12, 18)
