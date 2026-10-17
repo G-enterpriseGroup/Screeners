@@ -51,6 +51,33 @@ class VerticalOptionsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Paste at least one"):
             _parse_ticker_list("| Ticker |\n| ----- |")
 
+    def test_etrade_3031_rejection_is_explained_without_claiming_a_saved_order(self):
+        from src.vertical_options_ui import _vertical_preview_error
+        raw = (
+            'E*TRADE returned HTTP 400: {"Error":{"code":3031,'
+            '"message":"We are unable to accept your order as entered since it '
+            'would create an unapproved options position for your account when '
+            'paired with current positions and/or open orders."}}'
+        )
+        message = _vertical_preview_error(ValueError(raw))
+        self.assertIn("ERROR 3031", message)
+        self.assertIn("Level 3", message)
+        self.assertIn("existing", message.lower())
+        self.assertIn("no order was placed", message.lower())
+        self.assertNotIn("SUBMITTED", message)
+        self.assertEqual(
+            _vertical_preview_error(ValueError("Other brokerage failure")),
+            "Other brokerage failure",
+        )
+
+    def test_live_place_cta_is_not_a_save_action(self):
+        ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
+        self.assertIn("PLACE LIVE ORDER //", ui)
+        self.assertIn("MAY QUEUE", ui)
+        self.assertIn("TERMINAL-ONLY DRAFT", ui)
+        self.assertIn("The E*TRADE public API cannot create broker-side Saved orders.", ui)
+        self.assertIn("st.session_state.pop(\"vo_review_bundle\", None)", ui)
+
     def test_save_multiple_spreads_as_local_drafts_without_broker_actions(self):
         import csv
         import io
