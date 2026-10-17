@@ -32,7 +32,7 @@ import math
 from pathlib import Path
 import re
 import time
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote as url_quote
 
@@ -662,6 +662,86 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[s
     }
 
 
+
+# ==============================
+# ALL QUALIFIED RESULT SORT + CSV EXPORT (READ-ONLY)
+# ==============================
+_QUALIFIED_SORT_FIELDS = (
+    "FILL + TARGET", "R:R", "COST", "BREAKEVEN", "TARGET DISTANCE",
+    "MAX PROFIT", "EXPIRATION", "BUY STRIKE", "SELL STRIKE",
+    "BUY LAST", "SELL LAST", "SPREAD WIDTH", "FILL QUALITY",
+)
+
+
+def _sort_qualified_spreads(
+    rows: list[dict[str, Any]], sort_by: str, direction: str, target: float,
+) -> list[dict[str, Any]]:
+    """Sort the complete result set without changing original ranking or IDs."""
+    if sort_by not in _QUALIFIED_SORT_FIELDS or direction not in {"ASC", "DESC"}:
+        raise ValueError("Invalid qualified-spread sorting controls.")
+    if sort_by == "FILL + TARGET":
+        key = lambda row: (
+            row["grade"], abs(row["breakeven"] - target),
+            row["cost"], -row["reward_risk"],
+        )
+    elif sort_by == "TARGET DISTANCE":
+        key = lambda row: abs(row["breakeven"] - target)
+    elif sort_by == "FILL QUALITY":
+        key = lambda row: row["grade"]
+    else:
+        field = {
+            "R:R": "reward_risk", "COST": "cost",
+            "BREAKEVEN": "breakeven", "MAX PROFIT": "max_profit",
+            "EXPIRATION": "expiry", "BUY STRIKE": "buy_strike",
+            "SELL STRIKE": "sell_strike", "BUY LAST": "buy_last",
+            "SELL LAST": "sell_last", "SPREAD WIDTH": "width",
+        }[sort_by]
+        key = lambda row: (
+            row.get(field) is None,
+            row.get(field) if row.get(field) is not None else 0,
+        )
+    # Stable initial identity order makes ties reproducible in CSV and grid.
+    return sorted(
+        sorted(rows, key=lambda row: row["id"]),
+        key=key, reverse=direction == "DESC",
+    )
+
+
+def _qualified_spreads_csv(
+    rows: list[dict[str, Any]], annual_ids: set[str], *,
+    source: str, loaded_at: float, target: float, max_cost: float | None,
+) -> str:
+    """Export EVERY supplied qualifying row in current sort order, not just a page."""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow((
+        "Ticker", "Type", "Expiration", "Buy Strike", "Sell Strike",
+        "Spread Width", "Buy Last", "Sell Last", "Net Debit Per Share",
+        "Cost Per Contract ($)", "Breakeven ($)", "Risk Reward (to 1)",
+        "Max Profit ($)", "Max Loss ($)", "Fill Basis",
+        "Spread Bid", "Spread Mid", "Spread Ask", "Orderable",
+        "Annual Best", "Underlying Last", "Target Breakeven ($)",
+        "Max Cost Filter ($)", "Quote Source", "Quote Snapshot",
+        "Buy OSI", "Sell OSI", "OptionStrat URL",
+    ))
+    snapshot = datetime.fromtimestamp(loaded_at).astimezone().isoformat(timespec="seconds")
+    for row in rows:
+        writer.writerow((
+            row["symbol"], row["call_put"], row["expiry"].isoformat(),
+            row["buy_strike"], row["sell_strike"], row["width"],
+            row.get("buy_last"), row.get("sell_last"), row["debit"],
+            row["cost"], row["breakeven"], round(row["reward_risk"], 6),
+            row["max_profit"], row["max_loss"], row["basis"],
+            row.get("spread_bid"), row.get("spread_mid"), row.get("spread_ask"),
+            "YES" if row.get("orderable") else "NO",
+            "YES" if row["id"] in annual_ids else "NO",
+            row["spot_last"], target, max_cost if max_cost is not None else "",
+            source, snapshot, row.get("buy_osi", ""), row.get("sell_osi", ""),
+            _optionstrat_url(row),
+        ))
+    return output.getvalue()
+
+
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session) -> None:
     with st.container(key="vertical_options_workspace"):
@@ -928,7 +1008,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 displayed_candidates = [row for row in candidates if row["id"] in annual_ids]
             else:
                 expirations = sorted({row["expiry"] for row in candidates})
-                filter_cols = st.columns([1.6, 1.0, 1.65, .85], gap="small", vertical_alignment="bottom")
+                filter_cols = st.columns([1.45, .9, 1.5, .74, .84], gap="small", vertical_alignment="bottom")
                 expiry_filter = filter_cols[0].selectbox(
                     "EXPIRATION", ["ALL"] + expirations, key="vo_all_pair_expiry",
                     format_func=lambda value: "ALL EXPIRATIONS" if value == "ALL" else _date_label(value),
@@ -937,40 +1017,58 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                     "TYPE", ("CALL + PUT", "CALL", "PUT"), key="vo_all_pair_side",
                 )
                 sort_filter = filter_cols[2].selectbox(
-                    "SORT", ("FILL + TARGET", "R:R HIGHEST", "COST LOWEST", "BREAKEVEN CLOSEST"),
-                    key="vo_all_pair_sort",
+                    "SORT BY", _QUALIFIED_SORT_FIELDS, key="vo_all_pair_sort",
+                )
+                sort_direction = filter_cols[3].selectbox(
+                    "ORDER", ("ASC", "DESC"), key="vo_all_pair_direction",
+                )
+                ordered = _sort_qualified_spreads(
+                    candidates, sort_filter, sort_direction, result["target"],
                 )
                 matching = [
-                    row for row in candidates
+                    row for row in ordered
                     if (expiry_filter == "ALL" or row["expiry"] == expiry_filter)
                     and (side_filter == "CALL + PUT" or row["call_put"] == side_filter)
                 ]
-                if sort_filter == "R:R HIGHEST":
-                    matching.sort(key=lambda row: (-row["reward_risk"], row["grade"],
-                                                    abs(row["breakeven"] - result["target"]), row["id"]))
-                elif sort_filter == "COST LOWEST":
-                    matching.sort(key=lambda row: (row["cost"], row["grade"],
-                                                    abs(row["breakeven"] - result["target"]), row["id"]))
-                elif sort_filter == "BREAKEVEN CLOSEST":
-                    matching.sort(key=lambda row: (abs(row["breakeven"] - result["target"]),
-                                                    row["grade"], row["cost"], row["id"]))
-                # Only the current page is passed into the browser component.
-                # Full candidate results stay in the scanner's session cache.
+                # Send only the current page to the scroller; exports include all pages.
                 pages = max(1, (len(matching) + 199) // 200)
                 page_scope = hashlib.sha256(
-                    repr((scope, expiry_filter, side_filter, sort_filter)).encode("utf-8")
+                    repr((scope, expiry_filter, side_filter, sort_filter, sort_direction)).encode("utf-8")
                 ).hexdigest()[:12]
-                page = int(filter_cols[3].number_input(
+                page = int(filter_cols[4].number_input(
                     f"PAGE / {pages:,}", min_value=1, max_value=pages, step=1,
                     value=1, key="vo_all_pair_page_" + page_scope,
                 ))
                 offset = (page - 1) * 200
                 displayed_candidates = matching[offset:offset + 200]
-                view_identity = f"{view}|{expiry_filter}|{side_filter}|{sort_filter}|{page}"
+                view_identity = f"{view}|{expiry_filter}|{side_filter}|{sort_filter}|{sort_direction}|{page}"
                 st.caption(
                     f"ALL {len(matching):,} QUALIFIED IN FILTER // PAGE {page:,}/{pages:,} "
                     f"// ROWS {offset + 1:,}–{offset + len(displayed_candidates):,} "
-                    "// NO TOP-20 TRUNCATION // PAGE/FILTER CHANGES NEVER CONTACT E*TRADE."
+                    "// 1:2 MINIMUM R:R, NOT A FILL GUARANTEE // NO BROKER REQUESTS ON FILTER/SORT."
+                )
+                exports = st.columns(2, gap="small")
+                exports[0].download_button(
+                    f"EXPORT ALL QUALIFIED CSV // {len(ordered):,}",
+                    data=_qualified_spreads_csv(
+                        ordered, annual_ids, source=result["source"],
+                        loaded_at=result["loaded_at"], target=result["target"],
+                        max_cost=result["max_cost"],
+                    ),
+                    file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
+                    mime="text/csv", key="vo_export_all_qualified",
+                    use_container_width=True,
+                )
+                exports[1].download_button(
+                    f"EXPORT FILTERED CSV // {len(matching):,}",
+                    data=_qualified_spreads_csv(
+                        matching, annual_ids, source=result["source"],
+                        loaded_at=result["loaded_at"], target=result["target"],
+                        max_cost=result["max_cost"],
+                    ),
+                    file_name=f'{result["symbol"]}_vertical_filtered.csv',
+                    mime="text/csv", key="vo_export_filtered_qualified",
+                    use_container_width=True,
                 )
             displayed = [_spread_table_row(row, annual_ids) for row in displayed_candidates]
             selected_update = _SPREAD_SCROLL_COMPONENT(
