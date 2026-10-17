@@ -306,7 +306,11 @@ def test() -> None:
             assert checked_count(driver) == 1, "Opening OptionStrat changed the selected spread"
 
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: "60 TOP MATCHES" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            assert driver.find_element(By.XPATH, '//button[contains(., "EXPORT ALL QUALIFIED CSV")]')
+            assert driver.find_element(By.XPATH, '//button[contains(., "EXPORT FILTERED CSV")]')
+            assert "SORT BY" in driver.find_element(By.TAG_NAME, "body").text
+            assert "ORDER" in driver.find_element(By.TAG_NAME, "body").text
             def expanded_grid(_):
                 snapshot = grid_snapshot(driver)
                 return snapshot if len(snapshot["rows"]) > 3 else False
