@@ -2758,3 +2758,17 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** PASS, GitHub Actions 38966867000.
 - **Code commit SHAs:** sort helpers `e3282f01d79ca74a6dc56a45b9d9f7b21a727872`; overview and styled export `bd2ec1f91eedfde1ba2bfc6cd77480184619360d`; focused regressions `fbcc973bbebb92adf4fb64b7539113278d65a69e`. Final production merge SHA is reported after merge.
 - **Lesson:** Exports should share the exact sorted presentation state with the table they represent. Supply HTML for color/graphics fidelity and CSV for machine-readable visible columns; keep the detailed strike dataset independently downloadable.
+
+## 2026-10-17 — Vertical Options multi-checkbox session draft basket (no broker-side save API)
+
+- **Feature / production route:** Vertical Options only; `streamlit_app.py → src/vertical_options_ui.py`.
+- **Production files changed:** `src/vertical_options_ui.py`; focused regression `tests/test_vertical_options.py`; this append-only changelog.
+- **What was broken:** Checking multiple spread rows produced the warning "Multiple spreads checked" and hid broker review unless all but one were unchecked. There was no way to keep multiple candidate spreads in a draft basket without risking live submission.
+- **Root cause:** Order-review rendering was explicitly gated on exactly one checked row, while the documented public E*TRADE API provides Preview and Place but no broker-side Saved Order creation endpoint. E*TRADE's brokerage UI displays Saved/Queued statuses, but the API's Place endpoint is a live-order action, not a safe broker-side Save.
+- **Minimum change:** Checking any number of spreads now offers SAVE CHECKED AS TERMINAL DRAFTS, deduplicated by exact contract identity and preserved across symbol scans for the current Streamlit session. Saved spreads expose editable whole-number quantities and CSV export for retention outside the session. Multiple checked rows retain all checkmarks and offer a chooser for which of those checked rows to preview/order individually; E*TRADE's existing live Preview → confirmation → SEND action remains unchanged.
+- **Safety / behavior to preserve:** Save is **local session state only** and does not call E*TRADE Preview or Place, queue orders, or create a broker order. Show this limitation explicitly; session drafts are not durable broker drafts. On each live order, require a fresh E*TRADE scan/requote, broker preview, fresh fingerprint, and separate affirmative SEND. No automatic or batch live submission.
+- **Features intentionally NOT changed:** Scanner formulas, price tier/risk math, option chain loading, OAuth/client transport, GEX, Risk Sizing, Holdings, Protective Puts, navigation, `streamlit_app.py`, `src/terminal_core.py`, shared theme, and component scroller.
+- **Tests performed:** Focused draft deduplication/CSV regression added; production architecture/CI testing pending PR #110 validation. No live E*TRADE orders placed. Deployed UI not yet verified.
+- **Architecture guard result:** Pending CI on PR #110 at initial entry.
+- **Code commit SHAs:** UI `fad5054b5392e548183e6b9d52d1681e82fef2d4`; tests `ad563c5c84080fab6e7db6bd36cfd3b580bc5d4c`; final merge to be recorded after passing checks.
+- **Lesson:** E*TRADE broker-side Saved/Queued UI states do not imply a public Saved Orders creation API; never pretend a live Place order is a saved draft. Keep multi-row analytical selection separate from explicit per-order trade authorization.
