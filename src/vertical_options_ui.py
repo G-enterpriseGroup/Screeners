@@ -1224,7 +1224,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         st.info("Reconnect E*TRADE and run a fresh E*TRADE scan before reviewing a live order.")
         return
     if not candidate.get("orderable", False):
-        st.warning("LAST* HAS NO VERIFIED LIVE BID/ASK // This row is informational only. Choose a quoted ASK, LAST or MID spread to review an E*TRADE order.")
+        st.warning("UNQUOTED SPREAD // This row is informational only. Select a live quoted spread before E*TRADE review.")
         return
     if time.time() - float(result["loaded_at"]) >= _SCAN_CACHE_SECONDS:
         st.warning("MARKET SNAPSHOT EXPIRED // Scan again before reviewing a live order.")
@@ -1270,11 +1270,12 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     account_options = list(by_account)
     current_accounts = [key for key in (st.session_state.get("vo_accounts") or []) if key in by_account]
     st.session_state["vo_accounts"] = current_accounts or _default_account_keys(accounts)
-    # E*TRADE spread orders require a NET_DEBIT limit, but its value must come
-    # solely from the checked row's BUY Last minus SELL Last, never a stale
-    # manual input or an unrelated bid/ask midpoint.
+    # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
+    # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
-    ladder = smart_fill_ladder(candidate, result["max_cost"]) if smart_mode else []
+    ladder = (smart_fill_ladder(candidate, result["max_cost"])
+              if smart_mode and candidate.get("basis") == "SMART" else
+              [limit_price] if smart_mode and candidate.get("basis") == "MID" else [])
     if smart_mode and not ladder:
         st.warning("SMART FILL PRICING UNAVAILABLE // Rescan a live quoted spread.")
         return
