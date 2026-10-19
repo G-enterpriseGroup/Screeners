@@ -151,6 +151,87 @@ class VerticalOptionsTests(unittest.TestCase):
                          (2, 1.95, 2.30))
         self.assertEqual(annual, {call["id"]})
 
+    def test_smart_fill_improves_on_natural_ask_without_changing_normal(self):
+        from src.vertical_options import price_vertical_quote, smart_fill_ladder
+        data = dict(
+            buy_last=4.5, sell_last=3, buy_bid=4.0, buy_ask=5.0,
+            sell_bid=3.0, sell_ask=3.7, width=5, max_cost=150,
+        )
+        original = price_vertical_quote(**data)
+        self.assertEqual((original["basis"], original["debit"]), ("LAST", 1.5))
+        smart = price_vertical_quote(**data, pricing_mode="SMART FILL")
+        self.assertEqual((smart["basis"], smart["debit"], smart["cost"]),
+                         ("SMART", 1.37, 137))
+        self.assertEqual(smart["spread_mid"], 1.15)
+        self.assertEqual(smart["spread_ask"], 2.0)
+        self.assertTrue(smart["orderable"])
+        self.assertGreaterEqual((5 - smart["debit"]) / smart["debit"], 2)
+        self.assertEqual(
+            smart_fill_ladder({**smart, "width": 5}, 150),
+            [1.37, 1.42, 1.47],
+        )
+
+    def test_smart_fill_liquidity_signal_and_never_chases_above_budget(self):
+        from src.vertical_options import price_vertical_quote, smart_fill_ladder
+        data = dict(
+            buy_last=4.5, sell_last=3.0, buy_bid=4.0, buy_ask=5.0,
+            sell_bid=3.0, sell_ask=3.7, width=5, max_cost=120,
+            pricing_mode="SMART FILL",
+        )
+        capped = price_vertical_quote(**data)
+        self.assertEqual((capped["basis"], capped["debit"]), ("SMART", 1.20))
+        self.assertEqual(smart_fill_ladder({**capped, "width": 5}, 120), [1.2])
+        self.assertIsNone(price_vertical_quote(**{**data, "max_cost": 100}))
+        active = price_vertical_quote(**{
+            **data, "max_cost": 200, "buy_volume": 60, "sell_volume": 70,
+            "buy_open_interest": 300, "sell_open_interest": 500,
+        })
+        self.assertEqual(active["liquidity_signal"], "ACTIVE LEGS")
+        self.assertGreater(active["debit"], active["spread_mid"])
+        thin = price_vertical_quote(**{
+            **data, "max_cost": 200, "buy_volume": 1, "sell_volume": 2,
+            "buy_open_interest": 10, "sell_open_interest": 15,
+        })
+        self.assertEqual(thin["liquidity_signal"], "THIN LEGS")
+        self.assertLessEqual(thin["debit"], active["debit"])
+        with self.assertRaisesRegex(ValueError, "pricing mode"):
+            price_vertical_quote(**{**data, "pricing_mode": "WRONG"})
+
+    def test_smart_mode_scan_keeps_pair_identity_and_recomputes_risk(self):
+        expiry = date(2029, 1, 19)
+        rows = [
+            self._row(expiry, "CALL", 100, 4.5, bid=4.0, ask=5.0),
+            self._row(expiry, "CALL", 105, 3.0, bid=3.0, ask=3.7),
+        ]
+        normal, _ = scan_vertical_candidates(
+            symbol="SPY", spot_last=102, option_rows=rows,
+            target_breakeven=101, max_cost=None, pricing_mode="NORMAL",
+        )
+        smart, annual = scan_vertical_candidates(
+            symbol="SPY", spot_last=102, option_rows=rows,
+            target_breakeven=101, max_cost=None, pricing_mode="SMART FILL",
+        )
+        self.assertEqual(len(normal), len(smart))
+        self.assertEqual(normal[0]["id"], smart[0]["id"])
+        self.assertEqual(smart[0]["basis"], "SMART")
+        self.assertLess(smart[0]["cost"], normal[0]["cost"])
+        self.assertEqual(smart[0]["breakeven"], 101.37)
+        self.assertAlmostEqual(smart[0]["reward_risk"],
+                               (5 - 1.37) / 1.37)
+        self.assertEqual(annual, {smart[0]["id"]})
+        self.assertEqual(smart[0]["pricing_mode"], "SMART FILL")
+
+    def test_smart_mode_requotes_and_has_no_automatic_send_controls(self):
+        ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
+        self.assertIn('("NORMAL", "SMART FILL")', ui)
+        self.assertIn("def _reprice_cached_vertical_scan(", ui)
+        self.assertIn('["GOOD_FOR_DAY"] if smart_mode', ui)
+        self.assertIn('checked_price["debit"] != candidate["debit"]', ui)
+        self.assertIn('or limit_price > checked_price["spread_ask"] + .005', ui)
+        self.assertIn('key="vo_preview"', ui)
+        self.assertIn('key="vo_send"', ui)
+        self.assertNotIn("client.change_order(", ui)
+
     def test_msft_stale_last_below_mid_is_not_ranked_as_likely_fill(self):
         expiry = date(2029, 1, 19)
         rows = [
