@@ -1024,12 +1024,12 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             f'{result["source"]} LAST AS OF '
             f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
             'BOTH CALL + PUT DEBIT SPREADS // '
-            'MINIMUM RISK:REWARD 1:2 AT THE SELECTED ORDER PRICE // '
+            'MINIMUM RISK:REWARD 1:2 AT THE SELECTED ORDER PRICE // ' +
             ('PRICING: SMART FILL = ADAPTIVE MID-TO-ASK LIMIT, CAPPED BY 1:2 AND COST; '
              'NO AUTOMATIC REPRICING OR FILL PROBABILITY. '
              if result.get("pricing_mode") == "SMART FILL" else
              'PRIORITY: ASK (NATURAL) > IN-MARKET LAST > MID > UNQUOTED LAST*; '
-             'THEN CLOSEST BREAKEVEN AND LOWEST COST. ')
+             'THEN CLOSEST BREAKEVEN AND LOWEST COST. ') +
             f'TARGET BREAKEVEN {_money(result["target"])}'
             f' ({"SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM"}). '
             f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "NO CEILING"} PER SPREAD. '
