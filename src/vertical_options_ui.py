@@ -63,6 +63,10 @@ _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_vo_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
 )
+_PRICING_PREFERENCE_COMPONENT = components.declare_component(
+    "raj_vo_pricing_preference_v1",
+    path=str(Path(__file__).parent / "components" / "vo_pricing_preference_v1"),
+)
 
 _VERTICAL_OPTIONS_CSS = """
 <style>
@@ -798,6 +802,45 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     }
 
 
+def _pricing_mode_flip_switch() -> str | None:
+    """Restore the last browser pricing mode before showing the live switch.
+
+    Separate session memory survives tab changes; the browser bridge survives
+    reloads in the same browser profile. Never write a default before reading.
+    """
+    if not st.session_state.get("_vo_pricing_mode_hydrated", False):
+        restored = _PRICING_PREFERENCE_COMPONENT(
+            action="read", key="vo_pricing_preference_reader", default=None,
+        )
+        if not isinstance(restored, dict) or not restored.get("ready"):
+            return None  # No transient NORMAL mode may overwrite saved SMART.
+        previous = restored.get("mode")
+        if previous not in {"NORMAL", "SMART FILL"}:
+            # Migrate an existing segmented selection in this live session.
+            previous = st.session_state.get("vo_pricing_mode", "NORMAL")
+        mode = previous if previous in {"NORMAL", "SMART FILL"} else "NORMAL"
+        st.session_state["_vo_pricing_mode_preference"] = mode
+        st.session_state["_vo_pricing_mode_hydrated"] = True
+
+    # Streamlit can clean up a widget key when another top-level tab renders.
+    # The non-widget preference remains stable for this server-side session.
+    if "vo_smart_fill" not in st.session_state:
+        st.session_state["vo_smart_fill"] = (
+            st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
+        )
+    smart = st.toggle(
+        "SMART FILL", key="vo_smart_fill",
+        help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
+             "Saved for this browser profile, including after page reload.",
+    )
+    mode = "SMART FILL" if smart else "NORMAL"
+    st.session_state["_vo_pricing_mode_preference"] = mode
+    _PRICING_PREFERENCE_COMPONENT(
+        action="write", value=mode, key="vo_pricing_preference_writer", default=None,
+    )
+    return mode
+
+
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session) -> None:
     with st.container(key="vertical_options_workspace"):
@@ -941,12 +984,9 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
             '</span></span></span></div>'
         )
-        pricing_mode = st.segmented_control(
-            "PRICING MODE", ("NORMAL", "SMART FILL"),
-            default="NORMAL", key="vo_pricing_mode", label_visibility="collapsed",
-            help="NORMAL = existing scanner. SMART FILL = liquidity-aware "
-                 "mid-to-ask limit with a 2:1/cost cap and optional manual ladder.",
-        ) or "NORMAL"
+        pricing_mode = _pricing_mode_flip_switch()
+        if pricing_mode is None:
+            return
         last_result = st.session_state.get("vo_scan_result") or {}
         with st.form("vo_scan_form", clear_on_submit=False):
             fields = st.columns([1.05, 1.8, 1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
