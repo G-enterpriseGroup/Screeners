@@ -107,15 +107,25 @@ def price_vertical_quote(
     sell_ask: float | None,
     width: float,
     max_cost: float | None,
+    pricing_mode: str = "NORMAL",
+    buy_volume: float | None = None,
+    sell_volume: float | None = None,
+    buy_open_interest: float | None = None,
+    sell_open_interest: float | None = None,
 ) -> dict[str, Any] | None:
-    """Choose the most execution-friendly debit that STILL meets 1:2 and cost.
+    """Choose a debit under the selected NORMAL or SMART FILL execution policy.
 
     ASK is the two-leg natural debit (BUY ask - SELL bid), not one option's
     ask. LAST is eligible only if it is within the current spread market
     at or above its midpoint; an old Last below MID is not a likely fill.
     Missing bid/ask yields a visible LAST* estimate only, never an order.
+    SMART FILL offers a conservative, liquidity-aware *indicative* price
+    between MID and natural ASK, capped by 2:1 reward/risk and max cost.
+    It is not a calibrated fill probability and cannot place orders.
     No quote basis is a guarantee of execution or liquidity.
     """
+    if pricing_mode not in {"NORMAL", "SMART FILL"}:
+        raise ValueError("Invalid Vertical Options pricing mode.")
     spread_width = _finite_number(width, positive=True)
     budget = None if max_cost is None else _finite_number(max_cost, positive=True)
     if spread_width is None or (max_cost is not None and budget is None):
@@ -129,17 +139,50 @@ def price_vertical_quote(
     quoted = all(value is not None for value in (bb, ba, sb, sa))
     choices: list[tuple[str, float, int, bool]] = []
     quote_bid = quote_mid = quote_ask = None
+    liquidity = "UNVERIFIED"
     if quoted:
         if bb > ba or sb > sa:
             return None  # Inverted/stale single-leg markets must not be trusted.
         quote_bid = round(bb - sa, 4)
         quote_ask = round(ba - sb, 4)
         quote_mid = round((quote_bid + quote_ask) / 2, 4)
-        choices.append(("ASK", quote_ask, 0, True))
-        if (last_debit is not None
-                and quote_mid - .005 <= last_debit <= quote_ask + .005):
-            choices.append(("LAST", last_debit, 1, True))
-        choices.append(("MID", quote_mid, 2, True))
+        if pricing_mode == "SMART FILL":
+            # Volume/OI describe the individual legs, not executable spread
+            # depth. No bid/ask size, quote timestamp, or fill history is
+            # available through the existing normalized chain.
+            volumes = [_finite_number(v) for v in (buy_volume, sell_volume)]
+            interests = [_finite_number(v) for v in (buy_open_interest, sell_open_interest)]
+            if all(v is not None for v in volumes + interests):
+                if min(volumes) >= 20 and min(interests) >= 100:
+                    liquidity = "ACTIVE LEGS"
+                elif min(volumes) < 5 or min(interests) < 20:
+                    liquidity = "THIN LEGS"
+                else:
+                    liquidity = "MODERATE LEGS"
+            half_gap = max(0.0, quote_ask - quote_mid)
+            fraction = 0.50 if half_gap <= .05 else (0.35 if half_gap <= .20 else 0.25)
+            if liquidity == "ACTIVE LEGS":
+                fraction = min(fraction, .25)
+            elif liquidity == "THIN LEGS":
+                fraction = min(fraction, .20)  # Do not chase thin markets.
+            # Round *up* to the next cent rather than guessing sub-cent limit
+            # precision. Cap the order against both independent risk limits.
+            target_cents = math.ceil((quote_mid + fraction * half_gap) * 100 - 1e-8)
+            max_debit = min(spread_width / (1 + _MIN_REWARD_RISK),
+                            budget / 100 if budget is not None else math.inf,
+                            quote_ask)
+            capped_cents = min(target_cents, math.floor(max_debit * 100 + 1e-8))
+            if (quote_mid > 0 and capped_cents >= math.ceil(quote_mid * 100 - 1e-8)
+                    and capped_cents >= 1):
+                choices.append(("SMART", capped_cents / 100, 0, True))
+            else:
+                choices.append(("MID", quote_mid, 2, True))
+        else:
+            choices.append(("ASK", quote_ask, 0, True))
+            if (last_debit is not None
+                    and quote_mid - .005 <= last_debit <= quote_ask + .005):
+                choices.append(("LAST", last_debit, 1, True))
+            choices.append(("MID", quote_mid, 2, True))
     elif last_debit is not None:
         choices.append(("LAST*", last_debit, 3, False))
 
@@ -155,8 +198,42 @@ def price_vertical_quote(
             "grade": grade, "orderable": orderable,
             "spread_bid": quote_bid, "spread_mid": quote_mid,
             "spread_ask": quote_ask, "last_debit": last_debit,
+            "liquidity_signal": liquidity if pricing_mode == "SMART FILL" else "",
         }
     return None
+
+
+def smart_fill_ladder(
+    candidate: dict[str, Any], max_cost: float | None, *, levels: int = 4,
+) -> list[float]:
+    """Manual, risk-capped limit choices for one SMART-quoted candidate.
+
+    Selecting a rung never changes or submits a broker order by itself.
+    """
+    if candidate.get("basis") != "SMART":
+        return []
+    start = _finite_number(candidate.get("debit"), positive=True)
+    natural = _finite_number(candidate.get("spread_ask"), positive=True)
+    midpoint = _finite_number(candidate.get("spread_mid"))
+    width = _finite_number(candidate.get("width"), positive=True)
+    if None in (start, natural, midpoint, width):
+        return []
+    budget = None if max_cost is None else _finite_number(max_cost, positive=True)
+    if max_cost is not None and budget is None:
+        return []
+    limit = min(natural, width / (1 + _MIN_REWARD_RISK),
+                budget / 100 if budget is not None else math.inf)
+    ceiling_cents = math.floor(limit * 100 + 1e-8)
+    current = math.ceil(start * 100 - 1e-8)
+    gap = natural - midpoint
+    step = 1 if gap <= .20 else (5 if gap <= 1 else 10)
+    ladder = [round(current / 100, 2)]
+    for _ in range(max(0, min(int(levels), 8) - 1)):
+        current += step
+        if current > ceiling_cents:
+            break
+        ladder.append(round(current / 100, 2))
+    return ladder
 
 
 def scan_vertical_candidates(
@@ -167,6 +244,7 @@ def scan_vertical_candidates(
     target_breakeven: float,
     max_cost: float | None,
     max_per_expiration: int | None = 20,
+    pricing_mode: str = "NORMAL",
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
 
@@ -184,6 +262,8 @@ def scan_vertical_candidates(
     spot = _finite_number(spot_last, positive=True)
     target = _finite_number(target_breakeven, positive=True)
     budget = None if max_cost is None else _finite_number(max_cost)
+    if pricing_mode not in {"NORMAL", "SMART FILL"}:
+        raise ValueError("Invalid Vertical Options pricing mode.")
     if not ticker or spot is None or target is None or (max_cost is not None and budget is None):
         raise ValueError("Ticker, underlying Last, breakeven, and cost must be valid.")
     if max_per_expiration is not None and (type(max_per_expiration) is not int or max_per_expiration < 1):
@@ -216,6 +296,8 @@ def scan_vertical_candidates(
             "bid": _finite_number(raw.get("bid")),
             "ask": _finite_number(raw.get("ask")),
             "osi": str(raw.get("osi") or "").strip(),
+            "volume": _finite_number(raw.get("volume")),
+            "open_interest": _finite_number(raw.get("open_interest")),
         }
         group = groups.setdefault((expiry, side), {})
         key = (strike, contract["osi"])
@@ -245,7 +327,10 @@ def scan_vertical_candidates(
                     buy_last=buy["last"], sell_last=sell["last"],
                     buy_bid=buy["bid"], buy_ask=buy["ask"],
                     sell_bid=sell["bid"], sell_ask=sell["ask"],
-                    width=width, max_cost=budget,
+                    width=width, max_cost=budget, pricing_mode=pricing_mode,
+                    buy_volume=buy["volume"], sell_volume=sell["volume"],
+                    buy_open_interest=buy["open_interest"],
+                    sell_open_interest=sell["open_interest"],
                 )
                 if price is None:
                     continue
@@ -281,6 +366,7 @@ def scan_vertical_candidates(
                     "buy_osi": buy["osi"], "sell_osi": sell["osi"],
                     "buy_last": buy["last"], "buy_bid": buy["bid"], "buy_ask": buy["ask"],
                     "sell_last": sell["last"], "sell_bid": sell["bid"], "sell_ask": sell["ask"],
+                    "pricing_mode": pricing_mode,
                     **price, "width": width,
                     "max_profit": profit, "max_loss": cost,
                     "breakeven": breakeven, "reward_risk": ratio,
