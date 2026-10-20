@@ -1153,7 +1153,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 '(BUY LOWER/SELL HIGHER CALL OR BUY HIGHER/SELL LOWER PUT). '
                 ('FILL = SMART FILL BASIS (SMART / MID / LAST*). '
                  if result.get("pricing_mode") == "SMART FILL" else
-                 'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ')
+                 'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ') +
                 'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'
             )
             if checked_ids:
