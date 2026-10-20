@@ -1150,7 +1150,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                 f'FROM {result["loaded_expirations"]} COMPLETE CHAINS // '
                 f'{len(checked_ids)} CHECKED // LIME GREEN = ANNUAL BEST CALL; TONINO RED = ANNUAL BEST PUT. '
                 'ALL QUALIFIED TESTS EVERY UNIQUE VALID STRIKE PAIR PER EXPIRATION '
-                '(BUY LOWER/SELL HIGHER CALL OR BUY HIGHER/SELL LOWER PUT). '
+                '(BUY LOWER/SELL HIGHER CALL OR BUY HIGHER/SELL LOWER PUT). ' +
                 ('FILL = SMART FILL BASIS (SMART / MID / LAST*). '
                  if result.get("pricing_mode") == "SMART FILL" else
                  'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ') +
