@@ -232,11 +232,70 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertIn("natural ASK first when it meets your 2:1", ui)
         self.assertIn("Suggests a limit between spread MID and natural ASK", ui)
         self.assertIn("Does not guarantee a fill or place orders automatically.", ui)
-        self.assertIn('key="vo_pricing_mode", label_visibility="collapsed"', ui)
+        self.assertIn('pricing_mode = _pricing_mode_flip_switch()', ui)
+        self.assertIn('st.toggle(', ui)
+        self.assertIn('key="vo_smart_fill"', ui)
+
+    def test_pricing_mode_is_hydrated_before_writing_and_restored_after_tab_change(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        session = {"vo_pricing_mode": "NORMAL"}  # Browser value takes precedence.
+        with (patch.object(vo.st, "session_state", session),
+              patch.object(vo, "_PRICING_PREFERENCE_COMPONENT") as memory,
+              patch.object(vo.st, "toggle", return_value=True) as toggle):
+            memory.side_effect = [
+                None,  # Browser has not yet responded.
+                {"ready": True, "mode": "SMART FILL", "available": True},
+                None,  # Write the restored mode after hydration.
+                None,  # Subsequent render write.
+            ]
+            self.assertIsNone(vo._pricing_mode_flip_switch())
+            self.assertEqual(memory.call_count, 1)  # No default written!
+            self.assertEqual(vo._pricing_mode_flip_switch(), "SMART FILL")
+            self.assertTrue(session["vo_smart_fill"])
+            self.assertTrue(session["_vo_pricing_mode_hydrated"])
+            self.assertEqual(memory.call_args.kwargs["value"], "SMART FILL")
+            self.assertEqual(toggle.call_count, 1)
+            del session["vo_smart_fill"]  # Widget is removed on a tab switch.
+            self.assertEqual(vo._pricing_mode_flip_switch(), "SMART FILL")
+            self.assertTrue(session["vo_smart_fill"])
+
+    def test_pricing_mode_restores_normal_and_persists_explicit_flip(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        session = {}
+        with (patch.object(vo.st, "session_state", session),
+              patch.object(vo, "_PRICING_PREFERENCE_COMPONENT") as memory,
+              patch.object(vo.st, "toggle", return_value=False)):
+            memory.side_effect = [
+                {"ready": True, "mode": "NORMAL", "available": True},
+                None,
+                None,
+            ]
+            self.assertEqual(vo._pricing_mode_flip_switch(), "NORMAL")
+            self.assertFalse(session["vo_smart_fill"])
+            self.assertEqual(memory.call_args.kwargs["value"], "NORMAL")
+        session["vo_smart_fill"] = True
+        with (patch.object(vo.st, "session_state", session),
+              patch.object(vo, "_PRICING_PREFERENCE_COMPONENT") as memory,
+              patch.object(vo.st, "toggle", return_value=True)):
+            self.assertEqual(vo._pricing_mode_flip_switch(), "SMART FILL")
+            self.assertEqual(session["_vo_pricing_mode_preference"], "SMART FILL")
+            self.assertEqual(memory.call_args.kwargs["value"], "SMART FILL")
+
+    def test_pricing_mode_browser_bridge_uses_persistent_local_storage(self):
+        browser = (Path(__file__).resolve().parents[1]
+                   / "src/components/vo_pricing_preference_v1/index.html").read_text()
+        self.assertIn('localStorage.getItem(KEY)', browser)
+        self.assertIn('localStorage.setItem(KEY, value)', browser)
+        self.assertIn('args.action==="read"', browser)
+        self.assertIn('args.action==="write"', browser)
+        self.assertIn('streamlit:setFrameHeight",\{height:0\}', browser)
+        self.assertIn('raj-terminal-vo-pricing-mode-v1', browser)
 
     def test_smart_mode_requotes_and_has_no_automatic_send_controls(self):
         ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
-        self.assertIn('("NORMAL", "SMART FILL")', ui)
+        self.assertIn('mode = "SMART FILL" if smart else "NORMAL"', ui)
         self.assertIn("def _reprice_cached_vertical_scan(", ui)
         self.assertIn('["GOOD_FOR_DAY"] if smart_mode', ui)
         self.assertIn('checked_price["debit"] != candidate["debit"]', ui)
