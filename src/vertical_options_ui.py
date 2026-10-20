@@ -252,7 +252,7 @@ _VERTICAL_OPTIONS_CSS = """
     white-space:normal;text-align:left;visibility:hidden;opacity:0;
     pointer-events:none;
 }
-.st-key-vertical_options_workspace .vo-mode-help:last-child .vo-mode-tooltip{
+.st-key-vertical_options_workspace .vo-mode-help--smart .vo-mode-tooltip{
     left:auto;right:0;
 }
 .st-key-vertical_options_workspace .vo-mode-help:hover .vo-mode-tooltip,
@@ -934,7 +934,7 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             'and cost limits; otherwise qualifying LAST or MID. '
             'Unquoted LAST* is information only. No guaranteed fill.'
             '</span></span></span>'
-            '<span>SMART FILL <span class="vo-mode-help" tabindex="0" aria-label="Smart Fill mode explanation">?'
+            '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
             '<span class="vo-mode-tooltip" role="tooltip">'
             'Suggests a limit between spread MID and natural ASK using quote width '
             'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
