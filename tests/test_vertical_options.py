@@ -290,7 +290,7 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertIn('localStorage.setItem(KEY, value)', browser)
         self.assertIn('args.action==="read"', browser)
         self.assertIn('args.action==="write"', browser)
-        self.assertIn('streamlit:setFrameHeight",\{height:0\}', browser)
+        self.assertIn('streamlit:setFrameHeight",{height:0}', browser)
         self.assertIn('raj-terminal-vo-pricing-mode-v1', browser)
 
     def test_smart_mode_requotes_and_has_no_automatic_send_controls(self):
