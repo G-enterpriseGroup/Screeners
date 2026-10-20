@@ -229,6 +229,36 @@ _VERTICAL_OPTIONS_CSS = """
     font:800 .62rem/1.2 "Courier New",monospace;
 }
 .vo-note .muted{color:var(--vo-muted)!important;-webkit-text-fill-color:var(--vo-muted)!important;}
+/* Vertical Options pricing help only: compact hover/focus tooltips. */
+.st-key-vertical_options_workspace .vo-mode-guide{
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    margin:0;font:900 .66rem/1.25 "Courier New",monospace;
+    color:var(--vo-orange);
+}
+.st-key-vertical_options_workspace .vo-mode-help{
+    display:inline-flex;align-items:center;justify-content:center;
+    position:relative;vertical-align:middle;margin-left:3px;
+    width:14px;height:14px;border:1px solid var(--vo-orange);
+    border-radius:50%;cursor:help;outline-offset:2px;
+    font:900 10px/1 "Courier New",monospace;
+}
+.st-key-vertical_options_workspace .vo-mode-tooltip{
+    position:absolute;top:calc(100% + 6px);left:0;z-index:999;
+    width:max-content;max-width:min(320px,calc(100vw - 32px));
+    box-sizing:border-box;padding:8px 10px;
+    border:1px solid var(--vo-orange);background:#050505;
+    color:#f5f5f5;-webkit-text-fill-color:#f5f5f5;
+    font:700 12px/1.4 "Courier New",monospace;
+    white-space:normal;text-align:left;visibility:hidden;opacity:0;
+    pointer-events:none;
+}
+.st-key-vertical_options_workspace .vo-mode-help--smart .vo-mode-tooltip{
+    left:auto;right:0;
+}
+.st-key-vertical_options_workspace .vo-mode-help:hover .vo-mode-tooltip,
+.st-key-vertical_options_workspace .vo-mode-help:focus .vo-mode-tooltip{
+    visibility:visible;opacity:1;
+}
 .vo-grid{
     display:grid;
     grid-template-columns:repeat(6,minmax(0,1fr));
@@ -896,9 +926,24 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
         # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
         # Switching modes reprices the cached snapshot only; it never fetches
         # quotes, previews a broker order or submits one.
+        st.html(
+            '<div class="vo-mode-guide">PRICING MODE'
+            '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+            '<span class="vo-mode-tooltip" role="tooltip">'
+            'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
+            'and cost limits; otherwise qualifying LAST or MID. '
+            'Unquoted LAST* is information only. No guaranteed fill.'
+            '</span></span></span>'
+            '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
+            '<span class="vo-mode-tooltip" role="tooltip">'
+            'Suggests a limit between spread MID and natural ASK using quote width '
+            'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
+            'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
+            '</span></span></span></div>'
+        )
         pricing_mode = st.segmented_control(
             "PRICING MODE", ("NORMAL", "SMART FILL"),
-            default="NORMAL", key="vo_pricing_mode",
+            default="NORMAL", key="vo_pricing_mode", label_visibility="collapsed",
             help="NORMAL = existing scanner. SMART FILL = liquidity-aware "
                  "mid-to-ask limit with a 2:1/cost cap and optional manual ladder.",
         ) or "NORMAL"
