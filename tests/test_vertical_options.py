@@ -221,6 +221,19 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertEqual(annual, {smart[0]["id"]})
         self.assertEqual(smart[0]["pricing_mode"], "SMART FILL")
 
+    def test_mode_help_icons_have_distinct_hover_and_keyboard_explanations(self):
+        ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
+        self.assertIn('aria-label="Normal mode explanation"', ui)
+        self.assertIn('aria-label="Smart Fill mode explanation"', ui)
+        self.assertEqual(ui.count('role="tooltip"'), 2)
+        self.assertIn('tabindex="0"', ui)
+        self.assertIn(".vo-mode-help:hover .vo-mode-tooltip", ui)
+        self.assertIn(".vo-mode-help:focus .vo-mode-tooltip", ui)
+        self.assertIn("natural ASK first when it meets your 2:1", ui)
+        self.assertIn("Suggests a limit between spread MID and natural ASK", ui)
+        self.assertIn("Does not guarantee a fill or place orders automatically.", ui)
+        self.assertIn('key="vo_pricing_mode", label_visibility="collapsed"', ui)
+
     def test_smart_mode_requotes_and_has_no_automatic_send_controls(self):
         ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
         self.assertIn('("NORMAL", "SMART FILL")', ui)
