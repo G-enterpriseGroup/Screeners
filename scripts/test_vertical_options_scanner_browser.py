@@ -25,6 +25,7 @@ from selenium.common.exceptions import (
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 
 
@@ -252,6 +253,22 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
+            for label, text in (
+                ("Normal mode explanation", "natural ASK first"),
+                ("Smart Fill mode explanation", "between spread MID and natural ASK"),
+            ):
+                help_icon = wait.until(lambda _: driver.find_element(
+                    By.CSS_SELECTOR, f'.vo-mode-help[aria-label="{label}"]'
+                ))
+                tooltip = help_icon.find_element(By.CSS_SELECTOR, ".vo-mode-tooltip")
+                assert text in (
+                    driver.execute_script("return arguments[0].textContent", tooltip) or ""
+                )
+                ActionChains(driver).move_to_element(help_icon).perform()
+                wait.until(lambda _: driver.execute_script(
+                    "return getComputedStyle(arguments[0]).visibility", tooltip
+                ) == "visible")
+            ActionChains(driver).move_to_element(form).perform()
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]').send_keys("SPY")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').send_keys("100")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("500")
