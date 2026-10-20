@@ -196,6 +196,24 @@ def checked_count(driver: webdriver.Chrome) -> int:
     )
 
 
+def pricing_preference_in_browser(driver) -> str | None:
+    """Read the same isolated iframe localStorage that backs the flip switch."""
+    frames = driver.find_elements(By.TAG_NAME, "iframe")
+    for frame in frames:
+        try:
+            driver.switch_to.frame(frame)
+            saved = driver.execute_script(
+                "return window.localStorage.getItem('raj-terminal-vo-pricing-mode-v1')"
+            )
+            if saved in ("NORMAL", "SMART FILL"):
+                return saved
+        except Exception:
+            pass
+        finally:
+            driver.switch_to.default_content()
+    return None
+
+
 def exact_optionstrat_url(values: list[str]) -> str:
     symbol, side, expiration, buy, sell = values[:5]
     code = datetime.strptime(expiration, "%b-%d-%y").strftime("%y%m%d")
@@ -253,6 +271,22 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
+            # Flip switch saves immediately and must rehydrate after a hard reload.
+            flip = wait.until(lambda _: driver.find_element(
+                By.CSS_SELECTOR, ".st-key-vo_smart_fill label"
+            ))
+            flip.click()
+            wait.until(lambda _: pricing_preference_in_browser(driver) == "SMART FILL")
+            driver.refresh()
+            form = wait.until(ready_scanner_form)
+            wait.until(lambda _: driver.execute_script(
+                "const i=document.querySelector('.st-key-vo_smart_fill input');"
+                "return i && i.checked;"
+            ))
+            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            wait.until(lambda _: pricing_preference_in_browser(driver) == "NORMAL")
+            form = wait.until(ready_scanner_form)
+            print("Vertical Options flip toggle persistence PASS (refresh + both positions)")
             for label, text in (
                 ("Normal mode explanation", "natural ASK first"),
                 ("Smart Fill mode explanation", "between spread MID and natural ASK"),
