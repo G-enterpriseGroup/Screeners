@@ -6,6 +6,7 @@ read-only E*TRADE-shaped quotes. No brokerage login or order is made.
 from __future__ import annotations
 
 import csv
+import base64
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import zlib
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -790,8 +792,7 @@ def test() -> None:
                             "raj-terminal-gex-snapshots-v1:" + token,
                         )
                         if stored:
-                            from src.gex_snapshot_cache import _unpack
-                            decoded = _unpack(stored)
+                            decoded = json.loads(zlib.decompress(base64.b64decode(stored["packed"])))
                             if "SPY" in (decoded.get("cboe") or {}).get("results", {}) and "ETRADE_TEST" in decoded.get("etrade", {}):
                                 return True
                     finally:
