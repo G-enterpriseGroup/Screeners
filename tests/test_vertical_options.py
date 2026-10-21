@@ -240,12 +240,53 @@ class VerticalOptionsTests(unittest.TestCase):
         ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
         self.assertIn('.st-key-vertical_options_workspace [data-testid="stTextInput"] input,', ui)
         self.assertNotIn('.st-key-vertical_options_workspace input,', ui)
-        self.assertIn('.st-key-vo_smart_fill label > div:first-of-type', ui)
+        self.assertNotIn('.st-key-vo_smart_fill label > div:first-of-type', ui)
         self.assertIn('label_visibility="collapsed"', ui)
-        self.assertIn('mode_guide_col, mode_switch_col, _ = st.columns(', ui)
+        self.assertIn('mode_guide_col, mode_switch_col, smart_label_col = st.columns(', ui)
         self.assertIn('with mode_switch_col:', ui)
         self.assertIn('key="vo_pricing_preference_reader", height=0', ui)
         self.assertIn('key="vo_pricing_preference_writer", height=0', ui)
+
+    def test_ticker_preview_is_last_only_cached_and_never_loads_chains(self):
+        from unittest.mock import Mock, patch
+        import src.vertical_options_ui as vo
+        broker = Mock(is_offline=False)
+        broker.get_quote.return_value = {"lastTrade": 123.45, "companyName": "Test Fund"}
+        with patch.object(vo.st, "session_state", {}), patch.object(vo, "options_market_client", return_value=broker):
+            first = vo._ticker_quote_preview(broker, "SPY", lambda: None)
+            self.assertEqual(first["last"], 123.45)
+            self.assertEqual(first["name"], "Test Fund")
+            self.assertEqual(first, vo._ticker_quote_preview(broker, "SPY", lambda: None))
+            broker.get_quote.assert_called_once_with("SPY")
+            broker.get_option_chain.assert_not_called()
+            broker.get_option_expirations.assert_not_called()
+            self.assertEqual(vo._ticker_quote_preview(broker, "", lambda: None), {})
+
+    def test_preview_falls_back_to_public_and_does_not_invent_last_from_mid(self):
+        from unittest.mock import Mock, patch
+        import src.vertical_options_ui as vo
+        broker = Mock(is_offline=False)
+        broker.get_quote.return_value = {"bid": 100, "ask": 102}
+        public = Mock()
+        public.get_quote.return_value = {"lastTrade": 101.25, "companyName": "Public Fund"}
+        with patch.object(vo.st, "session_state", {}), patch.object(vo, "options_market_client", side_effect=[broker, public]):
+            quote = vo._ticker_quote_preview(broker, "SPY", lambda: None)
+            self.assertEqual((quote["last"], quote["source"]), (101.25, "YFINANCE"))
+        with patch.object(vo.st, "session_state", {}), patch.object(vo, "options_market_client", return_value=broker):
+            self.assertIsNone(vo._ticker_quote_preview(None, "SPY", lambda: None)["last"])
+
+    def test_walls_use_exact_cboe_ticker_and_correct_vault_only(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        result = {"SPY": {"callWall": {"strike": 110}, "putWall": {"strike": 90}}}
+        with patch.object(vo.st, "session_state", {}), patch.object(vo, "cboe_results", return_value=result) as read:
+            markup = vo._cboe_wall_markup("SPY", "terminal-vault")
+            self.assertIn("CALL WALL $110.00", markup)
+            self.assertIn("PUT WALL $90.00", markup)
+            read.assert_called_once_with("terminal-vault")
+            self.assertIn("Not in GEX", vo._cboe_wall_markup("SPYM", "terminal-vault"))
+        with patch.object(vo.st, "session_state", {"_gex_state": {"tickers": []}}), patch.object(vo, "cboe_results", return_value=result):
+            self.assertIn("Not in GEX", vo._cboe_wall_markup("SPY", "terminal-vault"))
 
     def test_pricing_mode_is_hydrated_before_writing_and_restored_after_tab_change(self):
         from unittest.mock import patch

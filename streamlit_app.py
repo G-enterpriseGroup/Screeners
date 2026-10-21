@@ -757,7 +757,7 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
         )
 
     elif active_tab == "VERTICAL OPTIONS":
-        render_vertical_options(_etrade_client(), _touch_etrade_session)
+        render_vertical_options(_etrade_client(), _touch_etrade_session, vault_key=_trade_access_code_hash())
 
     elif active_tab == "PROTECTIVE PUTS":
         render_protective_puts(_etrade_client(), _touch_etrade_session)

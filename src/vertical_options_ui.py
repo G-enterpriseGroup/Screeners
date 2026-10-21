@@ -32,7 +32,7 @@ import math
 from pathlib import Path
 import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import quote as url_quote
 
@@ -41,6 +41,7 @@ import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
 from src.option_book import extract_option_rows
+from src.gex_cboe import cboe_results
 from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
@@ -249,32 +250,21 @@ _VERTICAL_OPTIONS_CSS = """
     line-height:0!important;
     overflow:hidden!important;
 }
-/* Keep the native pricing flip visible within this feature, even with dark theme. */
+/* Same native switch as Risk Sizing; labels flank the unchanged track. */
 .st-key-vertical_options_workspace .st-key-vo_smart_fill label{
     display:inline-flex!important;
     align-items:center!important;
-    gap:6px!important;
     white-space:nowrap!important;
 }
-.st-key-vertical_options_workspace .st-key-vo_smart_fill label > div:first-of-type{
-    outline:1px solid var(--vo-orange)!important;
-    outline-offset:1px;
-    border-radius:999px!important;
-    background:var(--vo-border)!important;
-}
-.st-key-vertical_options_workspace .st-key-vo_smart_fill label > div:first-of-type > div{
-    background:var(--vo-orange)!important;
-}
-.st-key-vertical_options_workspace .st-key-vo_smart_fill label:has(input:checked) > div:first-of-type{
-    background:var(--vo-orange)!important;
-}
-.st-key-vertical_options_workspace .st-key-vo_smart_fill label:has(input:checked) > div:first-of-type > div{
-    background:#000!important;
-}
+.st-key-vertical_options_workspace .st-key-vo_scan_form{padding:0!important;border:0!important;}
+.st-key-vertical_options_workspace .vo-company-box{gap:8px;}
+.st-key-vertical_options_workspace .vo-company-name{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;}
+.st-key-vertical_options_workspace .vo-last{flex:none;color:var(--vo-green)!important;-webkit-text-fill-color:var(--vo-green)!important;}
+.st-key-vertical_options_workspace .vo-gex-context{margin:2px 0 0;font:800 .66rem/1.3 "Courier New",monospace;color:var(--vo-orange);}
 /* Vertical Options pricing help only: compact hover/focus tooltips. */
 .st-key-vertical_options_workspace .vo-mode-guide{
     display:flex;align-items:center;gap:14px;flex-wrap:wrap;
-    margin:0;font:900 .66rem/1.25 "Courier New",monospace;
+    margin:0;font:700 .82rem/1.1 "Courier New",monospace;
     color:var(--vo-orange);
 }
 .st-key-vertical_options_workspace .vo-mode-help{
@@ -363,15 +353,72 @@ def _date_label(value: date) -> str:
     return value.strftime("%b-%d-%y")
 
 
-def _company_display_markup(symbol: str, resolved_name: str = "") -> str:
+def _company_display_markup(symbol: str, resolved_name: str = "",
+                            last: Any = None, source: str = "") -> str:
     name = str(resolved_name or company_name(symbol) or "").strip() or "—"
     safe = html.escape(name)
     return (
         '<div class="vo-company-field">'
         '<div class="vo-company-label">Company / ETF</div>'
-        f'<div class="vo-company-box" title="{safe}">{safe}</div>'
+        f'<div class="vo-company-box" title="{safe}">'
+        f'<span class="vo-company-name">{safe}</span>'
+        f'<span class="vo-last" title="{html.escape(source)} Last">LAST {_money(last)}</span></div>'
         '</div>'
     )
+
+
+# ==============================
+# TICKER QUOTE / READ-ONLY CBOE CONTEXT
+# ==============================
+def _ticker_quote_preview(client, symbol: str, touch_session) -> dict[str, Any]:
+    """Quote only on ticker entry; short session cache prevents edit/flip traffic."""
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-^]{0,14}", symbol):
+        st.session_state.pop("_vo_preview_identity", None)
+        return {}
+    source = "E*TRADE" if client is not None and not getattr(client, "is_offline", False) else "YFINANCE"
+    cache = st.session_state.setdefault("_vo_ticker_quotes", {})
+    key = f"{source}:{symbol}"
+    cached = cache.get(key)
+    same_ticker = st.session_state.get("_vo_preview_identity") == key
+    st.session_state["_vo_preview_identity"] = key
+    if cached and (same_ticker or time.time() - cached["loaded_at"] < 60):
+        return cached
+    for market_client, label in ((options_market_client(client), source),
+                                 (None, "YFINANCE")):
+        if market_client is None:
+            if source == "YFINANCE":
+                break
+            market_client = options_market_client(None)
+        try:
+            payload = market_client.get_quote(symbol)
+            quote = quote_summary(payload)
+            # Never substitute bid/ask MID for an unavailable last trade.
+            last = _entered_price(find_number(payload, "lastTrade", "lastPrice"), "Last price")
+            if label == "E*TRADE":
+                touch_session()
+            cached = {"last": last, "name": quote.get("description", ""),
+                      "source": label, "loaded_at": time.time()}
+            break
+        except Exception:
+            cached = None
+    cached = cached or {"last": None, "name": "", "source": "QUOTE UNAVAILABLE", "loaded_at": time.time()}
+    cache[key] = cached
+    return cached
+
+
+def _cboe_wall_markup(symbol: str, vault_key: str) -> str:
+    """Use only the exact ticker in CBOE Overview's existing result vault."""
+    result = cboe_results(vault_key).get(symbol)
+    state = st.session_state.get("_gex_state")
+    if isinstance(state, dict) and symbol not in state.get("tickers", []):
+        result = None
+    if not isinstance(result, dict):
+        return '<div class="vo-gex-context">CBOE // Not in GEX</div>'
+    call = _money((result.get("callWall") or {}).get("strike"))
+    put = _money((result.get("putWall") or {}).get("strike"))
+    stamp = html.escape(str(result.get("snapshotFetchedAt") or ""))
+    return (f'<div class="vo-gex-context" title="CBOE delayed snapshot {stamp}">'
+            f'CBOE // CALL WALL {call} &nbsp; | &nbsp; PUT WALL {put}</div>')
 
 
 def _account_key(account: dict[str, Any]) -> str:
@@ -880,7 +927,7 @@ def _pricing_mode_flip_switch() -> str | None:
 
 
 @st.fragment
-def _render_vertical_options_fragment(client, touch_session) -> None:
+def _render_vertical_options_fragment(client, touch_session, vault_key: str = "default") -> None:
     with st.container(key="vertical_options_workspace"):
         _render_saved_spread_drafts()
         st.markdown(
@@ -905,27 +952,30 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
-            mode_guide_col, mode_switch_col, _ = st.columns(
-                [4.0, .6, .4], gap="small", vertical_alignment="center"
+            mode_guide_col, mode_switch_col, smart_label_col = st.columns(
+                [1.0, .4, 1.0], gap="small", vertical_alignment="center"
             )
             with mode_guide_col:
                 st.html(
-                    '<div class="vo-mode-guide">PRICING MODE'
+                    '<div class="vo-mode-guide" style="justify-content:flex-end">'
                     '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
                     'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
                     'and cost limits; otherwise qualifying LAST or MID. '
                     'Unquoted LAST* is information only. No guaranteed fill.'
-                    '</span></span></span>'
-                    '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
+                    '</span></span></span></div>'
+                )
+            with mode_switch_col:
+                pricing_mode = _pricing_mode_flip_switch()
+            with smart_label_col:
+                st.html(
+                    '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
                     'Suggests a limit between spread MID and natural ASK using quote width '
                     'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
                     'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
                     '</span></span></span></div>'
                 )
-            with mode_switch_col:
-                pricing_mode = _pricing_mode_flip_switch()
             if pricing_mode is None:
                 return
         if st.session_state.get("vo_list_open"):
@@ -1032,31 +1082,42 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             st.session_state["_vo_auto_target"] = {"symbol": pending_target[0], "text": seeded_text}
 
         last_result = st.session_state.get("vo_scan_result") or {}
-        with st.form("vo_scan_form", clear_on_submit=False):
-            fields = st.columns([1.05, 1.8, 1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
-            with fields[0]:
-                symbol_text = st.text_input(
-                    "Ticker", key="vo_symbol_value", placeholder="SPY",
-                    help="Enter the ticker symbol; company / ETF name appears automatically.",
-                )
-            symbol = str(symbol_text or "").strip().upper()
-            with fields[1]:
-                st.html(_company_display_markup(symbol, last_result.get("name", "")
-                                                if last_result.get("symbol") == symbol else ""))
-            with fields[2]:
+        # Ticker lives outside the submit form so its quote/name update on
+        # Enter or blur. Breakeven/cost retain Enter-to-scan form semantics.
+        fields = st.columns([1.05, 1.8, 3.1], gap="small", vertical_alignment="bottom")
+        with fields[0]:
+            symbol_text = st.text_input(
+                "Ticker", key="vo_symbol_value", placeholder="SPY",
+                help="Enter a ticker and press Tab or Enter to show its company / ETF, Last and CBOE walls.",
+            )
+        symbol = str(symbol_text or "").strip().upper()
+        ticker_quote = _ticker_quote_preview(client, symbol, touch_session)
+        quote_title = ticker_quote.get("source", "")
+        if ticker_quote.get("loaded_at"):
+            quote_title += " // " + datetime.fromtimestamp(
+                ticker_quote["loaded_at"], timezone.utc
+            ).isoformat(timespec="seconds")
+        with fields[1]:
+            st.html(_company_display_markup(symbol, ticker_quote.get("name", ""),
+                                            ticker_quote.get("last"), quote_title))
+        with fields[2], st.form("vo_scan_form", clear_on_submit=False, border=False):
+            scan_fields = st.columns([1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
+            with scan_fields[0]:
                 breakeven_text = st.text_input(
                     "Target Breakeven", key="vo_target_breakeven", placeholder="AUTO: CURRENT SPOT",
                     help="Leave blank to use current underlying Last; edit to target a specific breakeven.",
                 )
-            with fields[3]:
+            with scan_fields[1]:
                 cost_text = st.text_input(
                     "Max Cost", key="vo_max_cost", placeholder="NO CEILING",
                     help="Optional maximum one-spread debit in dollars. Blank means no cost ceiling.",
                 )
-            with fields[4]:
+            with scan_fields[2]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
                 )
+        if symbol:
+            st.html(_cboe_wall_markup(symbol, vault_key))
 
         if scan_clicked:
             st.session_state.pop("vo_scan_result", None)
@@ -1084,6 +1145,11 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
                     and (use_spot_target or last_result.get("target") == custom_target)
                 )
                 raw = _scan_all_years(client, symbol, touch_session, refresh=repeat_scan)
+                preview_source = "E*TRADE" if broker_live else "YFINANCE"
+                st.session_state.setdefault("_vo_ticker_quotes", {})[f"{preview_source}:{symbol}"] = {
+                    "last": raw["spot"], "name": raw["name"], "source": preview_source,
+                    "loaded_at": raw["loaded_at"],
+                }
                 target = raw["spot"] if use_spot_target else custom_target
                 candidates, annual_ids = scan_vertical_candidates(
                     symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
@@ -1656,7 +1722,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
 
 
-def render_vertical_options(client, touch_session) -> None:
+def render_vertical_options(client, touch_session, *, vault_key: str = "default") -> None:
     """Render the isolated Vertical Options workspace."""
     st.html(_VERTICAL_OPTIONS_CSS)
-    _render_vertical_options_fragment(client, touch_session)
+    _render_vertical_options_fragment(client, touch_session, vault_key)
