@@ -67,7 +67,9 @@ async function apply(args){
   const saved=await read(key);
   send({state:saved,source:saved?"browser":"empty"});
  }else if(args.hydrated&&valid(state)){
-  send({saved:await write(key,state),digest:state.digest});
+  // Successful background persistence must not rerun editable trading widgets.
+  // Only an actionable storage failure needs a Python/UI response.
+  if(!await write(key,state))send({saved:false,digest:state.digest});
  }
 }
 window.addEventListener("message",event=>{
