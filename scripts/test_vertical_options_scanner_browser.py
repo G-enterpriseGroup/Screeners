@@ -120,6 +120,10 @@ st.session_state.setdefault("vo_limit_price", 4.35)
 from src.gex_cboe import cboe_results
 cboe_results("scanner-fixture")["SPY"] = {"callWall": {"strike": 110}, "putWall": {"strike": 90}}
 render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
+# Same keyed native control and shared helper used by production Risk Sizing.
+from src.theme import install_native_switch_theme
+install_native_switch_theme("risk_capital_source_tactical")
+st.toggle("Capital Source", key="risk_capital_source_tactical", label_visibility="collapsed")
 '''
 
 
@@ -369,20 +373,59 @@ def test() -> None:
                 assert not geometry["overflow"], geometry
             driver.set_window_size(1440, 900)
             print("Vertical Options aligned scan controls PASS (1440 + 1100)", flush=True)
+            def assert_switch_visibility(checked, key="vo_smart_fill"):
+                # Click a static note to remove keyboard focus, then move the
+                # pointer away. Hover/focus must not be required for contrast.
+                note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                note.click()
+                ActionChains(driver).move_to_element(note).perform()
+                def settled(_):
+                    info = driver.execute_script("""
+                        const root=document.querySelector('.st-key-'+arguments[0]);
+                        const input=root.querySelector('input[role="switch"]');
+                        const label=input.closest('label');
+                        const track=label.querySelector(':scope > div:first-of-type');
+                        const thumb=track.firstElementChild;
+                        const t=getComputedStyle(track), h=getComputedStyle(thumb);
+                        const box=track.getBoundingClientRect(), dot=thumb.getBoundingClientRect();
+                        return {checked:input.checked,hover:label.matches(':hover'),
+                            focus:input.matches(':focus-visible'),track:t.backgroundColor,
+                            thumb:h.backgroundColor,outline:t.outlineColor,outlineStyle:t.outlineStyle,
+                            trackMid:box.left+box.width/2,thumbMid:dot.left+dot.width/2};
+                    """, key)
+                    return info if info["checked"] == checked and ((info["thumbMid"] > info["trackMid"]) == checked) else False
+                appearance = wait.until(settled)
+                assert not appearance["hover"] and not appearance["focus"], appearance
+                assert appearance["outline"] == "rgb(251, 139, 30)", appearance
+                assert appearance["outlineStyle"] == "solid", appearance
+                assert appearance["track"] == ("rgb(251, 139, 30)" if checked else "rgb(0, 0, 0)"), appearance
+                assert appearance["thumb"] == ("rgb(0, 0, 0)" if checked else "rgb(251, 139, 30)"), appearance
+                # An actual hover followed by leaving must keep the same colors.
+                target = driver.find_element(By.CSS_SELECTOR, f".st-key-{key} label")
+                ActionChains(driver).move_to_element(target).move_to_element(note).perform()
+                assert wait.until(settled)["track"] == appearance["track"]
+                print("Native switch resting contrast PASS", key, appearance, flush=True)
+            assert_switch_visibility(False)
+            assert_switch_visibility(False, "risk_capital_source_tactical")
+            driver.find_element(By.CSS_SELECTOR, ".st-key-risk_capital_source_tactical label").click()
+            assert_switch_visibility(True, "risk_capital_source_tactical")
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, ".st-key-vo_smart_fill label"
             ))
             flip.click()
             wait.until(lambda _: pricing_preference_in_browser(driver) == "SMART FILL")
+            assert_switch_visibility(True)
             driver.refresh()
             form = wait.until(ready_scanner_form)
             wait.until(lambda _: driver.execute_script(
                 "const i=document.querySelector('.st-key-vo_smart_fill input');"
                 "return i && i.checked;"
             ))
+            assert_switch_visibility(True)
             driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
             wait.until(lambda _: pricing_preference_in_browser(driver) == "NORMAL")
+            assert_switch_visibility(False)
             form = wait.until(ready_scanner_form)
             print("Vertical Options flip toggle persistence PASS (refresh + both positions)")
             for label, text in (
