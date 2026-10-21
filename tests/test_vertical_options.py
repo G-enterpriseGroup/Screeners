@@ -236,6 +236,17 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertIn('st.toggle(', ui)
         self.assertIn('key="vo_smart_fill"', ui)
 
+    def test_pricing_switch_keeps_native_control_visible_and_browser_frames_zero_height(self):
+        ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
+        self.assertIn('.st-key-vertical_options_workspace [data-testid="stTextInput"] input,', ui)
+        self.assertNotIn('.st-key-vertical_options_workspace input,', ui)
+        self.assertIn('.st-key-vo_smart_fill label > span:first-child', ui)
+        self.assertIn('label_visibility="collapsed"', ui)
+        self.assertIn('mode_guide_col, mode_switch_col, _ = st.columns(', ui)
+        self.assertIn('with mode_switch_col:', ui)
+        self.assertIn('key="vo_pricing_preference_reader", height=0', ui)
+        self.assertIn('key="vo_pricing_preference_writer", height=0', ui)
+
     def test_pricing_mode_is_hydrated_before_writing_and_restored_after_tab_change(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
