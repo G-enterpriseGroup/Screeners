@@ -141,7 +141,8 @@ jobs:
         run: python scripts/test_protective_puts_chain_browser.py
 
       - name: Verify deployed frontend is not on Oh no page
-        if: github.event_name == 'push'
+        # Independently check the hosted frontend even if an unrelated CI test fails.
+        if: ${{ always() && github.event_name == 'push' }}
         run: |
           python -m pip install selenium==4.36.0
           python - <<'PY'
