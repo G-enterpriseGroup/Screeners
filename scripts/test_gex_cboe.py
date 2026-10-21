@@ -509,6 +509,40 @@ class CboeGexTests(unittest.TestCase):
         self.assertIn("def _publish_current_etrade_master_a6", ui)
         self.assertIn("_proven._base._refresh_symbol = refresh_symbol_with_txt_publish", ui)
 
+    def test_removed_legacy_subtabs_keep_gex_sources_and_session_fallback(self):
+        import ast
+
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "src/gex_ui_v3_base.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        render = next(
+            node for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == "render_gex"
+        )
+        subtabs = next(
+            node for node in ast.walk(render)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "subtab_names"
+                    for target in node.targets)
+        )
+        self.assertEqual(ast.literal_eval(subtabs.value), [
+            "E*TRADE OVERVIEW", "CBOE OVERVIEW", "MORNINGSTAR GEX",
+            "SETTINGS", "NOTES",
+        ])
+        render_calls = {
+            node.func.id for node in ast.walk(render)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertTrue({
+            "_render_overview", "_render_cboe_overview",
+            "_render_morningstar_gex", "_render_settings", "_render_notes",
+        }.issubset(render_calls))
+        self.assertTrue({
+            "_render_analytics", "_render_raw", "_render_tradingview",
+        }.isdisjoint(render_calls))
+        self.assertIn('st.session_state.pop("gexv3_active_subtab", None)', source)
+        self.assertIn('on_change=_remember_gex_subtab', source)
+
 
 def live_source_smoke() -> None:
     payload, url = gex_cboe._fetch_cboe_chain("SPY")
