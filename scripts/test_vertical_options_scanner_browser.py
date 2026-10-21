@@ -577,9 +577,9 @@ def test() -> None:
                 and leg["orderedQuantity"] == 1
                 for leg in (buy, sell)
             ), order
-            assert driver.find_element(
-                By.XPATH, '//button[contains(., "SEND LIVE TO")]',
-            ).get_attribute("disabled") is not None, "SEND must need affirmative confirmation"
+            assert wait.until(lambda _: driver.find_element(
+                By.CSS_SELECTOR, '.st-key-vo_send button',
+            )).get_attribute("disabled") is not None, "PLACE must need affirmative confirmation"
             assert not any(item["event"] == "place" for item in events(event_path)), (
                 "Preview alone placed an order"
             )
