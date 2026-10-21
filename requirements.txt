@@ -49,3 +49,5 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-10-21 vertical-options-compact-toolbar
 
 # clean rebuild marker: 2026-10-21 vertical-options-native-switch-last-cboe-walls
+
+# clean rebuild marker: 2026-10-21 vertical-options-scan-alignment

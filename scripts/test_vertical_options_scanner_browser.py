@@ -103,6 +103,18 @@ class StubETrade:
         raise AssertionError("Checkbox selection must never place an order")
 
 st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
+# Match the real shared production CSS without executing broker/auth code.
+import ast
+from src.theme import _TYPING_CARET_CSS
+from src.layout_guardrails import _LAYOUT_GUARDRAIL_CSS
+core = ast.parse((Path(os.environ["PYTHONPATH"].split(os.pathsep)[0]) / "src/terminal_core.py").read_text())
+for node in core.body:
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and node.value.args:
+        css = node.value.args[0]
+        if isinstance(css, ast.Constant) and isinstance(css.value, str) and "<style>" in css.value:
+            st.html(css.value)
+st.html(_TYPING_CARET_CSS)
+st.html(_LAYOUT_GUARDRAIL_CSS)
 # Simulate the exact stale manually entered debit from a pre-fix session.
 st.session_state.setdefault("vo_limit_price", 4.35)
 from src.gex_cboe import cboe_results
@@ -325,6 +337,38 @@ def test() -> None:
             assert pricing_layout["toggleWidth"] >= 24, pricing_layout
             assert pricing_layout["normalX"] < pricing_layout["switchX"] < pricing_layout["smartX"], pricing_layout
             print("Vertical Options compact scan toolbar PASS", pricing_layout)
+            # Compare visible box edges and labels with the shared production
+            # theme at both desktop widths, including nested form boundaries.
+            for viewport_width in (1440, 1100):
+                driver.set_window_size(viewport_width, 900)
+                geometry = driver.execute_script("""
+                    const rect = el => { const r=el.getBoundingClientRect();
+                        return {top:r.top,bottom:r.bottom,height:r.height,left:r.left,right:r.right}; };
+                    const inputs = ['Ticker','Target Breakeven','Max Cost'].map(name =>
+                        document.querySelector('input[aria-label="'+name+'"]'));
+                    const labels = inputs.map(input => input.closest('[data-testid="stTextInput"]')
+                        .querySelector('[data-testid="stWidgetLabel"]'));
+                    return {
+                        inputs:inputs.map(input => rect(input.parentElement)),
+                        inputDOM:inputs[0].parentElement.outerHTML.slice(0,1600),
+                        company:rect(document.querySelector('.vo-company-box')),
+                        labels:labels.map(rect),
+                        companyLabel:rect(document.querySelector('.vo-company-label')),
+                        scan:rect(document.querySelector('[data-testid="stFormSubmitButton"] button')),
+                        formPadding:getComputedStyle(document.querySelector('[data-testid="stForm"]')).padding,
+                        overflow:document.documentElement.scrollWidth > window.innerWidth,
+                    };
+                """)
+                print("Vertical Options control geometry", viewport_width, geometry, flush=True)
+                boxes = geometry["inputs"] + [geometry["company"], geometry["scan"]]
+                labels = geometry["labels"] + [geometry["companyLabel"]]
+                assert max(b["top"] for b in boxes)-min(b["top"] for b in boxes) <= 2, geometry
+                assert max(b["bottom"] for b in boxes)-min(b["bottom"] for b in boxes) <= 2, geometry
+                assert max(b["top"] for b in labels)-min(b["top"] for b in labels) <= 2, geometry
+                assert geometry["formPadding"] == "0px", geometry
+                assert not geometry["overflow"], geometry
+            driver.set_window_size(1440, 900)
+            print("Vertical Options aligned scan controls PASS (1440 + 1100)", flush=True)
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, ".st-key-vo_smart_fill label"

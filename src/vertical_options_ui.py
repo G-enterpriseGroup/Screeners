@@ -86,7 +86,7 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace [data-testid="stHorizontalBlock"]{gap:8px!important;}
 .st-key-vertical_options_workspace [data-testid="stColumn"]{min-width:0!important;}
 /* Keep the scan controls and source notice content-sized within this feature. */
-.st-key-vertical_options_workspace [data-testid="stForm"]{padding:8px!important;}
+.st-key-vertical_options_workspace [data-testid="stForm"]{padding:0!important;border:0!important;}
 .st-key-vertical_options_workspace [data-testid="stAlertContainer"]{padding:6px 10px!important;}
 .st-key-vertical_options_workspace [data-testid="stAlert"] [data-testid="stMarkdownContainer"]{margin:0!important;}
 .st-key-vertical_options_workspace [data-testid="stAlert"] p{
@@ -256,7 +256,31 @@ _VERTICAL_OPTIONS_CSS = """
     align-items:center!important;
     white-space:nowrap!important;
 }
-.st-key-vertical_options_workspace .st-key-vo_scan_form{padding:0!important;border:0!important;}
+/* Native labels and the read-only company field share one 20px label row.
+   st.form's real stForm wrapper owns padding; its key is not a CSS class. */
+.st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stWidgetLabel"],
+.st-key-vertical_options_workspace .st-key-vo_target_breakeven [data-testid="stWidgetLabel"],
+.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stWidgetLabel"],
+.st-key-vertical_options_workspace .vo-company-label{
+    display:flex!important;align-items:center!important;
+    height:20px!important;min-height:20px!important;
+    margin:0 0 3px!important;padding:0!important;line-height:1.25!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stWidgetLabel"] p,
+.st-key-vertical_options_workspace .st-key-vo_target_breakeven [data-testid="stWidgetLabel"] p,
+.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stWidgetLabel"] p{margin:0!important;}
+/* Set the visible React Aria border box to the terminal's 38px control height. */
+.st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stTextInputRootElement"],
+.st-key-vertical_options_workspace .st-key-vo_target_breakeven [data-testid="stTextInputRootElement"],
+.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stTextInputRootElement"]{
+    height:38px!important;min-height:38px!important;box-sizing:border-box!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_symbol_value input,
+.st-key-vertical_options_workspace .st-key-vo_target_breakeven input,
+.st-key-vertical_options_workspace .st-key-vo_max_cost input{height:36px!important;min-height:0!important;}
+.st-key-vertical_options_workspace [data-testid="stFormSubmitButton"] button{
+    height:38px!important;min-height:38px!important;box-sizing:border-box!important;
+}
 .st-key-vertical_options_workspace .vo-company-box{gap:8px;}
 .st-key-vertical_options_workspace .vo-company-name{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;}
 .st-key-vertical_options_workspace .vo-last{flex:none;color:var(--vo-green)!important;-webkit-text-fill-color:var(--vo-green)!important;}
