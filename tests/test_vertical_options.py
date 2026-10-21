@@ -240,7 +240,7 @@ class VerticalOptionsTests(unittest.TestCase):
         ui = (Path(__file__).resolve().parents[1] / "src" / "vertical_options_ui.py").read_text()
         self.assertIn('.st-key-vertical_options_workspace [data-testid="stTextInput"] input,', ui)
         self.assertNotIn('.st-key-vertical_options_workspace input,', ui)
-        self.assertIn('.st-key-vo_smart_fill label > span:first-child', ui)
+        self.assertIn('.st-key-vo_smart_fill label > div:first-of-type', ui)
         self.assertIn('label_visibility="collapsed"', ui)
         self.assertIn('mode_guide_col, mode_switch_col, _ = st.columns(', ui)
         self.assertIn('with mode_switch_col:', ui)

@@ -278,17 +278,24 @@ def test() -> None:
                 const form = document.querySelector('[data-testid="stForm"]');
                 const label = document.querySelector(".st-key-vo_smart_fill label");
                 if (!guide || !form || !label) return null;
-                const track = label.querySelector("span:first-child");
+                const track = label.querySelector(":scope > div:first-of-type");
+                const paste = document.querySelector(".st-key-vo_list_toggle button").getBoundingClientRect();
+                const guideBox = guide.getBoundingClientRect();
                 return {
+                    sameToolbarRow: paste.top <= guideBox.bottom && paste.bottom >= guideBox.top,
+                    toolbarToForm: form.getBoundingClientRect().top - paste.bottom,
                     gap: form.getBoundingClientRect().top - guide.getBoundingClientRect().bottom,
                     toggleWidth: label.getBoundingClientRect().width,
                     trackOutlined: !!track && getComputedStyle(track).outlineStyle === "solid",
                 };
             """)
             assert pricing_layout is not None, "Pricing controls are missing"
-            assert 0 <= pricing_layout["gap"] < 95, pricing_layout
+            assert pricing_layout["sameToolbarRow"], pricing_layout
+            assert 0 <= pricing_layout["toolbarToForm"] < 32, pricing_layout
+            assert 0 <= pricing_layout["gap"] < 64, pricing_layout
             assert pricing_layout["toggleWidth"] >= 24, pricing_layout
             assert pricing_layout["trackOutlined"], pricing_layout
+            print("Vertical Options compact scan toolbar PASS", pricing_layout)
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, ".st-key-vo_smart_fill label"

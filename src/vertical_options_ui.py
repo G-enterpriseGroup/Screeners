@@ -84,6 +84,14 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace [data-testid="stVerticalBlock"]{gap:4px!important;}
 .st-key-vertical_options_workspace [data-testid="stHorizontalBlock"]{gap:8px!important;}
 .st-key-vertical_options_workspace [data-testid="stColumn"]{min-width:0!important;}
+/* Keep the scan controls and source notice content-sized within this feature. */
+.st-key-vertical_options_workspace [data-testid="stForm"]{padding:8px!important;}
+.st-key-vertical_options_workspace [data-testid="stAlertContainer"]{padding:6px 10px!important;}
+.st-key-vertical_options_workspace [data-testid="stAlert"] [data-testid="stMarkdownContainer"]{margin:0!important;}
+.st-key-vertical_options_workspace [data-testid="stAlert"] p{
+    margin:0!important;
+    font:800 .70rem/1.35 "Courier New",monospace!important;
+}
 .st-key-vertical_options_workspace [data-testid="stWidgetLabel"],
 .st-key-vertical_options_workspace [data-testid="stWidgetLabel"] *{
     color:var(--vo-orange)!important;
@@ -233,6 +241,14 @@ _VERTICAL_OPTIONS_CSS = """
     font:800 .62rem/1.2 "Courier New",monospace;
 }
 .vo-note .muted{color:var(--vo-muted)!important;-webkit-text-fill-color:var(--vo-muted)!important;}
+/* A zero-height iframe still has a line box in its Streamlit wrapper. */
+.st-key-vertical_options_workspace .st-key-vo_pricing_preference_reader,
+.st-key-vertical_options_workspace .st-key-vo_pricing_preference_writer{
+    height:0!important;
+    min-height:0!important;
+    line-height:0!important;
+    overflow:hidden!important;
+}
 /* Keep the native pricing flip visible within this feature, even with dark theme. */
 .st-key-vertical_options_workspace .st-key-vo_smart_fill label{
     display:inline-flex!important;
@@ -240,10 +256,20 @@ _VERTICAL_OPTIONS_CSS = """
     gap:6px!important;
     white-space:nowrap!important;
 }
-.st-key-vertical_options_workspace .st-key-vo_smart_fill label > span:first-child{
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label > div:first-of-type{
     outline:1px solid var(--vo-orange)!important;
     outline-offset:1px;
     border-radius:999px!important;
+    background:var(--vo-border)!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label > div:first-of-type > div{
+    background:var(--vo-orange)!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label:has(input:checked) > div:first-of-type{
+    background:var(--vo-orange)!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label:has(input:checked) > div:first-of-type > div{
+    background:#000!important;
 }
 /* Vertical Options pricing help only: compact hover/focus tooltips. */
 .st-key-vertical_options_workspace .vo-mode-guide{
@@ -871,10 +897,37 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
 
         # Optional ticker list stays collapsed until requested. Selecting from
         # the list only pre-fills the existing one-ticker scanner; no chain calls.
-        paste_cols = st.columns([1.15, 3.85], gap="small", vertical_alignment="bottom")
+        paste_cols = st.columns([1.15, 3.85], gap="small", vertical_alignment="center")
         with paste_cols[0]:
             if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
                 st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
+        with paste_cols[1], st.container(width=380):
+            # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
+            # Switching modes reprices the cached snapshot only; it never fetches
+            # quotes, previews a broker order or submits one.
+            mode_guide_col, mode_switch_col, _ = st.columns(
+                [4.0, .6, .4], gap="small", vertical_alignment="center"
+            )
+            with mode_guide_col:
+                st.html(
+                    '<div class="vo-mode-guide">PRICING MODE'
+                    '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+                    '<span class="vo-mode-tooltip" role="tooltip">'
+                    'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
+                    'and cost limits; otherwise qualifying LAST or MID. '
+                    'Unquoted LAST* is information only. No guaranteed fill.'
+                    '</span></span></span>'
+                    '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
+                    '<span class="vo-mode-tooltip" role="tooltip">'
+                    'Suggests a limit between spread MID and natural ASK using quote width '
+                    'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
+                    'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
+                    '</span></span></span></div>'
+                )
+            with mode_switch_col:
+                pricing_mode = _pricing_mode_flip_switch()
+            if pricing_mode is None:
+                return
         if st.session_state.get("vo_list_open"):
             pasted = st.text_area(
                 "PASTE TICKERS // ONE PER LINE, COMMA-SEPARATED OR MARKDOWN TABLE",
@@ -978,32 +1031,6 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
             st.session_state["vo_target_breakeven"] = seeded_text
             st.session_state["_vo_auto_target"] = {"symbol": pending_target[0], "text": seeded_text}
 
-        # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
-        # Switching modes reprices the cached snapshot only; it never fetches
-        # quotes, previews a broker order or submits one.
-        mode_guide_col, mode_switch_col, _ = st.columns(
-            [3.0, .7, 6.3], gap="small", vertical_alignment="center"
-        )
-        with mode_guide_col:
-            st.html(
-                '<div class="vo-mode-guide">PRICING MODE'
-                '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
-                '<span class="vo-mode-tooltip" role="tooltip">'
-                'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
-                'and cost limits; otherwise qualifying LAST or MID. '
-                'Unquoted LAST* is information only. No guaranteed fill.'
-                '</span></span></span>'
-                '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
-                '<span class="vo-mode-tooltip" role="tooltip">'
-                'Suggests a limit between spread MID and natural ASK using quote width '
-                'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
-                'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
-                '</span></span></span></div>'
-            )
-        with mode_switch_col:
-            pricing_mode = _pricing_mode_flip_switch()
-        if pricing_mode is None:
-            return
         last_result = st.session_state.get("vo_scan_result") or {}
         with st.form("vo_scan_form", clear_on_submit=False):
             fields = st.columns([1.05, 1.8, 1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
