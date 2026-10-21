@@ -6,6 +6,8 @@ read-only E*TRADE-shaped quotes. No brokerage login or order is made.
 from __future__ import annotations
 
 import csv
+import base64
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -16,6 +18,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import zlib
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -55,7 +58,7 @@ class StubETrade:
         record("quote", symbol=symbol)
         return {"QuoteResponse": {"QuoteData": [{
             "symbol": symbol, "companyName": "SPDR Test Fund",
-            "lastTrade": 100.0, "bid": 99.99, "ask": 100.01,
+            "lastTrade": 92.0 if symbol == "QQQ" else 100.0, "bid": 99.99, "ask": 100.01,
         }]}}
 
     def get_option_expirations(self, symbol):
@@ -118,7 +121,16 @@ st.html(_LAYOUT_GUARDRAIL_CSS)
 # Simulate the exact stale manually entered debit from a pre-fix session.
 st.session_state.setdefault("vo_limit_price", 4.35)
 from src.gex_cboe import cboe_results
-cboe_results("scanner-fixture")["SPY"] = {"callWall": {"strike": 110}, "putWall": {"strike": 90}}
+if not os.environ.get("VO_SCANNER_SKIP_GEX_SEED"):
+    for ticker in ("SPY", "QQQ"):
+        cboe_results("scanner-fixture").setdefault(ticker, {
+            "callWall": {"strike": 110}, "putWall": {"strike": 90},
+            "snapshotFetchedAt": "2026-10-21T12:00:00-04:00",
+        })
+    from src.gex_ui import _results
+    _results("scanner-fixture").setdefault("ETRADE_TEST", {
+        "callWall": {"strike": 120}, "updated": "2026-10-21T12:00:00-04:00",
+    })
 render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
 # Same keyed native control and shared helper used by production Risk Sizing.
 from src.theme import install_native_switch_theme
@@ -183,7 +195,18 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
         return {
           rows:rows.map(row=>({
             annual:row.classList.contains('annual'),
-            values:[...row.querySelectorAll('.cell')].map(cell=>cell.textContent),
+            values:[...row.querySelectorAll('.cell')].map(cell=>
+                cell.classList.contains('expiry') ? cell.firstChild.textContent : cell.textContent),
+            expiryDetail:row.querySelector('.expiry-detail')?.textContent,
+            expiryFits:(()=>{
+                const cell=row.querySelector('.expiry'), detail=cell?.querySelector('small');
+                if(!detail)return false;
+                const c=cell.getBoundingClientRect(),d=detail.getBoundingClientRect();
+                return getComputedStyle(detail).fontSize==='8px' &&
+                    d.top>=cell.firstChild.getBoundingClientRect().bottom &&
+                    d.bottom<=c.bottom && detail.scrollWidth<=cell.clientWidth &&
+                    row.getBoundingClientRect().height===43;
+            })(),
             selected:row.querySelector('.select').getAttribute('aria-pressed'),
             background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
             foreground:getComputedStyle(row.querySelector('.cell')).color,
@@ -451,7 +474,10 @@ def test() -> None:
             assert "PUT WALL $90.00" in driver.find_element(By.TAG_NAME, "body").text
             assert not [item for item in events(event_path) if item["event"] == "chain"]
             form = wait.until(ready_scanner_form)
-            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').send_keys("100")
+            target_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
+            wait.until(lambda _: target_input.get_attribute("value") == "110.0")
+            target_input.send_keys(Keys.CONTROL, "a")
+            target_input.send_keys("100")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("500")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
 
@@ -464,6 +490,17 @@ def test() -> None:
                        for item in chain_calls), chain_calls
 
             best = grid_snapshot(driver)
+            from datetime import date
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo("America/New_York")).date()
+            for row in best["rows"]:
+                days = (datetime.strptime(row["values"][2], "%b-%d-%y").date() - today).days
+                assert row["expiryDetail"] == f"{days}d · {days / 365.25:.2f}y", row
+                assert row["expiryFits"], row
+            for width in (1100, 1440):
+                driver.set_window_size(width, 900)
+                assert all(row["expiryFits"] for row in grid_snapshot(driver)["rows"])
+            print("Vertical Options tiny expiry detail PASS (calendar days + years, 43px rows)", flush=True)
             assert len(best["rows"]) == 3, best
             assert all(row["annual"] for row in best["rows"]), best
             assert len({row["values"][2][-2:] for row in best["rows"]}) == 3, best
@@ -732,6 +769,73 @@ def test() -> None:
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "150"
             assert not any(item["event"] == "place" for item in events(event_path))
 
+            # A manual target belongs to its ticker, while another ticker gets
+            # its own preset. Returning restores the original manual override.
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys("QQQ", Keys.TAB)
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "90.0")
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys("MSFT", Keys.TAB)
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "103")
+
+            # Restart the actual Streamlit process. The replacement fixture does
+            # not seed GEX: only the same browser's persisted backup can restore it.
+            token = hashlib.sha256(b"scanner-fixture").hexdigest()[:24]
+            def saved_gex(_):
+                for frame in driver.find_elements(By.TAG_NAME, "iframe"):
+                    if "raj_gex_snapshot_memory_v1" not in str(frame.get_attribute("src")):
+                        continue
+                    try:
+                        driver.switch_to.frame(frame)
+                        stored = driver.execute_async_script("""
+                            const key=arguments[0],done=arguments[1];
+                            const request=indexedDB.open('raj-terminal-gex-snapshots-v1',1);
+                            request.onsuccess=()=>{
+                                const db=request.result;
+                                const get=db.transaction('snapshots','readonly').objectStore('snapshots').get(key);
+                                get.onsuccess=()=>{done(get.result?.current||null);db.close();};
+                                get.onerror=()=>{done(null);db.close();};
+                            };
+                            request.onerror=()=>done(null);
+                            """,
+                            "raj-terminal-gex-snapshots-v1:" + token,
+                        )
+                        if stored:
+                            decoded = json.loads(zlib.decompress(base64.b64decode(stored["packed"])))
+                            if "SPY" in (decoded.get("cboe") or {}).get("results", {}) and "ETRADE_TEST" in decoded.get("etrade", {}):
+                                return True
+                    finally:
+                        driver.switch_to.default_content()
+                return False
+            wait.until(saved_gex)
+            chain_before_restart = len([item for item in events(event_path) if item["event"] == "chain"])
+            server.terminate()
+            server.wait(timeout=8)
+            environment["VO_SCANNER_SKIP_GEX_SEED"] = "1"
+            with server_log.open("a", encoding="utf-8") as output:
+                server = subprocess.Popen(
+                    [sys.executable, "-m", "streamlit", "run", str(app_path),
+                     "--server.port", str(port), "--server.headless", "true",
+                     "--browser.gatherUsageStats", "false"],
+                    cwd=ROOT, env=environment, stdout=output, stderr=subprocess.STDOUT,
+                )
+            wait_for_server(server, base, server_log)
+            driver.get(base)
+            wait.until(ready_scanner_form)
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys("SPY", Keys.TAB)
+            wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "110.0")
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys("QQQ", Keys.TAB)
+            wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "90.0")
+            assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_restart
+            assert not any(item["event"] == "place" for item in events(event_path))
+            print("GEX browser cache PASS after real process restart; nearest call/put presets PASS", flush=True)
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
