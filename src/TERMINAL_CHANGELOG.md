@@ -2882,3 +2882,15 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Lesson:** Remove obsolete GEX presentation routes without deleting the TradingView TXT transport; safeguard persisted tab selections whenever the tab list shrinks.
 
 - **2026-10-20 CI verification:** PR #117 Terminal Architecture Guard run **39541087381 PASS**, including `python scripts/validate_architecture.py`, Python production syntax, focused CBOE/Morningstar/GEX legacy-subtab removal regression, and adjacent top-level tab smoke checks. This validates source structure and offline UI routes, not an interactive authenticated Streamlit production session; final host reboot/frontend still to verify.
+
+## 2026-10-21 — GEX deployment recheck after legacy tabs persisted live
+
+- **Feature / production route:** GEX deployment marker only; `streamlit_app.py → src/gex_workspace_v2.py → src/gex_ui_v3.py → src/gex_ui_v3_proven.py → src/gex_ui_v3_base.py`.
+- **Exact production file changed:** `src/gex_workspace_v2.py`; append-only changelog here.
+- **What was broken / suspected cause:** Raj still saw ANALYTICS, RAW STRIKES, and TRADINGVIEW on the hosted GEX page despite their removal from `src/gex_ui_v3_base.py` on `main` (PR #117). The prior "reboot" commit changed no file content; its successful health probe cannot prove the Streamlit runtime adopted the new GEX modules. Actual Cloud deployment staleness or different app repository/branch remains to verify, not established as a fact.
+- **Minimum change:** Increment the already-visible, GEX-owned `GEX_BUILD_VERSION` from `v2026.09.23.1` to `v2026.10.21.1`. This supplies a real Python-file update for Community Cloud auto-sync and an identifiable version on the GEX page. The existing five-tab production list remains unchanged.
+- **Preserve:** E*TRADE, CBOE, Morningstar, Settings, Notes; GEX TXT/TradingView bridge exports; saved ticker state; all quotes, formulas, history, order safety and session handling.
+- **Intentionally NOT changed:** `src/gex_ui_v3_base.py` tabs (already corrected); GEX calculations/bridge serializers; Streamlit top-level routing, OAuth, Holdings, Risk Sizing, Vertical Options, theme, navigation, `src/terminal_core.py`, and `src/reboot_guard.py`.
+- **Tests / architecture guard:** Pending PR CI for syntax, `python scripts/validate_architecture.py`, focused GEX regressions, and neighboring top-level tabs. Cloud health and actual authenticated frontend are separate validations; without Community Cloud management access do not claim a process-level reboot.
+- **Implementation SHA:** `c4f4956a59ad6736a427783e9e68b9f6d2c90da9`; final merge SHA to be recorded after validation.
+- **Lesson:** A commit with an unchanged tree and an HTTP health result do not establish a new Streamlit Community Cloud Python process. Check the actual displayed build marker and GEX tabs after any deploy; when missing, use the host's **Reboot app** control and inspect deployment repo/branch/logs.
