@@ -105,7 +105,9 @@ class StubETrade:
 st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
 # Simulate the exact stale manually entered debit from a pre-fix session.
 st.session_state.setdefault("vo_limit_price", 4.35)
-render_vertical_options(StubETrade(), lambda: None)
+from src.gex_cboe import cboe_results
+cboe_results("scanner-fixture")["SPY"] = {"callWall": {"strike": 110}, "putWall": {"strike": 90}}
+render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
 '''
 
 
@@ -283,7 +285,7 @@ def test() -> None:
             driver.get(base)
             wait = WebDriverWait(driver, 60)
 
-            expected_labels = ["Ticker", "Target Breakeven", "Max Cost"]
+            expected_labels = ["Target Breakeven", "Max Cost"]
             def ready_scanner_form(_):
                 # Streamlit can mount stForm before its inputs hydrate on CI.
                 forms = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
@@ -311,7 +313,9 @@ def test() -> None:
                     toolbarToForm: form.getBoundingClientRect().top - paste.bottom,
                     gap: form.getBoundingClientRect().top - guide.getBoundingClientRect().bottom,
                     toggleWidth: label.getBoundingClientRect().width,
-                    trackOutlined: !!track && getComputedStyle(track).outlineStyle === "solid",
+                    normalX: guideBox.left,
+                    switchX: label.getBoundingClientRect().left,
+                    smartX: document.querySelector('.vo-mode-help--smart').getBoundingClientRect().left,
                 };
             """)
             assert pricing_layout is not None, "Pricing controls are missing"
@@ -319,7 +323,7 @@ def test() -> None:
             assert 0 <= pricing_layout["toolbarToForm"] < 32, pricing_layout
             assert 0 <= pricing_layout["gap"] < 64, pricing_layout
             assert pricing_layout["toggleWidth"] >= 24, pricing_layout
-            assert pricing_layout["trackOutlined"], pricing_layout
+            assert pricing_layout["normalX"] < pricing_layout["switchX"] < pricing_layout["smartX"], pricing_layout
             print("Vertical Options compact scan toolbar PASS", pricing_layout)
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
@@ -353,7 +357,13 @@ def test() -> None:
                     "return getComputedStyle(arguments[0]).visibility", tooltip
                 ) == "visible")
             ActionChains(driver).move_to_element(form).perform()
-            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]').send_keys("SPY")
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys("SPY", Keys.TAB)
+            wait.until(lambda _: "LAST $100.00" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
+            assert "PUT WALL $90.00" in driver.find_element(By.TAG_NAME, "body").text
+            assert not [item for item in events(event_path) if item["event"] == "chain"]
+            form = wait.until(ready_scanner_form)
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').send_keys("100")
             form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("500")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
@@ -598,6 +608,7 @@ def test() -> None:
                 return inputs and inputs[0].get_attribute("value") == "MSFT"
             wait.until(list_loaded)
             assert "LOADED TICKERS (3)" in driver.find_element(By.TAG_NAME, "body").text
+            assert "Not in GEX" in driver.find_element(By.TAG_NAME, "body").text
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_list
             assert not any(item["event"] == "place" for item in events(event_path))
             # Loading a list resets the prior ticker's result without scanning.
