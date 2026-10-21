@@ -5,6 +5,7 @@ read-only E*TRADE-shaped quotes. No brokerage login or order is made.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 from datetime import datetime
@@ -225,6 +226,24 @@ def exact_optionstrat_url(values: list[str]) -> str:
     return f"https://optionstrat.com/build/{strategy}/{symbol}/{legs}"
 
 
+def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
+    """Wait for the rerendered export action and inspect its actual download."""
+    def ready(_):
+        for button in driver.find_elements(By.CSS_SELECTOR, f".st-key-{key} button"):
+            try:
+                if button.is_displayed() and button.is_enabled():
+                    return button
+            except StaleElementReferenceException:
+                pass
+        return False
+
+    target = folder / filename
+    wait.until(ready).click()
+    wait.until(lambda _: target.exists() and not list(folder.glob("*.crdownload")))
+    with target.open(encoding="utf-8", newline="") as downloaded:
+        return list(csv.DictReader(downloaded))
+
+
 def test() -> None:
     with tempfile.TemporaryDirectory(prefix="vo_scanner_browser_") as temporary:
         folder = Path(temporary)
@@ -248,7 +267,13 @@ def test() -> None:
         driver = None
         try:
             wait_for_server(server, base, server_log)
+            downloads = folder / "downloads"
+            downloads.mkdir()
             options = Options()
+            options.add_experimental_option("prefs", {
+                "download.default_directory": str(downloads),
+                "download.prompt_for_download": False,
+            })
             options.add_argument("--headless=new")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
@@ -383,8 +408,23 @@ def test() -> None:
 
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             wait.until(lambda _: "60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
-            assert driver.find_element(By.XPATH, '//button[contains(., "EXPORT ALL QUALIFIED CSV")]')
-            assert driver.find_element(By.XPATH, '//button[contains(., "EXPORT FILTERED CSV")]')
+            # The count above already exists in BEST PER YEAR. Wait for the
+            # new view's keyed export controls, then verify real CSV downloads.
+            full_csv = download_csv(driver, wait, downloads, "vo_export_all_qualified",
+                                    "SPY_vertical_all_qualified.csv")
+            assert len(full_csv) == 60 and {row["Type"] for row in full_csv} == {"CALL", "PUT"}
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_side [role="combobox"]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//*[@role="option" and normalize-space(.)="CALL"]')).click()
+            wait.until(lambda _: "30" in driver.find_element(
+                By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
+            filtered_csv = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
+                                        "SPY_vertical_filtered.csv")
+            assert len(filtered_csv) == 30 and all(row["Type"] == "CALL" for row in filtered_csv)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_side [role="combobox"]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//*[@role="option" and normalize-space(.)="CALL + PUT"]')).click()
+            wait.until(lambda _: "60" in driver.find_element(
+                By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
+            print("Vertical Options CSV downloads PASS (60 all / 30 CALL-filtered)")
             assert "SORT BY" in driver.find_element(By.TAG_NAME, "body").text
             assert "ORDER" in driver.find_element(By.TAG_NAME, "body").text
             def expanded_grid(_):
