@@ -35,6 +35,7 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import quote as url_quote
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -43,6 +44,7 @@ from src.etrade_client import ETradeError, find_number, option_expiration_dates,
 from src.option_book import extract_option_rows
 from src.theme import install_native_switch_theme
 from src.gex_cboe import cboe_results
+from src.gex_snapshot_cache import hydrate_gex_snapshots, persist_gex_snapshots
 from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
@@ -378,6 +380,12 @@ def _date_label(value: date) -> str:
     return value.strftime("%b-%d-%y")
 
 
+def _expiry_time_label(expiry: date, today: date | None = None) -> str:
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    days = max(0, (expiry - today).days)
+    return f"{days}d · {days / 365.25:.2f}y"
+
+
 def _company_display_markup(symbol: str, resolved_name: str = "",
                             last: Any = None, source: str = "") -> str:
     name = str(resolved_name or company_name(symbol) or "").strip() or "—"
@@ -431,13 +439,50 @@ def _ticker_quote_preview(client, symbol: str, touch_session) -> dict[str, Any]:
     return cached
 
 
-def _cboe_wall_markup(symbol: str, vault_key: str) -> str:
+def _cboe_ticker_result(symbol: str, vault_key: str) -> dict[str, Any]:
     """Use only the exact ticker in CBOE Overview's existing result vault."""
     result = cboe_results(vault_key).get(symbol)
     state = st.session_state.get("_gex_state")
     if isinstance(state, dict) and symbol not in state.get("tickers", []):
         result = None
-    if not isinstance(result, dict):
+    return result if isinstance(result, dict) else {}
+
+
+def _default_breakeven(symbol: str, spot: Any, vault_key: str) -> tuple[float | None, str]:
+    try:
+        spot = float(spot)
+    except (TypeError, ValueError):
+        return None, "SPOT DEFAULT"
+    if not math.isfinite(spot) or spot <= 0:
+        return None, "SPOT DEFAULT"
+    result = _cboe_ticker_result(symbol, vault_key)
+    walls = []
+    for key, label in (("callWall", "CALL WALL"), ("putWall", "PUT WALL")):
+        try:
+            strike = float((result.get(key) or {}).get("strike"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(strike) and strike > 0:
+            walls.append((strike, "CBOE " + label + " DEFAULT"))
+    return min(walls, key=lambda wall: abs(wall[0] - spot)) if walls else (spot, "SPOT DEFAULT")
+
+
+def _seed_breakeven_preset(symbol: str, spot: Any, vault_key: str) -> None:
+    """Seed only blank/automatic fields; a manual target always takes precedence."""
+    text = str(st.session_state.get("vo_target_breakeven") or "").strip()
+    previous = st.session_state.get("_vo_auto_target") or {}
+    if text and text != previous.get("text"):
+        st.session_state.pop("_vo_auto_target", None)
+        return
+    target, basis = _default_breakeven(symbol, spot, vault_key)
+    seeded = str(target) if target is not None else ""
+    st.session_state["vo_target_breakeven"] = seeded
+    st.session_state["_vo_auto_target"] = {"symbol": symbol, "text": seeded, "basis": basis}
+
+
+def _cboe_wall_markup(symbol: str, vault_key: str) -> str:
+    result = _cboe_ticker_result(symbol, vault_key)
+    if not result:
         return '<div class="vo-gex-context">CBOE // Not in GEX</div>'
     call = _money((result.get("callWall") or {}).get("strike"))
     put = _money((result.get("putWall") or {}).get("strike"))
@@ -796,6 +841,7 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[s
         "id": candidate["id"],
         "annual": candidate["id"] in annual_ids,
         "optionstrat_url": _optionstrat_url(candidate),
+        "expiry_detail": _expiry_time_label(candidate["expiry"]),
         "values": [
             candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
             f"{candidate['buy_strike']:g}", f"{candidate['sell_strike']:g}",
@@ -953,6 +999,9 @@ def _pricing_mode_flip_switch() -> str | None:
 
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session, vault_key: str = "default") -> None:
+    if not hydrate_gex_snapshots(vault_key):
+        return
+    persist_gex_snapshots(vault_key)
     with st.container(key="vertical_options_workspace"):
         _render_saved_spread_drafts()
         st.markdown(
@@ -1037,7 +1086,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 f"EDIT TICKER BREAKEVENS // {len(loaded_tickers)} LOADED",
                 expanded=False,
             ):
-                st.caption("BLANK = CURRENT SPOT // EDIT INDIVIDUAL SYMBOL TARGETS // NO AUTO SCANS")
+                st.caption("BLANK = NEAREST CBOE WALL, ELSE SPOT // EDIT INDIVIDUAL TARGETS // NO AUTO SCANS")
                 edited = st.data_editor(
                     [
                         {"Ticker": ticker, "Breakeven ($)": target_map.get(ticker, "")}
@@ -1048,7 +1097,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     column_config={
                         "Ticker": st.column_config.TextColumn("TICKER", width="small"),
                         "Breakeven ($)": st.column_config.TextColumn(
-                            "TARGET BREAKEVEN ($)", help="Blank uses the ticker's spot price at scan."
+                            "TARGET BREAKEVEN ($)", help="Blank uses the CBOE wall nearest spot, or spot when walls are unavailable."
                         ),
                     },
                     key=f"vo_ticker_editor_{st.session_state.get('vo_ticker_editor_revision', 0)}",
@@ -1117,6 +1166,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             )
         symbol = str(symbol_text or "").strip().upper()
         ticker_quote = _ticker_quote_preview(client, symbol, touch_session)
+        _seed_breakeven_preset(symbol, ticker_quote.get("last"), vault_key)
         quote_title = ticker_quote.get("source", "")
         if ticker_quote.get("loaded_at"):
             quote_title += " // " + datetime.fromtimestamp(
@@ -1129,8 +1179,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             scan_fields = st.columns([1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 breakeven_text = st.text_input(
-                    "Target Breakeven", key="vo_target_breakeven", placeholder="AUTO: CURRENT SPOT",
-                    help="Leave blank to use current underlying Last; edit to target a specific breakeven.",
+                    "Target Breakeven", key="vo_target_breakeven", placeholder="AUTO: NEAREST WALL / SPOT",
+                    help="Preset: cached CBOE call or put wall nearest current Last (ties use call wall). Falls back to spot. Edit freely; clear to restore the preset.",
                 )
             with scan_fields[1]:
                 cost_text = st.text_input(
@@ -1155,11 +1205,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     raise ValueError("Enter a ticker to scan.")
                 entered_target = str(breakeven_text or "").strip()
                 previous_auto = st.session_state.get("_vo_auto_target")
-                use_spot_target = not entered_target or (
+                use_auto_target = not entered_target or (
                     isinstance(previous_auto, dict)
+                    and previous_auto.get("symbol") == symbol
                     and entered_target == previous_auto.get("text")
                 )
-                custom_target = None if use_spot_target else _entered_price(
+                custom_target = None if use_auto_target else _entered_price(
                     entered_target, "target breakeven"
                 )
                 max_cost = (None if not str(cost_text or "").strip()
@@ -1167,7 +1218,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
-                    and (use_spot_target or last_result.get("target") == custom_target)
+                    and (use_auto_target or last_result.get("target") == custom_target)
                 )
                 raw = _scan_all_years(client, symbol, touch_session, refresh=repeat_scan)
                 preview_source = "E*TRADE" if broker_live else "YFINANCE"
@@ -1175,7 +1226,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "last": raw["spot"], "name": raw["name"], "source": preview_source,
                     "loaded_at": raw["loaded_at"],
                 }
-                target = raw["spot"] if use_spot_target else custom_target
+                default_target, target_basis = _default_breakeven(symbol, raw["spot"], vault_key)
+                target = default_target if use_auto_target else custom_target
                 candidates, annual_ids = scan_vertical_candidates(
                     symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
                     target_breakeven=target, max_cost=max_cost,
@@ -1189,7 +1241,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
                     "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
-                    "target_defaulted": use_spot_target, "loaded_at": raw["loaded_at"],
+                    "target_defaulted": use_auto_target,
+                    "target_basis": target_basis if use_auto_target else "CUSTOM",
+                    "loaded_at": raw["loaded_at"],
                     "scope": scope, "candidates": candidates, "annual_ids": annual_ids,
                     "loaded_expirations": raw["loaded_expirations"],
                     "listed_expirations": len(raw["expirations"]),
@@ -1199,9 +1253,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.session_state["vo_results_view"] = "BEST PER YEAR"
                 if symbol in (st.session_state.get("vo_ticker_list") or []):
                     st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
-                        "" if use_spot_target else entered_target
+                        "" if use_auto_target else entered_target
                     )
-                if use_spot_target:
+                if use_auto_target:
                     # Seed the editable widget before it renders on the next pass.
                     st.session_state["_vo_auto_target_pending"] = (symbol, target)
                 else:
@@ -1251,7 +1305,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
              'PRIORITY: ASK (NATURAL) > IN-MARKET LAST > MID > UNQUOTED LAST*; '
              'THEN CLOSEST BREAKEVEN AND LOWEST COST. ') +
             f'TARGET BREAKEVEN {_money(result["target"])}'
-            f' ({"SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM"}). '
+            f' ({result.get("target_basis") or ("SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM")}). '
             f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "NO CEILING"} PER SPREAD. '
             'ASK = BUY ASK MINUS SELL BID; MID = TWO-LEG MARKET MIDPOINT. '
             'LAST* HAS NO RELIABLE LIVE SPREAD QUOTE AND CANNOT BE ORDERED. '

@@ -21,6 +21,8 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 #space{position:relative;width:100%}
 #visible{position:absolute;left:0;right:0;top:0}
 .row{height:43px;min-height:43px;font-size:.73rem;font-weight:800;background:#080808;color:#f6b56a;font-variant-numeric:tabular-nums}
+.row>.cell.expiry{flex-direction:column;justify-content:center;align-items:flex-end;gap:2px}
+.expiry-detail{font-size:.50rem;line-height:1;font-weight:600;white-space:nowrap}
 .row.annual>.cell{background:#a3e635!important;color:#000!important;-webkit-text-fill-color:#000!important;font-weight:900!important}
 .row.annual.put>.cell{background:#ea0101!important}
 .row>.cell:nth-child(10),.row>.cell:nth-child(11),.row>.cell:nth-child(13){font-weight:900!important;text-decoration:underline;text-underline-offset:2px}
@@ -93,6 +95,13 @@ function makeRow(row,index){
  for(let i=0;i<HEAD.length-2;i++){
   const cell=document.createElement("span");cell.className="cell";
   cell.textContent=String(values[i]??"—");cell.title=HEAD[i+2]+": "+cell.textContent;
+  if(i===2 && row.expiry_detail){
+   cell.classList.add("expiry");
+   const date=document.createElement("span");date.textContent=cell.textContent;
+   const detail=document.createElement("small");detail.className="expiry-detail";
+   detail.textContent=String(row.expiry_detail);detail.title="Calendar days and years (365.25 days/year) until expiration";
+   cell.replaceChildren(date,detail);
+  }
   line.appendChild(cell);
  }
  return line;

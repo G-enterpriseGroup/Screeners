@@ -19,6 +19,7 @@ from src import gex_cboe
 from src import gex_ui as core
 from src import gex_ui_v3 as ui
 from src import gex_ui_v3_base as base
+from src import gex_snapshot_cache as memory
 
 
 def occ(symbol: str, expiry, cp: str, strike: float) -> str:
@@ -26,6 +27,56 @@ def occ(symbol: str, expiry, cp: str, strike: float) -> str:
 
 
 class CboeGexTests(unittest.TestCase):
+    def test_snapshot_backup_restores_both_sources_only_after_browser_hydration(self):
+        state = {}
+        cboe = {"results": {"SPY": {"callWall": {"strike": 110}, "snapshotFetchedAt": "2026-10-21T12:00:00-04:00"}},
+                "updated": "2026-10-21T12:00:00-04:00", "failures": {}}
+        etrade = {"QQQ": {"putWall": {"strike": 500}, "updated": "2026-10-21T12:00:00-04:00"}}
+        with (patch.object(memory.st, "session_state", state),
+              patch.object(memory, "_MEMORY") as component,
+              patch.object(memory, "cboe_snapshot", return_value=cboe),
+              patch.object(memory.gex_ui, "_results", return_value=etrade)):
+            memory.persist_gex_snapshots("first-vault")
+            component.assert_not_called()
+            component.return_value = None
+            self.assertFalse(memory.hydrate_gex_snapshots("first-vault"))
+            self.assertEqual(component.call_args.kwargs["mode"], "read")
+            component.return_value = {"source": "empty", "state": None}
+            self.assertTrue(memory.hydrate_gex_snapshots("first-vault"))
+            memory.persist_gex_snapshots("first-vault")
+            stored = copy.deepcopy(component.call_args.kwargs["server_state"])
+            first_key = component.call_args.kwargs["storage_key"]
+            self.assertEqual(memory._unpack(stored), {"cboe": cboe, "etrade": etrade})
+            cboe["results"].clear()
+            etrade.clear()
+            state.clear()  # Simulate fresh process/session with only browser bytes left.
+            component.return_value = {"source": "browser", "state": stored}
+            self.assertTrue(memory.hydrate_gex_snapshots("first-vault"))
+            self.assertEqual(cboe["results"]["SPY"]["callWall"]["strike"], 110)
+            self.assertEqual(etrade["QQQ"]["putWall"]["strike"], 500)
+            component.return_value = {"source": "empty", "state": None}
+            self.assertTrue(memory.hydrate_gex_snapshots("second-vault"))
+            self.assertNotEqual(first_key, component.call_args.kwargs["storage_key"])
+            # A browser backup must never replace fresher server calculations.
+            cboe["results"]["SPY"]["snapshotFetchedAt"] = "2026-10-21T13:00:00-04:00"
+            cboe["results"]["SPY"]["callWall"]["strike"] = 120
+            memory._restore("first-vault", memory._unpack(stored))
+            self.assertEqual(cboe["results"]["SPY"]["callWall"]["strike"], 120)
+            self.assertEqual(memory._unpack({"packed": "broken data"}), {})
+
+    def test_failed_cboe_refresh_keeps_last_success_while_pruning_removed_tickers(self):
+        saved = {"results": {"SPY": {"callWall": {"strike": 110}}, "REMOVED": {}}, "failures": {}}
+        with (patch.object(ui, "build_cboe_gex", side_effect=ValueError("feed unavailable")),
+              patch.object(ui, "cboe_snapshot", return_value=saved),
+              patch.object(ui, "save_cboe_refresh") as save,
+              patch.object(ui.st, "progress")):
+            updated, failures = ui._refresh_cboe_batch("vault", dict(core.DEFAULT_STATE), ["SPY"],
+                                                       replace_all=True, publish_master=False)
+        self.assertEqual(updated, {})
+        self.assertIn("SPY", failures)
+        self.assertEqual(saved["results"], {"SPY": {"callWall": {"strike": 110}}})
+        self.assertEqual(save.call_args.args[2], failures)
+
     def setUp(self):
         self.today = datetime.now(ZoneInfo("America/New_York")).date()
         self.expiry = self.today + timedelta(days=30)

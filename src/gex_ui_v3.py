@@ -45,6 +45,7 @@ from src import gex_ui as _core
 from src import gex_ui_v3_proven as _proven
 from src.gex_cboe import build_cboe_gex, cboe_results, cboe_snapshot, save_cboe_refresh
 from src.gex_github_bridge import publish_latest_gex, publish_latest_gex_cboe
+from src.gex_snapshot_cache import hydrate_gex_snapshots, persist_gex_snapshots
 
 
 # ==============================
@@ -501,10 +502,11 @@ def _refresh_cboe_batch(
 
     snapshot = cboe_snapshot(vault_key)
     if replace_all:
-        snapshot["results"].clear()
-    for ticker in normalized:
-        if ticker in failures:
-            snapshot["results"].pop(ticker, None)
+        for ticker in list(snapshot["results"]):
+            if ticker not in normalized:
+                snapshot["results"].pop(ticker, None)
+    # A failed refresh retains the last successful snapshot and its timestamp.
+    # Failures remain visible; cached walls are never represented as fresh.
 
     if replace_all:
         merged_failures = failures
@@ -1634,6 +1636,8 @@ def render_gex(
 ) -> None:
     """Render the proven GEX workspace with source-isolated calculation parity."""
     vault_key = str(vault_key or "default")
+    if not hydrate_gex_snapshots(vault_key):
+        return
     st.html('<style>.gexv3-summary a.gexv3-dte-edit {color:#fb8b1e!important;text-decoration:underline dotted!important;cursor:pointer;font:inherit;}</style>')
     if "gex_dte" in st.query_params:
         st.session_state["gex_dte_edit_ticker"] = _core._normalize_ticker(st.query_params["gex_dte"])
@@ -1887,6 +1891,7 @@ def render_gex(
         _proven._base._render_overview = original_render_overview
         _proven._base._remove_ticker = original_remove
         _proven._base._overview_html = original_overview
+        persist_gex_snapshots(vault_key)
 
     edit_ticker = st.session_state.pop("gex_dte_edit_ticker", "")
     if edit_ticker:

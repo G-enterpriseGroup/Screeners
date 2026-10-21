@@ -13,6 +13,48 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_expiration_detail_uses_calendar_days_and_fractional_years(self):
+        from src.vertical_options_ui import _expiry_time_label
+        self.assertEqual(_expiry_time_label(date(2026, 10, 23), date(2026, 10, 21)), "2d · 0.01y")
+        self.assertEqual(_expiry_time_label(date(2028, 10, 21), date(2026, 10, 21)), "731d · 2.00y")
+        self.assertEqual(_expiry_time_label(date(2026, 10, 21), date(2026, 10, 21)), "0d · 0.00y")
+        self.assertEqual(_expiry_time_label(date(2026, 10, 20), date(2026, 10, 21)), "0d · 0.00y")
+
+    def test_default_breakeven_uses_nearest_valid_exact_ticker_cboe_wall(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        results = {"SPY": {"callWall": {"strike": 110}, "putWall": {"strike": 90}}}
+        with patch.object(vo.st, "session_state", {}), patch.object(vo, "cboe_results", return_value=results):
+            self.assertEqual(vo._default_breakeven("SPY", 108, "vault"), (110, "CBOE CALL WALL DEFAULT"))
+            self.assertEqual(vo._default_breakeven("SPY", 92, "vault"), (90, "CBOE PUT WALL DEFAULT"))
+            self.assertEqual(vo._default_breakeven("SPY", 100, "vault")[0], 110)
+            self.assertEqual(vo._default_breakeven("SPYM", 99, "vault"), (99, "SPOT DEFAULT"))
+            self.assertEqual(vo._default_breakeven("SPY", None, "vault")[0], None)
+            results["SPY"]["callWall"]["strike"] = float("nan")
+            self.assertEqual(vo._default_breakeven("SPY", 108, "vault")[0], 90)
+            results["SPY"]["putWall"]["strike"] = -90
+            self.assertEqual(vo._default_breakeven("SPY", 108, "vault"), (108, "SPOT DEFAULT"))
+
+    def test_wall_preset_remains_editable_and_auto_updates_across_tickers(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        session = {}
+        results = {"SPY": {"callWall": {"strike": 110}, "putWall": {"strike": 90}}}
+        with patch.object(vo.st, "session_state", session), patch.object(vo, "cboe_results", return_value=results):
+            vo._seed_breakeven_preset("SPY", 108, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "110.0")
+            vo._seed_breakeven_preset("SPY", 92, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "90.0")
+            session["vo_target_breakeven"] = "103"
+            vo._seed_breakeven_preset("SPY", 108, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "103")
+            self.assertNotIn("_vo_auto_target", session)
+            session["vo_target_breakeven"] = ""
+            vo._seed_breakeven_preset("SPY", 108, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "110.0")
+            vo._seed_breakeven_preset("MSFT", 400, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "400.0")
+
     def test_pasted_ticker_table_parses_deduplicates_and_preserves_order(self):
         from src.vertical_options_ui import _parse_ticker_list
         table = """| Ticker |
