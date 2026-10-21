@@ -2880,3 +2880,5 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Architecture guard result:** Pending CI.
 - **Implementation commit SHA:** `fe38ba405d0fdecf998d3894d88feca4e4a657f9`; **regression commit SHA:** `41cc16c7d777b81af96a048190b11c50ae2aa575`.
 - **Lesson:** Remove obsolete GEX presentation routes without deleting the TradingView TXT transport; safeguard persisted tab selections whenever the tab list shrinks.
+
+- **2026-10-20 CI verification:** PR #117 Terminal Architecture Guard run **39541087381 PASS**, including `python scripts/validate_architecture.py`, Python production syntax, focused CBOE/Morningstar/GEX legacy-subtab removal regression, and adjacent top-level tab smoke checks. This validates source structure and offline UI routes, not an interactive authenticated Streamlit production session; final host reboot/frontend still to verify.
