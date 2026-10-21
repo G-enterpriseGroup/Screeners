@@ -271,6 +271,24 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
+            # Pricing controls stay on one compact row. Hidden preference frames
+            # must never reserve the custom-component default 150px height.
+            pricing_layout = driver.execute_script("""
+                const guide = document.querySelector(".vo-mode-guide");
+                const form = document.querySelector('[data-testid="stForm"]');
+                const label = document.querySelector(".st-key-vo_smart_fill label");
+                if (!guide || !form || !label) return null;
+                const track = label.querySelector("span:first-child");
+                return {
+                    gap: form.getBoundingClientRect().top - guide.getBoundingClientRect().bottom,
+                    toggleWidth: label.getBoundingClientRect().width,
+                    trackOutlined: !!track && getComputedStyle(track).outlineStyle === "solid",
+                };
+            """)
+            assert pricing_layout is not None, "Pricing controls are missing"
+            assert 0 <= pricing_layout["gap"] < 95, pricing_layout
+            assert pricing_layout["toggleWidth"] >= 24, pricing_layout
+            assert pricing_layout["trackOutlined"], pricing_layout
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, ".st-key-vo_smart_fill label"

@@ -93,7 +93,7 @@ _VERTICAL_OPTIONS_CSS = """
     font-weight:900!important;
     text-transform:uppercase!important;
 }
-.st-key-vertical_options_workspace input,
+.st-key-vertical_options_workspace [data-testid="stTextInput"] input,
 .st-key-vertical_options_workspace [data-baseweb="select"]>div,
 .st-key-vertical_options_workspace [data-baseweb="input"]>div{
     min-height:38px!important;
@@ -233,6 +233,18 @@ _VERTICAL_OPTIONS_CSS = """
     font:800 .62rem/1.2 "Courier New",monospace;
 }
 .vo-note .muted{color:var(--vo-muted)!important;-webkit-text-fill-color:var(--vo-muted)!important;}
+/* Keep the native pricing flip visible within this feature, even with dark theme. */
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label{
+    display:inline-flex!important;
+    align-items:center!important;
+    gap:6px!important;
+    white-space:nowrap!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label > span:first-child{
+    outline:1px solid var(--vo-orange)!important;
+    outline-offset:1px;
+    border-radius:999px!important;
+}
 /* Vertical Options pricing help only: compact hover/focus tooltips. */
 .st-key-vertical_options_workspace .vo-mode-guide{
     display:flex;align-items:center;gap:14px;flex-wrap:wrap;
@@ -810,7 +822,7 @@ def _pricing_mode_flip_switch() -> str | None:
     """
     if not st.session_state.get("_vo_pricing_mode_hydrated", False):
         restored = _PRICING_PREFERENCE_COMPONENT(
-            action="read", key="vo_pricing_preference_reader", default=None,
+            action="read", key="vo_pricing_preference_reader", height=0, default=None,
         )
         if not isinstance(restored, dict) or not restored.get("ready"):
             return None  # No transient NORMAL mode may overwrite saved SMART.
@@ -829,14 +841,14 @@ def _pricing_mode_flip_switch() -> str | None:
             st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
         )
     smart = st.toggle(
-        "SMART FILL", key="vo_smart_fill",
+        "SMART FILL", key="vo_smart_fill", label_visibility="collapsed",
         help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
              "Saved for this browser profile, including after page reload.",
     )
     mode = "SMART FILL" if smart else "NORMAL"
     st.session_state["_vo_pricing_mode_preference"] = mode
     _PRICING_PREFERENCE_COMPONENT(
-        action="write", value=mode, key="vo_pricing_preference_writer", default=None,
+        action="write", value=mode, key="vo_pricing_preference_writer", height=0, default=None,
     )
     return mode
 
@@ -969,22 +981,27 @@ def _render_vertical_options_fragment(client, touch_session) -> None:
         # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
         # Switching modes reprices the cached snapshot only; it never fetches
         # quotes, previews a broker order or submits one.
-        st.html(
-            '<div class="vo-mode-guide">PRICING MODE'
-            '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
-            '<span class="vo-mode-tooltip" role="tooltip">'
-            'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
-            'and cost limits; otherwise qualifying LAST or MID. '
-            'Unquoted LAST* is information only. No guaranteed fill.'
-            '</span></span></span>'
-            '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
-            '<span class="vo-mode-tooltip" role="tooltip">'
-            'Suggests a limit between spread MID and natural ASK using quote width '
-            'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
-            'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
-            '</span></span></span></div>'
+        mode_guide_col, mode_switch_col, _ = st.columns(
+            [3.0, .7, 6.3], gap="small", vertical_alignment="center"
         )
-        pricing_mode = _pricing_mode_flip_switch()
+        with mode_guide_col:
+            st.html(
+                '<div class="vo-mode-guide">PRICING MODE'
+                '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+                '<span class="vo-mode-tooltip" role="tooltip">'
+                'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
+                'and cost limits; otherwise qualifying LAST or MID. '
+                'Unquoted LAST* is information only. No guaranteed fill.'
+                '</span></span></span>'
+                '<span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
+                '<span class="vo-mode-tooltip" role="tooltip">'
+                'Suggests a limit between spread MID and natural ASK using quote width '
+                'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
+                'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
+                '</span></span></span></div>'
+            )
+        with mode_switch_col:
+            pricing_mode = _pricing_mode_flip_switch()
         if pricing_mode is None:
             return
         last_result = st.session_state.get("vo_scan_result") or {}
