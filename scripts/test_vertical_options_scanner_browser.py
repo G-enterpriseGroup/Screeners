@@ -769,6 +769,17 @@ def test() -> None:
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "150"
             assert not any(item["event"] == "place" for item in events(event_path))
 
+            # A manual target belongs to its ticker, while another ticker gets
+            # its own preset. Returning restores the original manual override.
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys("QQQ", Keys.TAB)
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "90.0")
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys("MSFT", Keys.TAB)
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "103")
+
             # Restart the actual Streamlit process. The replacement fixture does
             # not seed GEX: only the same browser's persisted backup can restore it.
             token = hashlib.sha256(b"scanner-fixture").hexdigest()[:24]

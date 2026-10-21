@@ -471,9 +471,19 @@ def _seed_breakeven_preset(symbol: str, spot: Any, vault_key: str) -> None:
     """Seed only blank/automatic fields; a manual target always takes precedence."""
     text = str(st.session_state.get("vo_target_breakeven") or "").strip()
     previous = st.session_state.get("_vo_auto_target") or {}
+    manual_targets = st.session_state.setdefault("_vo_manual_targets", {})
+    active = st.session_state.get("_vo_breakeven_symbol")
+    if active is not None and active != symbol:
+        target_map = st.session_state.get("vo_ticker_targets") or {}
+        text = str(target_map.get(symbol, manual_targets.get(symbol, "")) or "").strip()
+        st.session_state["vo_target_breakeven"] = text
+        previous = {}
+    st.session_state["_vo_breakeven_symbol"] = symbol
     if text and text != previous.get("text"):
+        manual_targets[symbol] = text
         st.session_state.pop("_vo_auto_target", None)
         return
+    manual_targets.pop(symbol, None)
     target, basis = _default_breakeven(symbol, spot, vault_key)
     seeded = str(target) if target is not None else ""
     st.session_state["vo_target_breakeven"] = seeded

@@ -49,6 +49,10 @@ class VerticalOptionsTests(unittest.TestCase):
             vo._seed_breakeven_preset("SPY", 108, "vault")
             self.assertEqual(session["vo_target_breakeven"], "103")
             self.assertNotIn("_vo_auto_target", session)
+            vo._seed_breakeven_preset("QQQ", 400, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "400.0")
+            vo._seed_breakeven_preset("SPY", 108, "vault")
+            self.assertEqual(session["vo_target_breakeven"], "103")
             session["vo_target_breakeven"] = ""
             vo._seed_breakeven_preset("SPY", 108, "vault")
             self.assertEqual(session["vo_target_breakeven"], "110.0")
