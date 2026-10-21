@@ -247,6 +247,30 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertIn('key="vo_pricing_preference_reader", height=0', ui)
         self.assertIn('key="vo_pricing_preference_writer", height=0', ui)
 
+    def test_native_switch_theme_is_scoped_and_emitted_every_session(self):
+        from unittest.mock import patch
+        import src.theme as theme
+        with patch.object(theme.st, "html") as output:
+            theme.install_native_switch_theme("vo_smart_fill")
+            theme.install_native_switch_theme("vo_smart_fill")
+            self.assertEqual(output.call_count, 2)
+            css = output.call_args.args[0]
+            self.assertIn('.st-key-vo_smart_fill label:has(input[role="switch"])', css)
+            self.assertIn("outline:1px solid #fb8b1e!important", css)
+            self.assertIn("background-color:#fb8b1e!important", css)
+            self.assertIn('input[role="switch"]:checked', css)
+            self.assertIn('input[role="switch"]:focus-visible', css)
+            self.assertNotIn(":hover", css)
+            theme.install_native_switch_theme("risk_capital_source_tactical")
+            self.assertIn(".st-key-risk_capital_source_tactical", output.call_args.args[0])
+        with self.assertRaises(ValueError):
+            theme.install_native_switch_theme("bad key > *")
+        root = Path(__file__).resolve().parents[1]
+        self.assertIn('install_native_switch_theme("risk_capital_source_tactical")',
+                      (root / "src/risk_sizing_ui_v2.py").read_text())
+        self.assertIn('install_native_switch_theme("vo_smart_fill")',
+                      (root / "src/vertical_options_ui.py").read_text())
+
     def test_ticker_preview_is_last_only_cached_and_never_loads_chains(self):
         from unittest.mock import Mock, patch
         import src.vertical_options_ui as vo

@@ -63,6 +63,43 @@ CHART_COLORWAY = [
 
 
 # ==============================
+# SCOPED NATIVE SWITCH THEME
+# ==============================
+def install_native_switch_theme(widget_key: str) -> None:
+    """Give one native switch a visible track/thumb in both resting states.
+
+    Streamlit derives an unchecked thumb from bodyText, which is intentionally
+    black for our dataframe headers. Emit per render/session; never globally
+    recolor all checkboxes or replace the native keyboard/state behavior.
+    """
+    if not widget_key.isidentifier():
+        raise ValueError("Switch theme requires a static widget key.")
+    track = f'.st-key-{widget_key} label:has(input[role="switch"]) > div:first-of-type'
+    st.html(f"""<style>
+{track} {{
+    outline:1px solid {BB_ORANGE}!important;
+    outline-offset:1px;
+    border-radius:999px!important;
+    background-color:{BB_BLACK}!important;
+}}
+{track} > div {{
+    border-radius:999px!important;
+    background-color:{BB_ORANGE}!important;
+}}
+.st-key-{widget_key} label:has(input[role="switch"]:checked) > div:first-of-type {{
+    background-color:{BB_ORANGE}!important;
+}}
+.st-key-{widget_key} label:has(input[role="switch"]:checked) > div:first-of-type > div {{
+    background-color:{BB_BLACK}!important;
+}}
+.st-key-{widget_key} label:has(input[role="switch"]:focus-visible) > div:first-of-type {{
+    outline:2px solid {BB_BLUE}!important;
+    outline-offset:2px;
+}}
+</style>""")
+
+
+# ==============================
 # TERMINAL-WIDE INPUT THEME
 # ==============================
 

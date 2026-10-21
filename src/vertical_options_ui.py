@@ -41,6 +41,7 @@ import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
 from src.option_book import extract_option_rows
+from src.theme import install_native_switch_theme
 from src.gex_cboe import cboe_results
 from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
@@ -1749,4 +1750,5 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
 def render_vertical_options(client, touch_session, *, vault_key: str = "default") -> None:
     """Render the isolated Vertical Options workspace."""
     st.html(_VERTICAL_OPTIONS_CSS)
+    install_native_switch_theme("vo_smart_fill")
     _render_vertical_options_fragment(client, touch_session, vault_key)

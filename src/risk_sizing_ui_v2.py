@@ -38,7 +38,7 @@ from src.risk_sizing import (
     stock_position_size,
 )
 from src.risk_sizing_ui import _normalized_holdings, _render_crown_reference
-from src.theme import BB_BLACK, BB_BLUE, BB_GREEN, BB_ORANGE, BB_RED
+from src.theme import BB_BLACK, BB_BLUE, BB_GREEN, BB_ORANGE, BB_RED, install_native_switch_theme
 
 
 # ==============================
@@ -1461,6 +1461,7 @@ def _render_next_trade(
                     'text-align:right;white-space:nowrap;">Liquid Bal.</div>'
                 )
             with switch_col:
+                install_native_switch_theme("risk_capital_source_tactical")
                 use_tactical_room = bool(
                     st.toggle(
                         "Capital Source",
