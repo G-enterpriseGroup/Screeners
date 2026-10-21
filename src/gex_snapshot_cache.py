@@ -28,9 +28,12 @@ _MEMORY = components.declare_component(
     path=str(Path(__file__).parent / "components" / "gex_snapshot_memory_v1"),
 )
 _MAX_BYTES = 128 * 1024 * 1024
+_MEMORY_CSS = '<style>.st-key-gex_snapshot_reader,.st-key-gex_snapshot_writer{display:none!important}</style>'
 
 
 def _unpack(state: dict) -> dict:
+    if not isinstance(state, dict):
+        return {}
     try:
         compressed = base64.b64decode(state.get("packed", ""), validate=True)
         decoder = zlib.decompressobj()
@@ -83,8 +86,10 @@ def hydrate_gex_snapshots(vault_key: str) -> bool:
     ready_key = "_gex_snapshot_ready_" + token
     if st.session_state.get(ready_key):
         return True
-    st.html('<style>.st-key-gex_snapshot_reader,.st-key-gex_snapshot_writer{display:none!important}</style>')
     with st.container(key="gex_snapshot_reader", gap=None):
+        # Keep style output in this hidden body container. Streamlit's shared
+        # st.html event container can overwrite later root styles on fragment reruns.
+        st.markdown(_MEMORY_CSS, unsafe_allow_html=True)
         browser = _MEMORY(
             storage_key="raj-terminal-gex-snapshots-v1:" + token,
             mode="read", hydrated=False, server_state={}, height=0,
@@ -115,8 +120,8 @@ def persist_gex_snapshots(vault_key: str) -> None:
         }
         st.session_state[state_key] = envelope
     # CSS must be emitted every render, including fragment-only reruns.
-    st.html('<style>.st-key-gex_snapshot_reader,.st-key-gex_snapshot_writer{display:none!important}</style>')
     with st.container(key="gex_snapshot_writer", gap=None):
+        st.markdown(_MEMORY_CSS, unsafe_allow_html=True)
         status = _MEMORY(storage_key="raj-terminal-gex-snapshots-v1:" + token,
                          mode="write", hydrated=True, server_state=envelope, height=0,
                          key="gex_snapshot_write_" + token, default=None)
