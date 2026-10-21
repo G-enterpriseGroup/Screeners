@@ -1111,17 +1111,18 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         "E*TRADE OVERVIEW",
         "CBOE OVERVIEW",
         "MORNINGSTAR GEX",
-        "ANALYTICS",
-        "RAW STRIKES",
-        "TRADINGVIEW",
         "SETTINGS",
         "NOTES",
     ]
     last_subtab = st.session_state.get("_gex_last_subtab", subtab_names[0])
     if last_subtab not in subtab_names:
         last_subtab = subtab_names[0]
+        st.session_state["_gex_last_subtab"] = last_subtab
+    # Reset a previously selected legacy tab before creating the keyed widget.
+    if st.session_state.get("gexv3_active_subtab") not in (*subtab_names, None):
+        st.session_state.pop("gexv3_active_subtab", None)
     (etrade_overview_tab, cboe_overview_tab, morningstar_tab,
-     analytics_tab, raw_tab, tv_tab, settings_tab, notes_tab) = st.tabs(
+     settings_tab, notes_tab) = st.tabs(
         subtab_names, default=last_subtab, key="gexv3_active_subtab",
         on_change=_remember_gex_subtab,
     )
@@ -1134,15 +1135,6 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
 
     with morningstar_tab:
         _render_morningstar_gex(vault_key, state)
-
-    with analytics_tab:
-        _render_analytics(client, vault_key, touch_session, state, result_map)
-
-    with raw_tab:
-        _render_raw(state, result_map)
-
-    with tv_tab:
-        _render_tradingview(state, result_map)
 
     with settings_tab:
         state = _render_settings(vault_key, state, result_map)
