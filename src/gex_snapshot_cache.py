@@ -10,6 +10,8 @@ import base64
 import copy
 import hashlib
 import json
+import os
+import threading
 import time
 import zlib
 from datetime import datetime
@@ -28,6 +30,8 @@ _MEMORY = components.declare_component(
     path=str(Path(__file__).parent / "components" / "gex_snapshot_memory_v1"),
 )
 _MAX_BYTES = 128 * 1024 * 1024
+_SERVER_CACHE_DIR = Path(__file__).resolve().parents[1] / '.gex_snapshot_cache'
+_SERVER_CACHE_LOCK = threading.RLock()
 _MEMORY_CSS = '<style>.st-key-gex_snapshot_reader,.st-key-gex_snapshot_writer{display:none!important}</style>'
 
 
@@ -81,9 +85,43 @@ def _token(vault_key: str) -> str:
     return hashlib.sha256(str(vault_key or "default").encode()).hexdigest()[:24]
 
 
+def _server_snapshot_path(vault_key: str) -> Path:
+    # Hash vault identity; never put authentication data in filenames or contents.
+    return _SERVER_CACHE_DIR / (_token(vault_key) + ".json")
+
+
+def _read_server_snapshot(vault_key: str) -> None:
+    try:
+        with _SERVER_CACHE_LOCK:
+            path = _server_snapshot_path(vault_key)
+            if not path.is_file() or path.stat().st_size > _MAX_BYTES:
+                return
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        _restore(vault_key, saved if isinstance(saved, dict) else {})
+    except (OSError, ValueError, TypeError):
+        return  # Browser backup remains available.
+
+
+def _save_server_snapshot(vault_key: str) -> None:
+    # Last-successful results are never cleared when a refresh fails.
+    state = {"cboe": cboe_snapshot(vault_key), "etrade": gex_ui._results(vault_key)}
+    with _SERVER_CACHE_LOCK:
+        _SERVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _server_snapshot_path(vault_key)
+        temp = path.with_suffix(".tmp")
+        try:
+            temp.write_text(json.dumps(state, allow_nan=False), encoding="utf-8")
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
 def hydrate_gex_snapshots(vault_key: str) -> bool:
     token = _token(vault_key)
     ready_key = "_gex_snapshot_ready_" + token
+    if not st.session_state.get('_gex_server_snapshot_loaded_' + token):
+        _read_server_snapshot(vault_key)
+        st.session_state['_gex_server_snapshot_loaded_' + token] = True
     if st.session_state.get(ready_key):
         return True
     with st.container(key="gex_snapshot_reader", gap=None):
@@ -106,6 +144,7 @@ def hydrate_gex_snapshots(vault_key: str) -> bool:
 
 def persist_gex_snapshots(vault_key: str) -> None:
     token = _token(vault_key)
+    _save_server_snapshot(vault_key)
     if not st.session_state.get("_gex_snapshot_ready_" + token):
         return
     raw = json.dumps({"cboe": cboe_snapshot(vault_key), "etrade": gex_ui._results(vault_key)},
