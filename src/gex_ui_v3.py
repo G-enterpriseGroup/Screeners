@@ -31,6 +31,7 @@ import csv
 import html
 import io
 import math
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
@@ -160,12 +161,13 @@ _MASTER_A6_STATIC_PATH = (
 )
 _ORIGINAL_RUN_BACKGROUND_REFRESH = _proven._run_background_refresh
 
-try:
-    _GEX_GITHUB_TOKEN = str(
-        st.secrets.get("github", {}).get("bridge_token", "")
-    ).strip()
-except Exception:
-    _GEX_GITHUB_TOKEN = ""
+def _gex_github_token() -> str:
+    """Resolve credentials at publish time, not at Streamlit module import."""
+    try:
+        secret = str(st.secrets.get("github", {}).get("bridge_token", "")).strip()
+    except Exception:
+        secret = ""
+    return secret or str(os.environ.get("GEX_GITHUB_TOKEN", "")).strip()
 
 
 def _write_master_a6_static(
@@ -218,13 +220,13 @@ def _publish_current_etrade_master_a6(
         tickers,
         failures,
     ).strip()
-    if not parser_text or not _GEX_GITHUB_TOKEN:
+    if not parser_text or not _gex_github_token():
         return False
 
     try:
         return bool(
             publish_latest_gex(
-                _GEX_GITHUB_TOKEN,
+                _gex_github_token(),
                 f'"{parser_text}"',
             )
         )
@@ -270,9 +272,9 @@ def _run_background_refresh_with_master_export(
             tickers,
             failures,
         ).strip()
-        if parser_text and _GEX_GITHUB_TOKEN:
+        if parser_text and _gex_github_token():
             publish_latest_gex(
-                _GEX_GITHUB_TOKEN,
+                _gex_github_token(),
                 f'"{parser_text}"',
             )
     except Exception:
@@ -436,7 +438,7 @@ def _publish_cboe_master_a6(
         pass
 
     try:
-        if not publish_latest_gex_cboe(_GEX_GITHUB_TOKEN, quoted):
+        if not publish_latest_gex_cboe(_gex_github_token(), quoted):
             raise RuntimeError("GitHub did not confirm publication")
     except Exception as exc:
         st.session_state["gexv3_cboe_publish_status"] = (
