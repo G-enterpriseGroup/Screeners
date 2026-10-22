@@ -25,7 +25,7 @@ PATH = "bridge/latest_gex.txt"
 CBOE_PATH = "bridge/latest_gex_cboe.txt"
 
 
-def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
+def _publish_path(token: str, payload: str, path: str, message: str) -> str:
     """Write and read back bridge bytes; retry concurrent edits and transient API failures."""
     token = str(token or "").strip()
     payload = str(payload or "")
@@ -44,11 +44,11 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
         "Cache-Control": "no-cache",
     }
     expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    metadata_url = api_url + "?ref=" + urllib.parse.quote(BRANCH, safe="")
     retry_codes = {409, 422, 429, 500, 502, 503, 504}
 
-    def read_remote() -> tuple[str, str]:
-        request = urllib.request.Request(metadata_url, headers=headers, method="GET")
+    def read_remote(ref: str = BRANCH) -> tuple[str, str]:
+        url = api_url + "?ref=" + urllib.parse.quote(ref, safe="")
+        request = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 data = json.loads(response.read().decode("utf-8"))
@@ -63,9 +63,7 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            sha, remote_hash = read_remote()
-            # Refresh is a publication event even when delayed CBOE rows are identical.
-            # GitHub's last-updated timestamp must reflect each successful refresh.
+            sha, _ = read_remote()
             body = {
                 "message": message,
                 "content": base64.b64encode(payload.encode("utf-8")).decode("ascii"),
@@ -80,13 +78,16 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
             )
             with urllib.request.urlopen(request, timeout=15) as response:
                 written = json.loads(response.read().decode("utf-8"))
-            if not str((written.get("commit") or {}).get("sha") or "").strip():
+            commit = str((written.get("commit") or {}).get("sha") or "").strip()
+            if not commit:
                 raise RuntimeError("GitHub did not return a publication commit")
-            # Do not announce published until the branch serves the exact bytes.
+            # Verify the immutable commit as well as the current data branch.
+            # A cached branch response alone cannot prove which write was served.
             for verify_attempt in range(3):
+                _, committed = read_remote(commit)
                 _, confirmed = read_remote()
-                if confirmed == expected:
-                    return True
+                if committed == expected and confirmed == expected:
+                    return commit
                 if verify_attempt < 2:
                     time.sleep(0.35 * (verify_attempt + 1))
             raise RuntimeError("GitHub write succeeded but remote CBOE payload did not match")
@@ -97,22 +98,24 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
                 raise last_error from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             last_error = exc
+        except RuntimeError as exc:
+            last_error = exc
         if attempt < 2:
             time.sleep(0.4 * (attempt + 1))
     raise RuntimeError(f"GitHub bridge publish failed after 3 attempts: {last_error}")
 
 def publish_latest_gex(token: str, payload: str) -> bool:
     """Replace the existing E*TRADE MASTER A6 bridge payload unchanged."""
-    return _publish_path(
+    return bool(_publish_path(
         token,
         payload,
         PATH,
         "Update TradingView GEX bridge data",
-    )
+    ))
 
 
-def publish_latest_gex_cboe(token: str, payload: str) -> bool:
-    """Create or replace the separate CBOE MASTER A6 bridge payload."""
+def publish_latest_gex_cboe(token: str, payload: str) -> str:
+    """Return the verified commit for the separate CBOE MASTER A6 payload."""
     return _publish_path(
         token,
         payload,
