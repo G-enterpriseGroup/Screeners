@@ -46,7 +46,7 @@ from src import gex_ui as _core
 from src import gex_ui_v3_proven as _proven
 from src.gex_cboe import build_cboe_gex, cboe_results, cboe_snapshot, save_cboe_refresh
 from src.gex_github_bridge import publish_latest_gex, publish_latest_gex_cboe
-from src.gex_snapshot_cache import hydrate_gex_snapshots, persist_gex_snapshots
+from src.gex_snapshot_cache import hydrate_gex_snapshots, persist_gex_snapshots, _save_server_snapshot
 
 
 # ==============================
@@ -209,6 +209,7 @@ def _publish_current_etrade_master_a6(
     result_map = _core._results(str(vault_key or "default"))
     if not tickers or not result_map:
         return False
+    _save_server_snapshot(str(vault_key or "default"))
 
     try:
         _write_master_a6_static(result_map, tickers, failures)
@@ -259,6 +260,9 @@ def _run_background_refresh_with_master_export(
 
     if status not in {"DONE", "DONE_WITH_ERRORS"}:
         return
+
+    # Save completed background calculations even when the browser switched tabs.
+    _save_server_snapshot(key, etrade_results=results)
 
     try:
         _write_master_a6_static(results, tickers, failures)
@@ -427,6 +431,10 @@ def _publish_cboe_master_a6(
     if not parser_text:
         return
 
+    # A PUT of identical bytes can create a commit without changing GitHub's
+    # file-history date. Include the export time, separate from source freshness.
+    exported = datetime.now().astimezone().isoformat(timespec="microseconds")
+    parser_text = parser_text.replace("\n", f"\nCBOE Exported: {exported}\n", 1)
     quoted = f'"{parser_text}"'
     try:
         path = _CBOE_MASTER_A6_STATIC_PATH
@@ -437,17 +445,64 @@ def _publish_cboe_master_a6(
     except Exception:
         pass
 
+    snapshot["publication"] = {"payload": quoted, "exported_at": exported}
+    _publish_cached_cboe_payload(vault_key)
+
+
+def _publish_cached_cboe_payload(vault_key: str) -> None:
+    """Retry the exact saved export without downloading any option chains."""
+    snapshot = cboe_snapshot(vault_key)
+    publication = snapshot.get("publication") or {}
+    quoted = str(publication.get("payload") or "")
+    if not quoted:
+        return
+    publication.update(status="PENDING", attempted_at=datetime.now().astimezone().isoformat())
+    publication.pop("completed_at", None)
+    snapshot["publication"] = publication
+    _save_server_snapshot(vault_key)  # Results and pending export survive transport failure.
     try:
-        if not publish_latest_gex_cboe(_gex_github_token(), quoted):
+        commit = publish_latest_gex_cboe(_gex_github_token(), quoted)
+        if not commit:
             raise RuntimeError("GitHub did not confirm publication")
     except Exception as exc:
+        publication.update(status="ERROR", error=" ".join(str(exc).split())[:320])
         st.session_state["gexv3_cboe_publish_status"] = (
-            "ERROR", " ".join(str(exc).split())[:320]
+            "ERROR", publication["error"]
         )
     else:
+        publication.update(status="OK", commit=str(commit), error="")
         st.session_state["gexv3_cboe_publish_status"] = (
-            "OK", "GitHub CBOE TXT verified against the refreshed payload"
+            "OK", f"GitHub CBOE TXT verified // commit {str(commit)[:12]}"
         )
+    publication["completed_at"] = datetime.now().astimezone().isoformat()
+    _save_server_snapshot(vault_key)
+
+
+def _render_cboe_publication_status(vault_key: str) -> None:
+    """Show publication outcome regardless of which GEX subtab is selected."""
+    publication = cboe_snapshot(vault_key).get("publication") or {}
+    status = publication.get("status")
+    if status == "OK":
+        st.caption(
+            f"CBOE TXT // GITHUB VERIFIED {publication.get('commit', '')[:12]}"
+            f" // EXPORTED {publication.get('exported_at', '')}"
+        )
+    elif status in {"ERROR", "PENDING"}:
+        st.error(
+            "CBOE results are cached. GitHub TXT is not verified: "
+            + str(publication.get("error") or "publication was interrupted")
+        )
+        retry_col, download_col = st.columns(2)
+        with retry_col:
+            if st.button("RETRY GITHUB TXT", key="gexv3_cboe_retry_publish"):
+                _publish_cached_cboe_payload(vault_key)
+                st.rerun()
+        with download_col:
+            st.download_button(
+                "DOWNLOAD CACHED CBOE TXT", publication.get("payload", ""),
+                file_name="latest_gex_cboe.txt", mime="text/plain",
+                key="gexv3_cboe_cached_txt",
+            )
 
 
 def _refresh_cboe_batch(
@@ -530,7 +585,10 @@ def _refresh_cboe_batch(
         merged_failures,
         str(state.get("timezone") or "America/New_York"),
     )
-    if publish_master:
+    if not publish_master and replace_all:
+        snapshot["tickers"] = list(normalized)
+    _save_server_snapshot(vault_key)
+    if publish_master and results:
         _publish_cboe_master_a6(vault_key, state)
     progress.empty()
     return results, failures
@@ -820,13 +878,6 @@ def _render_cboe_overview(
                 st.toast(f"{selected} UPDATED")
             st.rerun()
 
-    publish_status = st.session_state.get("gexv3_cboe_publish_status")
-    if publish_status:
-        if publish_status[0] == "ERROR":
-            st.error(f"CBOE GEX refreshed locally, but GitHub TXT is stale: {publish_status[1]}")
-        else:
-            st.caption(f"CBOE TXT // {publish_status[1]}")
-
     snapshot = cboe_snapshot(vault_key)
     refreshed = [ticker for ticker in tickers if ticker in result_map]
     failures = snapshot.get("failures") or {}
@@ -995,6 +1046,9 @@ def _render_morningstar_gex(
 ) -> None:
     """Run a separate Morningstar ticker basket through the normal CBOE engine."""
     basket_key = f"{vault_key}:morningstar"
+    st.session_state.setdefault(
+        "gex_morningstar_tickers", list(cboe_snapshot(basket_key).get("tickers") or [])
+    )
     tickers = list(st.session_state.get("gex_morningstar_tickers") or [])
     controls = st.columns([1.5, 1.1, 3.4], gap="small", vertical_alignment="bottom")
     with controls[0]:
@@ -1653,6 +1707,7 @@ def render_gex(
     vault_key = str(vault_key or "default")
     if not hydrate_gex_snapshots(vault_key):
         return
+    _render_cboe_publication_status(vault_key)
     st.html('<style>.gexv3-summary a.gexv3-dte-edit {color:#fb8b1e!important;text-decoration:underline dotted!important;cursor:pointer;font:inherit;}</style>')
     if "gex_dte" in st.query_params:
         st.session_state["gex_dte_edit_ticker"] = _core._normalize_ticker(st.query_params["gex_dte"])

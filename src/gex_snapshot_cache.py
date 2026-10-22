@@ -10,6 +10,7 @@ import base64
 import copy
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -32,6 +33,8 @@ _MEMORY = components.declare_component(
 _MAX_BYTES = 128 * 1024 * 1024
 _SERVER_CACHE_DIR = Path(__file__).resolve().parents[1] / '.gex_snapshot_cache'
 _SERVER_CACHE_LOCK = threading.RLock()
+_SERVER_DIGESTS: dict[str, tuple[str, int, int]] = {}
+_SERVER_LOADED: set[str] = set()
 _MEMORY_CSS = '<style>.st-key-gex_snapshot_reader,.st-key-gex_snapshot_writer{display:none!important}</style>'
 
 
@@ -76,6 +79,27 @@ def _restore(vault_key: str, saved: dict) -> None:
         snapshot["updated"] = str(cboe_backup.get("updated") or "")
         failures = cboe_backup.get("failures")
         snapshot["failures"] = copy.deepcopy(failures) if isinstance(failures, dict) else {}
+    publication = cboe_backup.get("publication")
+    current_publication = snapshot.get("publication") or {}
+    if isinstance(publication, dict) and _stamp(
+        {"updated": publication.get("completed_at") or publication.get("attempted_at")}
+    ) > _stamp(
+        {"updated": current_publication.get("completed_at") or current_publication.get("attempted_at")}
+    ):
+        snapshot["publication"] = copy.deepcopy(publication)
+    morningstar = saved.get("morningstar")
+    if isinstance(morningstar, dict):
+        basket = cboe_snapshot(vault_key + ":morningstar")
+        backup = morningstar.get("results")
+        backup = backup if isinstance(backup, dict) else {}
+        for ticker, result in backup.items():
+            current = basket["results"].get(ticker)
+            if isinstance(result, dict) and (current is None or _stamp(result) > _stamp(current)):
+                basket["results"][ticker] = copy.deepcopy(result)
+        if not basket.get("updated") or _stamp(morningstar) > _stamp(basket):
+            for field in ("updated", "failures", "tickers"):
+                if field in morningstar:
+                    basket[field] = copy.deepcopy(morningstar[field])
 
 
 # ==============================
@@ -91,29 +115,69 @@ def _server_snapshot_path(vault_key: str) -> Path:
 
 
 def _read_server_snapshot(vault_key: str) -> None:
+    path = _server_snapshot_path(vault_key)
+    _SERVER_LOADED.add(str(path))
+    for candidate in (path, path.with_suffix(".previous.json")):
+        try:
+            with _SERVER_CACHE_LOCK:
+                if not candidate.is_file() or candidate.stat().st_size > _MAX_BYTES:
+                    continue
+                saved = json.loads(candidate.read_text(encoding="utf-8"))
+            if isinstance(saved, dict) and ("cboe" in saved or "etrade" in saved):
+                _restore(vault_key, saved)
+                return
+        except (OSError, ValueError, TypeError):
+            continue  # Try the previous-good server copy, then the browser backup.
+
+
+def _snapshot_state(vault_key: str) -> dict:
+    state = {"cboe": cboe_snapshot(vault_key), "etrade": gex_ui._results(vault_key)}
+    basket = cboe_snapshot(vault_key + ":morningstar")
+    if basket.get("results") or basket.get("tickers"):
+        state["morningstar"] = basket
+    return copy.deepcopy(state)
+
+
+def _save_server_snapshot(vault_key: str, *, etrade_results: dict | None = None) -> bool:
+    # Last-successful results are never cleared when a refresh fails.
     try:
         with _SERVER_CACHE_LOCK:
             path = _server_snapshot_path(vault_key)
-            if not path.is_file() or path.stat().st_size > _MAX_BYTES:
-                return
-            saved = json.loads(path.read_text(encoding="utf-8"))
-        _restore(vault_key, saved if isinstance(saved, dict) else {})
+            if str(path) not in _SERVER_LOADED:
+                _read_server_snapshot(vault_key)
+            if etrade_results:
+                current = gex_ui._results(vault_key)
+                for ticker, result in etrade_results.items():
+                    if ticker not in current or _stamp(result) >= _stamp(current[ticker]):
+                        current[ticker] = copy.deepcopy(result)
+            state = _snapshot_state(vault_key)
+            raw = json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+            _SERVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            if path.is_file():
+                stat = path.stat()
+                if _SERVER_DIGESTS.get(str(path)) == (digest, stat.st_mtime_ns, stat.st_size):
+                    return True
+            temp = path.with_suffix(".tmp")
+            try:
+                temp.write_text(raw, encoding="utf-8")
+                # Rotate only a readable cache; corrupt bytes never replace the backup.
+                if path.is_file():
+                    try:
+                        json.loads(path.read_text(encoding="utf-8"))
+                    except (ValueError, OSError):
+                        pass
+                    else:
+                        os.replace(path, path.with_suffix(".previous.json"))
+                os.replace(temp, path)
+                stat = path.stat()
+                _SERVER_DIGESTS[str(path)] = (digest, stat.st_mtime_ns, stat.st_size)
+            finally:
+                temp.unlink(missing_ok=True)
+        return True
     except (OSError, ValueError, TypeError):
-        return  # Browser backup remains available.
-
-
-def _save_server_snapshot(vault_key: str) -> None:
-    # Last-successful results are never cleared when a refresh fails.
-    state = {"cboe": cboe_snapshot(vault_key), "etrade": gex_ui._results(vault_key)}
-    with _SERVER_CACHE_LOCK:
-        _SERVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = _server_snapshot_path(vault_key)
-        temp = path.with_suffix(".tmp")
-        try:
-            temp.write_text(json.dumps(state, allow_nan=False), encoding="utf-8")
-            os.replace(temp, path)
-        finally:
-            temp.unlink(missing_ok=True)
+        logging.getLogger(__name__).exception("GEX server snapshot could not be saved")
+        return False
 
 
 def hydrate_gex_snapshots(vault_key: str) -> bool:
@@ -144,11 +208,16 @@ def hydrate_gex_snapshots(vault_key: str) -> bool:
 
 def persist_gex_snapshots(vault_key: str) -> None:
     token = _token(vault_key)
-    _save_server_snapshot(vault_key)
+    if not _save_server_snapshot(vault_key):
+        st.warning("GEX server backup could not be saved; current results remain available.")
     if not st.session_state.get("_gex_snapshot_ready_" + token):
         return
-    raw = json.dumps({"cboe": cboe_snapshot(vault_key), "etrade": gex_ui._results(vault_key)},
-                     sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    try:
+        raw = json.dumps(_snapshot_state(vault_key), sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode()
+    except (ValueError, TypeError):
+        st.warning("GEX browser backup could not be encoded; the previous backup is retained.")
+        return
     digest = hashlib.sha256(raw).hexdigest()
     state_key = "_gex_snapshot_envelope_" + token
     envelope = st.session_state.get(state_key) or {}

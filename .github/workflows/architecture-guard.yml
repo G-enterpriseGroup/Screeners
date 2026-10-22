@@ -54,6 +54,7 @@ jobs:
         run: |
           python -m py_compile src/gex_ui_v3.py src/gex_ui_v3_base.py scripts/test_gex_cboe.py
           python scripts/test_gex_cboe.py
+          python -m unittest tests.test_gex_bridge_publish
 
       - name: Test Risk live-order helpers without broker submission
         run: python scripts/test_risk_live_order_helpers.py

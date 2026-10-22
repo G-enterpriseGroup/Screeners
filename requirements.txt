@@ -55,3 +55,4 @@ webauthn>=2.2,<3
 # clean rebuild marker: 2026-10-21 shared-native-switch-resting-contrast
 
 # clean rebuild marker: 2026-10-21 vertical-expiry-nearest-wall-persistent-gex
+# clean rebuild marker: 2026-10-22 gex-verified-export-cache-recovery

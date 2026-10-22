@@ -9,6 +9,7 @@ from pathlib import Path
 import copy
 import math
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -27,6 +28,138 @@ def occ(symbol: str, expiry, cp: str, strike: float) -> str:
 
 
 class CboeGexTests(unittest.TestCase):
+    def test_retry_control_uses_cached_payload_and_renders_verified_receipt(self):
+        from streamlit.testing.v1 import AppTest
+        source = '''
+import streamlit as st
+from src import gex_ui_v3 as ui
+snapshot = ui.cboe_snapshot("retry-control")
+snapshot.setdefault("publication", {"payload": "saved-payload", "status": "ERROR",
+                                    "error": "GitHub HTTP 403", "exported_at": "source-export"})
+ui._render_cboe_publication_status("retry-control")
+'''
+        with (patch.object(ui, "_gex_github_token", return_value="token"),
+              patch.object(ui, "publish_latest_gex_cboe", return_value="verified-commit") as publish,
+              patch.object(ui, "build_cboe_gex") as fetch):
+            app = AppTest.from_string(source).run()
+            self.assertFalse(app.exception)
+            self.assertIn("GitHub HTTP 403", app.error[0].value)
+            self.assertEqual(len(app.get("download_button")), 1)
+            app.button(key="gexv3_cboe_retry_publish").click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertIn("GITHUB VERIFIED verified-com", app.caption[0].value)
+        publish.assert_called_once_with("token", "saved-payload")
+        fetch.assert_not_called()
+
+    def test_cached_publication_retry_survives_restart_without_chain_fetch(self):
+        key = "publication-recovery"
+        snapshot = gex_cboe.cboe_snapshot(key)
+        snapshot["results"] = {"SPY": {"symbol": "SPY", "updated": "2026-10-22T12:00:00-04:00"}}
+        snapshot["publication"] = {"payload": '"Ticker: SPY\nCALLWALL,800,1"',
+                                   "exported_at": "2026-10-22T12:00:00-04:00"}
+        with (patch.object(ui, "_gex_github_token", return_value="token"),
+              patch.object(ui, "publish_latest_gex_cboe", side_effect=RuntimeError("GitHub HTTP 401")),
+              patch.object(ui.st, "session_state", {})):
+            ui._publish_cached_cboe_payload(key)
+        self.assertEqual(snapshot["publication"]["status"], "ERROR")
+        saved_payload = snapshot["publication"]["payload"]
+        snapshot.clear()
+        snapshot.update(results={}, failures={}, updated="")
+        memory._read_server_snapshot(key)
+        self.assertEqual(snapshot["publication"]["payload"], saved_payload)
+        with (patch.object(ui, "_gex_github_token", return_value="new-token"),
+              patch.object(ui, "build_cboe_gex") as fetch,
+              patch.object(ui, "publish_latest_gex_cboe", return_value="verified-commit") as publish,
+              patch.object(ui.st, "session_state", {})):
+            ui._publish_cached_cboe_payload(key)
+        fetch.assert_not_called()
+        publish.assert_called_once_with("new-token", saved_payload)
+        self.assertEqual(snapshot["publication"]["commit"], "verified-commit")
+        self.assertEqual(snapshot["results"]["SPY"]["updated"], "2026-10-22T12:00:00-04:00")
+        completed = copy.deepcopy(snapshot["publication"])
+        snapshot["publication"].update(status="PENDING")
+        snapshot["publication"].pop("completed_at")
+        memory._restore(key, {"cboe": {"publication": completed}})
+        self.assertEqual(snapshot["publication"]["status"], "OK")
+
+    def test_unchanged_levels_have_different_export_bytes_and_valid_pine_rows(self):
+        key = "export-freshness"
+        result = {"symbol": "SPY", "gammaFlip": 100,
+                  "callWall": {"strike": 110, "value": 10},
+                  "putWall": {"strike": 90, "value": -10},
+                  "maxCallOi": {"strike": 110, "call_oi": 5},
+                  "maxPutOi": {"strike": 90, "put_oi": 5},
+                  "topGex": [{"strike": 110, "net_gex": 10}],
+                  "snapshotFetchedAt": "2026-10-22T12:00:00-04:00"}
+        gex_cboe.cboe_snapshot(key)["results"] = {"SPY": result}
+        with (patch.object(ui, "_gex_github_token", return_value="token"),
+              patch.object(ui, "publish_latest_gex_cboe", return_value="commit") as publish,
+              patch.object(ui.st, "session_state", {}),
+              patch.object(ui, "_CBOE_MASTER_A6_STATIC_PATH", memory._SERVER_CACHE_DIR / "cboe.txt")):
+            ui._publish_cboe_master_a6(key, {"tickers": ["SPY"]})
+            ui._publish_cboe_master_a6(key, {"tickers": ["SPY"]})
+        payloads = [call.args[1] for call in publish.call_args_list]
+        self.assertNotEqual(payloads[0], payloads[1])
+        for payload in payloads:
+            self.assertTrue(payload.startswith('"Ticker: SPY\n'))
+            self.assertIn("CBOE Exported:", payload)
+            self.assertEqual(gex_cboe.cboe_results(key)["SPY"]["snapshotFetchedAt"],
+                             "2026-10-22T12:00:00-04:00")
+            self.assertEqual(ui._cboe_pine_ticker_issues(payload[1:-1], "SPY")[0], [])
+
+    def test_server_backup_skips_unchanged_writes_and_recovers_corrupt_latest(self):
+        key = "server-recovery"
+        snapshot = gex_cboe.cboe_snapshot(key)
+        snapshot["results"] = {"SPY": {"updated": "2026-10-22T12:00:00-04:00", "spot": 100}}
+        self.assertTrue(memory._save_server_snapshot(key))
+        path = memory._server_snapshot_path(key)
+        with patch.object(memory.os, "replace", wraps=memory.os.replace) as replace:
+            self.assertTrue(memory._save_server_snapshot(key))
+        replace.assert_not_called()
+        snapshot["results"]["SPY"]["spot"] = 101
+        self.assertTrue(memory._save_server_snapshot(key))
+        path.write_text("broken JSON", encoding="utf-8")
+        snapshot["results"].clear()
+        memory._read_server_snapshot(key)
+        self.assertEqual(snapshot["results"]["SPY"]["spot"], 100)
+
+    def test_cache_includes_morningstar_and_background_results_without_ui_sync(self):
+        key = "all-gex-sources"
+        basket = gex_cboe.cboe_snapshot(key + ":morningstar")
+        basket.update(results={"MSFT": {"spot": 500, "updated": "2026-10-22T12:00:00-04:00"}},
+                      tickers=["MSFT"], updated="2026-10-22T12:00:00-04:00")
+        etrade = {"QQQ": {"spot": 600, "updated": "2026-10-22T12:00:00-04:00"}}
+        self.assertTrue(memory._save_server_snapshot(key, etrade_results=etrade))
+        self.assertEqual(core._results(key)["QQQ"]["spot"], 600)
+
+        self.assertTrue(memory._save_server_snapshot(key))  # Unrelated later render retains the result.
+        basket.clear()
+        basket.update(results={})
+        core._results(key).clear()
+        memory._read_server_snapshot(key)
+        self.assertEqual(basket["tickers"], ["MSFT"])
+        self.assertEqual(basket["results"]["MSFT"]["spot"], 500)
+        self.assertEqual(core._results(key)["QQQ"]["spot"], 600)
+        # A later browser backup must also restore its newer basket/list metadata.
+        newer = {"morningstar": {"results": {}, "tickers": ["AAPL"],
+                                 "updated": "2026-10-22T13:00:00-04:00"}}
+        memory._restore(key, newer)
+        self.assertEqual(basket["tickers"], ["AAPL"])
+        memory._restore(key, {"morningstar": {"results": 123}})
+
+    def test_disk_failure_does_not_abort_publication_or_destroy_memory(self):
+        key = "disk-failure"
+        snapshot = gex_cboe.cboe_snapshot(key)
+        snapshot["publication"] = {"payload": "payload"}
+        with (patch.object(memory, "_SERVER_CACHE_DIR", Path("/dev/null/gex")),
+              patch.object(memory.logging, "getLogger"),
+              patch.object(ui, "_gex_github_token", return_value="token"),
+              patch.object(ui, "publish_latest_gex_cboe", return_value="commit"),
+              patch.object(ui.st, "session_state", {})):
+            ui._publish_cached_cboe_payload(key)
+        self.assertEqual(snapshot["publication"]["status"], "OK")
+
     def test_snapshot_backup_restores_both_sources_only_after_browser_hydration(self):
         state = {}
         cboe = {"results": {"SPY": {"callWall": {"strike": 110}, "snapshotFetchedAt": "2026-10-21T12:00:00-04:00"}},
@@ -34,7 +167,8 @@ class CboeGexTests(unittest.TestCase):
         etrade = {"QQQ": {"putWall": {"strike": 500}, "updated": "2026-10-21T12:00:00-04:00"}}
         with (patch.object(memory.st, "session_state", state),
               patch.object(memory, "_MEMORY") as component,
-              patch.object(memory, "cboe_snapshot", return_value=cboe),
+              patch.object(memory, "cboe_snapshot", side_effect=lambda key: (
+                  {"results": {}} if key.endswith(":morningstar") else cboe)),
               patch.object(memory.gex_ui, "_results", return_value=etrade)):
             memory.persist_gex_snapshots("first-vault")
             component.assert_not_called()
@@ -78,6 +212,11 @@ class CboeGexTests(unittest.TestCase):
         self.assertEqual(save.call_args.args[2], failures)
 
     def setUp(self):
+        cache_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(cache_dir.cleanup)
+        cache_patch = patch.object(memory, "_SERVER_CACHE_DIR", Path(cache_dir.name))
+        cache_patch.start()
+        self.addCleanup(cache_patch.stop)
         self.today = datetime.now(ZoneInfo("America/New_York")).date()
         self.expiry = self.today + timedelta(days=30)
         self.source_url = "https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json"
