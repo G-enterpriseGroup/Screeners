@@ -435,11 +435,17 @@ def _publish_cboe_master_a6(
     except Exception:
         pass
 
-    if _GEX_GITHUB_TOKEN:
-        try:
-            publish_latest_gex_cboe(_GEX_GITHUB_TOKEN, quoted)
-        except Exception:
-            pass
+    try:
+        if not publish_latest_gex_cboe(_GEX_GITHUB_TOKEN, quoted):
+            raise RuntimeError("GitHub did not confirm publication")
+    except Exception as exc:
+        st.session_state["gexv3_cboe_publish_status"] = (
+            "ERROR", " ".join(str(exc).split())[:320]
+        )
+    else:
+        st.session_state["gexv3_cboe_publish_status"] = (
+            "OK", "GitHub CBOE TXT verified against the refreshed payload"
+        )
 
 
 def _refresh_cboe_batch(
@@ -811,6 +817,13 @@ def _render_cboe_overview(
             else:
                 st.toast(f"{selected} UPDATED")
             st.rerun()
+
+    publish_status = st.session_state.get("gexv3_cboe_publish_status")
+    if publish_status:
+        if publish_status[0] == "ERROR":
+            st.error(f"CBOE GEX refreshed locally, but GitHub TXT is stale: {publish_status[1]}")
+        else:
+            st.caption(f"CBOE TXT // {publish_status[1]}")
 
     snapshot = cboe_snapshot(vault_key)
     refreshed = [ticker for ticker in tickers if ticker in result_map]
