@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,12 +26,14 @@ CBOE_PATH = "bridge/latest_gex_cboe.txt"
 
 
 def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
-    """Create or replace one data-branch bridge payload."""
+    """Write and read back bridge bytes; retry concurrent edits and transient API failures."""
     token = str(token or "").strip()
     payload = str(payload or "")
     path = str(path or "").strip().lstrip("/")
-    if not token or not payload or not path:
-        return False
+    if not token:
+        raise RuntimeError("GitHub bridge token is not configured")
+    if not payload or not path:
+        raise ValueError("GitHub bridge payload/path cannot be empty")
 
     api_url = f"https://api.github.com/repos/{REPO}/contents/{path}"
     headers = {
@@ -37,37 +41,63 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
         "Authorization": "Bearer " + token,
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "raj-terminal-gex-bridge",
+        "Cache-Control": "no-cache",
     }
-
-    sha = ""
+    expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     metadata_url = api_url + "?ref=" + urllib.parse.quote(BRANCH, safe="")
-    request = urllib.request.Request(metadata_url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            metadata = json.loads(response.read().decode("utf-8"))
-        sha = str(metadata.get("sha") or "").strip()
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
+    retry_codes = {409, 422, 429, 500, 502, 503, 504}
+
+    def read_remote() -> tuple[str, str]:
+        request = urllib.request.Request(metadata_url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return "", ""
             raise
+        encoded = str(data.get("content") or "").replace("\\n", "")
+        remote = base64.b64decode(encoded) if encoded else b""
+        return str(data.get("sha") or ""), hashlib.sha256(remote).hexdigest()
 
-    body = {
-        "message": message,
-        "content": base64.b64encode(payload.encode("utf-8")).decode("ascii"),
-        "branch": BRANCH,
-    }
-    if sha:
-        body["sha"] = sha
-
-    request = urllib.request.Request(
-        api_url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={**headers, "Content-Type": "application/json"},
-        method="PUT",
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        response.read()
-    return True
-
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            sha, remote_hash = read_remote()
+            if remote_hash == expected:
+                return True
+            body = {
+                "message": message,
+                "content": base64.b64encode(payload.encode("utf-8")).decode("ascii"),
+                "branch": BRANCH,
+            }
+            if sha:
+                body["sha"] = sha
+            request = urllib.request.Request(
+                api_url, data=json.dumps(body).encode("utf-8"),
+                headers={**headers, "Content-Type": "application/json"},
+                method="PUT",
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                response.read()
+            # Do not announce published until the branch serves the exact bytes.
+            for verify_attempt in range(3):
+                _, confirmed = read_remote()
+                if confirmed == expected:
+                    return True
+                if verify_attempt < 2:
+                    time.sleep(0.35 * (verify_attempt + 1))
+            raise RuntimeError("GitHub write succeeded but remote CBOE payload did not match")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(500).decode("utf-8", "replace")
+            last_error = RuntimeError(f"GitHub HTTP {exc.code}: {detail}")
+            if exc.code not in retry_codes:
+                raise last_error from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+        if attempt < 2:
+            time.sleep(0.4 * (attempt + 1))
+    raise RuntimeError(f"GitHub bridge publish failed after 3 attempts: {last_error}")
 
 def publish_latest_gex(token: str, payload: str) -> bool:
     """Replace the existing E*TRADE MASTER A6 bridge payload unchanged."""
