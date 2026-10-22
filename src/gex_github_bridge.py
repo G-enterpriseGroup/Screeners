@@ -64,8 +64,8 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
     for attempt in range(3):
         try:
             sha, remote_hash = read_remote()
-            if remote_hash == expected:
-                return True
+            # Refresh is a publication event even when delayed CBOE rows are identical.
+            # GitHub's last-updated timestamp must reflect each successful refresh.
             body = {
                 "message": message,
                 "content": base64.b64encode(payload.encode("utf-8")).decode("ascii"),
@@ -79,7 +79,9 @@ def _publish_path(token: str, payload: str, path: str, message: str) -> bool:
                 method="PUT",
             )
             with urllib.request.urlopen(request, timeout=15) as response:
-                response.read()
+                written = json.loads(response.read().decode("utf-8"))
+            if not str((written.get("commit") or {}).get("sha") or "").strip():
+                raise RuntimeError("GitHub did not return a publication commit")
             # Do not announce published until the branch serves the exact bytes.
             for verify_attempt in range(3):
                 _, confirmed = read_remote()
