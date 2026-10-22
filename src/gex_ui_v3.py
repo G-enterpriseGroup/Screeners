@@ -457,6 +457,7 @@ def _publish_cached_cboe_payload(vault_key: str) -> None:
     if not quoted:
         return
     publication.update(status="PENDING", attempted_at=datetime.now().astimezone().isoformat())
+    publication.pop("completed_at", None)
     snapshot["publication"] = publication
     _save_server_snapshot(vault_key)  # Results and pending export survive transport failure.
     try:
@@ -473,6 +474,7 @@ def _publish_cached_cboe_payload(vault_key: str) -> None:
         st.session_state["gexv3_cboe_publish_status"] = (
             "OK", f"GitHub CBOE TXT verified // commit {str(commit)[:12]}"
         )
+    publication["completed_at"] = datetime.now().astimezone().isoformat()
     _save_server_snapshot(vault_key)
 
 

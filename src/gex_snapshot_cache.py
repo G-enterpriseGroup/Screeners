@@ -80,18 +80,23 @@ def _restore(vault_key: str, saved: dict) -> None:
         failures = cboe_backup.get("failures")
         snapshot["failures"] = copy.deepcopy(failures) if isinstance(failures, dict) else {}
     publication = cboe_backup.get("publication")
-    if isinstance(publication, dict) and str(publication.get("attempted_at", "")) > str(
-        (snapshot.get("publication") or {}).get("attempted_at", "")
+    current_publication = snapshot.get("publication") or {}
+    if isinstance(publication, dict) and _stamp(
+        {"updated": publication.get("completed_at") or publication.get("attempted_at")}
+    ) > _stamp(
+        {"updated": current_publication.get("completed_at") or current_publication.get("attempted_at")}
     ):
         snapshot["publication"] = copy.deepcopy(publication)
     morningstar = saved.get("morningstar")
     if isinstance(morningstar, dict):
         basket = cboe_snapshot(vault_key + ":morningstar")
-        for ticker, result in (morningstar.get("results") or {}).items():
+        backup = morningstar.get("results")
+        backup = backup if isinstance(backup, dict) else {}
+        for ticker, result in backup.items():
             current = basket["results"].get(ticker)
             if isinstance(result, dict) and (current is None or _stamp(result) > _stamp(current)):
                 basket["results"][ticker] = copy.deepcopy(result)
-        if not basket.get("updated"):
+        if not basket.get("updated") or _stamp(morningstar) > _stamp(basket):
             for field in ("updated", "failures", "tickers"):
                 if field in morningstar:
                     basket[field] = copy.deepcopy(morningstar[field])

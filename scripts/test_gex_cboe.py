@@ -77,6 +77,11 @@ ui._render_cboe_publication_status("retry-control")
         publish.assert_called_once_with("new-token", saved_payload)
         self.assertEqual(snapshot["publication"]["commit"], "verified-commit")
         self.assertEqual(snapshot["results"]["SPY"]["updated"], "2026-10-22T12:00:00-04:00")
+        completed = copy.deepcopy(snapshot["publication"])
+        snapshot["publication"].update(status="PENDING")
+        snapshot["publication"].pop("completed_at")
+        memory._restore(key, {"cboe": {"publication": completed}})
+        self.assertEqual(snapshot["publication"]["status"], "OK")
 
     def test_unchanged_levels_have_different_export_bytes_and_valid_pine_rows(self):
         key = "export-freshness"
@@ -127,6 +132,7 @@ ui._render_cboe_publication_status("retry-control")
         etrade = {"QQQ": {"spot": 600, "updated": "2026-10-22T12:00:00-04:00"}}
         self.assertTrue(memory._save_server_snapshot(key, etrade_results=etrade))
         self.assertEqual(core._results(key)["QQQ"]["spot"], 600)
+
         self.assertTrue(memory._save_server_snapshot(key))  # Unrelated later render retains the result.
         basket.clear()
         basket.update(results={})
@@ -135,6 +141,12 @@ ui._render_cboe_publication_status("retry-control")
         self.assertEqual(basket["tickers"], ["MSFT"])
         self.assertEqual(basket["results"]["MSFT"]["spot"], 500)
         self.assertEqual(core._results(key)["QQQ"]["spot"], 600)
+        # A later browser backup must also restore its newer basket/list metadata.
+        newer = {"morningstar": {"results": {}, "tickers": ["AAPL"],
+                                 "updated": "2026-10-22T13:00:00-04:00"}}
+        memory._restore(key, newer)
+        self.assertEqual(basket["tickers"], ["AAPL"])
+        memory._restore(key, {"morningstar": {"results": 123}})
 
     def test_disk_failure_does_not_abort_publication_or_destroy_memory(self):
         key = "disk-failure"
