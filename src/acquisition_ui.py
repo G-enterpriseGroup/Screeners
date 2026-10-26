@@ -222,6 +222,67 @@ def _pine_rows(lots: list[dict[str, Any]]) -> str:
 
 
 # ==============================
+# VERIFIED POSITION LOT NORMALIZATION
+# ==============================
+
+def _lot_date(value: Any) -> date | None:
+    if isinstance(value, str) and len(value) >= 10 and value[4:5] == "-":
+        try:
+            candidate = date.fromisoformat(value[:10])
+            return candidate if date(1970, 1, 1) <= candidate <= datetime.now(_ET).date() else None
+        except ValueError:
+            return None
+    try:
+        stamp = float(value)
+        if not math.isfinite(stamp):
+            return None
+        if abs(stamp) > 10_000_000_000:
+            stamp /= 1000
+        candidate = datetime.fromtimestamp(stamp, tz=_ET).date()
+        return candidate if date(1970, 1, 1) <= candidate <= datetime.now(_ET).date() else None
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _parse_position_lots(payload: dict[str, Any], ticker: str, position_id: str) -> list[dict[str, Any]]:
+    """Reject partial or unpriced brokerage lot records, never fabricate entries."""
+    raw = _find(payload, "positionLot")
+    rows = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    if not rows:
+        return []
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, lot in enumerate(rows):
+        if not isinstance(lot, dict):
+            return []
+        linked_id = lot.get("positionId")
+        if linked_id is not None and str(linked_id) != str(position_id):
+            return []
+        try:
+            quantity = float(lot["remainingQty"])
+            cost = float(lot["price"])
+        except (TypeError, ValueError, KeyError):
+            return []
+        if not math.isfinite(quantity) or quantity < 0 or not math.isfinite(cost):
+            return []
+        if quantity <= 1e-8:
+            continue
+        acquired = _lot_date(lot.get("acquiredDate"))
+        if acquired is None or cost <= 0:
+            return []
+        identifier = str(lot.get("positionLotId") or f"row:{index}")
+        if identifier in seen:
+            return []
+        seen.add(identifier)
+        output.append({
+            "ticker": ticker, "date": acquired, "cost": cost,
+            "qty": quantity, "id": f"broker:{position_id}:{identifier}",
+            "source": "E*TRADE TAX LOT",
+        })
+    return output
+
+
+# ==============================
 # UI / CSS
 # ==============================
 
