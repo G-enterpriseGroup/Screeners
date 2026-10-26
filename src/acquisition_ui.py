@@ -282,6 +282,87 @@ def _parse_position_lots(payload: dict[str, Any], ticker: str, position_id: str)
     return output
 
 
+def _fetch_position_lots(
+    client: Any, vault_key: str, account_key: str, position: dict[str, Any], *,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Read one broker tax-lot payload, cached by account, position and basis."""
+    position_id = str(_find(position, "positionId") or "").strip()
+    if not position_id.isdecimal() or int(position_id) <= 0:
+        return {}
+    if client is None or bool(getattr(client, "is_offline", False)):
+        return {}
+    reader = getattr(client, "get_position_lots", None)
+    if not callable(reader):
+        return {}
+    fingerprint = (
+        str(vault_key), str(account_key), position_id,
+        str(position.get("quantity")), str(position.get("totalCost")),
+    )
+    vault = _history_vault()
+    with vault["lock"]:
+        entry = vault.setdefault("position_lots", {}).get(fingerprint)
+        if entry and not refresh and time.time() - entry["loaded_at"] < _LOT_CACHE_SECONDS:
+            return entry["value"]
+        result = reader(account_key, position_id)
+        if isinstance(result, dict):
+            vault["position_lots"][fingerprint] = {
+                "loaded_at": time.time(), "value": result,
+            }
+            return result
+        return {}
+
+
+def _recover_unverified_lots(
+    client: Any, vault_key: str, account_key: str,
+    positions: list[dict[str, Any]], gaps: list[dict[str, Any]],
+    *, refresh: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover only complete broker-confirmed tax lots for unmatched symbols."""
+    by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        item = normalize_position(position)
+        symbol = str(item["Symbol"] or "").strip().upper()
+        security = str(item["Type"] or "").strip().upper()
+        if symbol and security in _SHARE_TYPES and float(item["Quantity"] or 0) > 0:
+            by_symbol[symbol].append(position)
+    recovered: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for gap in gaps:
+        symbol = str(gap["Ticker"])
+        candidates = by_symbol.get(symbol, [])
+        lots: list[dict[str, Any]] = []
+        complete = bool(candidates)
+        for position in candidates:
+            position_id = str(_find(position, "positionId") or "")
+            try:
+                result = _fetch_position_lots(
+                    client, vault_key, account_key, position, refresh=refresh,
+                )
+                parsed = _parse_position_lots(result, symbol, position_id)
+            except Exception:
+                parsed = []
+            current = float(normalize_position(position)["Quantity"] or 0)
+            if not parsed or not math.isclose(
+                sum(lot["qty"] for lot in parsed), current,
+                rel_tol=1e-7, abs_tol=1e-5,
+            ):
+                complete = False
+                break
+            lots.extend(parsed)
+        if complete and math.isclose(
+            sum(lot["qty"] for lot in lots), float(gap["Held"]),
+            rel_tol=1e-7, abs_tol=1e-5,
+        ):
+            recovered.extend(lots)
+        else:
+            unresolved.append(gap)
+    recovered.sort(key=lambda lot: (lot["ticker"], lot["date"], lot["id"]))
+    return recovered, unresolved
+
+
 # ==============================
 # UI / CSS
 # ==============================
