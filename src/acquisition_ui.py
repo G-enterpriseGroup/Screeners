@@ -29,6 +29,7 @@ _ET = ZoneInfo("America/New_York")
 _HISTORY_DAYS = 729   # E*TRADE rejects start dates older than two years
 _OVERLAP_DAYS = 7     # late-posted/corrected executions
 _SYNC_SECONDS = 12 * 3600
+_LOT_CACHE_SECONDS = 5 * 60
 _SHARE_TYPES = {"EQ", "EQUITY", "ETF", "STOCK", "COMMON", "COMMON_STOCK"}
 _CSS = """
 <style>
@@ -143,9 +144,11 @@ def _fifo_equity(transactions: list[dict[str, Any]]) -> tuple[dict[str, list[dic
     trades.sort(key=lambda row: (row["when"], str(row["id"])))
     lots: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
     incomplete: set[str] = set()
+    seen_buys: set[str] = set()
     for row in trades:
         ticker, action, qty = row["symbol"], row["action"], float(row["quantity"])
         if action == "BUY":
+            seen_buys.add(ticker)
             lots[ticker].append({
                 "ticker": ticker, "date": row["when"].date(),
                 "cost": float(row["price"]), "qty": qty, "id": str(row["id"]),
@@ -158,8 +161,10 @@ def _fifo_equity(transactions: list[dict[str, Any]]) -> tuple[dict[str, list[dic
                 first["qty"] -= used
                 if first["qty"] <= 1e-8:
                     lots[ticker].popleft()
-            if qty > 1e-8:
-                incomplete.add(ticker)  # sale against a pre-window/unseen purchase
+            if qty > 1e-8 and ticker in seen_buys:
+                incomplete.add(ticker)  # an unmatched sale AFTER recorded buys
+            # An older sale before the first visible purchase must not taint
+            # later BUY lots when these match the actual held share count.
         else:
             incomplete.add(ticker)  # short/buy-to-cover cannot be a long BUY lot
     return {symbol: [dict(lot) for lot in entries if lot["qty"] > 1e-8]
