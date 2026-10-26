@@ -109,7 +109,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(gaps, [])
         self.assertEqual(sum(lot["qty"] for lot in verified), 8)
         self.assertTrue(all(lot["source"] == "FIFO" for lot in verified))
-        self.assertEqual(_pine_rows(verified), "MSFT 03.01.2025 410.15 5 B\\nMSFT 06.01.2026 415.55 3 B")
+        self.assertEqual(_pine_rows(verified), "MSFT 03.01.2025 410.15 5 B\nMSFT 06.01.2026 415.55 3 B")
 
     def test_htd_65_missing_from_transaction_window_recovers_real_broker_lots(self):
         class Broker:
@@ -141,7 +141,7 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(broker.calls, [("RAJ_ACCOUNT", 1000001)])
         self.assertEqual(len(open_lots), 2)
         self.assertEqual(sum(row["qty"] for row in open_lots), 65)
-        self.assertEqual(_pine_rows(open_lots), "HTD 07.12.2023 23.03 25 B\\nHTD 01.15.2024 22.47 40 B")
+        self.assertEqual(_pine_rows(open_lots), "HTD 07.12.2023 23.03 25 B\nHTD 01.15.2024 22.47 40 B")
         self.assertTrue(all(row["source"] == "E*TRADE LOT" for row in again))
 
     def test_bad_or_incomplete_broker_lots_are_never_exported(self):
