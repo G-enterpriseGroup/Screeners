@@ -10,8 +10,9 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history
+from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history, _recover_broker_lots, _broker_lot_rows
 from src.tab_bar_v4 import DEFAULT_TAB_ORDER, _clean_order
+from src.etrade_client import ETradeClient, ETradeError
 
 
 def transaction(identifier, stamp, action, symbol, qty, price, security="EQ"):
@@ -60,7 +61,9 @@ class AcquisitionTests(unittest.TestCase):
             transaction(1, "2025-04-01", "SELL", "LMT", 50, 490),
             transaction(2, "2025-04-02", "BUY", "LMT", 10, 500),
         ]
-        valid, gaps = _reconcile(rows, [holding("LMT", 10), holding("SPY", 5)])
+        # Current LMT shares exceed reconstructed open buys: the missing older
+        # shares are still in the book, unlike fully closed older MSFT sells.
+        valid, gaps = _reconcile(rows, [holding("LMT", 15), holding("SPY", 5)])
         self.assertEqual(valid, [])
         self.assertEqual({row["Ticker"] for row in gaps}, {"LMT", "SPY"})
 
@@ -98,6 +101,86 @@ class AcquisitionTests(unittest.TestCase):
             {"accountName": "Ameka", "accountIdKey": "X", "accountId": "1111"},
             {"accountName": "Raj", "accountIdKey": "Y", "accountId": "5474"},
         ]), "Y")
+
+    def test_msft_prior_oversell_does_not_hide_verified_open_eight_shares(self):
+        rows = [
+            transaction(1, "2025-01-01", "SELL", "MSFT", 40, 400),
+            transaction(2, "2025-03-01", "BUY", "MSFT", 5, 410.15),
+            transaction(3, "2026-06-01", "BUY", "MSFT", 3, 415.55),
+        ]
+        verified, gaps = _reconcile(rows, [holding("MSFT", 8)])
+        self.assertEqual(gaps, [])
+        self.assertEqual(sum(lot["qty"] for lot in verified), 8)
+        self.assertTrue(all(lot["source"] == "FIFO" for lot in verified))
+        self.assertEqual(_pine_rows(verified), "MSFT 03.01.2025 410.15 5 B\nMSFT 06.01.2026 415.55 3 B")
+
+    def test_htd_65_missing_from_transaction_window_recovers_real_broker_lots(self):
+        class Broker:
+            def __init__(self):
+                self.calls = []
+            def get_position_lots(self, account_key, position_id):
+                self.calls.append((account_key, position_id))
+                return {"PortfolioResponse": {"AccountPortfolio": {"Position": [{
+                    "PositionLot": [
+                        {"positionLotId": 1, "remainingQty": 40, "price": 22.47, "acquiredDate": 20240115},
+                        {"positionLotId": 2, "remainingQty": 25, "price": 23.03, "acquiredDate": 20230712},
+                    ]
+                }]}}}
+
+        raw_portfolio = [{**holding("HTD", 65), "positionId": 1000001}]
+        known, gaps = _reconcile([], raw_portfolio)
+        self.assertEqual(gaps[0]["FIFO Found"], 0)
+        vault = {"lock": __import__("threading").RLock(), "accounts": {}, "lots": {}}
+        broker = Broker()
+        with patch("src.acquisition_ui._history_vault", return_value=vault):
+            open_lots, unresolved = _recover_broker_lots(
+                broker, "MY_VAULT", "RAJ_ACCOUNT", raw_portfolio, known, gaps,
+            )
+            again, unresolved_again = _recover_broker_lots(
+                broker, "MY_VAULT", "RAJ_ACCOUNT", raw_portfolio, known, gaps,
+            )
+        self.assertEqual(unresolved, [])
+        self.assertEqual(unresolved_again, [])
+        self.assertEqual(broker.calls, [("RAJ_ACCOUNT", 1000001)])
+        self.assertEqual(len(open_lots), 2)
+        self.assertEqual(sum(row["qty"] for row in open_lots), 65)
+        self.assertEqual(_pine_rows(open_lots), "HTD 07.12.2023 23.03 25 B\nHTD 01.15.2024 22.47 40 B")
+        self.assertTrue(all(row["source"] == "E*TRADE LOT" for row in again))
+
+    def test_bad_or_incomplete_broker_lots_are_never_exported(self):
+        self.assertEqual(_broker_lot_rows({"PositionLot": [
+            {"remainingQty": 65, "price": 22.3, "acquiredDate": -68400000}
+        ]}, "HTD"), [])
+        self.assertEqual(_broker_lot_rows({"PositionLot": [
+            {"remainingQty": 65, "price": 22.3}
+        ]}, "HTD"), [])
+        portfolio = [{**holding("HTD", 65), "positionId": 57}]
+        known, gaps = _reconcile([], portfolio)
+        class Incomplete:
+            def get_position_lots(self, account_key, position_id):
+                return {"PositionLot": [{"remainingQty": 64, "price": 24, "acquiredDate": 20240505}]}
+        with patch("src.acquisition_ui._history_vault", return_value={"lock": __import__("threading").RLock(), "accounts": {}}):
+            valid, remain = _recover_broker_lots(Incomplete(), "ONE", "RAJ", portfolio, known, gaps)
+        self.assertEqual(valid, [])
+        self.assertEqual(len(remain), 1)
+
+    def test_position_lot_transport_is_read_only_and_account_scoped(self):
+        client = ETradeClient.__new__(ETradeClient)
+        calls = []
+        client._get = lambda path, **kwargs: calls.append((path, kwargs)) or {"PositionLot": []}
+        self.assertEqual(client.get_position_lots("account+key", 123), {"PositionLot": []})
+        self.assertEqual(calls[0][0], "/v1/accounts/account%2Bkey/portfolio/123")
+        self.assertTrue(calls[0][1]["allow_no_content"])
+        with self.assertRaises(ETradeError):
+            client.get_position_lots("account+key", "../orders")
+
+    def test_broker_lots_are_never_fetched_for_options(self):
+        class Broker:
+            def get_position_lots(self, account_key, position_id):
+                self.fail("Should never request an option lot")
+        portfolio = [{**holding("MSFT", 1, "OPTN"), "positionId": 80}]
+        known, gaps = _reconcile([], portfolio)
+        self.assertEqual((known, gaps), ([], []))
 
     def test_legacy_navigation_adds_acquisition_beside_performance(self):
         # Prior browser/server layouts lack the newly introduced route.

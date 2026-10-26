@@ -9,7 +9,7 @@ All broker actions here are read-only. The API exposes at most two years of tran
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -47,7 +47,7 @@ _CSS = """
 @st.cache_resource
 def _history_vault() -> dict[str, Any]:
     """Reuse complete histories across tabs, reruns and browser sessions of this worker."""
-    return {"lock": threading.RLock(), "accounts": {}}
+    return {"lock": threading.RLock(), "accounts": {}, "lots": {}}
 
 
 def _identity(tx: dict[str, Any]) -> str:
@@ -183,16 +183,19 @@ def _shares_held(positions: list[dict[str, Any]]) -> dict[str, float]:
 def _reconcile(
     transactions: list[dict[str, Any]], positions: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Never publish a false cost/date when FIFO is incomplete or mismatches E*TRADE."""
+    """Exclude only lot quantities that cannot match current E*TRADE holdings."""
     lots, incomplete = _fifo_equity(transactions)
     holdings = _shares_held(positions)
     valid: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
     for ticker, actual in sorted(holdings.items()):
         reconstructed = sum(row["qty"] for row in lots.get(ticker, []))
-        matched = ticker not in incomplete and math.isclose(reconstructed, actual, abs_tol=1e-5, rel_tol=1e-7)
+        # Prior unmatched sales can be fully closed, before surviving BUY lots.
+        # Once current held shares equal reconstructed open BUY quantities, a
+        # historical sale deficit alone must not suppress those acquisitions.
+        matched = math.isclose(reconstructed, actual, abs_tol=1e-5, rel_tol=1e-7)
         if matched:
-            valid.extend(lots.get(ticker, []))
+            valid.extend({**lot, "source": "FIFO"} for lot in lots.get(ticker, []))
         else:
             gaps.append({
                 "Ticker": ticker, "Held": round(actual, 6), "FIFO Found": round(reconstructed, 6),
@@ -201,6 +204,142 @@ def _reconcile(
             })
     valid.sort(key=lambda row: (row["ticker"], row["date"], row["id"]))
     return valid, gaps
+
+
+# ==============================
+# VERIFIED BROKER POSITION-LOT RECOVERY
+# ==============================
+# Transaction FIFO is primary. Only unmatched currently held share positions
+# request detailed E*TRADE tax lots. The broker may use specific-lot disposal;
+# its lot records must not be mislabeled as FIFO transaction reconstruction.
+
+def _broker_acquired_date(value: Any) -> date | None:
+    try:
+        if isinstance(value, str) and "-" in value:
+            result = date.fromisoformat(value[:10])
+        elif isinstance(value, str) and "/" in value:
+            result = datetime.strptime(value.strip(), "%m/%d/%Y").date()
+        else:
+            number = int(float(value))
+            if 19000101 <= number <= 21001231:
+                result = datetime.strptime(str(number), "%Y%m%d").date()
+            elif number >= 100000000000:
+                result = datetime.fromtimestamp(number / 1000, timezone.utc).date()
+            elif number >= 100000000:
+                result = datetime.fromtimestamp(number, timezone.utc).date()
+            else:
+                return None
+        if result.year < 1970 or result > datetime.now(timezone.utc).date():
+            return None
+        return result
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def _broker_lot_rows(payload: Any, symbol: str) -> list[dict[str, Any]]:
+    """Normalize E*TRADE PositionLot records without fabricating dates/prices."""
+    nested = _find(payload, "positionLot")
+    if nested is None:
+        return []
+    if isinstance(nested, dict):
+        nested = _find(nested, "PositionLot") or [nested]
+    if not isinstance(nested, list) or not nested:
+        return []
+    rows: list[dict[str, Any]] = []
+    for lot in nested:
+        if not isinstance(lot, dict):
+            return []
+        try:
+            quantity = float(_find(lot, "remainingQty"))
+            unit_cost = float(_find(lot, "price"))
+        except (ValueError, TypeError):
+            return []
+        acquired = _broker_acquired_date(_find(lot, "acquiredDate"))
+        if not math.isfinite(quantity) or quantity < 0 or not math.isfinite(unit_cost):
+            return []
+        if quantity <= 1e-8:
+            continue
+        if acquired is None or unit_cost <= 0:
+            return []
+        rows.append({
+            "ticker": symbol, "date": acquired, "cost": unit_cost,
+            "qty": quantity, "id": str(_find(lot, "positionLotId") or ""),
+            "source": "E*TRADE LOT",
+        })
+    return rows
+
+
+def _recover_broker_lots(
+    client: Any,
+    vault_key: str,
+    account_key: str,
+    portfolio: list[dict[str, Any]],
+    valid: list[dict[str, Any]],
+    gaps: list[dict[str, Any]],
+    *,
+    force: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover missing acquisitions only from actual, verified broker tax lots.
+
+    Never query options, invent historical fills or cross account cache keys.
+    """
+    if not gaps or client is None:
+        return valid, gaps
+    vault = _history_vault()
+    remaining: list[dict[str, Any]] = []
+    recovered: list[dict[str, Any]] = []
+    for gap in gaps:
+        symbol = gap["Ticker"]
+        matches = [
+            position for position in portfolio
+            if isinstance(position, dict)
+            and str(normalize_position(position)["Symbol"]).strip().upper() == symbol
+            and str(normalize_position(position)["Type"]).strip().upper() in _SHARE_TYPES
+            and float(normalize_position(position)["Quantity"] or 0) > 0
+        ]
+        broker_rows: list[dict[str, Any]] = []
+        complete = bool(matches)
+        failure = ""
+        for position in matches:
+            raw_lots = _find(position, "positionLot")
+            if not raw_lots:
+                position_id = _find(position, "positionId")
+                if position_id is None or bool(getattr(client, "is_offline", False)):
+                    complete = False
+                    failure = "No live broker position-lot detail available"
+                    break
+                key = (str(vault_key), str(account_key), str(position_id))
+                with vault["lock"]:
+                    cache = vault.setdefault("lots", {}).get(key)
+                    if force or cache is None or time.time() - cache["read_at"] >= _SYNC_SECONDS:
+                        try:
+                            fetch = getattr(client, "get_position_lots", None)
+                            if not callable(fetch):
+                                raise RuntimeError("Broker position-lot endpoint unavailable")
+                            payload = fetch(account_key, position_id)
+                            cache = {"payload": payload, "read_at": time.time()}
+                            vault["lots"][key] = cache
+                        except Exception as exc:
+                            complete = False
+                            failure = str(exc)[:150]
+                            break
+                    raw_lots = cache["payload"]
+            parts = _broker_lot_rows(raw_lots, symbol)
+            if not parts:
+                complete = False
+                failure = "Broker supplied no complete dated position lots"
+                break
+            broker_rows.extend(parts)
+        held = float(gap["Held"])
+        total = sum(float(row["qty"]) for row in broker_rows)
+        if complete and broker_rows and math.isclose(total, held, abs_tol=1e-5, rel_tol=1e-7):
+            recovered.extend(broker_rows)
+        else:
+            reason = failure or f"Broker lot quantities {total:.6f} do not match holdings"
+            remaining.append({**gap, "Reason": str(gap["Reason"]) + " // " + reason})
+    result = [*valid, *recovered]
+    result.sort(key=lambda row: (row["ticker"], row["date"], row["id"]))
+    return result, remaining
 
 
 def _qty_text(quantity: float) -> str:
@@ -297,6 +436,9 @@ def render_acquisition(
             st.warning("CURRENT HOLDINGS COULD NOT BE VERIFIED.")
             return
         valid, gaps = _reconcile(saved["rows"], portfolio)
+        valid, gaps = _recover_broker_lots(
+            client, vault_key, chosen, portfolio, valid, gaps, force=sync,
+        )
         text = _pine_rows(valid)
         covered = saved["covered_from"]
         through = saved["covered_through"]
@@ -313,6 +455,7 @@ def render_acquisition(
             frame = pd.DataFrame([{
                 "Ticker": lot["ticker"], "Acquired": lot["date"].strftime("%m/%d/%Y"),
                 "Share Cost": round(lot["cost"], 4), "Open Shares": round(lot["qty"], 8),
+                "Source": lot.get("source", "FIFO"),
             } for lot in valid])
             st.dataframe(frame, hide_index=True, width="stretch", row_height=32)
         else:
@@ -325,7 +468,11 @@ def render_acquisition(
             )
             st.dataframe(pd.DataFrame(gaps), hide_index=True, width="stretch", row_height=32)
         st.html('<div class="acq-section">COPY INTO TRADINGVIEW PINE SCRIPT</div>')
-        st.caption("FORMAT // TICKER MM.DD.YYYY COST QTY B  |  Each line is the remaining unsold portion of a BUY; closed shares are omitted.")
+        st.caption(
+            "FORMAT // TICKER MM.DD.YYYY COST QTY B  |  FIFO from transactions when complete; "
+            "E*TRADE LOT = broker-reported surviving lot where older history is missing "
+            "(specific-lot selection may differ from FIFO). Closed sales are omitted."
+        )
         st.text_area(
             "PINE SCRIPT TEXT", value=text,
             height=min(360, max(88, 22 * max(1, len(valid)))),
@@ -336,4 +483,4 @@ def render_acquisition(
                            mime="text/plain", disabled=not bool(text), key="acquisition_download")
 
 
-__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history"]
+__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history", "_recover_broker_lots"]

@@ -200,6 +200,22 @@ class ETradeClient:
             page += 1
         return all_positions
 
+    def get_position_lots(self, account_id_key: str, position_id: str | int) -> dict[str, Any]:
+        """Read E*TRADE's detailed tax lots for one currently held position.
+
+        Unlike the usual Portfolio list response, this endpoint exposes
+        acquiredDate, remainingQty, and lot price even for old positions.
+        The Acquisition tab alone calls this method for unreconciled holdings.
+        """
+        account_id_key = str(account_id_key or "").strip()
+        position_id = str(position_id or "").strip()
+        if not account_id_key or not position_id or not position_id.isdigit():
+            raise ETradeError("Valid account and numeric position ID required for lot details.")
+        return self._get(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/portfolio/{quote(position_id, safe='')}",
+            allow_no_content=True,
+        )
+
     def get_transactions(
         self,
         account_id_key: str,
