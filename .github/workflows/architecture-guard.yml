@@ -72,6 +72,11 @@ jobs:
       - name: Test Performance analytics and read-only boundary
         run: python scripts/test_performance_ui.py
 
+      - name: Test Acquisition FIFO and incremental cache
+        run: |
+          python -m py_compile src/acquisition_ui.py tests/test_acquisition.py streamlit_app.py src/tab_bar_v4.py
+          python -m unittest tests.test_acquisition
+
       - name: Test Protective Puts public fallback
         run: |
           python -m py_compile src/protective_puts.py src/protective_puts_sources.py src/protective_puts_ui.py src/protective_puts_portfolio_ui.py src/protective_puts_orders.py scripts/test_protective_puts.py scripts/test_protective_puts_orders.py scripts/test_protective_puts_sources.py
