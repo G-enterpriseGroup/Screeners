@@ -181,7 +181,7 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(len(recovered), 2)
             self.assertEqual(sum(row["qty"] for row in recovered), 65)
             self.assertEqual(_pine_rows(recovered), 
-                "HTD 04.10.2023 48.125 40 B\\nHTD 06.20.2024 51.75 25 B")
+                "HTD 04.10.2023 48.125 40 B\nHTD 06.20.2024 51.75 25 B")
             _recover_unverified_lots(client, "VAULT", "RAJ", positions, gaps)
             self.assertEqual(client.calls, [("RAJ", "140")])
             _recover_unverified_lots(client, "VAULT", "RAJ", positions, gaps, refresh=True)
