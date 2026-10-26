@@ -200,6 +200,21 @@ class ETradeClient:
             page += 1
         return all_positions
 
+    def get_position_lots(self, account_id_key: str, position_id: int | str) -> dict[str, Any]:
+        """Read actual E*TRADE share-lot dates, prices and remaining quantities.
+
+        The separate portfolio/{positionId} endpoint is read-only. Never
+        synthesize tax lots when E*TRADE returns no lot information.
+        """
+        account = str(account_id_key or "").strip()
+        position = str(position_id or "").strip()
+        if not account or not position.isdigit():
+            raise ETradeError("A valid account key and numeric position ID are required.")
+        return self._get(
+            f"/v1/accounts/{quote(account, safe='')}/portfolio/{quote(position, safe='')}",
+            allow_no_content=True,
+        )
+
     def get_transactions(
         self,
         account_id_key: str,
