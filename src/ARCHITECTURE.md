@@ -60,6 +60,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Commit-triggered fresh-process reboot | `src/reboot_guard.py` | `streamlit_app.py` invokes the guard before app routing | Feature renderers |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | E*TRADE Performance | `src/performance_ui.py` | `src/etrade_client.py` read-only transaction/portfolio/balance transport | Risk/GEX/OAuth/order files |
+| Acquisition (open shares FIFO/Pine) | `src/acquisition_ui.py` | Existing `src/etrade_client.py` transactions/portfolio and Performance read-only normalization | Risk Sizing, Performance UI, OAuth, shared broker transport, GEX |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
 | Rebalance Portfolio | `src/rebalance_portfolio_ui.py` | `src/risk_sizing_ui.py`, `src/risk_sizing_ui_v2.py`, `src/risk_sizing.py` for shared read-only Risk book normalization/classification/intent memory | `streamlit_app.py`, Risk live-order workflow, OAuth/session UI, Holdings/GEX/Performance |
 | Bull debit spread UI | `src/bull_debit_ui.py` | `src/bull_debit_spread.py`, `src/yfinance_options.py` public chain fallback | Risk/GEX files |
@@ -216,6 +217,15 @@ Production path:
 - E*TRADE transaction history is a rolling API window. Never label unavailable pre-window history as complete ITD; show the earliest loaded transaction and keep ALL-TIME explicitly coverage-aware until older history is seeded.
 - The 30-second live fragment refreshes current portfolio/balance data only while Performance is active. Historical transactions are session-cached until the user selects REFRESH PERFORMANCE.
 - Do not change Risk Sizing, GEX, Holdings, OAuth, or shared theme files for Performance-only work.
+
+## Acquisition edit map
+
+Production path: `streamlit_app.py` → `src/acquisition_ui.py` → existing read-only `src/etrade_client.py` APIs and Performance transaction-normalization helpers.
+
+- ACQUISITION is an independently owned tab; add its key only to the shared navigation and header/dispatch shell. It is never a live-order entrypoint.
+- First authenticated visit loads the full API-available two-year transaction window for **every** linked account. Subsequent syncs retrieve only a seven-day overlap after the saved checkpoint, merge by transaction ID, and never advance the checkpoint when a fetch fails. A process-scoped access-code/account vault avoids repeated network calls on tab switches and ordinary browser reruns; a worker restart loses this cache because no external durable private database is configured.
+- FIFO matches only EQ/ETF shares; sales consume the oldest purchases. Only unsold BUY portions that reconcile exactly to current broker share counts become Pine Script records (`TICKER MM.DD.YYYY PRICE QTY B`). Unknown older trades, transfers, splits or corporate-action gaps must be prominently shown and omitted from export—not invented.
+- Visual styling is locally scoped to the Acquisition root, following Risk Sizing’s compact black/orange Courier design. Do not change Performance, Risk Sizing, OAuth, shared theme, or any other tab to implement Acquisition.
 
 ## Rebalance Portfolio edit map
 
