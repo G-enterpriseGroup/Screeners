@@ -200,6 +200,21 @@ class ETradeClient:
             page += 1
         return all_positions
 
+    def get_position_lots(self, account_id_key: str, position_id: int | str) -> dict[str, Any]:
+        """Read E*TRADE's per-position tax-lot endpoint (no order capability).
+
+        Portfolio's regular response does not reliably include PositionLot,
+        even with lotsRequired. This dedicated read uses an existing positionId.
+        """
+        account_id_key = str(account_id_key or "").strip()
+        position_text = str(position_id or "").strip()
+        if not account_id_key or not position_text.isdecimal() or int(position_text) <= 0:
+            raise ETradeError("Valid E*TRADE account and numeric position ID are required for lots.")
+        return self._get(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/portfolio/{int(position_text)}",
+            allow_no_content=True,
+        )
+
     def get_transactions(
         self,
         account_id_key: str,
