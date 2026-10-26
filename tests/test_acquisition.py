@@ -86,7 +86,7 @@ class AcquisitionTests(unittest.TestCase):
         }]}]}}
         result = _broker_lots(response, "HTD", 65)
         self.assertEqual(sum(x["qty"] for x in result), 65)
-        self.assertEqual(_pine_rows(result), "HTD 02.28.2023 95.12 45 B\\nHTD 02.28.2023 102 20 B")
+        self.assertEqual(_pine_rows(result), "HTD 02.28.2023 95.12 45 B\nHTD 02.28.2023 102 20 B")
         self.assertFalse(_broker_lots(response, "HTD", 66))
         response["PortfolioResponse"]["AccountPortfolio"][0]["Position"][0]["positionLot"][0]["acquiredDate"] = None
         self.assertFalse(_broker_lots(response, "HTD", 65))
