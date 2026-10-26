@@ -10,8 +10,9 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history
+from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history, _parse_position_lots, _recover_unverified_lots
 from src.tab_bar_v4 import DEFAULT_TAB_ORDER, _clean_order
+from src.etrade_client import ETradeClient, ETradeError
 
 
 def transaction(identifier, stamp, action, symbol, qty, price, security="EQ"):
