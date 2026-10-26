@@ -206,6 +206,142 @@ def _reconcile(
     return valid, gaps
 
 
+# ==============================
+# VERIFIED BROKER POSITION-LOT RECOVERY
+# ==============================
+# Transaction FIFO is primary. Only unmatched currently held share positions
+# request detailed E*TRADE tax lots. The broker may use specific-lot disposal;
+# its lot records must not be mislabeled as FIFO transaction reconstruction.
+
+def _broker_acquired_date(value: Any) -> date | None:
+    try:
+        if isinstance(value, str) and "-" in value:
+            result = date.fromisoformat(value[:10])
+        elif isinstance(value, str) and "/" in value:
+            result = datetime.strptime(value.strip(), "%m/%d/%Y").date()
+        else:
+            number = int(float(value))
+            if 19000101 <= number <= 21001231:
+                result = datetime.strptime(str(number), "%Y%m%d").date()
+            elif number >= 100000000000:
+                result = datetime.fromtimestamp(number / 1000, timezone.utc).date()
+            elif number >= 100000000:
+                result = datetime.fromtimestamp(number, timezone.utc).date()
+            else:
+                return None
+        if result.year < 1970 or result > datetime.now(timezone.utc).date():
+            return None
+        return result
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def _broker_lot_rows(payload: Any, symbol: str) -> list[dict[str, Any]]:
+    """Normalize E*TRADE PositionLot records without fabricating dates/prices."""
+    nested = _find(payload, "positionLot")
+    if nested is None:
+        return []
+    if isinstance(nested, dict):
+        nested = _find(nested, "PositionLot") or [nested]
+    if not isinstance(nested, list) or not nested:
+        return []
+    rows: list[dict[str, Any]] = []
+    for lot in nested:
+        if not isinstance(lot, dict):
+            return []
+        try:
+            quantity = float(_find(lot, "remainingQty"))
+            unit_cost = float(_find(lot, "price"))
+        except (ValueError, TypeError):
+            return []
+        acquired = _broker_acquired_date(_find(lot, "acquiredDate"))
+        if not math.isfinite(quantity) or quantity < 0 or not math.isfinite(unit_cost):
+            return []
+        if quantity <= 1e-8:
+            continue
+        if acquired is None or unit_cost <= 0:
+            return []
+        rows.append({
+            "ticker": symbol, "date": acquired, "cost": unit_cost,
+            "qty": quantity, "id": str(_find(lot, "positionLotId") or ""),
+            "source": "E*TRADE LOT",
+        })
+    return rows
+
+
+def _recover_broker_lots(
+    client: Any,
+    vault_key: str,
+    account_key: str,
+    portfolio: list[dict[str, Any]],
+    valid: list[dict[str, Any]],
+    gaps: list[dict[str, Any]],
+    *,
+    force: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover missing acquisitions only from actual, verified broker tax lots.
+
+    Never query options, invent historical fills or cross account cache keys.
+    """
+    if not gaps or client is None:
+        return valid, gaps
+    vault = _history_vault()
+    remaining: list[dict[str, Any]] = []
+    recovered: list[dict[str, Any]] = []
+    for gap in gaps:
+        symbol = gap["Ticker"]
+        matches = [
+            position for position in portfolio
+            if isinstance(position, dict)
+            and str(normalize_position(position)["Symbol"]).strip().upper() == symbol
+            and str(normalize_position(position)["Type"]).strip().upper() in _SHARE_TYPES
+            and float(normalize_position(position)["Quantity"] or 0) > 0
+        ]
+        broker_rows: list[dict[str, Any]] = []
+        complete = bool(matches)
+        failure = ""
+        for position in matches:
+            raw_lots = _find(position, "positionLot")
+            if raw_lots is None:
+                position_id = _find(position, "positionId")
+                if position_id is None or bool(getattr(client, "is_offline", False)):
+                    complete = False
+                    failure = "No live broker position-lot detail available"
+                    break
+                key = (str(vault_key), str(account_key), str(position_id))
+                with vault["lock"]:
+                    cache = vault.setdefault("lots", {}).get(key)
+                    if force or cache is None or time.time() - cache["read_at"] >= _SYNC_SECONDS:
+                        try:
+                            fetch = getattr(client, "get_position_lots", None)
+                            if not callable(fetch):
+                                raise RuntimeError("Broker position-lot endpoint unavailable")
+                            payload = fetch(account_key, position_id)
+                            cache = {"payload": payload, "read_at": time.time()}
+                            vault["lots"][key] = cache
+                        except Exception as exc:
+                            complete = False
+                            failure = str(exc)[:150]
+                            break
+                    raw_lots = cache["payload"]
+            parts = _broker_lot_rows(raw_lots, symbol)
+            if not parts:
+                complete = False
+                failure = "Broker supplied no complete dated position lots"
+                break
+            broker_rows.extend(parts)
+        held = float(gap["Held"])
+        total = sum(float(row["qty"]) for row in broker_rows)
+        if complete and broker_rows and math.isclose(total, held, abs_tol=1e-5, rel_tol=1e-7):
+            recovered.extend(broker_rows)
+        else:
+            reason = failure or f"Broker lot quantities {total:.6f} do not match holdings"
+            remaining.append({**gap, "Reason": str(gap["Reason"]) + " // " + reason})
+    result = [*valid, *recovered]
+    result.sort(key=lambda row: (row["ticker"], row["date"], row["id"]))
+    return result, remaining
+
+
 def _qty_text(quantity: float) -> str:
     return f"{quantity:.8f}".rstrip("0").rstrip(".")
 
