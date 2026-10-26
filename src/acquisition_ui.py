@@ -444,6 +444,11 @@ def render_acquisition(
             st.warning("CURRENT HOLDINGS COULD NOT BE VERIFIED.")
             return
         valid, gaps = _reconcile(saved["rows"], portfolio)
+        # Only unresolved current holdings trigger extra read-only broker lot calls.
+        broker_lots, gaps = _recover_unverified_lots(
+            client, vault_key, chosen, portfolio, gaps, refresh=sync,
+        )
+        valid = sorted(valid + broker_lots, key=lambda row: (row["ticker"], row["date"], row["id"]))
         text = _pine_rows(valid)
         covered = saved["covered_from"]
         through = saved["covered_through"]
@@ -460,6 +465,7 @@ def render_acquisition(
             frame = pd.DataFrame([{
                 "Ticker": lot["ticker"], "Acquired": lot["date"].strftime("%m/%d/%Y"),
                 "Share Cost": round(lot["cost"], 4), "Open Shares": round(lot["qty"], 8),
+                "Source": lot.get("source", "TRADE FIFO"),
             } for lot in valid])
             st.dataframe(frame, hide_index=True, width="stretch", row_height=32)
         else:
@@ -467,8 +473,8 @@ def render_acquisition(
         if gaps:
             st.warning(
                 "UNVERIFIED LOTS EXCLUDED FROM EXPORT. Older than two years, transfers, "
-                "splits, reinvestments, or missing API records can cause gaps. "
-                "Do not rely on FIFO for these positions until older history is reconciled."
+                "splits, reinvestments, or unavailable broker tax-lot records can cause gaps. "
+                "Only verified FIFO or broker tax lots are exported."
             )
             st.dataframe(pd.DataFrame(gaps), hide_index=True, width="stretch", row_height=32)
         st.html('<div class="acq-section">COPY INTO TRADINGVIEW PINE SCRIPT</div>')
@@ -483,4 +489,4 @@ def render_acquisition(
                            mime="text/plain", disabled=not bool(text), key="acquisition_download")
 
 
-__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history"]
+__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history", "_recover_unverified_lots"]
