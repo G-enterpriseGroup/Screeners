@@ -61,7 +61,9 @@ class AcquisitionTests(unittest.TestCase):
             transaction(1, "2025-04-01", "SELL", "LMT", 50, 490),
             transaction(2, "2025-04-02", "BUY", "LMT", 10, 500),
         ]
-        valid, gaps = _reconcile(rows, [holding("LMT", 10), holding("SPY", 5)])
+        # Current LMT shares exceed reconstructed open buys: the missing older
+        # shares are still in the book, unlike fully closed older MSFT sells.
+        valid, gaps = _reconcile(rows, [holding("LMT", 15), holding("SPY", 5)])
         self.assertEqual(valid, [])
         self.assertEqual({row["Ticker"] for row in gaps}, {"LMT", "SPY"})
 
