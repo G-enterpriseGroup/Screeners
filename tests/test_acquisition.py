@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history, _recover_broker_lots, _broker_lot_rows
 from src.tab_bar_v4 import DEFAULT_TAB_ORDER, _clean_order
+from src.etrade_client import ETradeClient, ETradeError
 
 
 def transaction(identifier, stamp, action, symbol, qty, price, security="EQ"):
@@ -160,6 +161,16 @@ class AcquisitionTests(unittest.TestCase):
             valid, remain = _recover_broker_lots(Incomplete(), "ONE", "RAJ", portfolio, known, gaps)
         self.assertEqual(valid, [])
         self.assertEqual(len(remain), 1)
+
+    def test_position_lot_transport_is_read_only_and_account_scoped(self):
+        client = ETradeClient.__new__(ETradeClient)
+        calls = []
+        client._get = lambda path, **kwargs: calls.append((path, kwargs)) or {"PositionLot": []}
+        self.assertEqual(client.get_position_lots("account+key", 123), {"PositionLot": []})
+        self.assertEqual(calls[0][0], "/v1/accounts/account%2Bkey/portfolio/123")
+        self.assertTrue(calls[0][1]["allow_no_content"])
+        with self.assertRaises(ETradeError):
+            client.get_position_lots("account+key", "../orders")
 
     def test_broker_lots_are_never_fetched_for_options(self):
         class Broker:
