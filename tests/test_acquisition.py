@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history
+from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history, _broker_lots, _recover_lots
 from src.tab_bar_v4 import DEFAULT_TAB_ORDER, _clean_order
 
 
@@ -63,6 +63,53 @@ class AcquisitionTests(unittest.TestCase):
         valid, gaps = _reconcile(rows, [holding("LMT", 10), holding("SPY", 5)])
         self.assertEqual(valid, [])
         self.assertEqual({row["Ticker"] for row in gaps}, {"LMT", "SPY"})
+
+    def test_msft_prior_unknown_sale_then_current_buys_reconcile(self):
+        # A sale from before the available opening history must not
+        # permanently poison later verified purchases.
+        tx = [
+            transaction(1, "2024-10-28", "SELL", "MSFT", 25, 410),
+            transaction(2, "2025-03-01", "BUY", "MSFT", 8, 390),
+        ]
+        verified, gaps = _reconcile(tx, [holding("MSFT", 8)])
+        self.assertFalse(gaps)
+        self.assertEqual(_pine_rows(verified), "MSFT 03.01.2025 390 8 B")
+
+    def test_broker_tax_lots_recover_missing_held_shares(self):
+        ts = int(datetime(2023, 2, 28, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
+        response = {"PortfolioResponse": {"AccountPortfolio": [{"Position": [{
+            "positionLot": [
+                {"positionLotId": 71, "acquiredDate": ts, "remainingQty": 45, "price": 95.12},
+                {"positionLotId": 72, "acquiredDate": ts, "remainingQty": 20, "price": 102},
+            ]
+        }]}]}}
+        result = _broker_lots(response, "HTD", 65)
+        self.assertEqual(sum(x["qty"] for x in result), 65)
+        self.assertEqual(_pine_rows(result), "HTD 02.28.2023 95.12 45 B\\nHTD 02.28.2023 102 20 B")
+        self.assertFalse(_broker_lots(response, "HTD", 66))
+        response["PortfolioResponse"]["AccountPortfolio"][0]["Position"][0]["positionLot"][0]["acquiredDate"] = None
+        self.assertFalse(_broker_lots(response, "HTD", 65))
+
+    def test_broker_recovery_fetches_unresolved_only_and_reuses_cache(self):
+        stamp = int(datetime(2023, 3, 1, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
+        class Client:
+            def __init__(self):
+                self.calls = []
+            def get_position_lots(self, account, position):
+                self.calls.append((account, position))
+                return {"positionLot": [{"positionLotId": 4, "acquiredDate": stamp,
+                                         "remainingQty": 65, "price": 88}]}
+        client = Client()
+        positions = [dict(holding("HTD", 65), positionId=991)]
+        gaps = [{"Ticker": "HTD", "Held": 65, "FIFO Found": 0, "Reason": "missing"}]
+        vault = {"lock": __import__("threading").RLock(), "accounts": {}}
+        with patch("src.acquisition_ui._history_vault", return_value=vault):
+            first, remaining = _recover_lots(client, "vault", "RAJ", positions, gaps)
+            again, _ = _recover_lots(client, "vault", "RAJ", positions, gaps)
+        self.assertFalse(remaining)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(_pine_rows(first), _pine_rows(again))
+        self.assertEqual(client.calls, [("RAJ", 991)])
 
     def test_dedup_keeps_latest_corrected_record(self):
         old = [transaction(17, "2025-01-01", "BUY", "LMT", 1, 100)]
