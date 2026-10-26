@@ -436,6 +436,9 @@ def render_acquisition(
             st.warning("CURRENT HOLDINGS COULD NOT BE VERIFIED.")
             return
         valid, gaps = _reconcile(saved["rows"], portfolio)
+        valid, gaps = _recover_broker_lots(
+            client, vault_key, chosen, portfolio, valid, gaps, force=sync,
+        )
         text = _pine_rows(valid)
         covered = saved["covered_from"]
         through = saved["covered_through"]
@@ -452,6 +455,7 @@ def render_acquisition(
             frame = pd.DataFrame([{
                 "Ticker": lot["ticker"], "Acquired": lot["date"].strftime("%m/%d/%Y"),
                 "Share Cost": round(lot["cost"], 4), "Open Shares": round(lot["qty"], 8),
+                "Source": lot.get("source", "FIFO"),
             } for lot in valid])
             st.dataframe(frame, hide_index=True, width="stretch", row_height=32)
         else:
@@ -464,7 +468,11 @@ def render_acquisition(
             )
             st.dataframe(pd.DataFrame(gaps), hide_index=True, width="stretch", row_height=32)
         st.html('<div class="acq-section">COPY INTO TRADINGVIEW PINE SCRIPT</div>')
-        st.caption("FORMAT // TICKER MM.DD.YYYY COST QTY B  |  Each line is the remaining unsold portion of a BUY; closed shares are omitted.")
+        st.caption(
+            "FORMAT // TICKER MM.DD.YYYY COST QTY B  |  FIFO from transactions when complete; "
+            "E*TRADE LOT = broker-reported surviving lot where older history is missing "
+            "(specific-lot selection may differ from FIFO). Closed sales are omitted."
+        )
         st.text_area(
             "PINE SCRIPT TEXT", value=text,
             height=min(360, max(88, 22 * max(1, len(valid)))),
@@ -475,4 +483,4 @@ def render_acquisition(
                            mime="text/plain", disabled=not bool(text), key="acquisition_download")
 
 
-__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history"]
+__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history", "_recover_broker_lots"]
