@@ -57,8 +57,9 @@ class AcquisitionTests(unittest.TestCase):
 
     def test_unreconciled_older_lot_and_corporate_action_are_excluded(self):
         rows = [
-            transaction(1, "2025-04-01", "SELL", "LMT", 50, 490),
-            transaction(2, "2025-04-02", "BUY", "LMT", 10, 500),
+            transaction(1, "2025-04-01", "BUY", "LMT", 5, 480),
+            transaction(2, "2025-04-02", "SELL", "LMT", 10, 490),
+            transaction(3, "2025-04-03", "BUY", "LMT", 10, 500),
         ]
         valid, gaps = _reconcile(rows, [holding("LMT", 10), holding("SPY", 5)])
         self.assertEqual(valid, [])
