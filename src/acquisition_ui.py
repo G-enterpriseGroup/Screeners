@@ -9,7 +9,7 @@ All broker actions here are read-only. The API exposes at most two years of tran
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -47,7 +47,7 @@ _CSS = """
 @st.cache_resource
 def _history_vault() -> dict[str, Any]:
     """Reuse complete histories across tabs, reruns and browser sessions of this worker."""
-    return {"lock": threading.RLock(), "accounts": {}}
+    return {"lock": threading.RLock(), "accounts": {}, "lots": {}}
 
 
 def _identity(tx: dict[str, Any]) -> str:
@@ -183,16 +183,19 @@ def _shares_held(positions: list[dict[str, Any]]) -> dict[str, float]:
 def _reconcile(
     transactions: list[dict[str, Any]], positions: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Never publish a false cost/date when FIFO is incomplete or mismatches E*TRADE."""
+    """Exclude only lot quantities that cannot match current E*TRADE holdings."""
     lots, incomplete = _fifo_equity(transactions)
     holdings = _shares_held(positions)
     valid: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
     for ticker, actual in sorted(holdings.items()):
         reconstructed = sum(row["qty"] for row in lots.get(ticker, []))
-        matched = ticker not in incomplete and math.isclose(reconstructed, actual, abs_tol=1e-5, rel_tol=1e-7)
+        # Prior unmatched sales can be fully closed, before surviving BUY lots.
+        # Once current held shares equal reconstructed open BUY quantities, a
+        # historical sale deficit alone must not suppress those acquisitions.
+        matched = math.isclose(reconstructed, actual, abs_tol=1e-5, rel_tol=1e-7)
         if matched:
-            valid.extend(lots.get(ticker, []))
+            valid.extend({**lot, "source": "FIFO"} for lot in lots.get(ticker, []))
         else:
             gaps.append({
                 "Ticker": ticker, "Held": round(actual, 6), "FIFO Found": round(reconstructed, 6),
