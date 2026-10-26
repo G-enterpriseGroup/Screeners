@@ -302,7 +302,7 @@ def _recover_broker_lots(
         failure = ""
         for position in matches:
             raw_lots = _find(position, "positionLot")
-            if raw_lots is None:
+            if not raw_lots:
                 position_id = _find(position, "positionId")
                 if position_id is None or bool(getattr(client, "is_offline", False)):
                     complete = False
