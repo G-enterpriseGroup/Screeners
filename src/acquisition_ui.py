@@ -143,9 +143,11 @@ def _fifo_equity(transactions: list[dict[str, Any]]) -> tuple[dict[str, list[dic
     trades.sort(key=lambda row: (row["when"], str(row["id"])))
     lots: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
     incomplete: set[str] = set()
+    seen_buy: set[str] = set()
     for row in trades:
         ticker, action, qty = row["symbol"], row["action"], float(row["quantity"])
         if action == "BUY":
+            seen_buy.add(ticker)
             lots[ticker].append({
                 "ticker": ticker, "date": row["when"].date(),
                 "cost": float(row["price"]), "qty": qty, "id": str(row["id"]),
@@ -158,8 +160,10 @@ def _fifo_equity(transactions: list[dict[str, Any]]) -> tuple[dict[str, list[dic
                 first["qty"] -= used
                 if first["qty"] <= 1e-8:
                     lots[ticker].popleft()
-            if qty > 1e-8:
-                incomplete.add(ticker)  # sale against a pre-window/unseen purchase
+            if qty > 1e-8 and ticker in seen_buy:
+                # A sale before the first observable BUY cannot consume a
+                # later long lot. A surplus sale AFTER buys is still uncertain.
+                incomplete.add(ticker)
         else:
             incomplete.add(ticker)  # short/buy-to-cover cannot be a long BUY lot
     return {symbol: [dict(lot) for lot in entries if lot["qty"] > 1e-8]
@@ -201,6 +205,92 @@ def _reconcile(
             })
     valid.sort(key=lambda row: (row["ticker"], row["date"], row["id"]))
     return valid, gaps
+
+
+# ==============================
+# VERIFIED BROKER POSITION-LOT RECOVERY
+# ==============================
+
+def _lot_date(raw: Any) -> date | None:
+    """Parse E*TRADE epoch seconds/milliseconds or ISO dates safely."""
+    try:
+        if isinstance(raw, str) and len(raw) >= 10 and raw[4] == "-":
+            return date.fromisoformat(raw[:10])
+        value = float(raw)
+        if not math.isfinite(value) or value <= 0:
+            return None
+        if value > 10_000_000_000:
+            value /= 1000
+        parsed = datetime.fromtimestamp(value, tz=_ET).date()
+        return parsed if date(1970, 1, 1) <= parsed <= datetime.now(_ET).date() else None
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _broker_lots(payload: dict[str, Any], ticker: str, held: float) -> list[dict[str, Any]]:
+    """Require actual lot-level date/price/remainingQty AND exact share match."""
+    from src.performance_ui import _find
+    source = _find(payload, "positionLot")
+    rows = source if isinstance(source, list) else [source] if isinstance(source, dict) else []
+    valid = []
+    for i, lot in enumerate(rows):
+        if not isinstance(lot, dict):
+            return []
+        try:
+            qty = float(lot.get("remainingQty"))
+            price = float(lot.get("price"))
+        except (TypeError, ValueError):
+            return []
+        acquired = _lot_date(lot.get("acquiredDate"))
+        if not acquired or not math.isfinite(qty) or not math.isfinite(price) or qty <= 0 or price <= 0:
+            return []
+        valid.append({
+            "ticker": ticker, "date": acquired, "cost": price, "qty": qty,
+            "id": str(lot.get("positionLotId") or f"lot-{i}"),
+            "source": "E*TRADE TAX LOT",
+        })
+    if not valid or not math.isclose(sum(item["qty"] for item in valid), held, abs_tol=1e-5, rel_tol=1e-7):
+        return []
+    return sorted(valid, key=lambda item: (item["date"], item["id"]))
+
+
+def _recover_lots(client: Any, vault_key: str, account_key: str,
+                  positions: list[dict[str, Any]], gaps: list[dict[str, Any]],
+                  *, force: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover only unmatched holdings; no guesswork or global cache patch."""
+    unresolved = {item["Ticker"] for item in gaps}
+    if not unresolved or client is None or bool(getattr(client, "is_offline", False)):
+        return [], gaps
+    vault = _history_vault()
+    with vault["lock"]:
+        lot_cache = vault.setdefault("position_lots", {})
+    holdings = _shares_held(positions)
+    recovered: dict[str, list[dict[str, Any]]] = {}
+    for position in positions:
+        item = normalize_position(position)
+        ticker = str(item.get("Symbol") or "").strip().upper()
+        position_id = position.get("positionId")
+        if ticker not in unresolved or not position_id or ticker in recovered:
+            continue
+        key = (str(vault_key), account_key, str(position_id))
+        with vault["lock"]:
+            entry = lot_cache.get(key)
+        if entry and not force and time.time() - entry["time"] < 3600:
+            payload = entry["payload"]
+        else:
+            try:
+                payload = client.get_position_lots(account_key, position_id)
+            except (AttributeError, Exception):
+                continue
+            with vault["lock"]:
+                lot_cache[key] = {"time": time.time(), "payload": payload}
+        if isinstance(payload, dict):
+            parsed = _broker_lots(payload, ticker, holdings[ticker])
+            if parsed:
+                recovered[ticker] = parsed
+    rows = [lot for ticker in sorted(recovered) for lot in recovered[ticker]]
+    remaining = [gap for gap in gaps if gap["Ticker"] not in recovered]
+    return rows, remaining
 
 
 def _qty_text(quantity: float) -> str:
@@ -297,6 +387,9 @@ def render_acquisition(
             st.warning("CURRENT HOLDINGS COULD NOT BE VERIFIED.")
             return
         valid, gaps = _reconcile(saved["rows"], portfolio)
+        recovered, gaps = _recover_lots(client, vault_key, chosen, portfolio, gaps, force=sync)
+        valid.extend(recovered)
+        valid.sort(key=lambda lot: (lot["ticker"], lot["date"], lot["id"]))
         text = _pine_rows(valid)
         covered = saved["covered_from"]
         through = saved["covered_through"]
@@ -305,7 +398,7 @@ def render_acquisition(
             f'FIFO // {len(valid):,} VERIFIED OPEN BUY LOTS // '
             f'{len(gaps):,} UNRECONCILED SYMBOLS // {len(saved["rows"]):,} CACHED TRANSACTIONS // '
             f'HISTORY WINDOW {covered:%m/%d/%Y} – {through:%m/%d/%Y} // '
-            'API MAXIMUM: 2 YEARS // PROCESS CACHE: ALL ACCOUNTS // SYNC: 7-DAY OVERLAP'
+            'E*TRADE TAX LOT RECOVERY // PROCESS CACHE // SYNC: 7-DAY OVERLAP'
             '</div>'
         )
         st.html('<div class="acq-section">OPEN EQUITY ACQUISITIONS // FIFO</div>')
@@ -313,6 +406,7 @@ def render_acquisition(
             frame = pd.DataFrame([{
                 "Ticker": lot["ticker"], "Acquired": lot["date"].strftime("%m/%d/%Y"),
                 "Share Cost": round(lot["cost"], 4), "Open Shares": round(lot["qty"], 8),
+                "Source": lot.get("source", "TRANSACTION FIFO"),
             } for lot in valid])
             st.dataframe(frame, hide_index=True, width="stretch", row_height=32)
         else:
@@ -336,4 +430,4 @@ def render_acquisition(
                            mime="text/plain", disabled=not bool(text), key="acquisition_download")
 
 
-__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history"]
+__all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history", "_broker_lots", "_recover_lots"]
