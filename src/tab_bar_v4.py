@@ -162,6 +162,11 @@ def _clean_order(order: Iterable[str] | None) -> list[str]:
     for item in candidate:
         if item in DEFAULT_TAB_ORDER and item not in out:
             out.append(item)
+    # Migrate older saved layouts: make the new Acquisition tab discoverable
+    # beside Performance instead of appending it outside the visible tab strip.
+    # An explicitly reordered Acquisition tab keeps the user's chosen position.
+    if "ACQUISITION" not in out and "PERFORMANCE" in out:
+        out.insert(out.index("PERFORMANCE") + 1, "ACQUISITION")
     for item in DEFAULT_TAB_ORDER:
         if item not in out:
             out.append(item)

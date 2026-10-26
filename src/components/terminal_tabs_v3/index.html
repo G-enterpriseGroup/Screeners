@@ -167,6 +167,12 @@
           if (allowed.includes(text) && !out.includes(text)) out.push(text);
         });
       }
+      // Migrate pre-Acquisition localStorage orders without losing custom tabs.
+      // Keep newly added Acquisition visible beside Performance, not at far right.
+      if (allowed.includes("ACQUISITION") && !out.includes("ACQUISITION")) {
+        const performanceIndex = out.indexOf("PERFORMANCE");
+        if (performanceIndex !== -1) out.splice(performanceIndex + 1, 0, "ACQUISITION");
+      }
       allowed.forEach((item) => { if (!out.includes(item)) out.push(item); });
       return out;
     }

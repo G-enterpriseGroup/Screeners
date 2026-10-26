@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import json
+import shutil
+import subprocess
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history
+from src.tab_bar_v4 import DEFAULT_TAB_ORDER, _clean_order
 
 
 def transaction(identifier, stamp, action, symbol, qty, price, security="EQ"):
@@ -94,6 +98,37 @@ class AcquisitionTests(unittest.TestCase):
             {"accountName": "Ameka", "accountIdKey": "X", "accountId": "1111"},
             {"accountName": "Raj", "accountIdKey": "Y", "accountId": "5474"},
         ]), "Y")
+
+    def test_legacy_navigation_adds_acquisition_beside_performance(self):
+        # Prior browser/server layouts lack the newly introduced route.
+        old = ["GEX", "PERFORMANCE", "HOLDINGS", "RISK SIZING"]
+        restored = _clean_order(old)
+        self.assertEqual(restored[:4], ["GEX", "PERFORMANCE", "ACQUISITION", "HOLDINGS"])
+        self.assertEqual(restored.count("ACQUISITION"), 1)
+        self.assertEqual(_clean_order([]), DEFAULT_TAB_ORDER)
+        custom = ["GEX", "ACQUISITION", "PERFORMANCE", "HOLDINGS"]
+        self.assertEqual(_clean_order(custom)[:4], custom)
+
+    def test_browser_saved_order_migrates_acquisition_near_performance(self):
+        if shutil.which("node") is None:
+            self.skipTest("Node.js is required for browser navigation JS checks.")
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/components/terminal_tabs_v3/index.html"
+        ).read_text(encoding="utf-8")
+        begin = source.index("    function cleanOrder(candidate, allowed) {")
+        end = source.index("\n    function persist()", begin)
+        fn = source[begin:end]
+        old = ["GEX", "PERFORMANCE", "HOLDINGS", "RISK SIZING"]
+        js = (
+            fn
+            + "\nprocess.stdout.write(JSON.stringify(cleanOrder("
+            + json.dumps(old) + ", " + json.dumps(DEFAULT_TAB_ORDER)
+            + ")));"
+        )
+        result = subprocess.run(["node", "-e", js], text=True, capture_output=True, check=True)
+        migrated = json.loads(result.stdout)
+        self.assertEqual(migrated[:4], ["GEX", "PERFORMANCE", "ACQUISITION", "HOLDINGS"])
 
     def test_no_order_calls_and_only_expected_shared_files(self):
         source = (Path(__file__).resolve().parents[1] / "src/acquisition_ui.py").read_text()
