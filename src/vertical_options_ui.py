@@ -811,6 +811,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         "source": source, "symbol": symbol, "spot": spot, "name": name,
         "expirations": expirations, "loaded_expirations": loaded,
         "rows": rows, "errors": errors,
+        "tv_exchange": _tradingview_listing_exchange(symbol, quote_payload),
     }
     cache[cache_key] = result
     return result
@@ -846,38 +847,51 @@ def _optionstrat_url(candidate: dict[str, Any]) -> str:
     return f"https://optionstrat.com/build/{strategy}/{url_quote(symbol, safe='')}/{url_quote(legs, safe='.,-')}"
 
 
-def _tradingview_spread_url(candidate: dict[str, Any]) -> str:
-    """Chart the exact long-minus-short OPRA premiums; not an expiration P&L diagram."""
+_TV_OPTIONS_BUILDER = "https://www.tradingview.com/options/strategies/handbook/"
+# Verified TradingView symbol pages; never guess an unverified exchange.
+_TV_KNOWN_LISTINGS = {"SOXX": "NASDAQ", "SPY": "AMEX", "SPX": "SP"}
+
+
+def _tradingview_listing_exchange(symbol: str, quote_payload: dict[str, Any] | None = None) -> str:
+    """Use a verified listing or the existing broker quote; never probe for every spread."""
+    symbol = str(symbol or "").upper().strip()
+    if symbol in _TV_KNOWN_LISTINGS:
+        return _TV_KNOWN_LISTINGS[symbol]
+    payload = quote_payload or {}
+    response = payload.get("QuoteResponse", payload)
+    items = response.get("QuoteData", response.get("quoteData", [])) if isinstance(response, dict) else []
+    if isinstance(items, dict):
+        items = [items]
+    row = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+    details = row.get("All", row.get("all", {}))
+    code = str((details or {}).get("primaryExchange") or "").strip().upper()
+    return {
+        "NASDAQ": "NASDAQ", "NASD": "NASDAQ", "NSDQ": "NASDAQ",
+        "NYSE": "NYSE", "NEW YORK STOCK EXCHANGE": "NYSE",
+        "AMEX": "AMEX", "NYSE AMERICAN": "AMEX",
+        "ARCA": "AMEX", "NYSE ARCA": "AMEX",
+    }.get(code, "")
+
+
+def _tradingview_spread_url(candidate: dict[str, Any], *, exchange: str = "") -> str:
+    """Open the real TradingView options builder, not an unverified OPRA spread chart.
+
+    TradingView documents symbol preselection but not URL-prefilled option legs.
+    Unknown exchanges safely open the generic builder for manual symbol search.
+    """
     symbol = str(candidate["symbol"]).strip().upper()
-    expiry = candidate["expiry"].strftime("%y%m%d")
-    option_type = "C" if candidate["call_put"] == "CALL" else "P"
+    known = _TV_KNOWN_LISTINGS.get(symbol)
+    listing = known or str(exchange or "").upper().strip()
+    if listing not in {"NASDAQ", "NYSE", "AMEX", "SP"}:
+        return _TV_OPTIONS_BUILDER
+    return _TV_OPTIONS_BUILDER + "?symbol=" + url_quote(f"{listing}:{symbol}", safe="")
 
-    def contract(strike: float, osi: str) -> str:
-        root = symbol
-        match = re.fullmatch(
-            r"([A-Z][A-Z0-9.\-]*?)(\d{6})([CP])(\d{1,8}(?:\.\d+)?)",
-            str(osi or "").upper().replace(" ", "").lstrip("."),
-        )
-        if match and match.group(2) == expiry and match.group(3) == option_type:
-            raw = match.group(4)
-            actual_strike = float(raw) / 1000 if len(raw) == 8 else float(raw)
-            if abs(actual_strike - float(strike)) < .0001:
-                root = match.group(1).rstrip("-") or symbol
-        strike_text = f"{float(strike):.8f}".rstrip("0").rstrip(".")
-        return f"OPRA:{root}{expiry}{option_type}{strike_text}"
-
-    # For either debit vertical, BUY - SELL shows the net premium.
-    spread = (contract(candidate["buy_strike"], candidate.get("buy_osi", ""))
-              + "-" + contract(candidate["sell_strike"], candidate.get("sell_osi", "")))
-    return "https://www.tradingview.com/chart/?symbol=" + url_quote(spread, safe="")
-
-
-def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[str, Any]:
+def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "") -> dict[str, Any]:
     return {
         "id": candidate["id"],
         "annual": candidate["id"] in annual_ids,
         "optionstrat_url": _optionstrat_url(candidate),
-        "tradingview_url": _tradingview_spread_url(candidate),
+        "tradingview_url": _tradingview_spread_url(candidate, exchange=tv_exchange),
         "expiry_detail": _expiry_time_label(candidate["expiry"]),
         "values": [
             candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
@@ -1286,6 +1300,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "listed_expirations": len(raw["expirations"]),
                     "listed_years": len({item.year for item in raw["expirations"]}),
                     "contract_count": len(raw["rows"]), "errors": raw["errors"],
+                    "tv_exchange": raw.get("tv_exchange", ""),
                 }
                 st.session_state["vo_results_view"] = "BEST PER YEAR"
                 if symbol in (st.session_state.get("vo_ticker_list") or []):
@@ -1433,7 +1448,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     mime="text/csv", key="vo_export_filtered_qualified",
                     use_container_width=True,
                 )
-            displayed = [_spread_table_row(row, annual_ids) for row in displayed_candidates]
+            displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
+                         for row in displayed_candidates]
             selected_update = _SPREAD_SCROLL_COMPONENT(
                 scope=scope, sort_key=view_identity, rows=displayed,
                 selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
@@ -1465,7 +1481,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 ('FILL = SMART FILL BASIS (SMART / MID / LAST*). '
                  if result.get("pricing_mode") == "SMART FILL" else
                  'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ') +
-                'OS = OPTIONSTRAT PAYOFF; TV = LONG − SHORT PREMIUM CHART (NOT P&L). '
+                'OS = EXACT OPTIONSTRAT SPREAD; TV = TRADINGVIEW OPTIONS BUILDER (SELECT LEGS THERE). '
                 'OPENING EITHER LINK NEVER SENDS AN ORDER.'
             )
             if checked_ids:
@@ -1500,9 +1516,16 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     )
                 with tv_col:
                     st.link_button(
-                        "OPEN SPREAD CHART IN TRADINGVIEW",
-                        _tradingview_spread_url(chosen), use_container_width=True,
+                        "OPEN TRADINGVIEW OPTIONS BUILDER",
+                        _tradingview_spread_url(chosen, exchange=result.get("tv_exchange", "")),
+                        use_container_width=True,
                     )
+                st.caption(
+                    f'TRADINGVIEW LEG SETUP // {chosen["symbol"]} '
+                    f'{chosen["expiry"].isoformat()} {chosen["call_put"]}: '
+                    f'BUY {chosen["buy_strike"]:g} / SELL {chosen["sell_strike"]:g}. '
+                    'The builder does not auto-import option legs from external links.'
+                )
                 with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
                     _render_selected_order(client, touch_session, chosen, result, broker_live)
                 if len(checked_rows) > 1:
