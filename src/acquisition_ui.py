@@ -175,6 +175,15 @@ def _sync_history(
     # In fixture tests the archive client can be injected without secrets.
     private_config = ArchiveConfig.from_runtime() if archive else None
     private_blotter = PrivateTradeBlotter(private_config) if private_config else None
+    if private_blotter is not None:
+        # One credential preflight for the ENTIRE account batch. GitHub uses
+        # HTTP 404 when a PAT cannot see a private repository. Do not retry
+        # that same unauthorized request for every linked E*TRADE account.
+        try:
+            private_blotter._verify_private()
+        except ArchiveError as exc:
+            errors["blotter"] = str(exc)
+            private_blotter = None
     with vault["lock"]:
         vault["archive_configured"] = archive is not None
         for account in accounts:
@@ -595,6 +604,8 @@ def render_acquisition(
             f"{_account_label(by_key[key])}: {message}"
             for key, message in errors.items() if key in by_key
         ]
+        if errors.get("blotter"):
+            st.warning("PRIVATE GITHUB BLOTTER NOT UPDATED // " + errors["blotter"])
         if account_errors:
             st.warning("HISTORY / ARCHIVE SYNC INCOMPLETE // " + "; ".join(account_errors))
         saved = snapshots.get(chosen)
