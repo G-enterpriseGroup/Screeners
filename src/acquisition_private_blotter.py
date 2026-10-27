@@ -138,7 +138,7 @@ class PrivateTradeBlotter:
     def named_paths(self, account_key: str, account_name: str, last_four: str = "") -> tuple[str, str]:
         """Human-readable private mirrors; keyed primary history never moves."""
         clean = unicodedata.normalize("NFKC", str(account_name or "E*TRADE Account"))
-        clean = re.sub(r"[^\\w .&()'-]+", "-", clean, flags=re.UNICODE)
+        clean = re.sub(r"[^\w .&()'-]+", "-", clean, flags=re.UNICODE)
         clean = re.sub(r"\s+", " ", clean).strip(" .-_")
         clean = clean[:64].rstrip(" .-_") or "E*TRADE Account"
         suffix = re.sub(r"\D", "", str(last_four or ""))[-4:]
