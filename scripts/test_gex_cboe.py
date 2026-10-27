@@ -669,6 +669,66 @@ ui._render_cboe_publication_status("retry-control")
         self.assertEqual(failed, {})
         publish.assert_not_called()
 
+    def test_both_cboe_export_sets_are_visible_before_tables_and_isolated(self):
+        from streamlit.testing.v1 import AppTest
+
+        source = """
+import streamlit as st
+from src import gex_ui_v3 as ui
+state = {"dte_overrides": {}, "global_dte": 45}
+result = {
+    "SPY": {
+        "spot": 600.0, "maxDte": 45, "gammaFlip": 590.0,
+        "putWall": {"strike": 580.0}, "callWall": {"strike": 610.0},
+        "rawRows": [{"strike": 600.0, "call_gex": 20.0, "put_gex": -10.0,
+                     "net_gex": 10.0, "cum_gex": 10.0,
+                     "call_oi": 100, "put_oi": 50}],
+    },
+}
+ui._render_gex_exports(
+    key_prefix="gex_cboe", file_prefix="cboe_gex",
+    displayed_tickers=["SPY"], result_map=result, display_state=state,
+    html_markup="<table></table>", html_heading="CBOE OVERVIEW",
+)
+ui._render_gex_exports(
+    key_prefix="gex_morningstar", file_prefix="morningstar_gex",
+    displayed_tickers=["SPY"], result_map=result, display_state=state,
+    html_markup="<table></table>", html_heading="MORNINGSTAR GEX // CBOE OVERVIEW",
+)
+"""
+        app = AppTest.from_string(source).run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("download_button")), 6)
+        self.assertTrue(all(not widget.disabled for widget in app.get("download_button")))
+
+        source_without_results = source.replace(
+            'result = {\\n    "SPY": {', 'result = {\\n    "SPY": {'
+        )
+        # Download controls must remain discoverable even before a successful run.
+        source_without_results = source_without_results.replace(
+            'result_map=result, display_state=state,',
+            'result_map={}, display_state=state,',
+        )
+        empty = AppTest.from_string(source_without_results).run()
+        self.assertFalse(empty.exception)
+        self.assertEqual(len(empty.get("download_button")), 6)
+        self.assertTrue(all(widget.disabled for widget in empty.get("download_button")))
+
+        import inspect
+        cboe = inspect.getsource(ui._render_cboe_overview)
+        morningstar = inspect.getsource(ui._render_morningstar_gex)
+        self.assertLess(
+            cboe.index("_render_gex_exports("),
+            cboe.index("st.html(_decorate_cboe_overview_markup("),
+        )
+        self.assertLess(
+            morningstar.index("_render_gex_exports("),
+            morningstar.index("st.html(markup)"),
+        )
+        self.assertIn("CBOE OVERVIEW", ui._morningstar_visual_html(
+            "<table></table>", 1, heading="CBOE OVERVIEW",
+        ))
+
     def test_source_urls_and_tabs_are_separate(self):
         root = Path(__file__).resolve().parents[1]
         base = (root / "src/gex_ui_v3_base.py").read_text(encoding="utf-8")
@@ -715,10 +775,20 @@ ui._render_cboe_publication_status("retry-control")
             and any(isinstance(target, ast.Name) and target.id == "subtab_names"
                     for target in node.targets)
         )
-        self.assertEqual(ast.literal_eval(subtabs.value), [
-            "E*TRADE OVERVIEW", "CBOE OVERVIEW", "MORNINGSTAR GEX",
-            "SETTINGS", "NOTES",
+        self.assertIsInstance(subtabs.value, ast.BinOp)
+        self.assertEqual(ast.literal_eval(subtabs.value.right), [
+            "CBOE OVERVIEW", "MORNINGSTAR GEX", "SETTINGS", "NOTES",
         ])
+        toggle = next(
+            node for node in ast.walk(render)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == "show_etrade_overview"
+                    for target in node.targets)
+        )
+        self.assertIs(ast.literal_eval(toggle.value), False)
+        self.assertIn('if show_etrade_overview:', source)
+        self.assertIn('with tabs["E*TRADE OVERVIEW"]:', source)
         render_calls = {
             node.func.id for node in ast.walk(render)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
