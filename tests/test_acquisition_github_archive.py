@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 import json
@@ -17,7 +19,7 @@ from streamlit.runtime.secrets import AttrDict
 from src.acquisition_history_github import (
     ArchiveConfig, ArchiveError, GitHubAcquisitionArchive, _Conflict,
 )
-from src.acquisition_ui import _merge, _sync_history
+from src.acquisition_ui import _merge, _sync_history, _github_archive_url, _ACQ_COPY_JS
 
 
 class MemoryGitHub(GitHubAcquisitionArchive):
@@ -192,6 +194,8 @@ class GitHubArchiveTests(unittest.TestCase):
             restored, err = _sync_history(client, "LOCK_CODE_HASH", accounts, now=self.now)
             self.assertFalse(err)
         self.assertEqual(len(client.calls), 2)
+        self.assertTrue(new_vault["archive_exists"][("LOCK_CODE_HASH", "RAJ")])
+        self.assertTrue(new_vault["archive_exists"][("LOCK_CODE_HASH", "AMEKA")])
         self.assertEqual(restored["RAJ"]["rows"], original["RAJ"]["rows"])
         self.assertEqual(restored["AMEKA"]["rows"], original["AMEKA"]["rows"])
 
@@ -226,6 +230,54 @@ class GitHubArchiveTests(unittest.TestCase):
             self.archive.save("RAJ", self.snapshot([trade(2, "LMT")]), _merge)
         self.assertEqual(self.archive.store["puts"], old)
 
+    def test_verified_github_link_targets_only_selected_encrypted_account_file(self):
+        raj = _github_archive_url(self.archive, "RAJ_ACCOUNT")
+        other = _github_archive_url(self.archive, "AMEKA_ACCOUNT")
+        self.assertTrue(raj.startswith(
+            "https://github.com/G-enterpriseGroup/Screeners/blob/"
+            "gex-bridge-data/bridge/acquisition/v1/"
+        ))
+        self.assertTrue(raj.endswith(".txt"))
+        self.assertNotEqual(raj, other)
+        self.assertNotIn("RAJ_ACCOUNT", raj)
+        self.assertNotIn("AMEKA_ACCOUNT", other)
+        self.assertNotIn("github.com/G-enterpriseGroup/Screeners/tree/", raj)
+
+    def test_copy_pine_js_copies_exact_multiline_input_in_browser(self):
+        if shutil.which("node") is None:
+            self.skipTest("Node.js required for the browser copy-button test.")
+        # The component takes read-only data, not interpolated HTML or JS.
+        self.assertNotIn("innerHTML", _ACQ_COPY_JS)
+        source = _ACQ_COPY_JS.replace(
+            "export default function(component)", "const render = function(component)", 1
+        )
+        script = source + """
+const pine = "LMT 02.28.2025 502.21 20 B\\\\nMSFT 10.14.2026 545.145 8 B";
+let copied;
+Object.defineProperty(globalThis, "navigator", {
+    configurable: true, value: {clipboard: {writeText: async text => { copied = text; }}},
+});
+const button = {
+    disabled: true, textContent: "COPY TEXT",
+    addEventListener(name, callback) { this.callback = callback; },
+    removeEventListener() {},
+};
+const cleanup = render({data: pine, parentElement: {querySelector: () => button}});
+if (button.disabled) throw new Error("Copy button unexpectedly disabled.");
+await button.callback();
+if (copied !== pine) throw new Error("Copied Pine text changed.");
+if (button.textContent !== "COPIED ✓") throw new Error("No success feedback.");
+cleanup();
+const blank = {disabled: false, addEventListener(){}, removeEventListener(){}};
+render({data:"", parentElement:{querySelector:()=>blank}});
+if (!blank.disabled) throw new Error("Blank Pine text must disable copy.");
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_archive_outage_preserves_worker_history_but_never_claims_save(self):
         vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
         self.archive.fail_writes = True
@@ -238,6 +290,7 @@ class GitHubArchiveTests(unittest.TestCase):
         self.assertEqual(len(snapshots["RAJ"]["rows"]), 1)
         self.assertIn("RAJ", errors)
         self.assertTrue(vault["archive_dirty"][("LOCK", "RAJ")])
+        self.assertFalse(vault.get("archive_exists", {}).get(("LOCK", "RAJ"), False))
         self.assertFalse(self.archive.store["files"])
 
 
