@@ -11,6 +11,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
+from streamlit.runtime.secrets import AttrDict
 
 from src.acquisition_history_github import (
     ArchiveConfig, ArchiveError, GitHubAcquisitionArchive, _Conflict,
@@ -83,6 +84,24 @@ class GitHubArchiveTests(unittest.TestCase):
         return {"rows": rows if rows is not None else [trade(1, "MSFT")],
                 "covered_from": "2024-10-27",
                 "covered_through": through, "synced_at": 1234567890.0}
+
+    def test_streamlit_toml_nested_attrdict_archive_key_and_bridge_token(self):
+        # A real Streamlit [acquisition] and [github] secrets section uses
+        # AttrDict (Mapping), not a built-in dict.
+        secrets = {
+            "acquisition": AttrDict({"archive_key": self.config.fernet_key}),
+            "github": AttrDict({"bridge_token": "GITHUB_WRITE_TOKEN"}),
+        }
+        with patch.dict("os.environ", {}, clear=True), patch("streamlit.secrets", secrets):
+            selected = ArchiveConfig.from_runtime()
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.fernet_key, self.config.fernet_key)
+        self.assertEqual(selected.token, "GITHUB_WRITE_TOKEN")
+
+    def test_missing_github_write_token_disables_archive_without_exposing_key(self):
+        secrets = {"acquisition": AttrDict({"archive_key": self.config.fernet_key})}
+        with patch.dict("os.environ", {}, clear=True), patch("streamlit.secrets", secrets):
+            self.assertIsNone(ArchiveConfig.from_runtime())
 
     def test_encrypted_account_isolation_and_no_plaintext(self):
         a = self.archive.save("PRIVATE_ACCOUNT_RAJ", self.snapshot(), _merge)
