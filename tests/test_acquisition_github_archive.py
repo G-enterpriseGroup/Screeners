@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
+from pathlib import Path
 import json
 import threading
 import unittest
@@ -102,6 +103,61 @@ class GitHubArchiveTests(unittest.TestCase):
         secrets = {"acquisition": AttrDict({"archive_key": self.config.fernet_key})}
         with patch.dict("os.environ", {}, clear=True), patch("streamlit.secrets", secrets):
             self.assertIsNone(ArchiveConfig.from_runtime())
+
+    def test_archive_failure_identifies_invalid_key_without_leaking_it(self):
+        corrupted = "not-a-fernet-key"
+        secrets = {
+            "acquisition": AttrDict({"archive_key": corrupted}),
+            "github": AttrDict({"bridge_token": "SENSITIVE_WRITE_TOKEN"}),
+        }
+        with patch.dict("os.environ", {}, clear=True), patch("streamlit.secrets", secrets):
+            with self.assertRaises(ArchiveError) as caught:
+                ArchiveConfig.from_runtime()
+        msg = str(caught.exception)
+        self.assertIn("ENCRYPTION KEY INVALID", msg)
+        self.assertNotIn(corrupted, msg)
+        self.assertNotIn("SENSITIVE_WRITE_TOKEN", msg)
+
+    def test_archive_failure_explains_missing_token_or_key_without_leaking_secrets(self):
+        scenarios = [
+            ({"acquisition": AttrDict({"archive_key": self.config.fernet_key})},
+             "GITHUB WRITE TOKEN MISSING"),
+            ({"github": AttrDict({"bridge_token": "SENSITIVE_WRITE_TOKEN"})},
+             "ENCRYPTION KEY MISSING"),
+        ]
+        for sections, expected in scenarios:
+            with self.subTest(expected=expected), patch.dict("os.environ", {}, clear=True), patch(
+                "streamlit.secrets", sections
+            ):
+                with self.assertRaises(ArchiveError) as caught:
+                    ArchiveConfig.from_runtime()
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn("SENSITIVE_WRITE_TOKEN", str(caught.exception))
+                self.assertNotIn(self.config.fernet_key, str(caught.exception))
+
+    def test_invalid_encryption_key_is_reported_not_mislabeled_broker_history(self):
+        secrets = {
+            "acquisition": AttrDict({"archive_key": "bad-key"}),
+            "github": AttrDict({"bridge_token": "PRIVATE_TOKEN"}),
+        }
+        client = Broker({"RAJ": [trade(1, "MSFT")]})
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        with patch.dict("os.environ", {}, clear=True), patch("streamlit.secrets", secrets), patch(
+            "src.acquisition_ui._history_vault", return_value=vault
+        ):
+            snapshots, errors = _sync_history(
+                client, "LOCK", [{"accountIdKey": "RAJ"}], now=self.now,
+            )
+        self.assertEqual(len(snapshots["RAJ"]["rows"]), 1)
+        self.assertIn("ENCRYPTION KEY INVALID", errors["archive"])
+        self.assertFalse(vault["archive_configured"])
+        self.assertNotIn("RAJ", errors)
+
+    def test_archive_warning_never_hides_global_config_error_or_shows_empty_sync(self):
+        source = (Path(__file__).resolve().parents[1] / "src/acquisition_ui.py").read_text()
+        self.assertIn('errors.get(', source)
+        self.assertIn('account_errors = [', source)
+        self.assertIn('if account_errors:', source)
 
     def test_encrypted_account_isolation_and_no_plaintext(self):
         a = self.archive.save("PRIVATE_ACCOUNT_RAJ", self.snapshot(), _merge)
