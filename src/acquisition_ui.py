@@ -23,7 +23,7 @@ import streamlit as st
 
 from src.etrade_client import normalize_position
 from src.performance_ui import _find, _instrument, _trade_record, _when
-from src.acquisition_history_github import ArchiveConfig, ArchiveError, GitHubAcquisitionArchive
+from src.acquisition_history_github import ArchiveConfig, ArchiveError, GitHubAcquisitionArchive, REPO, BRANCH
 
 
 _ET = ZoneInfo("America/New_York")
@@ -39,6 +39,65 @@ _CSS = """
 .st-key-acquisition_root [data-testid="stDataFrame"] {border:1px solid #5f431c}
 </style>
 """
+
+
+# ==============================
+# COPY TO CLIPBOARD (FRONTEND-ONLY; NO BROKER OR THIRD-PARTY REQUESTS)
+# ==============================
+
+# V2 components run in the same browser page, so copying affects the user's
+# clipboard rather than Streamlit Cloud's server clipboard. Broker output is
+# passed as component data, NEVER inserted into executable JavaScript/HTML.
+_ACQ_COPY_HTML = '<button type="button" class="acq-copy" aria-label="Copy Pine Script text">COPY TEXT</button>'
+_ACQ_COPY_CSS = """
+.acq-copy {
+    width: 100%; height: 38px; padding: 0 10px; margin: 0;
+    border: 1px solid #fb8b1e; border-radius: 2px;
+    background: #0867df; color: #fff;
+    font: 900 13px/1 "Courier New", monospace;
+    cursor: pointer; white-space: nowrap;
+}
+.acq-copy:disabled {opacity: .45; cursor: not-allowed}
+.acq-copy:focus-visible {outline: 2px solid #fb8b1e; outline-offset: 2px}
+"""
+_ACQ_COPY_JS = """
+export default function(component) {
+    const button = component.parentElement.querySelector('.acq-copy');
+    const value = String(component.data ?? '');
+    button.disabled = !value;
+    async function copy() {
+        if (!value) return;
+        let succeeded = false;
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+            await navigator.clipboard.writeText(value);
+            succeeded = true;
+        } catch (_) {
+            // Fallback for browsers without Clipboard API permission.
+            const input = document.createElement('textarea');
+            input.value = value;
+            input.readOnly = true;
+            input.style.cssText = 'position:fixed;left:-99999px;top:0';
+            document.body.appendChild(input);
+            input.select();
+            try { succeeded = document.execCommand('copy'); } catch (_) {}
+            input.remove();
+        }
+        button.textContent = succeeded ? 'COPIED ✓' : 'COPY FAILED';
+    }
+    button.addEventListener('click', copy);
+    return () => button.removeEventListener('click', copy);
+}
+"""
+_acq_copy = st.components.v2.component(
+    "acquisition_copy_pine", html=_ACQ_COPY_HTML,
+    css=_ACQ_COPY_CSS, js=_ACQ_COPY_JS,
+)
+
+
+def _github_archive_url(archive: GitHubAcquisitionArchive, account_key: str) -> str:
+    """Open the actual encrypted account-specific TXT, not the general repo."""
+    return f"https://github.com/{REPO}/blob/{BRANCH}/{archive.path(account_key)}"
 
 
 # ==============================
@@ -128,6 +187,7 @@ def _sync_history(
                     try:
                         remote = archive.read(key)
                         if remote is not None:
+                            vault.setdefault("archive_exists", {})[scope] = True
                             recovered = _restore_archive(remote)
                             if saved is not None:
                                 recovered["rows"] = _merge(recovered["rows"], saved["rows"])
@@ -136,7 +196,9 @@ def _sync_history(
                                 recovered["synced_at"] = max(recovered["synced_at"], saved["synced_at"])
                             saved = recovered
                             vault["accounts"][scope] = saved
-                        elif saved is not None:
+                        else:
+                            vault.setdefault("archive_exists", {})[scope] = False
+                        if remote is None and saved is not None:
                             # Archive was newly enabled on an existing worker:
                             # seed the saved in-memory ledger even without fresh trades.
                             vault.setdefault("archive_dirty", {})[scope] = True
@@ -184,6 +246,7 @@ def _sync_history(
                     vault["accounts"][scope] = saved
                     vault["archive_dirty"][scope] = False
                     vault.setdefault("archive_verified_at", {})[scope] = time.time()
+                    vault.setdefault("archive_exists", {})[scope] = True
                     vault["archive_retry_at"].pop(scope, None)
                 except ArchiveError:
                     errors[key] = "GITHUB BACKUP FAILED — in-memory history retained; retry later."
@@ -566,14 +629,34 @@ def render_acquisition(
             "E*TRADE LOT = broker-reported surviving lot where older history is missing "
             "(specific-lot selection may differ from FIFO). Closed sales are omitted."
         )
-        st.text_area(
+        visible_text = st.text_area(
             "PINE SCRIPT TEXT", value=text,
             height=min(360, max(88, 22 * max(1, len(valid)))),
             key=f"acquisition_export_{chosen}_{hashlib.sha256(text.encode()).hexdigest()[:12]}",
             label_visibility="collapsed",
         )
-        st.download_button("DOWNLOAD .TXT", text or "", file_name="acquisition_open_fifo.txt",
-                           mime="text/plain", disabled=not bool(text), key="acquisition_download")
+        download_col, copy_col, archive_col, _ = st.columns(
+            [1.15, 1.15, 2.2, 5.5], gap="small", vertical_alignment="center",
+        )
+        with download_col:
+            st.download_button("DOWNLOAD .TXT", text or "", file_name="acquisition_open_fifo.txt",
+                               mime="text/plain", disabled=not bool(text), key="acquisition_download")
+        with copy_col:
+            _acq_copy(data=visible_text, key="acquisition_copy_pine_button")
+        with archive_col:
+            archived = vault.get("archive_exists", {}).get((str(vault_key), str(chosen)), False)
+            if archived and vault.get("archive_configured"):
+                st.link_button(
+                    "VIEW GITHUB ARCHIVE", _github_archive_url(_archive_client(), chosen),
+                    help="Opens this account's encrypted TXT backup on the GitHub data branch, not readable trading history.",
+                    width="stretch",
+                )
+            else:
+                st.button(
+                    "VIEW GITHUB ARCHIVE", disabled=True, key="acquisition_archive_unavailable",
+                    help="Available after this account's encrypted history has been verified on GitHub.",
+                    width="stretch",
+                )
 
 
 __all__ = ["render_acquisition", "_fifo_equity", "_reconcile", "_pine_rows", "_sync_history", "_recover_broker_lots"]
