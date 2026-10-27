@@ -16,6 +16,9 @@ import hashlib
 import hmac
 import json
 import math
+import os
+from collections.abc import Mapping
+import binascii
 import time
 import urllib.error
 import urllib.parse
@@ -85,7 +88,15 @@ class PrivateTradeBlotter:
         if repo != PRIVATE_REPO:
             raise ArchiveError("Readable blotter target is not the approved private repository.")
         self.repo = repo
-        self.token = config.token
+        # Fine-grained PAT may be scoped to the private Portfolio repository,
+        # independently from the existing public Screeners/GEX GitHub PAT.
+        try:
+            import streamlit as st
+            section = st.secrets.get("acquisition", {})
+            dedicated = section.get("blotter_token", "") if isinstance(section, Mapping) else ""
+        except Exception:
+            dedicated = ""
+        self.token = str(os.environ.get("ACQUISITION_BLOTTER_TOKEN") or dedicated or config.token).strip()
         self._secret = base64.urlsafe_b64decode(config.fernet_key)
 
     def _stem(self, account_key: str) -> str:
@@ -157,7 +168,7 @@ class PrivateTradeBlotter:
         try:
             encoded = result["content"].replace("\n", "")
             raw = base64.b64decode(encoded, validate=True).decode("utf-8")
-        except (ValueError, UnicodeError) as exc:
+        except (ValueError, UnicodeError, binascii.Error) as exc:
             raise ArchiveError("GitHub blotter content is corrupted; refusing overwrite.") from exc
         return str(result.get("sha") or ""), raw
 
