@@ -124,9 +124,14 @@ class PrivateTradeBlotter:
             hashlib.sha256,
         ).hexdigest()
 
-    def paths(self, account_key: str) -> tuple[str, str]:
+    def _legacy_paths(self, account_key: str) -> tuple[str, str]:
         stem = self._stem(account_key)
         return PREFIX + stem + ".json", PREFIX + stem + ".txt"
+
+    def paths(self, account_key: str) -> tuple[str, str]:
+        # Account-scoped folders; preserve the stable keyed hash across syncs.
+        folder = PREFIX + "accounts/" + self._stem(account_key) + "/"
+        return folder + "history.json", folder + "trades.txt"
 
     def page_url(self, account_key: str) -> str:
         _, txt = self.paths(account_key)
@@ -284,6 +289,10 @@ class PrivateTradeBlotter:
         history_path, _ = self.paths(account)
         _, snapshot = self._read_history(self._request(history_path), account)
         if snapshot is None:
+            # Pre-folder archives remain readable after a restart/redeploy.
+            legacy_path, _ = self._legacy_paths(account)
+            _, snapshot = self._read_history(self._request(legacy_path), account)
+        if snapshot is None:
             return None
         return {
             "rows": list(snapshot["rows"]),
@@ -332,6 +341,10 @@ class PrivateTradeBlotter:
         json_path, text_path = self.paths(account)
         for attempt in range(4):
             sha, previous = self._read_history(self._request(json_path), account)
+            if previous is None:
+                # Never bootstrap a shorter history over a legacy ledger.
+                old_json, _ = self._legacy_paths(account)
+                _, previous = self._read_history(self._request(old_json), account)
             joined = {
                 "version": 1, "account": account,
                 "rows": merge((previous or {}).get("rows", []), snapshot["rows"]),
