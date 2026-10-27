@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import html
 import json
 import math
 import threading
@@ -38,6 +39,8 @@ _CSS = """
 .st-key-acquisition_root .acq-section {background:#fb8b1e;color:#000!important;font:900 .82rem/1.08 "Courier New",monospace;padding:.30rem .48rem;margin:0}
 .st-key-acquisition_root .acq-status {border:1px solid #5f431c;background:#080808;color:#b87621!important;font:800 .68rem/1.25 "Courier New",monospace;padding:.34rem .48rem;margin:0}
 .st-key-acquisition_root [data-testid="stDataFrame"] {border:1px solid #5f431c}
+.st-key-acquisition_root .acq-alert {background:#100b02;color:#fb8b1e!important;border:1px solid #8f5e20;font:800 .70rem/1.35 "Courier New",monospace;padding:.32rem .48rem;margin:0;overflow-wrap:anywhere}
+.st-key-acquisition_root .acq-alert strong {color:#ffa43c!important}
 /* Acquisition-only alignment: labels, account selector and action are content-sized. */
 .st-key-acquisition_root [data-testid="stHorizontalBlock"] {align-items:flex-end;gap:.55rem}
 .st-key-acquisition_root [data-testid="stSelectbox"] {margin:0!important}
@@ -544,11 +547,15 @@ def _account_label(account: dict[str, Any]) -> str:
 
 def _default_account(accounts: list[dict[str, Any]]) -> str:
     for account in accounts:
-        description = " ".join(str(account.get(field) or "") for field in ("accountName", "accountDesc")).lower()
-        if "raj" in description:
+        if str(account.get("accountId") or "").endswith("5474"):
             return str(account["accountIdKey"])
     for account in accounts:
-        if str(account.get("accountId") or "").endswith("5474"):
+        name = str(account.get("accountName") or "").strip().casefold()
+        if name == "raj singh" or name.startswith("raj singh "):
+            return str(account["accountIdKey"])
+    for account in accounts:
+        description = " ".join(str(account.get(field) or "") for field in ("accountName", "accountDesc")).casefold()
+        if "raj" in description:
             return str(account["accountIdKey"])
     return str(accounts[0]["accountIdKey"])
 
@@ -580,9 +587,10 @@ def render_acquisition(
         # Default each new Acquisition session to Raj while allowing the
         # user to switch accounts without resetting on normal Streamlit reruns.
         initial_key = "_acquisition_default_account_initialized"
-        if not st.session_state.get(initial_key):
+        account_scope = (str(vault_key), tuple(sorted(by_key)))
+        if st.session_state.get(initial_key) != account_scope:
             st.session_state[picker_key] = _default_account(accounts)
-            st.session_state[initial_key] = True
+            st.session_state[initial_key] = account_scope
         elif str(st.session_state.get(picker_key) or "") not in by_key:
             st.session_state[picker_key] = _default_account(accounts)
 
@@ -618,7 +626,11 @@ def render_acquisition(
             for key, message in errors.items() if key in by_key
         ]
         if errors.get("blotter"):
-            st.warning("PRIVATE GITHUB BLOTTER NOT UPDATED // " + errors["blotter"])
+            st.html(
+                '<div class="acq-alert" role="alert"><strong>PRIVATE GITHUB BLOTTER NOT UPDATED</strong> // '
+                + html.escape(errors["blotter"])
+                + ' // The encrypted archive is preserved separately.</div>'
+            )
         if account_errors:
             st.warning("HISTORY / ARCHIVE SYNC INCOMPLETE // " + "; ".join(account_errors))
         saved = snapshots.get(chosen)
