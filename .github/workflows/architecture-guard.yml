@@ -74,8 +74,8 @@ jobs:
 
       - name: Test Acquisition FIFO and incremental cache
         run: |
-          python -m py_compile src/acquisition_ui.py src/acquisition_history_github.py tests/test_acquisition.py tests/test_acquisition_github_archive.py streamlit_app.py src/tab_bar_v4.py
-          python -m unittest tests.test_acquisition tests.test_acquisition_github_archive
+          python -m py_compile src/acquisition_ui.py src/acquisition_history_github.py src/acquisition_private_blotter.py tests/test_acquisition.py tests/test_acquisition_github_archive.py tests/test_acquisition_private_blotter.py streamlit_app.py src/tab_bar_v4.py
+          python -m unittest tests.test_acquisition tests.test_acquisition_github_archive tests.test_acquisition_private_blotter
 
       - name: Test Protective Puts public fallback
         run: |
