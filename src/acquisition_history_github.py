@@ -11,6 +11,7 @@ Every payload, including account identity, remains inside Fernet ciphertext.
 from __future__ import annotations
 
 import base64
+import binascii
 from collections.abc import Mapping
 import hashlib
 import hmac
@@ -76,7 +77,7 @@ class ArchiveConfig:
             )
         try:
             Fernet(key.encode("ascii"))
-        except (ValueError, TypeError, UnicodeError) as exc:
+        except (ValueError, TypeError, UnicodeError, binascii.Error) as exc:
             raise ArchiveError(
                 "ENCRYPTION KEY INVALID // Replace [acquisition] archive_key with one "
                 "complete 44-character Fernet key generated on your Mac; keep it private."
