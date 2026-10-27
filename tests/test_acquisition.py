@@ -102,6 +102,29 @@ class AcquisitionTests(unittest.TestCase):
             {"accountName": "Raj", "accountIdKey": "Y", "accountId": "5474"},
         ]), "Y")
 
+    def test_raj_primary_account_selected_before_joint_mentions(self):
+        accounts = [
+            {"accountName": "Raj and Ameka (joint)", "accountIdKey": "JOINT", "accountId": "9999"},
+            {"accountName": "Ameka", "accountIdKey": "AMEKA", "accountId": "0057"},
+            {"accountName": "Raj Singh", "accountIdKey": "RAJ", "accountId": "5474"},
+        ]
+        self.assertEqual(_default_account(accounts), "RAJ")
+        self.assertEqual(_default_account(list(reversed(accounts))), "RAJ")
+        # A Raj-labeled account without a known suffix still wins over another.
+        self.assertEqual(_default_account(accounts[:2] + [
+            {"accountName": "Raj Singh", "accountIdKey": "RAJ2", "accountId": "1234"},
+        ]), "RAJ2")
+
+    def test_acquisition_theme_and_default_scope_are_feature_local(self):
+        source = (
+            Path(__file__).resolve().parents[1] / "src/acquisition_ui.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("st-key-acquisition_root .acq-alert", source)
+        self.assertIn("st-key-acquisition_account_controls", source)
+        self.assertIn('st.session_state["acquisition_account_scope"] = session_scope', source)
+        self.assertIn('html.escape(errors["blotter"])', source)
+        self.assertNotIn("st.button =", source)
+
     def test_msft_prior_oversell_does_not_hide_verified_open_eight_shares(self):
         rows = [
             transaction(1, "2025-01-01", "SELL", "MSFT", 40, 400),
