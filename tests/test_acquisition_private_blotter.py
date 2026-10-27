@@ -6,7 +6,7 @@ import json
 import threading
 import urllib.error
 from unittest.mock import MagicMock
-from datetime import datetime
+from datetime import date, datetime
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -89,6 +89,108 @@ class PrivateBlotterTests(unittest.TestCase):
             "LMT 10.11.2024 522.25 6 S\n"
             "MSFT 02.28.2025 310.333 8 B\n",
         )
+
+    def test_read_private_snapshot_preserves_full_historical_checkpoint(self):
+        self.repo.save("RAJ", self.snapshot(self.older), _merge, _equity_trade)
+        restored = self.repo.read_snapshot("RAJ")
+        self.assertEqual(restored["covered_from"], "2024-06-10")
+        self.assertEqual({x["transactionId"] for x in restored["rows"]}, {7, 8, 9, 10})
+        self.assertTrue(restored["rows"][0]["transactionDate"] < restored["rows"][-1]["transactionDate"])
+
+    def test_six_account_restart_resumes_from_saved_checkpoint_with_overlap(self):
+        accounts = [{"accountIdKey": k} for k in ("RAJ", "AMEKA", "BALJINDER", "PARMINDER", "BROKER5", "BROKER6")]
+        snapshots = {
+            key: {
+                "rows": [tx(100 + i, "2023-06-10", "BUY", "LMT", 1, 300)] if i < 4 else [],
+                "covered_from": "2023-06-10",
+                "covered_through": "2026-10-26",
+            } for i, key in enumerate(k["accountIdKey"] for k in accounts)
+        }
+        class Broker:
+            def __init__(self):
+                self.calls = []
+            def get_transactions(self, account, **kwargs):
+                self.calls.append((account, kwargs))
+                return [tx(900, "2026-10-27", "BUY", "MSFT", 1, 400)] if account == "RAJ" else []
+        class Encrypted:
+            def read(self, key):
+                return None
+            def save(self, key, snapshot, merge):
+                return snapshot
+        class Private:
+            def __init__(self):
+                self.reads = []
+                self.writes = []
+                self.preflights = 0
+            def _verify_private(self):
+                self.preflights += 1
+            def read_snapshot(self, account, *, preverified=False):
+                self.reads.append((account, preverified))
+                return snapshots[account]
+            def save(self, account, snapshot, merge, parse):
+                self.writes.append((account, snapshot))
+                return "https://github.com/private/" + account
+        private = Private()
+        broker = Broker()
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        with patch("src.acquisition_ui._history_vault", return_value=vault), patch(
+            "src.acquisition_ui._archive_client", return_value=Encrypted()
+        ), patch("src.acquisition_ui.ArchiveConfig.from_runtime", return_value=self.config), patch(
+            "src.acquisition_ui.PrivateTradeBlotter", return_value=private
+        ):
+            restored, errors = _sync_history(
+                broker, "ACCESS_SCOPE", accounts,
+                now=datetime(2026, 10, 27, tzinfo=ET),
+            )
+            self.assertFalse(errors)
+            self.assertEqual(len(broker.calls), 6)
+            self.assertEqual(len(private.reads), 6)
+            self.assertTrue(all(pre for _, pre in private.reads))
+            self.assertEqual(private.preflights, 1)
+            self.assertEqual(len(private.writes), 6)
+            self.assertEqual(len(restored["RAJ"]["rows"]), 2)
+            self.assertEqual(restored["RAJ"]["covered_from"], date(2023, 6, 10))
+            self.assertEqual(restored["RAJ"]["covered_through"], date(2026, 10, 27))
+            self.assertEqual(len(restored["BROKER5"]["rows"]), 0)
+            self.assertTrue(all(
+                call["start_date"] == date(2026, 10, 19)
+                for _, call in broker.calls
+            ))
+            _sync_history(broker, "ACCESS_SCOPE", accounts,
+                          now=datetime(2026, 10, 27, tzinfo=ET))
+            self.assertEqual(len(broker.calls), 6)
+            self.assertEqual(len(private.reads), 6)
+
+    def test_private_history_read_failure_never_full_imports_or_overwrites(self):
+        class Broker:
+            def __init__(self): self.calls = []
+            def get_transactions(self, account, **kwargs):
+                self.calls.append(account)
+                return [tx(901, "2026-10-27", "BUY", "MSFT", 1, 300)]
+        class Encrypted:
+            def read(self, account): return None
+            def save(self, account, snapshot, merge):
+                raise AssertionError("No encrypted overwrite permitted")
+        class Private:
+            def _verify_private(self): pass
+            def read_snapshot(self, account, *, preverified=False):
+                raise ArchiveError("READ FAILED")
+            def save(self, *args, **kwargs):
+                raise AssertionError("No private overwrite permitted")
+        broker = Broker()
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        with patch("src.acquisition_ui._history_vault", return_value=vault), patch(
+            "src.acquisition_ui._archive_client", return_value=Encrypted()
+        ), patch("src.acquisition_ui.ArchiveConfig.from_runtime", return_value=self.config), patch(
+            "src.acquisition_ui.PrivateTradeBlotter", return_value=Private()
+        ):
+            result, errors = _sync_history(
+                broker, "ACCESS_SCOPE", [{"accountIdKey":"RAJ"}],
+                now=datetime(2026, 10, 27, tzinfo=ET),
+            )
+        self.assertFalse(result)
+        self.assertFalse(broker.calls)
+        self.assertIn("RESTORE FAILED", errors["RAJ"])
 
     def test_private_repo_has_complete_original_history_and_readable_txt(self):
         link = self.repo.save("RAJ", self.snapshot(self.older), _merge, _equity_trade)
