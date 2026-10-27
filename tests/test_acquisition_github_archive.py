@@ -102,7 +102,10 @@ class GitHubArchiveTests(unittest.TestCase):
     def test_missing_github_write_token_disables_archive_without_exposing_key(self):
         secrets = {"acquisition": AttrDict({"archive_key": self.config.fernet_key})}
         with patch.dict("os.environ", {}, clear=True), patch("streamlit.secrets", secrets):
-            self.assertIsNone(ArchiveConfig.from_runtime())
+            with self.assertRaises(ArchiveError) as caught:
+                ArchiveConfig.from_runtime()
+        self.assertIn("GITHUB WRITE TOKEN MISSING", str(caught.exception))
+        self.assertNotIn(self.config.fernet_key, str(caught.exception))
 
     def test_archive_failure_identifies_invalid_key_without_leaking_it(self):
         corrupted = "not-a-fernet-key"
