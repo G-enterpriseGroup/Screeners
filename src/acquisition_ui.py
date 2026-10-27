@@ -171,7 +171,10 @@ def _sync_history(
     except ArchiveError as exc:
         archive = None
         errors["archive"] = str(exc)
-    private_blotter = PrivateTradeBlotter(ArchiveConfig.from_runtime()) if archive else None
+    # The private writer is optional and never blocks legacy encrypted restore.
+    # In fixture tests the archive client can be injected without secrets.
+    private_config = ArchiveConfig.from_runtime() if archive else None
+    private_blotter = PrivateTradeBlotter(private_config) if private_config else None
     with vault["lock"]:
         vault["archive_configured"] = archive is not None
         for account in accounts:
