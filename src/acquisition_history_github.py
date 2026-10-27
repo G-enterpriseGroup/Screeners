@@ -11,6 +11,7 @@ Every payload, including account identity, remains inside Fernet ciphertext.
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 import hashlib
 import hmac
 import json
@@ -52,7 +53,7 @@ class ArchiveConfig:
 
         def group_value(group: str, field: str) -> str:
             value = secrets.get(group, {})
-            return str(value.get(field, "") if isinstance(value, dict) else "").strip()
+            return str(value.get(field, "") if isinstance(value, Mapping) else "").strip()
 
         key = str(os.environ.get("ACQUISITION_ARCHIVE_KEY") or
                   secrets.get("ACQUISITION_ARCHIVE_KEY") or
