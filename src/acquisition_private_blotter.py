@@ -273,13 +273,14 @@ class PrivateTradeBlotter:
         except (ValueError, KeyError, TypeError) as exc:
             raise ArchiveError("Private GitHub history is invalid; refusing overwrite.") from exc
 
-    def read_snapshot(self, account: str) -> dict[str, Any] | None:
-        """Restore the authoritative saved transaction ledger before broker polling.
+    def read_snapshot(self, account: str, *, preverified: bool = False) -> dict[str, Any] | None:
+        """Restore persisted trades; block corruption or cross-account records.
 
-        This does not depend on the E*TRADE rolling API window. Reject invalid
-        account scopes/corruption, so a bad read can never authorize overwrite.
+        preverified=True is used only after the caller has authenticated and
+        confirmed PRIVATE repository visibility for this account batch.
         """
-        self._verify_private()
+        if not preverified:
+            self._verify_private()
         history_path, _ = self.paths(account)
         _, snapshot = self._read_history(self._request(history_path), account)
         if snapshot is None:
