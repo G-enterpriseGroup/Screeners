@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history, _recover_broker_lots, _broker_lot_rows
+from src.acquisition_ui import _default_account, _fifo_equity, _merge, _pine_rows, _reconcile, _sync_history, _recover_broker_lots, _broker_lot_rows, maybe_auto_sync_acquisition_accounts
 from src.tab_bar_v4 import DEFAULT_TAB_ORDER, _clean_order
 from src.etrade_client import ETradeClient, ETradeError
 
@@ -95,6 +95,31 @@ class AcquisitionTests(unittest.TestCase):
             after, errors = _sync_history(fake, "SECURE", accounts, now=now, force=True)
             self.assertIn("RAJ", errors)
             self.assertEqual(after["RAJ"]["covered_through"], prev)
+
+    def test_auto_account_discovery_creates_new_account_without_repeated_fetch(self):
+        accounts = [{"accountIdKey": "RAJ", "accountName": "Raj Singh", "accountId": "5474"}]
+        client = FakeClient({"RAJ": []})
+        calls = []
+        def listing(force_refresh=False):
+            calls.append(force_refresh)
+            return list(accounts)
+        client.list_accounts = listing
+        now = 1793120000
+        vault = {"lock": __import__("threading").RLock(), "accounts": {}}
+        with patch("src.acquisition_ui.st.session_state", {}), patch(
+            "src.acquisition_ui.time.time", return_value=now
+        ), patch("src.acquisition_ui._history_vault", return_value=vault):
+            maybe_auto_sync_acquisition_accounts(client, "ACCESS", "OAUTH1")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(client.calls), 1)
+            maybe_auto_sync_acquisition_accounts(client, "ACCESS", "OAUTH1")
+            self.assertEqual(len(calls), 1)
+            accounts.append({"accountIdKey": "NEW", "accountName": "New Client", "accountId": "1234"})
+            client.batches["NEW"] = []
+            with patch("src.acquisition_ui.time.time", return_value=now + 901):
+                maybe_auto_sync_acquisition_accounts(client, "ACCESS", "OAUTH1")
+            self.assertEqual(len(calls), 2)
+            self.assertEqual({c[0] for c in client.calls}, {"RAJ", "NEW"})
 
     def test_default_raj_over_other_accounts(self):
         self.assertEqual(_default_account([

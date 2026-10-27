@@ -159,6 +159,13 @@ def _merge(old: list[dict[str, Any]], recent: list[dict[str, Any]]) -> list[dict
     return sorted(rows.values(), key=lambda tx: (_when(tx) or datetime.min.replace(tzinfo=_ET), _identity(tx)))
 
 
+def _readable_account_identity(account: dict[str, Any]) -> tuple[str, str]:
+    name = str(account.get("accountName") or account.get("accountDesc") or
+               account.get("accountType") or "E*TRADE Account").strip()
+    number = str(account.get("accountId") or "")
+    return name or "E*TRADE Account", "".join(c for c in number if c.isdigit())[-4:]
+
+
 def _sync_history(
     client: Any,
     vault_key: str,
@@ -316,14 +323,20 @@ def _sync_history(
             if saved and private_blotter is not None and private_ready:
                 # Private plaintext historical blotter, isolated from public
                 # code repo. Skip repeat GitHub requests for unchanged history.
-                content = json.dumps(saved["rows"], sort_keys=True, default=str)
+                name, last_four = _readable_account_identity(account)
+                content = json.dumps(
+                    {"rows": saved["rows"], "name": name, "last_four": last_four},
+                    sort_keys=True, default=str,
+                )
                 digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 previous = vault.setdefault("blotter_digest", {}).get(scope)
                 retry_at = vault.setdefault("blotter_retry_at", {}).get(scope, 0)
                 if digest != previous and (force or time.time() >= retry_at):
                     try:
+                        readable_snapshot = _archive_snapshot(saved)
+                        readable_snapshot.update(account_name=name, account_last_four=last_four)
                         url = private_blotter.save(
-                            key, _archive_snapshot(saved), _merge, _equity_trade,
+                            key, readable_snapshot, _merge, _equity_trade,
                         )
                         vault["blotter_digest"][scope] = digest
                         vault.setdefault("blotter_url", {})[scope] = url
@@ -339,6 +352,47 @@ def _sync_history(
                     "synced_at": saved["synced_at"],
                 }
     return snapshots, errors
+
+# ==============================
+# AUTOMATIC ACCOUNT DISCOVERY (READ-ONLY)
+# ==============================
+
+def maybe_auto_sync_acquisition_accounts(client: Any, vault_key: str, connection_namespace: str) -> None:
+    """Scan live E*TRADE account inventory on login and every 15 minutes.
+
+    This runs in the existing zero-height app hook, not the OAuth UI.
+    _sync_history retains its separate 12-hour transaction throttle and
+    lossless, checkpoint-based archival logic.
+    """
+    if client is None or bool(getattr(client, "is_offline", False)) or not connection_namespace:
+        return
+    marker_key = "_acquisition_auto_account_sync"
+    current = time.time()
+    last = st.session_state.get(marker_key) or {}
+    if (last.get("namespace") == connection_namespace and
+            current - float(last.get("checked_at", 0)) < 15 * 60):
+        return
+    # A failing connection retries after five minutes, not every rerun.
+    st.session_state[marker_key] = {
+        "namespace": connection_namespace, "checked_at": current - 10 * 60,
+    }
+    try:
+        accounts = client.list_accounts(force_refresh=True)
+        if not isinstance(accounts, list):
+            return
+        accounts = [a for a in accounts if isinstance(a, dict) and a.get("accountIdKey")]
+        if not accounts:
+            return  # Never treat a failed/empty response as an account deletion.
+        st.session_state["etrade_accounts"] = accounts
+        _, errors = _sync_history(client, vault_key, accounts)
+        st.session_state[marker_key] = {
+            "namespace": connection_namespace,
+            "checked_at": current if not errors else current - 10 * 60,
+        }
+    except Exception:
+        # Account detection must not block the rest of the terminal.
+        return
+
 
 # ==============================
 # EQUITY TRADE NORMALIZATION / FIFO

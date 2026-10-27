@@ -17,6 +17,8 @@ import hmac
 import json
 import math
 import os
+import re
+import unicodedata
 from collections.abc import Mapping
 import binascii
 import time
@@ -133,9 +135,23 @@ class PrivateTradeBlotter:
         folder = PREFIX + "accounts/" + self._stem(account_key) + "/"
         return folder + "history.json", folder + "trades.txt"
 
-    def page_url(self, account_key: str) -> str:
-        _, txt = self.paths(account_key)
-        return f"https://github.com/{self.repo}/blob/{BRANCH}/{txt}"
+    def named_paths(self, account_key: str, account_name: str, last_four: str = "") -> tuple[str, str]:
+        """Human-readable private mirrors; keyed primary history never moves."""
+        clean = unicodedata.normalize("NFKC", str(account_name or "E*TRADE Account"))
+        clean = re.sub(r"[^\w .&()'-]+", "-", clean, flags=re.UNICODE)
+        clean = re.sub(r"\s+", " ", clean).strip(" .-_")
+        clean = clean[:64].rstrip(" .-_") or "E*TRADE Account"
+        suffix = re.sub(r"\D", "", str(last_four or ""))[-4:]
+        label = clean + (f" - {suffix}" if suffix else "")
+        # Suffix avoids collisions between equal names, joint accounts and
+        # changed broker nicknames; it never exposes the full broker key.
+        folder = PREFIX + "by-account/" + label + " -- " + self._stem(account_key)[:16] + "/"
+        return folder + "history.json", folder + "trades.txt"
+
+    def page_url(self, account_key: str, account_name: str = "", last_four: str = "") -> str:
+        _, txt = (self.named_paths(account_key, account_name, last_four) if account_name
+                  else self.paths(account_key))
+        return f"https://github.com/{self.repo}/blob/{BRANCH}/{urllib.parse.quote(txt, safe='/')}"
 
     def _request(self, path: str, *, payload: dict[str, Any] | None = None,
                  ref: str = BRANCH) -> dict[str, Any] | None:
@@ -379,7 +395,18 @@ class PrivateTradeBlotter:
                         raise ArchiveError("Concurrent GitHub history updates conflicted.")
                     time.sleep((attempt + 1) * .2)
                     continue
-            self._write_text(text_path, share_blotter(joined["rows"], parse_trade))
+            readable = share_blotter(joined["rows"], parse_trade)
+            self._write_text(text_path, readable)
+            name = str(snapshot.get("account_name") or "").strip()
+            if name:
+                # Only mirror the verified canonical ledger. Named folders are
+                # navigable copies; never restore from a nickname-based path.
+                named_json, named_txt = self.named_paths(
+                    account, name, str(snapshot.get("account_last_four") or ""),
+                )
+                self._write_text(named_json, canonical)
+                self._write_text(named_txt, readable)
+                return self.page_url(account, name, str(snapshot.get("account_last_four") or ""))
             return self.page_url(account)
         raise ArchiveError("Private GitHub trade history was not saved.")
 

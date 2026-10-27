@@ -252,6 +252,46 @@ class PrivateBlotterTests(unittest.TestCase):
         self.assertEqual(raw["rows"][0]["transactionId"], 7)
         self.assertEqual(self.repo.store["write_count"], 2)
 
+    def test_named_folders_mirror_canonical_history_and_are_collision_safe(self):
+        snap = self.snapshot(self.older)
+        snap.update(account_name="Raj Singh", account_last_four="5474")
+        link = self.repo.save("RAJ", snap, _merge, _equity_trade)
+        main_json, main_txt = self.repo.paths("RAJ")
+        named_json, named_txt = self.repo.named_paths("RAJ", "Raj Singh", "5474")
+        self.assertIn("Raj%20Singh%20-%205474", link)
+        self.assertIn("/by-account/", named_json)
+        self.assertEqual(self.repo.text(main_json), self.repo.text(named_json))
+        self.assertEqual(self.repo.text(main_txt), self.repo.text(named_txt))
+        self.assertEqual(self.repo.store["write_count"], 4)
+        other_json, _ = self.repo.named_paths("OTHER", "Raj Singh", "5474")
+        self.assertNotEqual(named_json, other_json)
+
+    def test_name_change_keeps_stable_primary_and_original_named_backup(self):
+        snap = self.snapshot(self.older)
+        snap.update(account_name="Old Nickname", account_last_four="5474")
+        self.repo.save("RAJ", snap, _merge, _equity_trade)
+        old_json, _ = self.repo.named_paths("RAJ", "Old Nickname", "5474")
+        snap.update(account_name="New Nickname")
+        latest = self.repo.save("RAJ", snap, _merge, _equity_trade)
+        new_json, _ = self.repo.named_paths("RAJ", "New Nickname", "5474")
+        self.assertIn("New%20Nickname", latest)
+        self.assertEqual(self.repo.text(old_json), self.repo.text(new_json))
+        self.assertEqual(self.repo.text(self.repo.paths("RAJ")[0]), self.repo.text(new_json))
+        self.assertEqual(self.repo.read_snapshot("RAJ")["rows"], self.older)
+
+    def test_named_paths_strip_traversal_and_only_publish_to_private(self):
+        h, t = self.repo.named_paths("RAJ", "../../Trading/../", "005474")
+        self.assertTrue(h.startswith("acquisition/history/by-account/"))
+        self.assertNotIn("../", h)
+        self.assertNotIn("/../", h)
+        self.assertIn("5474", h)
+        self.assertEqual(h.rsplit("/", 1)[0], t.rsplit("/", 1)[0])
+        self.repo.private = False
+        with self.assertRaises(ArchiveError):
+            self.repo.save("RAJ", {**self.snapshot(self.older),
+                          "account_name": "Raj Singh"}, _merge, _equity_trade)
+        self.assertEqual(self.repo.store["write_count"], 0)
+
     def test_incremental_merge_preserves_older_buys_sells_and_distinct_ids(self):
         self.repo.save("RAJ", self.snapshot(self.older), _merge, _equity_trade)
         fresh = [
