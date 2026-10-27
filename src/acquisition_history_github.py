@@ -11,6 +11,7 @@ Every payload, including account identity, remains inside Fernet ciphertext.
 from __future__ import annotations
 
 import base64
+import binascii
 from collections.abc import Mapping
 import hashlib
 import hmac
@@ -63,12 +64,24 @@ class ArchiveConfig:
                     group_value("acquisition", "github_token") or
                     group_value("github", "bridge_token") or
                     os.environ.get("GEX_GITHUB_TOKEN") or "").strip()
-        if not key or not token:
+        if not key and not token:
             return None
+        if not key:
+            raise ArchiveError(
+                "ENCRYPTION KEY MISSING // Add [acquisition] archive_key in Streamlit Secrets."
+            )
+        if not token:
+            raise ArchiveError(
+                "GITHUB WRITE TOKEN MISSING // Configure [github] bridge_token or "
+                "[acquisition] github_token in Streamlit Secrets."
+            )
         try:
             Fernet(key.encode("ascii"))
-        except (ValueError, TypeError, UnicodeError) as exc:
-            raise ArchiveError("Acquisition archive encryption key is invalid.") from exc
+        except (ValueError, TypeError, UnicodeError, binascii.Error) as exc:
+            raise ArchiveError(
+                "ENCRYPTION KEY INVALID // Replace [acquisition] archive_key with one "
+                "complete 44-character Fernet key generated on your Mac; keep it private."
+            ) from exc
         return cls(token=token, fernet_key=key)
 
 
