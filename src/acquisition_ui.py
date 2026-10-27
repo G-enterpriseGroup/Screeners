@@ -38,6 +38,13 @@ _CSS = """
 .st-key-acquisition_root .acq-section {background:#fb8b1e;color:#000!important;font:900 .82rem/1.08 "Courier New",monospace;padding:.30rem .48rem;margin:0}
 .st-key-acquisition_root .acq-status {border:1px solid #5f431c;background:#080808;color:#b87621!important;font:800 .68rem/1.25 "Courier New",monospace;padding:.34rem .48rem;margin:0}
 .st-key-acquisition_root [data-testid="stDataFrame"] {border:1px solid #5f431c}
+/* Acquisition-only alignment: labels, account selector and action are content-sized. */
+.st-key-acquisition_root [data-testid="stHorizontalBlock"] {align-items:flex-end;gap:.55rem}
+.st-key-acquisition_root [data-testid="stSelectbox"] {margin:0!important}
+.st-key-acquisition_root [data-testid="stButton"] button {min-height:2.65rem;border-radius:0!important;font:800 .79rem "Courier New",monospace}
+.st-key-acquisition_root [data-testid="stAlert"] {border-radius:0!important}
+.st-key-acquisition_root [data-testid="stAlert"] p {font:800 .71rem/1.35 "Courier New",monospace}
+
 </style>
 """
 
@@ -570,7 +577,13 @@ def render_acquisition(
             return
         by_key = {str(row["accountIdKey"]): row for row in accounts}
         picker_key = "acquisition_account_key"
-        if str(st.session_state.get(picker_key) or "") not in by_key:
+        # Default each new Acquisition session to Raj while allowing the
+        # user to switch accounts without resetting on normal Streamlit reruns.
+        initial_key = "_acquisition_default_account_initialized"
+        if not st.session_state.get(initial_key):
+            st.session_state[picker_key] = _default_account(accounts)
+            st.session_state[initial_key] = True
+        elif str(st.session_state.get(picker_key) or "") not in by_key:
             st.session_state[picker_key] = _default_account(accounts)
 
         left, right = st.columns([5, 1.65], gap="small", vertical_alignment="bottom")
