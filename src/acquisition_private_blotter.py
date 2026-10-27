@@ -273,6 +273,25 @@ class PrivateTradeBlotter:
         except (ValueError, KeyError, TypeError) as exc:
             raise ArchiveError("Private GitHub history is invalid; refusing overwrite.") from exc
 
+    def read_snapshot(self, account: str, *, preverified: bool = False) -> dict[str, Any] | None:
+        """Restore persisted trades; block corruption or cross-account records.
+
+        preverified=True is used only after the caller has authenticated and
+        confirmed PRIVATE repository visibility for this account batch.
+        """
+        if not preverified:
+            self._verify_private()
+        history_path, _ = self.paths(account)
+        _, snapshot = self._read_history(self._request(history_path), account)
+        if snapshot is None:
+            return None
+        return {
+            "rows": list(snapshot["rows"]),
+            "covered_from": snapshot["covered_from"],
+            "covered_through": snapshot["covered_through"],
+            "synced_at": float(snapshot.get("synced_at") or 0),
+        }
+
     def _write_text(self, path: str, content: str) -> None:
         for attempt in range(3):
             existing_sha, previous = self._unpack(self._request(path))
@@ -320,6 +339,8 @@ class PrivateTradeBlotter:
                                     snapshot["covered_from"]),
                 "covered_through": max((previous or {}).get("covered_through", snapshot["covered_through"]),
                                       snapshot["covered_through"]),
+                "synced_at": max(float((previous or {}).get("synced_at") or 0),
+                                 float(snapshot.get("synced_at") or 0)),
             }
             canonical = _json(joined) + "\n"
             if previous is None or _json(previous) != _json(joined):
