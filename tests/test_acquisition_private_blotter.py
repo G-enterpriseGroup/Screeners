@@ -147,9 +147,6 @@ class PrivateBlotterTests(unittest.TestCase):
         self.assertEqual(self.repo.store["write_count"], 0)
 
     def test_private_repository_metadata_404_has_clear_scope_diagnostic(self):
-        original = self.repo._request
-        def denied(*args, **kwargs):
-            return original(*args, **kwargs)
         # Directly exercise HTTP translation, without any external request.
         instance = PrivateTradeBlotter(self.config)
         def blocked(req, timeout):
