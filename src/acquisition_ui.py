@@ -24,6 +24,7 @@ import streamlit as st
 from src.etrade_client import normalize_position
 from src.performance_ui import _find, _instrument, _trade_record, _when
 from src.acquisition_history_github import ArchiveConfig, ArchiveError, GitHubAcquisitionArchive, REPO, BRANCH
+from src.acquisition_private_blotter import PrivateTradeBlotter
 
 
 _ET = ZoneInfo("America/New_York")
@@ -170,6 +171,7 @@ def _sync_history(
     except ArchiveError as exc:
         archive = None
         errors["archive"] = str(exc)
+    private_blotter = PrivateTradeBlotter(ArchiveConfig.from_runtime()) if archive else None
     with vault["lock"]:
         vault["archive_configured"] = archive is not None
         for account in accounts:
@@ -251,6 +253,24 @@ def _sync_history(
                 except ArchiveError:
                     errors[key] = "GITHUB BACKUP FAILED — in-memory history retained; retry later."
                     vault["archive_retry_at"][scope] = time.time() + 300
+            if saved and private_blotter is not None:
+                # Private plaintext historical blotter, isolated from public
+                # code repo. Skip repeat GitHub requests for unchanged history.
+                content = json.dumps(saved["rows"], sort_keys=True, default=str)
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                previous = vault.setdefault("blotter_digest", {}).get(scope)
+                retry_at = vault.setdefault("blotter_retry_at", {}).get(scope, 0)
+                if digest != previous and (force or time.time() >= retry_at):
+                    try:
+                        url = private_blotter.save(
+                            key, _archive_snapshot(saved), _merge, _equity_trade,
+                        )
+                        vault["blotter_digest"][scope] = digest
+                        vault.setdefault("blotter_url", {})[scope] = url
+                        vault["blotter_retry_at"].pop(scope, None)
+                    except ArchiveError as exc:
+                        errors[key] = "PRIVATE GITHUB BLOTTER NOT UPDATED // " + str(exc)
+                        vault["blotter_retry_at"][scope] = time.time() + 300
             if saved:
                 snapshots[key] = {
                     "rows": list(saved["rows"]),
@@ -644,17 +664,20 @@ def render_acquisition(
         with copy_col:
             _acq_copy(data=visible_text, key="acquisition_copy_pine_button")
         with archive_col:
-            archived = vault.get("archive_exists", {}).get((str(vault_key), str(chosen)), False)
-            if archived and vault.get("archive_configured"):
+            # This link targets only the verified PRIVATE plaintext trade
+            # blotter; the legacy encrypted backup remains a recovery fallback.
+            blotter_url = vault.get("blotter_url", {}).get((str(vault_key), str(chosen)))
+            if blotter_url:
                 st.link_button(
-                    "VIEW GITHUB ARCHIVE", _github_archive_url(_archive_client(), chosen),
-                    help="Opens this account's encrypted TXT backup on the GitHub data branch, not readable trading history.",
+                    "VIEW GITHUB ARCHIVE", blotter_url,
+                    help="Opens the full historical BUY/SELL share blotter in your private Portfolio GitHub repository.",
                     width="stretch",
                 )
             else:
                 st.button(
                     "VIEW GITHUB ARCHIVE", disabled=True, key="acquisition_archive_unavailable",
-                    help="Available after this account's encrypted history has been verified on GitHub.",
+                    help="Readable history available after a successful private GitHub archival sync; "
+                         "the existing encrypted recovery archive remains intact.",
                     width="stretch",
                 )
 
