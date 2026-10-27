@@ -194,6 +194,97 @@ class PrivateBlotterTests(unittest.TestCase):
         self.assertIn("Contents: Read and write", warning)
         self.assertNotIn(self.config.token, warning)
 
+    def test_private_auth_denial_probes_token_identity_without_exposing_secret(self):
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def read(self, _maximum=None):
+                return json.dumps(self.payload).encode("utf-8")
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "streamlit.secrets", {"acquisition": {"blotter_token": "PRIVATE_TOKEN_FOR_TEST"}}
+        ):
+            writer = PrivateTradeBlotter(self.config)
+        def denied(_path, **_kwargs):
+            raise ArchiveError("STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO (HTTP 404)")
+        with patch.object(writer, "_request", side_effect=denied), patch(
+            "urllib.request.urlopen", return_value=Response({"login": "G-enterpriseGroup"})
+        ):
+            with self.assertRaises(ArchiveError) as caught:
+                writer._verify_private()
+        detail = str(caught.exception)
+        self.assertIn("Token authenticates as @G-enterpriseGroup", detail)
+        self.assertIn("Selected repositories", detail)
+        self.assertNotIn("PRIVATE_TOKEN_FOR_TEST", detail)
+        self.assertNotIn(self.config.token, detail)
+
+    def test_wrong_github_account_is_identified_without_leaking_tokens(self):
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def read(self, _maximum=None):
+                return b'{"login":"other-github-user"}'
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "streamlit.secrets", {"acquisition": {"blotter_token": "PRIVATE_TOKEN_FOR_TEST"}}
+        ):
+            writer = PrivateTradeBlotter(self.config)
+        def denied(_path, **_kwargs):
+            raise ArchiveError("STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO (HTTP 404)")
+        with patch.object(writer, "_request", side_effect=denied), patch(
+            "urllib.request.urlopen", return_value=Response()
+        ):
+            with self.assertRaises(ArchiveError) as caught:
+                writer._verify_private()
+        msg = str(caught.exception)
+        self.assertIn("@other-github-user", msg)
+        self.assertIn("resource owner", msg)
+        self.assertNotIn("PRIVATE_TOKEN_FOR_TEST", msg)
+
+    def test_existing_archive_token_auto_fallback_only_if_private_is_verified(self):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "streamlit.secrets", {"acquisition": {"blotter_token": "PRIVATE_TOKEN_FOR_TEST"}}
+        ):
+            writer = PrivateTradeBlotter(self.config)
+        attempted = []
+        def private_metadata(path, **_kwargs):
+            attempted.append((path, writer.token))
+            if writer.token == "PRIVATE_TOKEN_FOR_TEST":
+                raise ArchiveError("STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO (HTTP 404)")
+            if writer.token == self.config.token:
+                return {"full_name": PRIVATE_REPO, "private": True, "archived": False}
+            raise AssertionError("unknown credential source")
+        with patch.object(writer, "_request", side_effect=private_metadata):
+            writer._verify_private()
+        self.assertEqual([source for _path, source in attempted],
+                         ["PRIVATE_TOKEN_FOR_TEST", self.config.token])
+        self.assertEqual(writer.token, self.config.token)
+        self.assertIn("verified private", writer.token_source)
+        self.assertNotIn("PRIVATE_TOKEN_FOR_TEST", writer.token_source)
+
+    def test_rejected_fallback_keeps_dedicated_token_and_blocks_plaintext(self):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "streamlit.secrets", {"acquisition": {"blotter_token": "PRIVATE_TOKEN_FOR_TEST"}}
+        ):
+            writer = PrivateTradeBlotter(self.config)
+        tried = []
+        def denied(path, **_kwargs):
+            tried.append(writer.token)
+            raise ArchiveError("STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO (HTTP 404)")
+        with patch.object(writer, "_request", side_effect=denied), patch.object(
+            writer, "_token_identity_diagnostic", return_value="TOKEN CHECK: repository not selected."
+        ):
+            with self.assertRaises(ArchiveError) as caught:
+                writer._verify_private()
+        self.assertEqual(tried, ["PRIVATE_TOKEN_FOR_TEST", self.config.token])
+        self.assertEqual(writer.token, "PRIVATE_TOKEN_FOR_TEST")
+        self.assertIn("repository not selected", str(caught.exception))
+        self.assertEqual(writer.token_source, "Streamlit [acquisition] blotter_token")
+
     def test_private_permission_failure_checked_once_for_all_accounts(self):
         class EncryptedArchive:
             def read(self, key):

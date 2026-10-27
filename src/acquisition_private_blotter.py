@@ -110,6 +110,9 @@ class PrivateTradeBlotter:
         else:
             self.token = config.token
             self.token_source = "fallback GitHub/GEX token"
+        # Existing encrypted-archive/GEX credential may independently have
+        # private Portfolio access even when the dedicated token does not.
+        self._fallback_token = config.token if config.token != self.token else ""
         self._secret = base64.urlsafe_b64decode(config.fernet_key)
 
     def _stem(self, account_key: str) -> str:
@@ -171,8 +174,65 @@ class PrivateTradeBlotter:
         except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
             raise ArchiveError("Private GitHub blotter could not be reached.") from exc
 
+    def _token_identity_diagnostic(self) -> str:
+        """Probe auth only after repo denial; never log or display credential data."""
+        headers = {
+            "Authorization": "Bearer " + self.token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "raj-terminal-private-trade-blotter",
+        }
+        request = urllib.request.Request("https://api.github.com/user", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                data = json.loads(response.read(32768).decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                return "TOKEN CHECK: GitHub rejected this token (401: expired, revoked or invalid)."
+            if exc.code == 403:
+                return "TOKEN CHECK: GitHub blocked identity verification (403)."
+            return f"TOKEN CHECK: GitHub identity endpoint returned HTTP {exc.code}."
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+            return "TOKEN CHECK: GitHub identity could not be verified."
+        login = str(data.get("login") or "") if isinstance(data, dict) else ""
+        if not login:
+            return "TOKEN CHECK: GitHub returned no authenticated user."
+        if login.casefold() != "g-enterprisegroup":
+            return (
+                f"TOKEN CHECK: Authenticated GitHub account is @{login}, not "
+                "@G-enterpriseGroup (owner of PRIVATE Portfolio). Review the "
+                "existing token's resource owner and selected repositories."
+            )
+        return (
+            "TOKEN CHECK: Token authenticates as @G-enterpriseGroup, but Portfolio "
+            "is not accessible through this credential. Edit the existing fine-grained "
+            "token's Selected repositories to include Portfolio, then set "
+            "Contents: Read and write. No encryption-key change is needed."
+        )
+
     def _verify_private(self) -> None:
-        response = self._request("")
+        try:
+            response = self._request("")
+        except ArchiveError as error:
+            # Only retry a known private-repository credential denial; never
+            # retry failures from unrelated GitHub transport/JSON operations.
+            if "STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO" not in str(error):
+                raise
+            if self._fallback_token:
+                selected, original_source = self.token, self.token_source
+                self.token = self._fallback_token
+                try:
+                    candidate = self._request("")
+                    if (isinstance(candidate, dict) and
+                            candidate.get("full_name") == self.repo and
+                            candidate.get("private") is True and
+                            candidate.get("archived") is not True):
+                        self.token_source = "existing GitHub encrypted-archive credential (verified private)"
+                        return
+                except ArchiveError:
+                    pass
+                self.token, self.token_source = selected, original_source
+            raise ArchiveError(str(error) + " // " + self._token_identity_diagnostic()) from error
         if (not isinstance(response, dict) or
                 response.get("full_name") != self.repo or
                 response.get("private") is not True or
