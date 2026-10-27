@@ -252,7 +252,7 @@ class GitHubArchiveTests(unittest.TestCase):
             "export default function(component)", "const render = function(component)", 1
         )
         script = source + """
-const pine = "LMT 02.28.2025 502.21 20 B\\\\nMSFT 10.14.2026 545.145 8 B";
+const pine = "LMT 02.28.2025 502.21 20 B\\nMSFT 10.14.2026 545.145 8 B";
 let copied;
 Object.defineProperty(globalThis, "navigator", {
     configurable: true, value: {clipboard: {writeText: async text => { copied = text; }}},
