@@ -701,11 +701,8 @@ ui._render_gex_exports(
         self.assertEqual(len(app.get("download_button")), 6)
         self.assertTrue(all(not widget.disabled for widget in app.get("download_button")))
 
-        source_without_results = source.replace(
-            'result = {\\n    "SPY": {', 'result = {\\n    "SPY": {'
-        )
         # Download controls must remain discoverable even before a successful run.
-        source_without_results = source_without_results.replace(
+        source_without_results = source.replace(
             'result_map=result, display_state=state,',
             'result_map={}, display_state=state,',
         )
