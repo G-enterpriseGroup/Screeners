@@ -4,7 +4,7 @@ OWNERSHIP / EDITING NOTES
 -------------------------
 EDIT THIS FILE FOR:
 - Vertical Options ticker/breakeven/cost scanner and full-year chain presentation;
-- automated spread selection, OptionStrat links, and optional order controls;
+- automated spread selection, OptionStrat / TradingView chart links, and optional order controls;
 - live option quote presentation and selected-spread LAST-based debit calculation;
 - multi-account E*TRADE preview + explicit live send workflow;
 - Vertical Options-only compact styling.
@@ -846,11 +846,38 @@ def _optionstrat_url(candidate: dict[str, Any]) -> str:
     return f"https://optionstrat.com/build/{strategy}/{url_quote(symbol, safe='')}/{url_quote(legs, safe='.,-')}"
 
 
+def _tradingview_spread_url(candidate: dict[str, Any]) -> str:
+    """Chart the exact long-minus-short OPRA premiums; not an expiration P&L diagram."""
+    symbol = str(candidate["symbol"]).strip().upper()
+    expiry = candidate["expiry"].strftime("%y%m%d")
+    option_type = "C" if candidate["call_put"] == "CALL" else "P"
+
+    def contract(strike: float, osi: str) -> str:
+        root = symbol
+        match = re.fullmatch(
+            r"([A-Z][A-Z0-9.\-]*?)(\d{6})([CP])(\d{1,8}(?:\.\d+)?)",
+            str(osi or "").upper().replace(" ", "").lstrip("."),
+        )
+        if match and match.group(2) == expiry and match.group(3) == option_type:
+            raw = match.group(4)
+            actual_strike = float(raw) / 1000 if len(raw) == 8 else float(raw)
+            if abs(actual_strike - float(strike)) < .0001:
+                root = match.group(1).rstrip("-") or symbol
+        strike_text = f"{float(strike):.8f}".rstrip("0").rstrip(".")
+        return f"OPRA:{root}{expiry}{option_type}{strike_text}"
+
+    # For either debit vertical, BUY - SELL shows the net premium.
+    spread = (contract(candidate["buy_strike"], candidate.get("buy_osi", ""))
+              + "-" + contract(candidate["sell_strike"], candidate.get("sell_osi", "")))
+    return "https://www.tradingview.com/chart/?symbol=" + url_quote(spread, safe="")
+
+
 def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str]) -> dict[str, Any]:
     return {
         "id": candidate["id"],
         "annual": candidate["id"] in annual_ids,
         "optionstrat_url": _optionstrat_url(candidate),
+        "tradingview_url": _tradingview_spread_url(candidate),
         "expiry_detail": _expiry_time_label(candidate["expiry"]),
         "values": [
             candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
@@ -1438,7 +1465,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 ('FILL = SMART FILL BASIS (SMART / MID / LAST*). '
                  if result.get("pricing_mode") == "SMART FILL" else
                  'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ') +
-                'CHECKING OR OPENING OPTIONSTRAT NEVER SENDS AN ORDER.'
+                'OS = OPTIONSTRAT PAYOFF; TV = LONG − SHORT PREMIUM CHART (NOT P&L). '
+                'OPENING EITHER LINK NEVER SENDS AN ORDER.'
             )
             if checked_ids:
                 checked_rows = [row for row in candidates if row["id"] in checked_ids]
@@ -1464,10 +1492,17 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         key=f"vo_multi_review_choice_{scope}",
                     )
                     chosen = by_id[selected_id]
-                st.link_button(
-                    "OPEN SELECTED SPREAD IN OPTIONSTRAT",
-                    _optionstrat_url(chosen), use_container_width=True,
-                )
+                os_col, tv_col = st.columns(2, gap="small")
+                with os_col:
+                    st.link_button(
+                        "OPEN SELECTED SPREAD IN OPTIONSTRAT",
+                        _optionstrat_url(chosen), use_container_width=True,
+                    )
+                with tv_col:
+                    st.link_button(
+                        "OPEN SPREAD CHART IN TRADINGVIEW",
+                        _tradingview_spread_url(chosen), use_container_width=True,
+                    )
                 with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
                     _render_selected_order(client, touch_session, chosen, result, broker_live)
                 if len(checked_rows) > 1:
