@@ -799,6 +799,66 @@ class VerticalOptionsTests(unittest.TestCase):
             "-.SPY270115P595,.SPY270115P600",
         )
 
+    def test_tradingview_spread_chart_uses_exact_buy_minus_sell_options(self):
+        from src.vertical_options_ui import _tradingview_spread_url, _spread_table_row
+        from urllib.parse import parse_qs, urlsplit
+
+        base = {"symbol": "SPY", "expiry": date(2027, 1, 15),
+                "buy_strike": 600, "sell_strike": 605}
+        call = _tradingview_spread_url(base | {"call_put": "CALL"})
+        put = _tradingview_spread_url(
+            base | {"call_put": "PUT", "buy_strike": 600, "sell_strike": 595}
+        )
+        self.assertEqual(urlsplit(call).scheme, "https")
+        self.assertEqual(urlsplit(call).hostname, "www.tradingview.com")
+        self.assertEqual(
+            parse_qs(urlsplit(call).query)["symbol"],
+            ["OPRA:SPY270115C600-OPRA:SPY270115C605"],
+        )
+        self.assertEqual(
+            parse_qs(urlsplit(put).query)["symbol"],
+            ["OPRA:SPY270115P600-OPRA:SPY270115P595"],
+        )
+        candidate = {
+            **base, "call_put": "CALL", "id": "example",
+            "buy_last": 6, "sell_last": 3, "cost": 300,
+            "breakeven": 603, "reward_risk": 0.667,
+            "max_profit": 200, "basis": "LAST",
+        }
+        rendered = _spread_table_row(candidate, set())
+        self.assertEqual(rendered["tradingview_url"], call)
+        self.assertIn("optionstrat.com", rendered["optionstrat_url"])
+        self.assertEqual(len(rendered["values"]), 12)
+
+    def test_tradingview_chart_honors_actual_osi_weekly_root(self):
+        from src.vertical_options_ui import _tradingview_spread_url
+        from urllib.parse import parse_qs, urlsplit
+
+        url = _tradingview_spread_url({
+            "symbol": "SPX", "expiry": date(2027, 1, 15), "call_put": "CALL",
+            "buy_strike": 6000, "sell_strike": 6005,
+            "buy_osi": "SPXW  270115C06000000",
+            "sell_osi": "SPXW  270115C06005000",
+        })
+        self.assertEqual(
+            parse_qs(urlsplit(url).query)["symbol"],
+            ["OPRA:SPXW270115C6000-OPRA:SPXW270115C6005"],
+        )
+
+    def test_tradingview_links_are_isolated_nontrading_actions(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "src" / "components" / "vo_spread_scroller_v1" / "index.html"
+                  ).read_text(encoding="utf-8")
+        ui = (Path(__file__).resolve().parents[1]
+              / "src" / "vertical_options_ui.py").read_text(encoding="utf-8")
+        self.assertIn('safeTradingViewUrl(row.tradingview_url)', source)
+        self.assertIn('safeOptionStratUrl(row.optionstrat_url)', source)
+        self.assertIn('url.hostname==="www.tradingview.com"', source)
+        self.assertIn('open.rel="noopener noreferrer"', source)
+        self.assertIn('["SELECT","OS / TV","TICKER"', source)
+        self.assertIn('st.columns(2, gap="small")', ui)
+        self.assertIn('OPEN SPREAD CHART IN TRADINGVIEW', ui)
+
     def test_three_scan_controls_accept_prices_and_reject_invalid_values(self):
         from src.vertical_options_ui import _entered_price
 
