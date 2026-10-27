@@ -122,22 +122,31 @@ def _sync_history(
             loaded = vault.setdefault("archive_loaded", set())
             eligible = archive is not None
             if archive is not None and scope not in loaded:
-                try:
-                    remote = archive.read(key)
-                    if remote is not None:
-                        recovered = _restore_archive(remote)
-                        if saved is not None:
-                            recovered["rows"] = _merge(recovered["rows"], saved["rows"])
-                            recovered["covered_from"] = min(recovered["covered_from"], saved["covered_from"])
-                            recovered["covered_through"] = max(recovered["covered_through"], saved["covered_through"])
-                            recovered["synced_at"] = max(recovered["synced_at"], saved["synced_at"])
-                        saved = recovered
-                        vault["accounts"][scope] = saved
-                    loaded.add(scope)
-                    vault.setdefault("archive_dirty", {}).setdefault(scope, False)
-                except (ArchiveError, ValueError) as exc:
-                    eligible = False
-                    errors[key] = "GITHUB RESTORE FAILED — history remains in memory; no remote overwrite."
+                if not force and time.time() < vault.setdefault("archive_retry_at", {}).get(scope, 0):
+                    eligible = False  # Rate-limit failed restore attempts.
+                else:
+                    try:
+                        remote = archive.read(key)
+                        if remote is not None:
+                            recovered = _restore_archive(remote)
+                            if saved is not None:
+                                recovered["rows"] = _merge(recovered["rows"], saved["rows"])
+                                recovered["covered_from"] = min(recovered["covered_from"], saved["covered_from"])
+                                recovered["covered_through"] = max(recovered["covered_through"], saved["covered_through"])
+                                recovered["synced_at"] = max(recovered["synced_at"], saved["synced_at"])
+                            saved = recovered
+                            vault["accounts"][scope] = saved
+                        elif saved is not None:
+                            # Archive was newly enabled on an existing worker:
+                            # seed the saved in-memory ledger even without fresh trades.
+                            vault.setdefault("archive_dirty", {})[scope] = True
+                        loaded.add(scope)
+                        vault.setdefault("archive_dirty", {}).setdefault(scope, False)
+                        vault.setdefault("archive_retry_at", {}).pop(scope, None)
+                    except (ArchiveError, ValueError):
+                        eligible = False
+                        vault.setdefault("archive_retry_at", {})[scope] = time.time() + 300
+                        errors[key] = "GITHUB RESTORE FAILED — history remains in memory; no remote overwrite."
             elif archive is None:
                 eligible = False
 
@@ -488,7 +497,7 @@ def render_acquisition(
         elif vault.get("archive_dirty", {}).get((str(vault_key), str(chosen)), False):
             st.warning("GITHUB ARCHIVE PENDING // local history is not yet durably backed up.")
         else:
-            st.caption("ENCRYPTED GITHUB ARCHIVE // RESTORED ACROSS REDEPLOYS // ACCOUNT-ISOLATED")
+            st.caption("ENCRYPTED GITHUB ARCHIVE ACTIVE // ACCOUNT-ISOLATED")
         if touch_session and client is not None and not bool(getattr(client, "is_offline", False)):
             touch_session()
         if errors:
