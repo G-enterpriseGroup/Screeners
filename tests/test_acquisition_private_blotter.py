@@ -161,6 +161,51 @@ class PrivateBlotterTests(unittest.TestCase):
             self.assertEqual(len(broker.calls), 6)
             self.assertEqual(len(private.reads), 6)
 
+    def test_latest_durable_archive_wins_same_id_correction_without_losing_old_ids(self):
+        class Encrypted:
+            def __init__(self, timestamp):
+                self.timestamp = timestamp
+            def read(self, key):
+                return {
+                    "rows": [tx(7, "2024-06-10", "BUY", "LMT", 10, 270)],
+                    "covered_from": "2024-06-10",
+                    "covered_through": "2026-10-27",
+                    "synced_at": self.timestamp,
+                }
+            def save(self, key, snapshot, merge):
+                return snapshot
+        class Private:
+            def _verify_private(self):
+                pass
+            def read_snapshot(self, key, *, preverified=False):
+                return {
+                    "rows": [tx(7, "2024-06-10", "BUY", "LMT", 10, 300),
+                             tx(8, "2024-06-11", "SELL", "LMT", 2, 320)],
+                    "covered_from": "2024-06-10",
+                    "covered_through": "2026-10-27",
+                    "synced_at": 2000,
+                }
+            def save(self, key, snapshot, merge, parse):
+                return "https://github.com/private"
+        for encrypted_ts, expected_cost in ((1000, 300), (3000, 270)):
+            with self.subTest(encrypted_ts=encrypted_ts):
+                vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+                with patch("src.acquisition_ui._history_vault", return_value=vault), patch(
+                    "src.acquisition_ui._archive_client", return_value=Encrypted(encrypted_ts)
+                ), patch("src.acquisition_ui.ArchiveConfig.from_runtime", return_value=self.config), patch(
+                    "src.acquisition_ui.PrivateTradeBlotter", return_value=Private()
+                ):
+                    result, errors = _sync_history(
+                        None, "SESSION", [{"accountIdKey": "RAJ"}],
+                        now=datetime(2026, 10, 27, tzinfo=ET),
+                    )
+                self.assertFalse(errors)
+                self.assertEqual(len(result["RAJ"]["rows"]), 2)
+                self.assertEqual(
+                    next(x for x in result["RAJ"]["rows"] if x["transactionId"] == 7)["brokerage"]["price"],
+                    expected_cost,
+                )
+
     def test_private_history_read_failure_never_full_imports_or_overwrites(self):
         class Broker:
             def __init__(self): self.calls = []
