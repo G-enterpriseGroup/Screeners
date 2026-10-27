@@ -102,6 +102,23 @@ class AcquisitionTests(unittest.TestCase):
             {"accountName": "Raj", "accountIdKey": "Y", "accountId": "5474"},
         ]), "Y")
 
+    def test_raj_individual_account_wins_over_joint_account_mentioning_raj(self):
+        accounts = [
+            {"accountName": "Raj + Ameka", "accountIdKey": "JOINT", "accountId": "9999"},
+            {"accountName": "Ameka", "accountIdKey": "AMEKA", "accountId": "0057"},
+            {"accountName": "Raj Singh", "accountIdKey": "RAJ", "accountId": "5474"},
+        ]
+        self.assertEqual(_default_account(accounts), "RAJ")
+        self.assertEqual(_default_account(list(reversed(accounts))), "RAJ")
+        accounts[-1]["accountId"] = "1234"
+        self.assertEqual(_default_account(accounts), "RAJ")
+
+    def test_private_auth_alert_theme_and_account_scope_are_local(self):
+        source = (Path(__file__).resolve().parents[1] / "src/acquisition_ui.py").read_text()
+        self.assertIn("st-key-acquisition_root .acq-alert", source)
+        self.assertIn("st.session_state[initial_key] = account_scope", source)
+        self.assertIn('html.escape(errors["blotter"])', source)
+
     def test_msft_prior_oversell_does_not_hide_verified_open_eight_shares(self):
         rows = [
             transaction(1, "2025-01-01", "SELL", "MSFT", 40, 400),
