@@ -202,6 +202,36 @@ def _sync_history(
                 continue
             scope = (str(vault_key), key)
             saved = vault["accounts"].get(scope)
+            private_ready = True
+            # Restore full saved private history BEFORE querying E*TRADE. This
+            # protects older-than-two-year executions if encrypted history
+            # or process memory is incomplete after a restart/redeploy.
+            private_loaded = vault.setdefault("private_loaded", set())
+            if private_blotter is not None and scope not in private_loaded:
+                try:
+                    historical = private_blotter.read_snapshot(key, preverified=True)
+                    if historical is not None:
+                        recovered = {
+                            "rows": list(historical["rows"]),
+                            "covered_from": date.fromisoformat(historical["covered_from"]),
+                            "covered_through": date.fromisoformat(historical["covered_through"]),
+                            "synced_at": 0.0,
+                        }
+                        if saved is not None:
+                            recovered["rows"] = _merge(recovered["rows"], saved["rows"])
+                            recovered["covered_from"] = min(recovered["covered_from"], saved["covered_from"])
+                            recovered["covered_through"] = max(recovered["covered_through"], saved["covered_through"])
+                            recovered["synced_at"] = float(saved["synced_at"])
+                        saved = recovered
+                        vault["accounts"][scope] = saved
+                        if archive is not None:
+                            vault.setdefault("archive_dirty", {})[scope] = True
+                    private_loaded.add(scope)
+                except (ArchiveError, ValueError, KeyError, TypeError):
+                    # Never upload a reduced two-year ledger when the private
+                    # lifetime history was unreadable: preserve remote intact.
+                    private_ready = False
+                    errors[key] = "PRIVATE GITHUB HISTORY RESTORE FAILED — archived trades untouched."
             loaded = vault.setdefault("archive_loaded", set())
             eligible = archive is not None
             if archive is not None and scope not in loaded:
@@ -237,13 +267,15 @@ def _sync_history(
                 eligible = False
 
             live = client is not None and not bool(getattr(client, "is_offline", False))
-            needs_sync = live and (
+            needs_sync = live and private_ready and not (
+                archive is not None and not eligible and saved is None
+            ) and (
                 saved is None or force or time.time() - float(saved.get("synced_at", 0)) >= _SYNC_SECONDS
             )
             if needs_sync:
                 if saved:
                     start = max(today - timedelta(days=_HISTORY_DAYS),
-                                saved["covered_through"] - timedelta(days=_OVERLAP_DAYS))
+                                min(today, saved["covered_through"]) - timedelta(days=_OVERLAP_DAYS))
                 else:
                     start = today - timedelta(days=_HISTORY_DAYS)
                 try:
@@ -275,7 +307,7 @@ def _sync_history(
                 except ArchiveError:
                     errors[key] = "GITHUB BACKUP FAILED — in-memory history retained; retry later."
                     vault["archive_retry_at"][scope] = time.time() + 300
-            if saved and private_blotter is not None:
+            if saved and private_blotter is not None and private_ready:
                 # Private plaintext historical blotter, isolated from public
                 # code repo. Skip repeat GitHub requests for unchanged history.
                 content = json.dumps(saved["rows"], sort_keys=True, default=str)
