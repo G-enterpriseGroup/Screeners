@@ -146,6 +146,40 @@ class PrivateBlotterTests(unittest.TestCase):
             self.repo.save("RAJ", self.snapshot(self.older), _merge, _equity_trade)
         self.assertEqual(self.repo.store["write_count"], 0)
 
+    def test_streamlit_dedicated_token_overrides_stale_environment_token(self):
+        # User's [acquisition] blotter_token should not be shadowed by an old
+        # ACQUISITION_BLOTTER_TOKEN environment variable or GEX fallback token.
+        with patch.dict("os.environ", {"ACQUISITION_BLOTTER_TOKEN": "STALE_ENV_TOKEN"}), patch(
+            "streamlit.secrets", {"acquisition": {"blotter_token": "NEW_STREAMLIT_TOKEN"}}
+        ):
+            writer = PrivateTradeBlotter(self.config)
+        self.assertEqual(writer.token, "NEW_STREAMLIT_TOKEN")
+        self.assertEqual(writer.token_source, "Streamlit [acquisition] blotter_token")
+        def blocked(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=blocked):
+            with self.assertRaises(ArchiveError) as caught:
+                writer._verify_private()
+        message = str(caught.exception)
+        self.assertIn("Credential source: Streamlit [acquisition] blotter_token", message)
+        self.assertNotIn("NEW_STREAMLIT_TOKEN", message)
+        self.assertNotIn("STALE_ENV_TOKEN", message)
+        self.assertNotIn(self.config.token, message)
+
+    def test_token_fallback_when_explicit_streamlit_value_absent(self):
+        with patch.dict("os.environ", {"ACQUISITION_BLOTTER_TOKEN": "ENV_TOKEN"}), patch(
+            "streamlit.secrets", {"acquisition": {}}
+        ):
+            via_env = PrivateTradeBlotter(self.config)
+        self.assertEqual(via_env.token, "ENV_TOKEN")
+        self.assertEqual(via_env.token_source, "ACQUISITION_BLOTTER_TOKEN environment")
+        with patch.dict("os.environ", {"ACQUISITION_BLOTTER_TOKEN": ""}), patch(
+            "streamlit.secrets", {"acquisition": {}}
+        ):
+            fallback = PrivateTradeBlotter(self.config)
+        self.assertEqual(fallback.token, self.config.token)
+        self.assertEqual(fallback.token_source, "fallback GitHub/GEX token")
+
     def test_private_repository_metadata_404_has_clear_scope_diagnostic(self):
         # Directly exercise HTTP translation, without any external request.
         instance = PrivateTradeBlotter(self.config)
