@@ -215,7 +215,7 @@ def _sync_history(
                             "rows": list(historical["rows"]),
                             "covered_from": date.fromisoformat(historical["covered_from"]),
                             "covered_through": date.fromisoformat(historical["covered_through"]),
-                            "synced_at": 0.0,
+                            "synced_at": float(historical.get("synced_at") or 0),
                         }
                         if saved is not None:
                             recovered["rows"] = _merge(recovered["rows"], saved["rows"])
@@ -244,7 +244,13 @@ def _sync_history(
                             vault.setdefault("archive_exists", {})[scope] = True
                             recovered = _restore_archive(remote)
                             if saved is not None:
-                                recovered["rows"] = _merge(recovered["rows"], saved["rows"])
+                                # Prefer the more recent durable transaction
+                                # correction on duplicate IDs; never discard older
+                                # records found in either history source.
+                                if float(saved.get("synced_at", 0)) > float(recovered.get("synced_at", 0)):
+                                    recovered["rows"] = _merge(recovered["rows"], saved["rows"])
+                                else:
+                                    recovered["rows"] = _merge(saved["rows"], recovered["rows"])
                                 recovered["covered_from"] = min(recovered["covered_from"], saved["covered_from"])
                                 recovered["covered_through"] = max(recovered["covered_through"], saved["covered_through"])
                                 recovered["synced_at"] = max(recovered["synced_at"], saved["synced_at"])
