@@ -3165,3 +3165,13 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Lesson:** Distinguish a synthetically charted option-premium differential from modeled options P&L; do not invent unsupported TradingView Strategy Builder auto-prefill links.
 
 - **Post-merge validation (2026-10-27):** PR #141 GitHub Actions Terminal Architecture Guard run `40511917857` **PASS**, including `python scripts/validate_architecture.py`, Vertical Options Python/syntax tests, Risk/top-level-tab tests, GEX isolation checks and the Vertical Options scanner/browser fixture check. Merge into `main` **`f1e8873631e21d1f824c55d5d433b59e3060adca`**. The CI deployed-health check and authenticated option-link click could not run; Streamlit Cloud fresh-process deployment is not independently verified. No broker order was placed.
+
+
+## 2026-10-27 — Acquisition Raj default / compact control alignment
+- **Production file:** `src/acquisition_ui.py`. Regression file `tests/test_acquisition.py`. This append-only changelog.
+- **Observed:** Screenshot showed Acquisition's account controls and banner spacing inconsistent with compact Terminal theme, and user requires Raj as the default when opening a fresh session.
+- **Fix:** Initialize Acquisition account preference to Raj once per new session (prefer named Raj, then account suffix 5474), preserving manual account switches during later Streamlit reruns. Acquisition-root-only CSS aligns dropdown and action, squares button/alert edges and uses consistent compact Courier type. No global CSS or Streamlit monkey patches.
+- **External 404 limitation:** The separate private Portfolio blotter requires a fine-grained GitHub token that can read/write the private `G-enterpriseGroup/Portfolio` repository. No code can grant a token permissions. Current plaintext blotter cannot be certified backed up until a newly authorized token is installed and a live sync succeeds. Credentials exposed in a user screenshot should be revoked/replaced immediately, with no credential values committed.
+- **Unchanged:** FIFO/share calculations, encrypted recovery history, trade source, external archive, GEX, Risk Sizing, Holdings, OAuth, navigation, options orders, `src/terminal_core.py`.
+- **Tests:** Focused Raj default and theme scoping tests plus CI Python compile, architecture guard, adjacent feature/tab tests; live visual verification separately required.
+- **Commit:** See GitHub PR for `fix/acquisition-default-raj-layout-20261027` and merge SHA.

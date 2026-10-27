@@ -213,6 +213,18 @@ class AcquisitionTests(unittest.TestCase):
         migrated = json.loads(result.stdout)
         self.assertEqual(migrated[:4], ["GEX", "PERFORMANCE", "ACQUISITION", "HOLDINGS"])
 
+    def test_acquisition_default_raj_and_local_compact_theme(self):
+        accounts = [
+            {"accountIdKey": "other", "accountName": "Individual Brokerage", "accountId": "7022"},
+            {"accountIdKey": "raj", "accountName": "Raj Singh", "accountId": "5474"},
+        ]
+        self.assertEqual(_default_account(accounts), "raj")
+        source = (Path(__file__).resolve().parents[1] / "src/acquisition_ui.py").read_text()
+        self.assertIn('initial_key = "_acquisition_default_account_initialized"', source)
+        self.assertIn('st.session_state[picker_key] = _default_account(accounts)', source)
+        self.assertIn(".st-key-acquisition_root [data-testid=\"stAlert\"]", source)
+        self.assertNotIn("st.button =", source)
+
     def test_no_order_calls_and_only_expected_shared_files(self):
         source = (Path(__file__).resolve().parents[1] / "src/acquisition_ui.py").read_text()
         for forbidden in ("client.place_order(", "client.preview_order(", "client.cancel_order(", "st.button ="):
