@@ -96,7 +96,20 @@ class PrivateTradeBlotter:
             dedicated = section.get("blotter_token", "") if isinstance(section, Mapping) else ""
         except Exception:
             dedicated = ""
-        self.token = str(os.environ.get("ACQUISITION_BLOTTER_TOKEN") or dedicated or config.token).strip()
+        # An explicitly saved Streamlit [acquisition] blotter_token MUST win
+        # over old environment variables and the public-repo GEX token.
+        # A stale ACQUISITION_BLOTTER_TOKEN environment setting previously
+        # shadowed a newly saved Streamlit Secrets value.
+        env_token = str(os.environ.get("ACQUISITION_BLOTTER_TOKEN") or "").strip()
+        if str(dedicated).strip():
+            self.token = str(dedicated).strip()
+            self.token_source = "Streamlit [acquisition] blotter_token"
+        elif env_token:
+            self.token = env_token
+            self.token_source = "ACQUISITION_BLOTTER_TOKEN environment"
+        else:
+            self.token = config.token
+            self.token_source = "fallback GitHub/GEX token"
         self._secret = base64.urlsafe_b64decode(config.fernet_key)
 
     def _stem(self, account_key: str) -> str:
@@ -148,8 +161,11 @@ class PrivateTradeBlotter:
             if not path and exc.code in (401, 403, 404):
                 raise ArchiveError(
                     "STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO "
-                    f"(HTTP {exc.code}) // Add [acquisition] blotter_token "
-                    "with Portfolio repository Contents: Read and write permission."
+                    f"(HTTP {exc.code}) // Credential source: {self.token_source}. "
+                    "If this is your [acquisition] blotter_token, GitHub is rejecting "
+                    "that token for the private Portfolio repository; verify its "
+                    "resource owner, selected repository, authorization and "
+                    "Contents: Read and write permission. No key changes are needed."
                 ) from exc
             raise ArchiveError(f"Private GitHub blotter access failed (HTTP {exc.code}).") from exc
         except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
