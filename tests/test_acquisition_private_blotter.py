@@ -476,9 +476,50 @@ class PrivateBlotterTests(unittest.TestCase):
 
     def test_isolated_account_paths_and_no_unrelated_repo(self):
         self.assertNotEqual(self.repo.paths("RAJ"), self.repo.paths("AMEKA"))
+        a_json, a_txt = self.repo.paths("RAJ")
+        b_json, _ = self.repo.paths("AMEKA")
+        self.assertEqual(a_json.rsplit("/", 1)[0], a_txt.rsplit("/", 1)[0])
+        self.assertNotEqual(a_json.rsplit("/", 1)[0], b_json.rsplit("/", 1)[0])
+        self.assertTrue(a_json.endswith("/history.json"))
+        self.assertTrue(a_txt.endswith("/trades.txt"))
+        self.assertNotIn("RAJ", a_json)
         self.assertEqual(self.repo.repo, PRIVATE_REPO)
         with self.assertRaises(ArchiveError):
             PrivateTradeBlotter(self.config, repo="G-enterpriseGroup/Screeners")
+
+    def test_flat_legacy_files_restore_and_migrate_without_losing_trades(self):
+        legacy_json, legacy_txt = self.repo._legacy_paths("RAJ")
+        legacy = {
+            "version": 1, "account": "RAJ", "rows": self.older,
+            "covered_from": "2024-06-10", "covered_through": "2026-10-27",
+        }
+        contents = json.dumps(legacy) + "\n"
+        self.repo.store["files"][legacy_json] = {
+            "sha": "old-json", "content": base64.b64encode(contents.encode()).decode(),
+        }
+        self.repo.store["files"][legacy_txt] = {
+            "sha": "old-txt", "content": base64.b64encode(b"legacy blotter").decode(),
+        }
+        self.assertEqual(len(self.repo.read_snapshot("RAJ")["rows"]), 4)
+        self.repo.save("RAJ", self.snapshot([
+            tx(11, "2026-10-26", "SELL", "MSFT", 1, 550),
+        ]), _merge, _equity_trade)
+        current_json, current_txt = self.repo.paths("RAJ")
+        new_rows = json.loads(self.repo.text(current_json))["rows"]
+        self.assertEqual({x["transactionId"] for x in new_rows}, {7, 8, 9, 10, 11})
+        self.assertIn("MSFT 10.26.2026 550 1 S", self.repo.text(current_txt))
+        self.assertEqual(self.repo.text(legacy_json), contents)
+        self.assertEqual(self.repo.text(legacy_txt), "legacy blotter")
+        self.assertEqual(len(self.repo.read_snapshot("RAJ")["rows"]), 5)
+
+    def test_corrupt_flat_legacy_history_blocks_new_folder_write(self):
+        legacy_json, _ = self.repo._legacy_paths("RAJ")
+        self.repo.store["files"][legacy_json] = {
+            "sha": "bad", "content": base64.b64encode(b"not json").decode(),
+        }
+        with self.assertRaises(ArchiveError):
+            self.repo.save("RAJ", self.snapshot(self.older), _merge, _equity_trade)
+        self.assertEqual(self.repo.store["write_count"], 0)
 
     def test_key_rotation_never_rewrites_original_account_path(self):
         rotated = PrivateGitHubInMemory(
