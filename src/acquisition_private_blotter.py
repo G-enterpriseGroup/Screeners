@@ -139,9 +139,9 @@ class PrivateTradeBlotter:
         """Human-readable private mirrors; keyed primary history never moves."""
         clean = unicodedata.normalize("NFKC", str(account_name or "E*TRADE Account"))
         clean = re.sub(r"[^\\w .&()'-]+", "-", clean, flags=re.UNICODE)
-        clean = re.sub(r"\\s+", " ", clean).strip(" .-_")
+        clean = re.sub(r"\s+", " ", clean).strip(" .-_")
         clean = clean[:64].rstrip(" .-_") or "E*TRADE Account"
-        suffix = re.sub(r"\\D", "", str(last_four or ""))[-4:]
+        suffix = re.sub(r"\D", "", str(last_four or ""))[-4:]
         label = clean + (f" - {suffix}" if suffix else "")
         # Suffix avoids collisions between equal names, joint accounts and
         # changed broker nicknames; it never exposes the full broker key.
