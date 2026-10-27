@@ -102,7 +102,7 @@ from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.lock_screen_v2 import render_seamless_lock_screen
 from src.option_book_ui import render_option_book
 from src.performance_ui import render_performance
-from src.acquisition_ui import render_acquisition
+from src.acquisition_ui import render_acquisition, maybe_auto_sync_acquisition_accounts
 from src.protective_puts_ui import render_protective_puts
 from src.rebalance_portfolio_ui import render_rebalance_portfolio
 from src.risk_sizing_ui_v7 import render_risk_sizing
@@ -734,6 +734,11 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
     # GEX keeps its existing login-triggered refresh behavior.
     with st.container(key="terminal_background_hooks", gap=None):
         _cache_all_account_holdings()
+        maybe_auto_sync_acquisition_accounts(
+            _live_etrade_client(),
+            _trade_access_code_hash(),
+            _etrade_data_cache.session_namespace(st.session_state.get("etrade_access_token")),
+        )
         maybe_auto_watch_risk_entries(_live_etrade_client())
         if active_tab != "GEX":
             maybe_auto_refresh_gex_on_login()
