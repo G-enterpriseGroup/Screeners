@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
+import urllib.error
+from unittest.mock import MagicMock
 from datetime import datetime
 import unittest
 from unittest.mock import patch
@@ -11,7 +14,7 @@ from zoneinfo import ZoneInfo
 from cryptography.fernet import Fernet
 from src.acquisition_private_blotter import PrivateTradeBlotter, share_blotter, PRIVATE_REPO, BRANCH
 from src.acquisition_history_github import ArchiveConfig, ArchiveError
-from src.acquisition_ui import _equity_trade, _merge
+from src.acquisition_ui import _equity_trade, _merge, _sync_history
 
 
 ET = ZoneInfo("America/New_York")
@@ -142,6 +145,65 @@ class PrivateBlotterTests(unittest.TestCase):
         with self.assertRaises(ArchiveError):
             self.repo.save("RAJ", self.snapshot(self.older), _merge, _equity_trade)
         self.assertEqual(self.repo.store["write_count"], 0)
+
+    def test_private_repository_metadata_404_has_clear_scope_diagnostic(self):
+        original = self.repo._request
+        def denied(*args, **kwargs):
+            return original(*args, **kwargs)
+        # Directly exercise HTTP translation, without any external request.
+        instance = PrivateTradeBlotter(self.config)
+        def blocked(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=blocked):
+            with self.assertRaises(ArchiveError) as caught:
+                instance._verify_private()
+        warning = str(caught.exception)
+        self.assertIn("STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO", warning)
+        self.assertIn("blotter_token", warning)
+        self.assertIn("Contents: Read and write", warning)
+        self.assertNotIn(self.config.token, warning)
+
+    def test_private_permission_failure_checked_once_for_all_accounts(self):
+        class EncryptedArchive:
+            def read(self, key):
+                return None
+            def save(self, key, snapshot, merge):
+                return snapshot
+        existing = {
+            ("LOCK", "RAJ"): {
+                "rows": list(self.older),
+                "covered_from": datetime(2024, 6, 10).date(),
+                "covered_through": datetime(2026, 10, 27).date(),
+                "synced_at": 123,
+            },
+            ("LOCK", "AMEKA"): {
+                "rows": list(self.older),
+                "covered_from": datetime(2024, 6, 10).date(),
+                "covered_through": datetime(2026, 10, 27).date(),
+                "synced_at": 123,
+            },
+        }
+        vault = {"lock": threading.RLock(), "accounts": existing, "lots": {}}
+        denied = MagicMock()
+        denied._verify_private.side_effect = ArchiveError("PRIVATE PORTFOLIO PERMISSION DENIED")
+        with patch("src.acquisition_ui._history_vault", return_value=vault), patch(
+            "src.acquisition_ui._archive_client", return_value=EncryptedArchive()
+        ), patch("src.acquisition_ui.ArchiveConfig.from_runtime", return_value=self.config), patch(
+            "src.acquisition_ui.PrivateTradeBlotter", return_value=denied
+        ):
+            histories, errors = _sync_history(
+                None, "LOCK",
+                [{"accountIdKey": "RAJ"}, {"accountIdKey": "AMEKA"}],
+                now=datetime(2026, 10, 27, tzinfo=ET),
+            )
+        self.assertEqual(denied._verify_private.call_count, 1)
+        denied.save.assert_not_called()
+        self.assertEqual(set(histories), {"RAJ", "AMEKA"})
+        self.assertEqual(len(histories["RAJ"]["rows"]), len(self.older))
+        self.assertEqual(list(errors), ["blotter"])
+        self.assertIn("PERMISSION DENIED", errors["blotter"])
+        self.assertFalse(vault["archive_dirty"][("LOCK", "RAJ")])
+        self.assertFalse(vault["archive_dirty"][("LOCK", "AMEKA")])
 
     def test_isolated_account_paths_and_no_unrelated_repo(self):
         self.assertNotEqual(self.repo.paths("RAJ"), self.repo.paths("AMEKA"))
