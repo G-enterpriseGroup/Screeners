@@ -843,7 +843,19 @@ def _render_cboe_overview(
         "gexv3_cboe", tickers, result_map, state,
     )
     # DTE editing and per-ticker refresh still address the original symbol.
-    markup = _inject_dte_editor_links(overview_renderer(display_state, result_map))
+    rendered = overview_renderer(display_state, result_map)
+    markup = _inject_dte_editor_links(rendered)
+    _render_gex_exports(
+        key_prefix="gex_cboe",
+        file_prefix="cboe_gex",
+        displayed_tickers=display_state["tickers"],
+        result_map=result_map,
+        display_state=display_state,
+        html_markup=_decorate_cboe_overview_markup(
+            rendered, result_map, include_trash=False,
+        ),
+        html_heading="CBOE OVERVIEW",
+    )
     st.html(_decorate_cboe_overview_markup(markup, result_map))
 
     if tickers:
@@ -1001,12 +1013,17 @@ def _morningstar_overview_csv(
     return buffer.getvalue()
 
 
-def _morningstar_visual_html(markup: str, count: int) -> str:
+def _morningstar_visual_html(
+    markup: str,
+    count: int,
+    heading: str = "MORNINGSTAR GEX // CBOE OVERVIEW",
+) -> str:
     """Self-contained, printer-friendly copy of the actual styled overview HTML."""
+    safe_heading = html.escape(heading)
     return (
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Morningstar GEX | Raj's Terminal</title>"
+        f"<title>{safe_heading} | Raj's Terminal</title>"
         "<style>"
         "html,body{margin:0;padding:0;background:#020202;color:#e8e8e8;"
         "font-family:'Courier New',monospace;}"
@@ -1031,12 +1048,60 @@ def _morningstar_visual_html(markup: str, count: int) -> str:
         "</style>"
         + _proven._ROW_ACTION_CSS
         + "</head><body>"
-        "<h1>MORNINGSTAR GEX // CBOE OVERVIEW</h1>"
+        f"<h1>{safe_heading}</h1>"
         f"<div class='export-meta'>{count} TICKERS // CBOE DELAYED OPTIONS // "
         f"{datetime.now():%Y-%m-%d %H:%M}</div>"
         + markup +
         "</body></html>"
     )
+
+
+
+def _render_gex_exports(
+    *,
+    key_prefix: str,
+    file_prefix: str,
+    displayed_tickers: list[str],
+    result_map: dict[str, Any],
+    display_state: dict[str, Any],
+    html_markup: str,
+    html_heading: str,
+) -> list[str]:
+    """Show source-isolated local downloads ABOVE either CBOE results table."""
+    completed = [
+        ticker for ticker in displayed_tickers
+        if isinstance(result_map.get(ticker), dict)
+    ]
+    cols = st.columns([1.75, 1.65, 1.45], gap="small")
+    with cols[0]:
+        st.download_button(
+            "EXPORT OVERVIEW CSV",
+            data=_morningstar_overview_csv(displayed_tickers, result_map, display_state),
+            file_name=f"{file_prefix}_overview_{datetime.now():%Y%m%d}.csv",
+            mime="text/csv", key=f"{key_prefix}_export",
+            width="stretch", disabled=not completed,
+        )
+    with cols[1]:
+        st.download_button(
+            "EXPORT VISUAL HTML",
+            data=_morningstar_visual_html(
+                html_markup, len(displayed_tickers), heading=html_heading,
+            ),
+            file_name=f"{file_prefix}_visual_{datetime.now():%Y%m%d}.html",
+            mime="text/html", key=f"{key_prefix}_visual_export",
+            width="stretch", disabled=not completed,
+        )
+    with cols[2]:
+        st.download_button(
+            "ALL STRIKES CSV",
+            data=_morningstar_gex_csv(completed, result_map),
+            file_name=f"{file_prefix}_strikes_{datetime.now():%Y%m%d}.csv",
+            mime="text/csv", key=f"{key_prefix}_strikes_export",
+            width="stretch", disabled=not completed,
+        )
+    if not completed:
+        st.caption("REFRESH / RUN GEX TO ENABLE CSV + HTML DOWNLOADS")
+    return completed
 
 
 def _render_morningstar_gex(
@@ -1119,36 +1184,17 @@ def _render_morningstar_gex(
         overview_renderer(display_state, result_map), result_map,
         include_trash=False,
     )
+    completed = _render_gex_exports(
+        key_prefix="gex_morningstar",
+        file_prefix="morningstar_gex",
+        displayed_tickers=displayed_tickers,
+        result_map=result_map,
+        display_state=display_state,
+        html_markup=markup,
+        html_heading="MORNINGSTAR GEX // CBOE OVERVIEW",
+    )
     st.html(markup)
-    completed = [ticker for ticker in displayed_tickers if ticker in result_map]
     if completed:
-        export_col, html_col, strikes_col = st.columns(
-            [1.75, 1.65, 1.45], gap="small",
-        )
-        with export_col:
-            st.download_button(
-                "EXPORT OVERVIEW CSV",
-                data=_morningstar_overview_csv(displayed_tickers, result_map, display_state),
-                file_name=f"morningstar_gex_overview_{datetime.now():%Y%m%d}.csv",
-                mime="text/csv", key="gex_morningstar_export",
-                width="stretch",
-            )
-        with html_col:
-            st.download_button(
-                "EXPORT VISUAL HTML",
-                data=_morningstar_visual_html(markup, len(displayed_tickers)),
-                file_name=f"morningstar_gex_visual_{datetime.now():%Y%m%d}.html",
-                mime="text/html", key="gex_morningstar_visual_export",
-                width="stretch",
-            )
-        with strikes_col:
-            st.download_button(
-                "ALL STRIKES CSV",
-                data=_morningstar_gex_csv(completed, result_map),
-                file_name=f"morningstar_gex_strikes_{datetime.now():%Y%m%d}.csv",
-                mime="text/csv", key="gex_morningstar_strikes_export",
-                width="stretch",
-            )
         st.caption(
             f"{len(completed)}/{len(tickers)} TICKERS UPDATED // "
             "OVERVIEW EXPORT FOLLOWS THE VISIBLE SORT // VISUAL HTML PRESERVES COLORS + RANGE BARS"

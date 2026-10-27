@@ -1107,13 +1107,12 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     if cboe_refresh_all:
         _run_cboe_refresh_all(vault_key, state)
 
-    subtab_names = [
-        "E*TRADE OVERVIEW",
-        "CBOE OVERVIEW",
-        "MORNINGSTAR GEX",
-        "SETTINGS",
-        "NOTES",
-    ]
+    # Hidden for now; switch to True to restore the existing E*TRADE subtab.
+    show_etrade_overview = False
+    subtab_names = (
+        (["E*TRADE OVERVIEW"] if show_etrade_overview else [])
+        + ["CBOE OVERVIEW", "MORNINGSTAR GEX", "SETTINGS", "NOTES"]
+    )
     last_subtab = st.session_state.get("_gex_last_subtab", subtab_names[0])
     if last_subtab not in subtab_names:
         last_subtab = subtab_names[0]
@@ -1121,25 +1120,28 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     # Reset a previously selected legacy tab before creating the keyed widget.
     if st.session_state.get("gexv3_active_subtab") not in (*subtab_names, None):
         st.session_state.pop("gexv3_active_subtab", None)
-    (etrade_overview_tab, cboe_overview_tab, morningstar_tab,
-     settings_tab, notes_tab) = st.tabs(
-        subtab_names, default=last_subtab, key="gexv3_active_subtab",
-        on_change=_remember_gex_subtab,
-    )
+    tabs = dict(zip(
+        subtab_names,
+        st.tabs(
+            subtab_names, default=last_subtab, key="gexv3_active_subtab",
+            on_change=_remember_gex_subtab,
+        ),
+    ))
 
-    with etrade_overview_tab:
-        state = _render_overview(client, vault_key, touch_session, state, result_map)
+    if show_etrade_overview:
+        with tabs["E*TRADE OVERVIEW"]:
+            state = _render_overview(client, vault_key, touch_session, state, result_map)
 
-    with cboe_overview_tab:
+    with tabs["CBOE OVERVIEW"]:
         _render_cboe_overview(vault_key, state)
 
-    with morningstar_tab:
+    with tabs["MORNINGSTAR GEX"]:
         _render_morningstar_gex(vault_key, state)
 
-    with settings_tab:
+    with tabs["SETTINGS"]:
         state = _render_settings(vault_key, state, result_map)
 
-    with notes_tab:
+    with tabs["NOTES"]:
         state = _render_notes(vault_key, state)
 
     core._sync_browser_state(vault_key, state)
