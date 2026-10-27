@@ -289,6 +289,7 @@ class PrivateTradeBlotter:
             "rows": list(snapshot["rows"]),
             "covered_from": snapshot["covered_from"],
             "covered_through": snapshot["covered_through"],
+            "synced_at": float(snapshot.get("synced_at") or 0),
         }
 
     def _write_text(self, path: str, content: str) -> None:
@@ -338,6 +339,8 @@ class PrivateTradeBlotter:
                                     snapshot["covered_from"]),
                 "covered_through": max((previous or {}).get("covered_through", snapshot["covered_through"]),
                                       snapshot["covered_through"]),
+                "synced_at": max(float((previous or {}).get("synced_at") or 0),
+                                 float(snapshot.get("synced_at") or 0)),
             }
             canonical = _json(joined) + "\n"
             if previous is None or _json(previous) != _json(joined):
