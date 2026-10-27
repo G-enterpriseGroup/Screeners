@@ -108,9 +108,9 @@ def _sync_history(
     snapshots: dict[str, dict[str, Any]] = {}
     try:
         archive = _archive_client()
-    except ArchiveError:
+    except ArchiveError as exc:
         archive = None
-        errors["archive"] = "ARCHIVE ENCRYPTION CONFIGURATION INVALID — GitHub history not saved."
+        errors["archive"] = str(exc)
     with vault["lock"]:
         vault["archive_configured"] = archive is not None
         for account in accounts:
@@ -491,8 +491,13 @@ def render_acquisition(
         vault = _history_vault()
         if not vault.get("archive_configured"):
             st.warning(
-                "GITHUB ARCHIVE NOT ACTIVE // configure ACQUISITION_ARCHIVE_KEY and a "
-                "GitHub write token in Streamlit secrets. Histories are currently memory-only."
+                "GITHUB ARCHIVE NOT ACTIVE // " +
+                errors.get(
+                    "archive",
+                    "ARCHIVE SETTINGS MISSING // Add [acquisition] archive_key and "
+                    "[github] bridge_token in Streamlit Secrets.",
+                ) +
+                " // Histories are currently memory-only."
             )
         elif vault.get("archive_dirty", {}).get((str(vault_key), str(chosen)), False):
             st.warning("GITHUB ARCHIVE PENDING // local history is not yet durably backed up.")
@@ -500,9 +505,12 @@ def render_acquisition(
             st.caption("ENCRYPTED GITHUB ARCHIVE ACTIVE // ACCOUNT-ISOLATED")
         if touch_session and client is not None and not bool(getattr(client, "is_offline", False)):
             touch_session()
-        if errors:
-            st.warning("HISTORY SYNC INCOMPLETE // " + "; ".join(
-                f"{_account_label(by_key[key])}: {message}" for key, message in errors.items() if key in by_key))
+        account_errors = [
+            f"{_account_label(by_key[key])}: {message}"
+            for key, message in errors.items() if key in by_key
+        ]
+        if account_errors:
+            st.warning("HISTORY / ARCHIVE SYNC INCOMPLETE // " + "; ".join(account_errors))
         saved = snapshots.get(chosen)
         if not saved:
             st.info("NO CACHED TRANSACTIONS FOR THIS ACCOUNT. CONNECT E*TRADE AND SYNC.")
