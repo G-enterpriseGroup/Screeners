@@ -23,6 +23,7 @@ import streamlit as st
 
 from src.etrade_client import normalize_position
 from src.performance_ui import _find, _instrument, _trade_record, _when
+from src.acquisition_history_github import ArchiveConfig, ArchiveError, GitHubAcquisitionArchive
 
 
 _ET = ZoneInfo("America/New_York")
@@ -41,13 +42,37 @@ _CSS = """
 
 
 # ==============================
-# HISTORY CACHE (PROCESS-LOCAL; NO BROKER DATA IN GITHUB OR BROWSER)
+# HISTORY CACHE (PROCESS-LOCAL WITH OPTIONAL ENCRYPTED GITHUB BACKUP)
 # ==============================
 
 @st.cache_resource
 def _history_vault() -> dict[str, Any]:
     """Reuse complete histories across tabs, reruns and browser sessions of this worker."""
     return {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+
+
+def _archive_client() -> GitHubAcquisitionArchive | None:
+    config = ArchiveConfig.from_runtime()
+    return GitHubAcquisitionArchive(config) if config else None
+
+
+def _archive_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Use ISO dates in portable encrypted JSON, never pickle/account data on disk."""
+    return {
+        "rows": list(snapshot["rows"]),
+        "covered_from": snapshot["covered_from"].isoformat(),
+        "covered_through": snapshot["covered_through"].isoformat(),
+        "synced_at": float(snapshot["synced_at"]),
+    }
+
+
+def _restore_archive(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rows": list(snapshot["rows"]),
+        "covered_from": date.fromisoformat(snapshot["covered_from"]),
+        "covered_through": date.fromisoformat(snapshot["covered_through"]),
+        "synced_at": float(snapshot.get("synced_at") or 0),
+    }
 
 
 def _identity(tx: dict[str, Any]) -> str:
@@ -72,22 +97,59 @@ def _sync_history(
     force: bool = False,
     now: datetime | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """First visit fetches all accounts; subsequent visits fetch ONLY a short overlap.
+    """Restore encrypted GitHub history first, then query only recent E*TRADE activity.
 
-    A failed read never replaces a good snapshot or advances its checkpoint.
-    Concurrent sessions share the lock to avoid duplicate full-history calls.
+    No archive update occurs unless a complete broker page scan succeeded.
+    A failed GitHub read/write cannot erase an existing snapshot or token.
     """
     today = (now or datetime.now(_ET)).date()
     vault = _history_vault()
     errors: dict[str, str] = {}
     snapshots: dict[str, dict[str, Any]] = {}
+    try:
+        archive = _archive_client()
+    except ArchiveError:
+        archive = None
+        errors["archive"] = "ARCHIVE ENCRYPTION CONFIGURATION INVALID — GitHub history not saved."
     with vault["lock"]:
+        vault["archive_configured"] = archive is not None
         for account in accounts:
             key = str(account.get("accountIdKey") or "").strip()
             if not key:
                 continue
             scope = (str(vault_key), key)
             saved = vault["accounts"].get(scope)
+            loaded = vault.setdefault("archive_loaded", set())
+            eligible = archive is not None
+            if archive is not None and scope not in loaded:
+                if not force and time.time() < vault.setdefault("archive_retry_at", {}).get(scope, 0):
+                    eligible = False  # Rate-limit failed restore attempts.
+                else:
+                    try:
+                        remote = archive.read(key)
+                        if remote is not None:
+                            recovered = _restore_archive(remote)
+                            if saved is not None:
+                                recovered["rows"] = _merge(recovered["rows"], saved["rows"])
+                                recovered["covered_from"] = min(recovered["covered_from"], saved["covered_from"])
+                                recovered["covered_through"] = max(recovered["covered_through"], saved["covered_through"])
+                                recovered["synced_at"] = max(recovered["synced_at"], saved["synced_at"])
+                            saved = recovered
+                            vault["accounts"][scope] = saved
+                        elif saved is not None:
+                            # Archive was newly enabled on an existing worker:
+                            # seed the saved in-memory ledger even without fresh trades.
+                            vault.setdefault("archive_dirty", {})[scope] = True
+                        loaded.add(scope)
+                        vault.setdefault("archive_dirty", {}).setdefault(scope, False)
+                        vault.setdefault("archive_retry_at", {}).pop(scope, None)
+                    except (ArchiveError, ValueError):
+                        eligible = False
+                        vault.setdefault("archive_retry_at", {})[scope] = time.time() + 300
+                        errors[key] = "GITHUB RESTORE FAILED — history remains in memory; no remote overwrite."
+            elif archive is None:
+                eligible = False
+
             live = client is not None and not bool(getattr(client, "is_offline", False))
             needs_sync = live and (
                 saved is None or force or time.time() - float(saved.get("synced_at", 0)) >= _SYNC_SECONDS
@@ -102,16 +164,30 @@ def _sync_history(
                     fresh = client.get_transactions(key, start_date=start, end_date=today, sort_order="ASC")
                     if not isinstance(fresh, list):
                         raise ValueError("E*TRADE did not return a transaction list.")
-                    merged = _merge((saved or {}).get("rows", []), fresh)
                     saved = {
-                        "rows": merged,
+                        "rows": _merge((saved or {}).get("rows", []), fresh),
                         "covered_from": (saved or {}).get("covered_from", start),
                         "covered_through": today,
                         "synced_at": time.time(),
                     }
                     vault["accounts"][scope] = saved
+                    vault.setdefault("archive_dirty", {})[scope] = True
                 except Exception as exc:
                     errors[key] = str(exc)[:240]
+
+            dirty = vault.setdefault("archive_dirty", {}).get(scope, False)
+            next_retry = vault.setdefault("archive_retry_at", {}).get(scope, 0)
+            if archive is not None and eligible and saved is not None and dirty and (force or time.time() >= next_retry):
+                try:
+                    merged = archive.save(key, _archive_snapshot(saved), _merge)
+                    saved = _restore_archive(merged)
+                    vault["accounts"][scope] = saved
+                    vault["archive_dirty"][scope] = False
+                    vault.setdefault("archive_verified_at", {})[scope] = time.time()
+                    vault["archive_retry_at"].pop(scope, None)
+                except ArchiveError:
+                    errors[key] = "GITHUB BACKUP FAILED — in-memory history retained; retry later."
+                    vault["archive_retry_at"][scope] = time.time() + 300
             if saved:
                 snapshots[key] = {
                     "rows": list(saved["rows"]),
@@ -120,7 +196,6 @@ def _sync_history(
                     "synced_at": saved["synced_at"],
                 }
     return snapshots, errors
-
 
 # ==============================
 # EQUITY TRADE NORMALIZATION / FIFO
@@ -413,6 +488,16 @@ def render_acquisition(
 
         with st.spinner("Reading cached share history / syncing only new transactions..."):
             snapshots, errors = _sync_history(client, vault_key, accounts, force=sync)
+        vault = _history_vault()
+        if not vault.get("archive_configured"):
+            st.warning(
+                "GITHUB ARCHIVE NOT ACTIVE // configure ACQUISITION_ARCHIVE_KEY and a "
+                "GitHub write token in Streamlit secrets. Histories are currently memory-only."
+            )
+        elif vault.get("archive_dirty", {}).get((str(vault_key), str(chosen)), False):
+            st.warning("GITHUB ARCHIVE PENDING // local history is not yet durably backed up.")
+        else:
+            st.caption("ENCRYPTED GITHUB ARCHIVE ACTIVE // ACCOUNT-ISOLATED")
         if touch_session and client is not None and not bool(getattr(client, "is_offline", False)):
             touch_session()
         if errors:
@@ -447,7 +532,7 @@ def render_acquisition(
             f'FIFO // {len(valid):,} VERIFIED OPEN BUY LOTS // '
             f'{len(gaps):,} UNRECONCILED SYMBOLS // {len(saved["rows"]):,} CACHED TRANSACTIONS // '
             f'HISTORY WINDOW {covered:%m/%d/%Y} – {through:%m/%d/%Y} // '
-            'API MAXIMUM: 2 YEARS // PROCESS CACHE: ALL ACCOUNTS // SYNC: 7-DAY OVERLAP'
+            'API MAXIMUM: 2 YEARS // ENCRYPTED GITHUB HISTORY WHEN ENABLED // 7-DAY OVERLAP'
             '</div>'
         )
         st.html('<div class="acq-section">OPEN EQUITY ACQUISITIONS // FIFO</div>')
