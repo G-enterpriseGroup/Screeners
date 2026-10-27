@@ -145,6 +145,12 @@ class PrivateTradeBlotter:
                 return None
             if exc.code in (409, 422) and payload is not None:
                 raise _Conflict() from exc
+            if not path and exc.code in (401, 403, 404):
+                raise ArchiveError(
+                    "STREAMLIT GITHUB TOKEN CANNOT ACCESS PRIVATE PORTFOLIO "
+                    f"(HTTP {exc.code}) // Add [acquisition] blotter_token "
+                    "with Portfolio repository Contents: Read and write permission."
+                ) from exc
             raise ArchiveError(f"Private GitHub blotter access failed (HTTP {exc.code}).") from exc
         except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
             raise ArchiveError("Private GitHub blotter could not be reached.") from exc
