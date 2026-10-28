@@ -726,6 +726,47 @@ ui._render_gex_exports(
             "<table></table>", 1, heading="CBOE OVERVIEW",
         ))
 
+    def test_cboe_publication_receipt_is_directly_above_add_tickers(self):
+        import ast
+
+        root = Path(__file__).resolve().parents[1]
+        base_source = (root / "src/gex_ui_v3_base.py").read_text(encoding="utf-8")
+        wrapper_source = (root / "src/gex_ui_v3.py").read_text(encoding="utf-8")
+        render = next(
+            node for node in ast.parse(base_source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "render_gex"
+        )
+
+        def line_of(name: str) -> int:
+            matches = [
+                node.lineno for node in ast.walk(render)
+                if isinstance(node, ast.Call)
+                and (
+                    isinstance(node.func, ast.Name) and node.func.id == name
+                    or isinstance(node.func, ast.Attribute) and node.func.attr == name
+                )
+            ]
+            self.assertEqual(len(matches), 1, f"Expected one {name} in GEX renderer")
+            return matches[0]
+
+        # The previous top-level receipt rendered before the hidden state iframe
+        # and CSS-only markup, producing needless space before the ticker entry.
+        self.assertLess(line_of("_load_state"), line_of("_render_cboe_publication_status"))
+        self.assertLess(line_of("_render_cboe_publication_status"), line_of("text_input"))
+        self.assertIn(
+            "_proven._base._render_cboe_publication_status = lambda: "
+            "_render_cboe_publication_status(vault_key)",
+            wrapper_source,
+        )
+        self.assertIn(
+            "_proven._base._render_cboe_publication_status = original_publication_status",
+            wrapper_source,
+        )
+        self.assertNotIn(
+            "    _render_cboe_publication_status(vault_key)\\n    st.html(",
+            wrapper_source,
+        )
+
     def test_source_urls_and_tabs_are_separate(self):
         root = Path(__file__).resolve().parents[1]
         base = (root / "src/gex_ui_v3_base.py").read_text(encoding="utf-8")
