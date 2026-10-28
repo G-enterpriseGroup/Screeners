@@ -786,6 +786,13 @@ ui._render_gex_exports(
         self.assertIs(ast.literal_eval(toggle.value), False)
         self.assertIn('if show_etrade_overview:', source)
         self.assertIn('with tabs["E*TRADE OVERVIEW"]:', source)
+        self.assertIn('add_col, cboe_refresh_col = st.columns(', source)
+        self.assertIn('[4.85, 1.15], gap="small"', source)
+        self.assertIn('refresh_all = False', source)
+        self.assertIn(
+            'if show_etrade_overview:\n        with etrade_refresh_col:', source,
+        )
+        self.assertIn('with cboe_refresh_col:', source)
         render_calls = {
             node.func.id for node in ast.walk(render)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
