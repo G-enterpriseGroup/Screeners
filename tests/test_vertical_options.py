@@ -19,10 +19,12 @@ class VerticalOptionsTests(unittest.TestCase):
         state = {}
         with patch.object(vo.st, "session_state", state):
             vo._restore_presentation()
-            self.assertEqual(state["vo_results_view"], "BEST PER YEAR")
-            self.assertTrue(state["vo_be_filter_enabled"])
+            self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
+            self.assertFalse(state["vo_be_filter_enabled"])
             self.assertEqual(state["vo_be_range_percent"], 5)
-            chosen = {"vo_results_view": "ALL QUALIFIED", "vo_be_filter_enabled": False,
+            self.assertEqual(state["vo_target_breakeven"], "no break even provided")
+            self.assertEqual(state["vo_max_cost"], "no ceiling cost provided")
+            chosen = {"vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": True,
                       "vo_be_range_percent": 0.0, "vo_all_pair_side": "PUT",
                       "vo_all_pair_direction": "DESC", "vo_auto_finish": False}
             for key, value in chosen.items():
@@ -40,10 +42,10 @@ class VerticalOptionsTests(unittest.TestCase):
             for key, value in chosen.items():
                 self.assertEqual(state[key], value)
             vo._restore_presentation()  # Ordinary rerun cannot override choices.
-            self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
+            self.assertEqual(state["vo_results_view"], "BEST PER YEAR")
         with patch.object(vo.st, "session_state", {}):
             vo._restore_presentation()
-            self.assertEqual(vo.st.session_state["vo_results_view"], "BEST PER YEAR")
+            self.assertEqual(vo.st.session_state["vo_results_view"], "ALL QUALIFIED")
 
     def test_real_streamlit_widget_cleanup_restores_manual_presentation(self):
         from streamlit.testing.v1 import AppTest
@@ -64,14 +66,14 @@ else:
     st.radio('VIEW', ('BEST PER YEAR', 'ALL QUALIFIED'), key='vo_results_view',
              on_change=_remember_presentation, args=('vo_results_view',))
 """).run()
-        self.assertTrue(app.toggle[0].value)
-        self.assertEqual(app.radio[0].value, 'BEST PER YEAR')
-        app.toggle[0].set_value(False).run()
-        app.radio[0].set_value('ALL QUALIFIED').run()
-        app.button[0].click().run()
-        app.button[0].click().run()
         self.assertFalse(app.toggle[0].value)
         self.assertEqual(app.radio[0].value, 'ALL QUALIFIED')
+        app.toggle[0].set_value(True).run()
+        app.radio[0].set_value('BEST PER YEAR').run()
+        app.button[0].click().run()
+        app.button[0].click().run()
+        self.assertTrue(app.toggle[0].value)
+        self.assertEqual(app.radio[0].value, 'BEST PER YEAR')
         self.assertFalse(app.exception)
 
     def test_bootstrap_timeout_is_actionable_without_overwriting_preferences(self):
@@ -223,6 +225,71 @@ else:
         self.assertEqual(len(store), 249500)
         for key in ("CALL", "PUT"):
             self.assertEqual(sum(1 for _ in store.iter_rows(side=key)), 124750)
+
+    def test_column_filters_cover_full_store_pages_and_csv_without_target(self):
+        import csv
+        import io
+        from src.vertical_options_store import VerticalResultStore, _rank
+        from src.vertical_options_ui import _qualified_store_csv
+
+        expiries = (date(2027, 1, 15), date(2028, 1, 21))
+        rows = [self._row(expiry, side, 100 + strike,
+                          30 - .3 * strike if side == "CALL" else 5 + .3 * strike)
+                for expiry in expiries for side in ("CALL", "PUT")
+                for strike in range(22)]
+        store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+        for expiry in expiries:
+            store.add_expiration(expiry, [row for row in rows if row["expiry"] == expiry],
+                                 scan_vertical_candidates)
+        expected, annual = scan_vertical_candidates(
+            symbol="QQQ", spot_last=110, option_rows=rows,
+            target_breakeven=None, max_cost=None, max_per_expiration=None,
+        )
+        self.assertEqual(len(expected), 924)
+        self.assertEqual(len(store), len(expected))
+        self.assertEqual(list(store.iter_ranked()), expected)
+        self.assertEqual(store.annual_ids, annual)
+
+        fields = {"buy": "buy_strike", "sell": "sell_strike",
+                  "buy_last": "buy_last", "sell_last": "sell_last",
+                  "cost": "cost", "breakeven": "breakeven",
+                  "ratio": "reward_risk", "profit": "max_profit"}
+        for column, field in fields.items():
+            values = sorted(row[field] for row in expected)
+            lower, upper = values[len(values) // 3], values[2 * len(values) // 3]
+            matching = sum(lower <= row[field] <= upper for row in expected)
+            self.assertEqual(store.count(column_filters={column: {"min": lower, "max": upper}}),
+                             matching, column)
+        for column, value, field in (("ticker", "QQQ", "symbol"),
+                                     ("side", "PUT", "call_put"),
+                                     ("expiry", expiries[1].isoformat(), "expiry"),
+                                     ("basis", "LAST*", "basis")):
+            matching = sum((row[field].isoformat() if field == "expiry" else row[field]) == value
+                           for row in expected)
+            self.assertEqual(store.count(column_filters={column: [value]}), matching, column)
+
+        filters = {"side": ["PUT"], "expiry": [expiries[1].isoformat()],
+                   "cost": {"max": 500}, "ratio": {"min": 2}}
+        matching = list(store.iter_rows(column_filters=filters))
+        self.assertEqual(len(matching), 216)
+        self.assertEqual(store.count(column_filters=filters), len(matching))
+        self.assertEqual(store.page(column_filters=filters, offset=200), matching[200:])
+        self.assertEqual(store.page(column_filters=filters, offset=215, limit=1), matching[215:216])
+        self.assertEqual([row["id"] for row in store.best_by_year(column_filters=filters)],
+                         [min(matching, key=lambda row: _rank(row, None))["id"]])
+
+        exported = list(csv.DictReader(io.StringIO(_qualified_store_csv(
+            store, source="E*TRADE", loaded_at=1000, target=None,
+            max_cost=None, column_filters=filters,
+        ))))
+        self.assertEqual(len(exported), len(matching))
+        self.assertEqual([float(row["Cost Per Contract ($)"]) for row in exported],
+                         [row["cost"] for row in matching])
+        self.assertTrue(all(row["Type"] == "PUT"
+                            and row["Expiration"] == expiries[1].isoformat()
+                            and float(row["Risk Reward (to 1)"]) >= 2
+                            for row in exported))
+        self.assertTrue(all(row["Target Breakeven ($)"] == "" for row in exported))
 
     def test_disk_store_rolls_back_failed_expiration_and_cleans_up(self):
         import gc
@@ -533,29 +600,29 @@ else:
             results["SPY"]["putWall"]["strike"] = -90
             self.assertEqual(vo._default_breakeven("SPY", 108, "vault"), (108, "SPOT DEFAULT"))
 
-    def test_wall_preset_remains_editable_and_auto_updates_across_tickers(self):
+    def test_no_breakeven_default_preserves_manual_target_per_ticker(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
         session = {}
         results = {"SPY": {"callWall": {"strike": 110}, "putWall": {"strike": 90}}}
-        with patch.object(vo.st, "session_state", session), patch.object(vo, "cboe_results", return_value=results):
+        with (patch.object(vo.st, "session_state", session),
+              patch.object(vo, "cboe_results", return_value=results) as cboe):
             vo._seed_breakeven_preset("SPY", 108, "vault")
-            self.assertEqual(session["vo_target_breakeven"], "110.0")
-            vo._seed_breakeven_preset("SPY", 92, "vault")
-            self.assertEqual(session["vo_target_breakeven"], "90.0")
+            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
             session["vo_target_breakeven"] = "103"
             vo._seed_breakeven_preset("SPY", 108, "vault")
             self.assertEqual(session["vo_target_breakeven"], "103")
-            self.assertNotIn("_vo_auto_target", session)
             vo._seed_breakeven_preset("QQQ", 400, "vault")
-            self.assertEqual(session["vo_target_breakeven"], "400.0")
+            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
             vo._seed_breakeven_preset("SPY", 108, "vault")
             self.assertEqual(session["vo_target_breakeven"], "103")
             session["vo_target_breakeven"] = ""
             vo._seed_breakeven_preset("SPY", 108, "vault")
-            self.assertEqual(session["vo_target_breakeven"], "110.0")
+            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
             vo._seed_breakeven_preset("MSFT", 400, "vault")
-            self.assertEqual(session["vo_target_breakeven"], "400.0")
+            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
+            self.assertNotIn("_vo_auto_target", session)
+            cboe.assert_not_called()
 
     def test_pasted_ticker_table_parses_deduplicates_and_preserves_order(self):
         from src.vertical_options_ui import _parse_ticker_list
@@ -997,6 +1064,22 @@ else:
             target_breakeven=101, max_cost=99,
         )
         self.assertEqual((over_budget, winners), ([], set()))
+
+    def test_no_target_breakeven_preserves_all_qualifying_pairs(self):
+        expiries = (date(2027, 1, 15), date(2028, 1, 21))
+        rows = [self._row(expiry, side, 100 + strike,
+                          10 - .2 * strike if side == "CALL" else 2 + .2 * strike)
+                for expiry in expiries for side in ("CALL", "PUT")
+                for strike in range(11)]
+        controls = dict(symbol="SPY", spot_last=105, option_rows=rows,
+                        max_cost=None, max_per_expiration=None)
+        no_target, annual = scan_vertical_candidates(**controls, target_breakeven=None)
+        targeted, _ = scan_vertical_candidates(**controls, target_breakeven=105)
+        self.assertEqual({row["id"] for row in no_target}, {row["id"] for row in targeted})
+        self.assertEqual(len(annual), 2)
+        self.assertEqual([row["cost"] for row in no_target],
+                         sorted(row["cost"] for row in no_target))
+        self.assertTrue(all(row["reward_risk"] >= 2 for row in no_target))
 
     def test_all_qualified_csv_includes_every_page_and_exact_filter_scope(self):
         import csv
@@ -1471,6 +1554,20 @@ else:
         self.assertEqual([leg["orderAction"] for leg in instruments], ["BUY_OPEN", "SELL_OPEN"])
         self.assertEqual([leg["Product"]["strikePrice"] for leg in instruments], [700.0, 705.0])
         self.assertTrue(all(leg["orderedQuantity"] == 3 for leg in instruments))
+
+    def test_preview_limit_keeps_five_wide_spread_at_two_to_one_or_better(self):
+        args = dict(symbol="SPY", call_put="CALL", expiry=date(2027, 1, 15),
+                    buy_strike=100, sell_strike=105, quantity=1)
+        accepted = build_vertical_preview_payload(**args, limit_price=1.66)
+        self.assertEqual(accepted["PreviewOrderRequest"]["Order"][0]["limitPrice"], 1.66)
+        precise = build_vertical_preview_payload(**args, limit_price=1.6666)
+        self.assertEqual(precise["PreviewOrderRequest"]["Order"][0]["limitPrice"], 1.6666)
+        with self.assertRaisesRegex(ValueError, "1:2"):
+            build_vertical_preview_payload(**args, limit_price=1.66666)
+        with self.assertRaisesRegex(ValueError, "1:2"):
+            build_vertical_preview_payload(**args, limit_price=1.67)
+        with self.assertRaises(ValueError):
+            build_vertical_preview_payload(**args, limit_price=float("nan"))
 
     def test_put_debit_vertical_requires_buy_above_sell(self):
         validate_vertical(

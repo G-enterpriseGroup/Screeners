@@ -35,6 +35,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SELECT_ALL = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
 
 FIXTURE = r'''
 import json
@@ -211,9 +212,18 @@ def in_grid(driver: webdriver.Chrome, callback):
             driver.switch_to.default_content()
         return False
 
+    deadline = time.monotonic() + 25
     try:
-        WebDriverWait(driver, 25).until(enter)
-        return callback()
+        while True:
+            WebDriverWait(driver, max(1, deadline - time.monotonic())).until(enter)
+            try:
+                return callback()
+            except StaleElementReferenceException:
+                # A Streamlit fragment rerun may replace the iframe between
+                # lookup and click; re-enter the current component once mounted.
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.1)
     finally:
         driver.switch_to.default_content()
 
@@ -333,6 +343,28 @@ def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[di
         return list(csv.DictReader(downloaded))
 
 
+def set_exact_grid_filter(driver: webdriver.Chrome, key: str, label: str, value: float) -> None:
+    """Use the real header popover to set an inclusive exact-value range."""
+    def enter() -> None:
+        driver.find_element(By.CSS_SELECTOR, f'.filter-button[data-key="{key}"]').click()
+        changed = driver.execute_script(
+            """
+            const panel=document.getElementById('filter-panel');
+            if(panel.hidden)return false;
+            for(const bound of ['min','max']){
+              const field=panel.querySelector('input[aria-label="'+arguments[0]+' '+bound+'"]');
+              if(!field)return false;
+              field.value=String(arguments[1]);
+              field.dispatchEvent(new Event('input',{bubbles:true}));
+            }
+            return true;
+            """,
+            label, value,
+        )
+        assert changed, (key, label)
+    in_grid(driver, enter)
+
+
 def test() -> None:
     with tempfile.TemporaryDirectory(prefix="vo_scanner_browser_") as temporary:
         folder = Path(temporary)
@@ -385,6 +417,8 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
             assert any(not event["waiting"] for event in initial_reads), initial_reads
@@ -452,13 +486,21 @@ def test() -> None:
             def assert_switch_visibility(checked, key="vo_smart_fill"):
                 # Click a static note to remove keyboard focus, then move the
                 # pointer away. Hover/focus must not be required for contrast.
-                note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
-                note.click()
-                ActionChains(driver).move_to_element(note).perform()
+                def clear_focus(_):
+                    try:
+                        note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        note.click()
+                        ActionChains(driver).move_to_element(note).perform()
+                        return True
+                    except (StaleElementReferenceException, ElementClickInterceptedException):
+                        return False
+                wait.until(clear_focus)
                 def settled(_):
                     info = driver.execute_script("""
                         const root=document.querySelector('.st-key-'+arguments[0]);
+                        if(!root)return null;
                         const input=root.querySelector('input[role="switch"]');
+                        if(!input)return null;
                         const label=input.closest('label');
                         const track=label.querySelector(':scope > div:first-of-type');
                         const thumb=track.firstElementChild;
@@ -469,7 +511,7 @@ def test() -> None:
                             thumb:h.backgroundColor,outline:t.outlineColor,outlineStyle:t.outlineStyle,
                             trackMid:box.left+box.width/2,thumbMid:dot.left+dot.width/2};
                     """, key)
-                    return info if info["checked"] == checked and ((info["thumbMid"] > info["trackMid"]) == checked) else False
+                    return info if info and info["checked"] == checked and ((info["thumbMid"] > info["trackMid"]) == checked) else False
                 appearance = wait.until(settled)
                 assert not appearance["hover"] and not appearance["focus"], appearance
                 assert appearance["outline"] == "rgb(251, 139, 30)", appearance
@@ -540,10 +582,12 @@ def test() -> None:
             assert not [item for item in events(event_path) if item["event"] == "chain"]
             form = wait.until(ready_scanner_form)
             target_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            wait.until(lambda _: target_input.get_attribute("value") == "110.0")
-            target_input.send_keys(Keys.CONTROL, "a")
+            assert target_input.get_attribute("value") == "no break even provided"
+            target_input.send_keys(SELECT_ALL, "a")
             target_input.send_keys("100")
-            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("500")
+            cost_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
+            cost_input.send_keys(SELECT_ALL, "a")
+            cost_input.send_keys("500")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
 
             wait.until(lambda _: checked_count(driver) == 0)
@@ -564,7 +608,7 @@ def test() -> None:
                 });
             """)
             assert all(item['width'] == 36 and item['height'] == 20 for item in switches), switches
-            assert switches[1]['on'] == '"ON"', switches
+            assert switches[1]['on'] == '"OFF"', switches
             help_button = driver.find_element(By.CSS_SELECTOR, '.vo-help button')
             ActionChains(driver).move_to_element(help_button).perform()
             def help_visible(_):
@@ -577,12 +621,21 @@ def test() -> None:
             wait.until(help_visible)
             driver.find_element(By.CSS_SELECTOR, '.vo-note').click()
             ActionChains(driver).move_to_element(driver.find_element(By.CSS_SELECTOR, '.vo-note')).perform()
-            # New sessions default to annual winners; explicit ALL stays selected.
-            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            # The full qualified universe is the default; the optional BE
+            # filter requires a user-selected target and explicit opt-in.
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
+            wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
+            driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) > 3)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_sort [role="combobox"]').click()
+            wait.until(lambda _: driver.find_element(
+                By.XPATH, '//*[@role="option" and normalize-space(.)="TARGET DISTANCE"]',
+            )).click()
             nearby = grid_snapshot(driver)["rows"]
             be_values = [float(row["values"][8].replace('$', '').replace(',', '')) for row in nearby]
             assert all(95 <= value <= 105 for value in be_values), be_values
@@ -593,7 +646,7 @@ def test() -> None:
             assert all(95 <= float(row["Breakeven ($)"]) <= 105 for row in filtered_near)
             assert all(float(row["Risk Reward (to 1)"]) >= 2 for row in filtered_near)
             tolerance = driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_range_percent input')
-            tolerance.send_keys(Keys.CONTROL, "a")
+            tolerance.send_keys(SELECT_ALL, "a")
             tolerance.send_keys("3", Keys.TAB)
             wait.until(lambda _: "BREAKEVEN $97.00 TO $103.00" in driver.find_element(By.TAG_NAME, "body").text)
             tighter = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
@@ -602,6 +655,10 @@ def test() -> None:
             assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_sort [role="combobox"]').click()
+            wait.until(lambda _: driver.find_element(
+                By.XPATH, '//*[@role="option" and normalize-space(.)="FILL + TARGET"]',
+            )).click()
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
@@ -862,6 +919,15 @@ def test() -> None:
             assert not any(item["event"] == "place" for item in events(event_path)), (
                 "Preview alone placed an order"
             )
+            # A saved BE toggle must not impose a range on a later scan whose
+            # target is cleared. Exercise the transition through ticker paste.
+            # Leave BE explicitly ON before clearing the target. Scroll the
+            # toggle clear of Streamlit's sticky toolbar after the review.
+            if not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
+                be_label = driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label')
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'})", be_label)
+                be_label.click()
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
             # Bulk paste must not fetch quotes or chains by itself or place orders.
             chain_before_list = len([item for item in events(event_path) if item["event"] == "chain"])
             paste_button = driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]')
@@ -883,45 +949,60 @@ def test() -> None:
             # Loading a list resets the prior ticker's result without scanning.
             assert driver.find_elements(By.CSS_SELECTOR, '[data-testid="stSelectbox"]')
             assert "BEST VERTICAL SPREADS BY YEAR" not in driver.find_element(By.TAG_NAME, "body").text
-            # Empty inputs use the current underlying Last and impose no cost cap.
+            # Clearing either input restores the literal no-filter defaults.
+            # The scan must not derive a BE ceiling from spot or a wall.
             form = wait.until(ready_scanner_form)
             for label in ("Target Breakeven", "Max Cost"):
                 field = form.find_element(By.CSS_SELECTOR, f'input[aria-label="{label}"]')
                 field.click()
-                field.send_keys(Keys.CONTROL, "a")
+                field.send_keys(SELECT_ALL, "a")
                 field.send_keys(Keys.BACKSPACE)
                 assert field.get_attribute("value") == "", (label, field.get_attribute("value"))
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "MAX COST NO CEILING" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "(SPOT DEFAULT)" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "MAX COST no ceiling cost provided" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "TARGET BREAKEVEN no break even provided" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
-            ).get_attribute("value") == "100.0")
+            ).get_attribute("value") == "no break even provided")
+            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
+            if not driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected():
+                driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            uncapped = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
+                                    "MSFT_vertical_filtered.csv")
+            assert len(uncapped) == 60
+            assert all(not row["Target Breakeven ($)"] and not row["Max Cost Filter ($)"]
+                       for row in uncapped), uncapped[:2]
+            assert all(float(row["Risk Reward (to 1)"]) >= 2 for row in uncapped)
             assert grid_snapshot(driver)["rows"]
             assert not any(item["event"] == "place" for item in events(event_path))
 
-            # The seeded spot target can be overwritten with an explicit target
-            # and the cost ceiling restored without changing the one-ticker flow.
+            # An explicit target and cost ceiling can still be supplied after
+            # a scan with no requested BE or cost filtering.
             form = wait.until(ready_scanner_form)
             breakeven_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
             breakeven_input.click()
-            breakeven_input.send_keys(Keys.CONTROL, "a")
+            breakeven_input.send_keys(SELECT_ALL, "a")
             breakeven_input.send_keys("103")
-            form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').send_keys("150")
+            cost_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
+            cost_input.click()
+            cost_input.send_keys(SELECT_ALL, "a")
+            cost_input.send_keys("150")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "(CUSTOM)" in driver.find_element(By.TAG_NAME, "body").text)
             assert "MAX COST" in driver.find_element(By.TAG_NAME, "body").text
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "150"
             assert not any(item["event"] == "place" for item in events(event_path))
 
-            # A manual target belongs to its ticker, while another ticker gets
-            # its own preset. Returning restores the original manual override.
+            # A manual target belongs to its ticker. Another ticker keeps the
+            # no-filter default, and returning restores the manual override.
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
-            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "90.0")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
-            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MSFT", Keys.TAB)
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "103")
 
@@ -973,15 +1054,15 @@ def test() -> None:
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "110.0")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
-            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "90.0")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_restart
             assert not any(item["event"] == "place" for item in events(event_path))
-            print("GEX browser cache PASS after real process restart; nearest call/put presets PASS", flush=True)
+            print("GEX browser cache PASS after real process restart; optional breakeven defaults PASS", flush=True)
             # The production renderer must show useful partial results, keep
             # checked identities and finish without fetching completed chains.
             form = wait.until(ready_scanner_form)
@@ -1009,18 +1090,17 @@ def test() -> None:
             # Jump past the old cutoff, select there, return to page one and
             # download the entire dataset rather than the 200-row screen page.
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
-            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MASSIVE", Keys.TAB)
             form = wait.until(ready_scanner_form)
             target = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            target.send_keys(Keys.CONTROL, "a")
-            target.send_keys("100")
+            assert target.get_attribute("value") == "no break even provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
-            # The preceding manual BEST selection must survive a fresh scan.
-            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
-            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            # A fresh session starts with every qualifying spread visible.
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
             wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
             if driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
                 driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
@@ -1028,14 +1108,14 @@ def test() -> None:
             assert "SHORTLIST" not in driver.find_element(By.TAG_NAME, "body").text
             assert "SAFETY MODE" not in driver.find_element(By.TAG_NAME, "body").text
             page = driver.find_element(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
-            page.send_keys(Keys.CONTROL, "a")
+            page.send_keys(SELECT_ALL, "a")
             page.send_keys("51", Keys.TAB)
             wait.until(lambda _: "PAGE 51/51" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "100 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
             page = driver.find_element(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
-            page.send_keys(Keys.CONTROL, "a")
+            page.send_keys(SELECT_ALL, "a")
             page.send_keys("1", Keys.TAB)
             wait.until(lambda _: "PAGE 1/51" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: checked_count(driver) == 1)
@@ -1045,8 +1125,37 @@ def test() -> None:
             assert sum(row["Type"] == "CALL" for row in whole) == 5050
             assert sum(row["Type"] == "PUT" for row in whole) == 5050
             assert len({(r["Type"], r["Buy Strike"], r["Sell Strike"]) for r in whole}) == 10100
+            assert all(not row["Target Breakeven ($)"] and not row["Max Cost Filter ($)"]
+                       for row in whole), whole[:2]
+            late_row = whole[-1]
+            late_identity = (late_row["Type"], late_row["Buy Strike"], late_row["Sell Strike"])
+            assert late_identity not in {
+                (row["Type"], row["Buy Strike"], row["Sell Strike"])
+                for row in whole[:200]
+            }
+            # The row came from the far end of the 10,100-result export. Header
+            # filters must search the stored universe, not the 200-row page.
+            set_exact_grid_filter(driver, "buy", "BUY STRIKE", float(late_row["Buy Strike"]))
+            wait.until(lambda _: "ALL 100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            set_exact_grid_filter(driver, "sell", "SELL STRIKE", float(late_row["Sell Strike"]))
+            wait.until(lambda _: "ALL 1 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "PAGE 1/1" in driver.find_element(By.TAG_NAME, "body").text)
+            isolated = wait.until(lambda _: grid_snapshot(driver)["rows"] if len(grid_snapshot(driver)["rows"]) == 1 else False)
+            assert (isolated[0]["values"][1], float(isolated[0]["values"][3]),
+                    float(isolated[0]["values"][4])) == (
+                late_row["Type"], float(late_row["Buy Strike"]), float(late_row["Sell Strike"])
+            ), (isolated, late_row)
+            isolated_csv = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
+                                        "MASSIVE_vertical_filtered.csv")
+            identifying_columns = (
+                "Ticker", "Type", "Expiration", "Buy Strike", "Sell Strike",
+                "Cost Per Contract ($)", "Breakeven ($)", "Risk Reward (to 1)",
+            )
+            assert len(isolated_csv) == 1 and all(
+                isolated_csv[0][column] == late_row[column] for column in identifying_columns
+            ), isolated_csv
             assert not any(e["event"] == "place" for e in events(event_path))
-            print("Full-universe browser PASS: 10,100 pairs, last page, cross-page selection, complete CSV", flush=True)
+            print("Full-universe browser PASS: 10,100 pairs, last page, cross-page selection, full CSV and late-row column filtering", flush=True)
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
