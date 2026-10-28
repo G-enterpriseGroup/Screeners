@@ -77,15 +77,16 @@ class StubETrade:
                no_of_strikes=no_of_strikes, chain_type=chain_type)
         expiry_code = f"{year % 100:02d}{month:02d}{day:02d}"
         pairs = []
-        for strike in (90, 95, 100, 105, 110):
-            call_last = (115 - strike) / 5 + 1
-            put_last = (strike - 85) / 5 + 1
+        strikes = range(50, 151) if symbol == "MASSIVE" else (90, 95, 100, 105, 110)
+        for strike in strikes:
+            call_last = ((151 if symbol == "MASSIVE" else 115) - strike) / 5 + 1
+            put_last = (strike - (49 if symbol == "MASSIVE" else 85)) / 5 + 1
             def option(side, last):
                 return {
                     "strikePrice": strike, "lastPrice": last,
                     # Asymmetric quotes: natural ASK differs from Last and MID.
-                    "bid": last - .02,
-                    "ask": last + .02 + .002 * (strike - 90),
+                    "bid": last - (.01 if symbol == "MASSIVE" else .02),
+                    "ask": last + .01 if symbol == "MASSIVE" else last + .02 + .002 * (strike - 90),
                     "osiKey": f"{symbol}{expiry_code}{side}{strike}",
                 }
             pairs.append({"Call": option("C", call_last),
@@ -492,6 +493,11 @@ def test() -> None:
             assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
                        for item in chain_calls), chain_calls
 
+            # Complete paged results are now the initial view; annual best is
+            # still available as an optional view with the same highlights.
+            assert "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text
+            driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
             best = grid_snapshot(driver)
             from datetime import date
             from zoneinfo import ZoneInfo
@@ -863,6 +869,41 @@ def test() -> None:
             assert "LAST SCAN PASS" in driver.find_element(By.TAG_NAME, "body").text
             assert not any(e["event"] == "place" for e in events(event_path))
             print("Vertical Options partial results and continuation PASS (3 unique chains, no orders)", flush=True)
+
+            # 101 strikes per side => 10,100 qualifying spreads for ONE expiry.
+            # Jump past the old cutoff, select there, return to page one and
+            # download the entire dataset rather than the 200-row screen page.
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(Keys.CONTROL, "a")
+            ticker.send_keys("MASSIVE", Keys.TAB)
+            form = wait.until(ready_scanner_form)
+            target = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
+            target.send_keys(Keys.CONTROL, "a")
+            target.send_keys("100")
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert "SHORTLIST" not in driver.find_element(By.TAG_NAME, "body").text
+            assert "SAFETY MODE" not in driver.find_element(By.TAG_NAME, "body").text
+            page = driver.find_element(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
+            page.send_keys(Keys.CONTROL, "a")
+            page.send_keys("51", Keys.TAB)
+            wait.until(lambda _: "PAGE 51/51" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "100 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
+            in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
+            wait.until(lambda _: checked_count(driver) == 1)
+            page = driver.find_element(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
+            page.send_keys(Keys.CONTROL, "a")
+            page.send_keys("1", Keys.TAB)
+            wait.until(lambda _: "PAGE 1/51" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: checked_count(driver) == 1)
+            whole = download_csv(driver, wait, downloads, "vo_export_all_qualified",
+                                 "MASSIVE_vertical_all_qualified.csv")
+            assert len(whole) == 10100
+            assert sum(row["Type"] == "CALL" for row in whole) == 5050
+            assert sum(row["Type"] == "PUT" for row in whole) == 5050
+            assert len({(r["Type"], r["Buy Strike"], r["Sell Strike"]) for r in whole}) == 10100
+            assert not any(e["event"] == "place" for e in events(event_path))
+            print("Full-universe browser PASS: 10,100 pairs, last page, cross-page selection, complete CSV", flush=True)
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
