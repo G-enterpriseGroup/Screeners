@@ -847,7 +847,9 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
                     loaded += 1
                     consecutive_failures = 0
                 else:
-                    consecutive_failures += 1
+                    # Empty chains are not connectivity failures: later listed
+                    # expirations can still have valid contracts.
+                    consecutive_failures = 0
                     errors.append(f"{_date_label(expiry)} // no quoted contracts returned")
             except Exception as exc:
                 consecutive_failures += 1
