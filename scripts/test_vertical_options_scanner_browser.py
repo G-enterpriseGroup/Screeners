@@ -154,7 +154,15 @@ if not os.environ.get("VO_SCANNER_SKIP_GEX_SEED"):
     _results("scanner-fixture").setdefault("ETRADE_TEST", {
         "callWall": {"strike": 120}, "updated": "2026-10-21T12:00:00-04:00",
     })
-render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
+if st.session_state.get("fixture_away"):
+    if st.button("RETURN TO SCANNER"):
+        st.session_state["fixture_away"] = False
+        st.rerun()
+else:
+    if st.button("LEAVE SCANNER"):
+        st.session_state["fixture_away"] = True
+        st.rerun()
+    render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
 # Same keyed native control and shared helper used by production Risk Sizing.
 from src.theme import install_native_switch_theme
 install_native_switch_theme("risk_capital_source_tactical")
@@ -534,8 +542,10 @@ def test() -> None:
             assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
                        for item in chain_calls), chain_calls
 
-            # User-selected default: every nearby pair, nearest breakeven first.
-            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            # New sessions default to annual winners; explicit ALL stays selected.
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) > 3)
             nearby = grid_snapshot(driver)["rows"]
@@ -557,6 +567,13 @@ def test() -> None:
             assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
+            driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input'))
+            assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
+            assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_range_percent input').get_attribute("value") in ("3.00", "3.0", "3")
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
@@ -962,7 +979,9 @@ def test() -> None:
             target.send_keys("100")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
-            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            # The preceding manual BEST selection must survive a fresh scan.
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             if driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
                 driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)

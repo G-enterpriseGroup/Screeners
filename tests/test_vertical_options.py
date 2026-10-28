@@ -13,6 +13,50 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_presentation_defaults_and_widget_cleanup_preserve_user_choices(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        state = {}
+        with patch.object(vo.st, "session_state", state):
+            vo._restore_presentation()
+            self.assertEqual(state["vo_results_view"], "BEST PER YEAR")
+            self.assertTrue(state["vo_be_filter_enabled"])
+            self.assertEqual(state["vo_be_range_percent"], 5)
+            chosen = {"vo_results_view": "ALL QUALIFIED", "vo_be_filter_enabled": False,
+                      "vo_be_range_percent": 0.0, "vo_all_pair_side": "PUT",
+                      "vo_all_pair_direction": "DESC", "vo_auto_finish": False}
+            for key, value in chosen.items():
+                state[key] = value
+                vo._remember_presentation(key)
+            # Simulate Streamlit deleting controls while another tab is active.
+            for key in vo._PRESENTATION_DEFAULTS:
+                state.pop(key, None)
+            vo._restore_presentation()
+            for key, value in chosen.items():
+                self.assertEqual(state[key], value)
+            vo._restore_presentation()  # Ordinary rerun cannot override choices.
+            self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
+        with patch.object(vo.st, "session_state", {}):
+            vo._restore_presentation()
+            self.assertEqual(vo.st.session_state["vo_results_view"], "BEST PER YEAR")
+
+    def test_bootstrap_timeout_is_actionable_without_overwriting_preferences(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        state = {"_vo_bootstrap_started": 1}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo, "_hydrate_vertical_options_pricing", return_value=False),
+              patch.object(vo.time, "monotonic", return_value=14),
+              patch.object(vo.st, "error") as error,
+              patch.object(vo.st, "button", return_value=False),
+              patch.object(vo.st, "rerun") as rerun):
+            vo._render_vertical_options_bootstrap.__wrapped__("test")
+            error.assert_not_called()
+            rerun.assert_called_once()
+            self.assertTrue(state["_vo_bootstrap_failed"])
+            self.assertNotIn("_vo_workspace_ready", state)
+            self.assertNotIn("_vo_pricing_mode_preference", state)
+
     def test_calculation_budget_resumes_all_pairs_without_repricing_old_expirations(self):
         from unittest.mock import MagicMock, patch
         import src.vertical_options_ui as vo
