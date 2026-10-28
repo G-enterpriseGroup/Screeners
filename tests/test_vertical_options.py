@@ -1223,6 +1223,30 @@ class VerticalOptionsTests(unittest.TestCase):
             quote = {"QuoteResponse": {"QuoteData": [{"All": {"primaryExchange": primary}}]}}
             self.assertEqual(_tradingview_listing_exchange("EXAMPLE", quote), expected)
 
+    def test_tradingview_accepts_documented_etrade_dash_padding(self):
+        from src.vertical_options_ui import _tradingview_spread_formula
+        from src.option_book import extract_option_rows
+        from src.vertical_options import scan_vertical_candidates
+        expiry = date(2026, 10, 30)
+        payload = {"OptionChainResponse": {"OptionPair": [{"Call": {
+            "strikePrice": strike, "lastPrice": price,
+            "osiKey": f"SOXX--261030C{strike * 1000:08d}",
+        }} for strike, price in [(415, 100), (760, 5)]]}}
+        rows = extract_option_rows(payload, expiry=expiry)
+        candidates, _ = scan_vertical_candidates(symbol="SOXX", spot_last=511.06,
+            option_rows=rows, target_breakeven=510, max_cost=None)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(_tradingview_spread_formula(candidates[0]),
+                         "OPRA:SOXX261030C415.0-OPRA:SOXX261030C760.0")
+        for root, padding in [("F", "-----"), ("GE", "----"), ("IBM", "---"), ("SPXW", "--")]:
+            base = {"symbol": root, "expiry": expiry, "call_put": "PUT",
+                    "buy_strike": 101.5, "sell_strike": 100,
+                    "buy_osi": f"{root}{padding}261030P00101500",
+                    "sell_osi": f"{root}{padding}261030P00100000"}
+            self.assertEqual(_tradingview_spread_formula(base),
+                             f"OPRA:{root}261030P101.5-OPRA:{root}261030P100.0")
+            self.assertEqual(_tradingview_spread_formula(base | {"buy_strike": 102}), "")
+
     def test_tradingview_links_are_isolated_nontrading_actions(self):
         source = (Path(__file__).resolve().parents[1]
                   / "src" / "components" / "vo_spread_scroller_v1" / "index.html"
