@@ -62,6 +62,8 @@ vo._PRICING_PREFERENCE_COMPONENT = delayed_preference_component
 if os.environ.get("VO_SCANNER_PARTIAL_TEST"):
     import src.vertical_options_ui as vo
     vo._SCAN_BATCH_EXPIRATIONS = 1
+    st.session_state.setdefault("vo_auto_finish", False)
+    st.session_state.setdefault("_vo_auto_finish_previous", False)
 
 LOG = Path(os.environ["VO_SCANNER_TEST_LOG"])
 EXPIRIES = [date(date.today().year + offset, 6, 20) for offset in (1, 2, 3)]
@@ -316,6 +318,7 @@ def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[di
         return False
 
     target = folder / filename
+    target.unlink(missing_ok=True)
     wait.until(ready).click()
     wait.until(lambda _: target.exists() and not list(folder.glob("*.crdownload")))
     with target.open(encoding="utf-8", newline="") as downloaded:
@@ -531,8 +534,31 @@ def test() -> None:
             assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
                        for item in chain_calls), chain_calls
 
-            # Annual best is the required default; every pair remains accessible.
-            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            # User-selected default: every nearby pair, nearest breakeven first.
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) > 3)
+            nearby = grid_snapshot(driver)["rows"]
+            be_values = [float(row["values"][8].replace('$', '').replace(',', '')) for row in nearby]
+            assert all(95 <= value <= 105 for value in be_values), be_values
+            assert [abs(value - 100) for value in be_values] == sorted(abs(value - 100) for value in be_values), be_values
+            filtered_near = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
+                                        "SPY_vertical_filtered.csv")
+            assert len(filtered_near) > 3
+            assert all(95 <= float(row["Breakeven ($)"]) <= 105 for row in filtered_near)
+            assert all(float(row["Risk Reward (to 1)"]) >= 2 for row in filtered_near)
+            tolerance = driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_range_percent input')
+            tolerance.send_keys(Keys.CONTROL, "a")
+            tolerance.send_keys("3", Keys.TAB)
+            wait.until(lambda _: "BREAKEVEN $97.00 TO $103.00" in driver.find_element(By.TAG_NAME, "body").text)
+            tighter = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
+                                   "SPY_vertical_filtered.csv")
+            assert 0 < len(tighter) < len(filtered_near)
+            assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
+            wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
+            driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
             best = grid_snapshot(driver)
             from datetime import date
@@ -909,16 +935,15 @@ def test() -> None:
             wait.until(lambda _: bool(grid_snapshot(driver)["rows"]))
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
-            for checked in (2, 3):
-                resume = driver.find_element(By.XPATH, '//button[contains(., "CONTINUE ALL YEARS")]')
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'})", resume)
-                resume.click()
-                wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"]) == chain_before_restart + checked)
-                if checked == 2:
-                    wait.until(lambda _: "PARTIAL ALL-YEAR SCAN // 2/3" in driver.find_element(By.TAG_NAME, "body").text)
-                else:
-                    wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
-                wait.until(lambda _: checked_count(driver) == 1)
+            resume = driver.find_element(By.XPATH, '//button[contains(., "CONTINUE ALL YEARS")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", resume)
+            resume.click()
+            wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"]) == chain_before_restart + 2)
+            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN // 2/3" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: checked_count(driver) == 1)
+            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_auto_finish label').click()
+            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: checked_count(driver) == 1)
             calls = [e for e in events(event_path) if e["event"] == "chain"][chain_before_restart:]
             assert len(calls) == len({(e["year"], e["month"], e["day"]) for e in calls}) == 3
             assert "LAST SCAN PASS" in driver.find_element(By.TAG_NAME, "body").text
@@ -937,8 +962,9 @@ def test() -> None:
             target.send_keys("100")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
-            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
-            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            if driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
+                driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
             assert "SHORTLIST" not in driver.find_element(By.TAG_NAME, "body").text
             assert "SAFETY MODE" not in driver.find_element(By.TAG_NAME, "body").text
