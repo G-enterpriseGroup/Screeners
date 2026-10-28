@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 import zlib
 
 from selenium import webdriver
@@ -220,6 +221,8 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             })),
             href:row.querySelector('.open[href]')?.href||'',
             target:row.querySelector('.open[href]')?.target||'',
+            tvHref:[...row.querySelectorAll('.open[href]')].find(a=>a.textContent==='TV')?.href||'',
+            tvTarget:[...row.querySelectorAll('.open[href]')].find(a=>a.textContent==='TV')?.target||'',
           })),
           height:scroll.offsetHeight,
           horizontalOverflow:scroll.scrollWidth>scroll.clientWidth||
@@ -269,6 +272,20 @@ def exact_optionstrat_url(values: list[str]) -> str:
     strategy = "bull-call-spread" if side == "CALL" else "bear-put-spread"
     legs = f"{long_leg},{short_leg}" if side == "CALL" else f"{short_leg},{long_leg}"
     return f"https://optionstrat.com/build/{strategy}/{symbol}/{legs}"
+
+
+def assert_exact_tradingview_formula(row: dict) -> None:
+    symbol, side, expiration, buy, sell = row["values"][:5]
+    code = datetime.strptime(expiration, "%b-%d-%y").strftime("%y%m%d")
+    suffix = "C" if side == "CALL" else "P"
+    def strike_text(value):
+        text = f"{float(value):g}"
+        return text if "." in text else text + ".0"
+    expected = f"OPRA:{symbol}{code}{suffix}{strike_text(buy)}-OPRA:{symbol}{code}{suffix}{strike_text(sell)}"
+    parsed = urlsplit(row["tvHref"])
+    assert (parsed.scheme, parsed.netloc, parsed.path) == ("https", "www.tradingview.com", "/chart/"), row
+    assert parse_qs(parsed.query)["symbol"] == [expected], row
+    assert row["tvTarget"] == "_blank", row
 
 
 def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
@@ -493,10 +510,8 @@ def test() -> None:
             assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
                        for item in chain_calls), chain_calls
 
-            # Complete paged results are now the initial view; annual best is
-            # still available as an optional view with the same highlights.
-            assert "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text
-            driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
+            # Annual best is the required default; every pair remains accessible.
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
             best = grid_snapshot(driver)
             from datetime import date
@@ -530,6 +545,8 @@ def test() -> None:
             assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
             assert best["height"] == 3 * 43, best
+            for row in best["rows"]:
+                assert_exact_tradingview_formula(row)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
@@ -575,6 +592,8 @@ def test() -> None:
                 return snapshot if len(snapshot["rows"]) > 3 else False
             all_rows = wait.until(expanded_grid)
             assert not all_rows["horizontalOverflow"], all_rows
+            for row in all_rows["rows"]:
+                assert_exact_tradingview_formula(row)
             assert checked_count(driver) == 1
 
             def all_types_and_strikes():
@@ -881,6 +900,9 @@ def test() -> None:
             target.send_keys(Keys.CONTROL, "a")
             target.send_keys("100")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
             assert "SHORTLIST" not in driver.find_element(By.TAG_NAME, "body").text
             assert "SAFETY MODE" not in driver.find_element(By.TAG_NAME, "body").text

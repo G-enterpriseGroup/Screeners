@@ -1150,7 +1150,7 @@ class VerticalOptionsTests(unittest.TestCase):
             "-.SPY270115P595,.SPY270115P600",
         )
 
-    def test_tradingview_handoff_uses_supported_options_builder(self):
+    def test_tradingview_handoff_charts_exact_buy_minus_sell_legs(self):
         from src.vertical_options_ui import _tradingview_spread_url, _spread_table_row
         from urllib.parse import parse_qs, urlsplit
 
@@ -1161,13 +1161,15 @@ class VerticalOptionsTests(unittest.TestCase):
         url = _tradingview_spread_url(soxx)
         self.assertEqual(urlsplit(url).scheme, "https")
         self.assertEqual(urlsplit(url).hostname, "www.tradingview.com")
-        self.assertEqual(urlsplit(url).path, "/options/strategies/handbook/")
-        self.assertEqual(parse_qs(urlsplit(url).query)["symbol"], ["NASDAQ:SOXX"])
-        self.assertNotIn("OPRA:", url)
+        self.assertEqual(urlsplit(url).path, "/chart/")
+        self.assertEqual(parse_qs(urlsplit(url).query)["symbol"],
+                         ["OPRA:SOXX290119C395.0-OPRA:SOXX290119C890.0"])
         self.assertEqual(
-            _tradingview_spread_url(soxx | {"call_put": "PUT"}),
-            url,
-        )  # TradingView doesn't support preselecting option legs via external URL.
+            parse_qs(urlsplit(_tradingview_spread_url(soxx | {
+                "call_put": "PUT", "buy_strike": 890, "sell_strike": 395,
+            })).query)["symbol"],
+            ["OPRA:SOXX290119P890.0-OPRA:SOXX290119P395.0"],
+        )
 
         candidate = {
             **soxx, "id": "example", "buy_last": 6, "sell_last": 3,
@@ -1179,37 +1181,47 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertIn("optionstrat.com", rendered["optionstrat_url"])
         self.assertEqual(len(rendered["values"]), 12)
 
-    def test_tradingview_quote_listing_and_safe_unknown_fallback(self):
+    def test_tradingview_preserves_option_roots_fractional_strikes_and_identity(self):
         from src.vertical_options_ui import (
-            _tradingview_listing_exchange, _tradingview_spread_url,
+            _tradingview_spread_formula, _tradingview_spread_url,
         )
-        from urllib.parse import parse_qs, urlsplit
+        base = {"symbol": "SPX", "expiry": date(2027, 1, 15), "call_put": "CALL",
+                "buy_strike": 6000, "sell_strike": 6005,
+                "buy_osi": "SPXW  270115C06000000", "sell_osi": "SPXW  270115C06005000"}
+        self.assertEqual(
+            _tradingview_spread_formula(base),
+            "OPRA:SPXW270115C6000.0-OPRA:SPXW270115C6005.0",
+        )
+        fractional = {"symbol": "SPY", "expiry": date(2027, 1, 15), "call_put": "PUT",
+                      "buy_strike": 600.5, "sell_strike": 595.125,
+                      "buy_osi": "SPY270115P00600500", "sell_osi": ".SPY270115P595.125"}
+        self.assertEqual(
+            _tradingview_spread_formula(fractional),
+            "OPRA:SPY270115P600.5-OPRA:SPY270115P595.125",
+        )
+        self.assertEqual(_tradingview_spread_url(base, exchange="NYSE"),
+                         _tradingview_spread_url(base, exchange="UNKNOWN"))
+        self.assertIn("C6000.125-", _tradingview_spread_formula(base | {
+            "buy_strike": 6000.125, "buy_osi": ".SPXW270115C6000.125",
+        }))
+        for bad in ({"symbol": "SPY"}, base | {"buy_strike": float("nan")},
+                    base | {"sell_strike": -1}, base | {"call_put": "OTHER"},
+                    base | {"buy_osi": "SPXW270116C06000000"},
+                    base | {"buy_osi": "SPXW270115P06000000"},
+                    base | {"sell_osi": "SPXW270115C06010000"},
+                    base | {"buy_osi": "bad-root"}):
+            with self.subTest(bad=bad):
+                self.assertEqual(_tradingview_spread_url(bad), "")
 
+    def test_tradingview_existing_quote_listing_mapping(self):
+        from src.vertical_options_ui import _tradingview_listing_exchange
         self.assertEqual(_tradingview_listing_exchange("SOXX"), "NASDAQ")
         self.assertEqual(_tradingview_listing_exchange("SPY"), "AMEX")
         self.assertEqual(_tradingview_listing_exchange("SPX"), "SP")
-        for primary, expected in [
-            ("NYSE", "NYSE"), ("NASDAQ", "NASDAQ"),
-            ("ARCA", "AMEX"), ("WRONG", ""),
-        ]:
-            quote = {"QuoteResponse": {"QuoteData": [{"All": {
-                "primaryExchange": primary,
-            }}]}}
-            self.assertEqual(
-                _tradingview_listing_exchange("EXAMPLE", quote),
-                expected,
-            )
-        candidate = {"symbol": "EXAMPLE"}
-        known = _tradingview_spread_url(candidate, exchange="NYSE")
-        self.assertEqual(parse_qs(urlsplit(known).query)["symbol"], ["NYSE:EXAMPLE"])
-        self.assertEqual(
-            _tradingview_spread_url(candidate, exchange="UNKNOWN"),
-            "https://www.tradingview.com/options/strategies/handbook/",
-        )
-        self.assertEqual(
-            _tradingview_spread_url({"symbol": "SPX", "buy_osi": "SPXW  270115C06000000"}),
-            "https://www.tradingview.com/options/strategies/handbook/?symbol=SP%3ASPX",
-        )
+        for primary, expected in [("NYSE", "NYSE"), ("NASDAQ", "NASDAQ"),
+                                  ("ARCA", "AMEX"), ("WRONG", "")]:
+            quote = {"QuoteResponse": {"QuoteData": [{"All": {"primaryExchange": primary}}]}}
+            self.assertEqual(_tradingview_listing_exchange("EXAMPLE", quote), expected)
 
     def test_tradingview_links_are_isolated_nontrading_actions(self):
         source = (Path(__file__).resolve().parents[1]
@@ -1220,13 +1232,13 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertIn('safeTradingViewUrl(row.tradingview_url)', source)
         self.assertIn('safeOptionStratUrl(row.optionstrat_url)', source)
         self.assertIn('url.hostname==="www.tradingview.com"', source)
-        self.assertIn('url.pathname==="/options/strategies/handbook/"', source)
-        self.assertNotIn('url.pathname==="/chart/"', source)
+        self.assertIn('url.pathname==="/chart/"', source)
+        self.assertNotIn('/options/strategies/handbook/', source)
         self.assertIn('open.rel="noopener noreferrer"', source)
         self.assertIn('["SELECT","OS / TV","TICKER"', source)
         self.assertIn('st.columns(2, gap="small")', ui)
-        self.assertIn('OPEN TRADINGVIEW OPTIONS BUILDER', ui)
-        self.assertIn('The builder does not auto-import option legs', ui)
+        self.assertIn('OPEN SPREAD CHART IN TRADINGVIEW', ui)
+        self.assertIn('BUY premium minus SELL premium, per share.', ui)
 
     def test_three_scan_controls_accept_prices_and_reject_invalid_values(self):
         from src.vertical_options_ui import _entered_price
