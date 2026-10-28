@@ -726,6 +726,47 @@ ui._render_gex_exports(
             "<table></table>", 1, heading="CBOE OVERVIEW",
         ))
 
+    def test_compact_gex_screenshot_layout_is_scoped_to_gex_only(self):
+        """Prevent blue full-width export banners and phantom build/receipt gaps."""
+        root = Path(__file__).resolve().parents[1]
+        workspace = (root / "src/gex_workspace_v2.py").read_text(encoding="utf-8")
+        base = (root / "src/gex_ui_v3_base.py").read_text(encoding="utf-8")
+        ui = (root / "src/gex_ui_v3.py").read_text(encoding="utf-8")
+
+        self.assertIn('with st.container(key="gexv3_workspace", gap=None):', workspace)
+        self.assertIn('st.html(_gex_build_badge())', workspace)
+        self.assertLess(
+            workspace.index('with st.container(key="gexv3_workspace", gap=None):'),
+            workspace.index('st.html(_gex_build_badge())'),
+        )
+        self.assertLess(
+            workspace.index('st.html(_gex_build_badge())'),
+            workspace.index('_render_with_style_only_html(\n            client,'),
+        )
+        self.assertIn(
+            '.st-key-gexv3_workspace div[data-testid="stDownloadButton"] button',
+            base,
+        )
+        self.assertIn(
+            '.st-key-gexv3_workspace div[data-testid="stLinkButton"] a',
+            base,
+        )
+        self.assertIn(
+            '.st-key-gexv3_workspace button[data-testid="stBaseButton-primary"]',
+            base,
+        )
+        self.assertIn('background: #050505 !important;', base)
+        self.assertIn('border: 1px solid #fb8b1e !important;', base)
+        self.assertIn(
+            'cols = st.columns([1.4, 1.35, 1.1, 3.3], gap="small")',
+            ui,
+        )
+        self.assertIn('key=f"{key_prefix}_visual_export"', ui)
+        self.assertIn('key=f"{key_prefix}_strikes_export"', ui)
+        # Hidden broker UI must stay hidden; do not alter quote/refresh logic.
+        self.assertIn('show_etrade_overview = False', base)
+        self.assertIn('with cboe_refresh_col:', base)
+
     def test_cboe_publication_receipt_is_directly_above_add_tickers(self):
         import ast
 

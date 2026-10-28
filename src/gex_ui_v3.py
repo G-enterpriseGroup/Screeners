@@ -1072,7 +1072,8 @@ def _render_gex_exports(
         ticker for ticker in displayed_tickers
         if isinstance(result_map.get(ticker), dict)
     ]
-    cols = st.columns([1.75, 1.65, 1.45], gap="small")
+    # Downloads are compact actions, not three full-width banners.
+    cols = st.columns([1.4, 1.35, 1.1, 3.3], gap="small")
     with cols[0]:
         st.download_button(
             "EXPORT OVERVIEW CSV",
