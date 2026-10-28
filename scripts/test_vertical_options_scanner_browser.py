@@ -486,13 +486,21 @@ def test() -> None:
             def assert_switch_visibility(checked, key="vo_smart_fill"):
                 # Click a static note to remove keyboard focus, then move the
                 # pointer away. Hover/focus must not be required for contrast.
-                note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
-                note.click()
-                ActionChains(driver).move_to_element(note).perform()
+                def clear_focus(_):
+                    try:
+                        note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        note.click()
+                        ActionChains(driver).move_to_element(note).perform()
+                        return True
+                    except (StaleElementReferenceException, ElementClickInterceptedException):
+                        return False
+                wait.until(clear_focus)
                 def settled(_):
                     info = driver.execute_script("""
                         const root=document.querySelector('.st-key-'+arguments[0]);
+                        if(!root)return null;
                         const input=root.querySelector('input[role="switch"]');
+                        if(!input)return null;
                         const label=input.closest('label');
                         const track=label.querySelector(':scope > div:first-of-type');
                         const thumb=track.firstElementChild;
@@ -503,7 +511,7 @@ def test() -> None:
                             thumb:h.backgroundColor,outline:t.outlineColor,outlineStyle:t.outlineStyle,
                             trackMid:box.left+box.width/2,thumbMid:dot.left+dot.width/2};
                     """, key)
-                    return info if info["checked"] == checked and ((info["thumbMid"] > info["trackMid"]) == checked) else False
+                    return info if info and info["checked"] == checked and ((info["thumbMid"] > info["trackMid"]) == checked) else False
                 appearance = wait.until(settled)
                 assert not appearance["hover"] and not appearance["focus"], appearance
                 assert appearance["outline"] == "rgb(251, 139, 30)", appearance
