@@ -39,11 +39,26 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = r'''
 import json
 import os
+import time
 from datetime import date
 from pathlib import Path
 
 import streamlit as st
 from src.vertical_options_ui import render_vertical_options
+import src.vertical_options_ui as vo
+# Reproduce a late browser reply without another user click to recover it.
+original_preference_component = getattr(vo, "_fixture_original_preference_component", vo._PRICING_PREFERENCE_COMPONENT)
+vo._fixture_original_preference_component = original_preference_component
+def delayed_preference_component(**kwargs):
+    value = original_preference_component(**kwargs)
+    if kwargs.get("action") == "read":
+        started = st.session_state.setdefault("fixture_preference_started", time.monotonic())
+        waiting = time.monotonic() - started < 2
+        record("preference-read", waiting=waiting)
+        if waiting:
+            return None
+    return value
+vo._PRICING_PREFERENCE_COMPONENT = delayed_preference_component
 if os.environ.get("VO_SCANNER_PARTIAL_TEST"):
     import src.vertical_options_ui as vo
     vo._SCAN_BATCH_EXPIRATIONS = 1
@@ -88,7 +103,8 @@ class StubETrade:
                     # Asymmetric quotes: natural ASK differs from Last and MID.
                     "bid": last - (.01 if symbol == "MASSIVE" else .02),
                     "ask": last + .01 if symbol == "MASSIVE" else last + .02 + .002 * (strike - 90),
-                    "osiKey": f"{symbol}{expiry_code}{side}{strike}",
+                    # Broker-documented dash-padded root and 8-digit strike.
+                    "osiKey": f"{symbol:-<6}{expiry_code}{side}{strike * 1000:08d}",
                 }
             pairs.append({"Call": option("C", call_last),
                           "Put": option("P", put_last)})
@@ -358,6 +374,11 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
+            initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
+            assert any(event["waiting"] for event in initial_reads), initial_reads
+            assert any(not event["waiting"] for event in initial_reads), initial_reads
+            assert not [event for event in events(event_path) if event["event"] == "chain"]
+            print("Vertical Options first visit recovers late browser preference without tab switching PASS")
             # Pricing controls stay on one compact row. Hidden preference frames
             # must never reserve the custom-component default 150px height.
             pricing_layout = driver.execute_script("""
@@ -565,6 +586,21 @@ def test() -> None:
             driver.close()
             driver.switch_to.window(original_tab)
             assert checked_count(driver) == 1, "Opening OptionStrat changed the selected spread"
+
+            tv_url = best["rows"][0]["tvHref"]
+            in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR,
+                '.row[data-index="0"] .link-pair').find_element(By.LINK_TEXT, 'TV').click())
+            tv_tab = wait.until(lambda _: next(
+                (handle for handle in driver.window_handles if handle != original_tab), None
+            ))
+            driver.switch_to.window(tv_tab)
+            wait.until(lambda _: driver.current_url.startswith("https://www.tradingview.com/chart/"))
+            assert parse_qs(urlsplit(driver.current_url).query)["symbol"] == parse_qs(urlsplit(tv_url).query)["symbol"]
+            driver.close()
+            driver.switch_to.window(original_tab)
+            assert checked_count(driver) == 1, "Opening TradingView changed the selected spread"
+            assert not any(event["event"] in {"preview", "place"} for event in events(event_path))
+            print("TradingView button click opens exact broker-normalized formula in a new chart tab PASS")
 
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             wait.until(lambda _: "60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)

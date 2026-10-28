@@ -995,7 +995,9 @@ def _tradingview_spread_formula(candidate: dict[str, Any]) -> str:
             root = symbol
             osi = str(candidate.get(f"{prefix}_osi") or "").upper().replace(" ", "").lstrip(".")
             if osi:
-                match = re.fullmatch(r"([A-Z][A-Z0-9.]*?)(\d{6})([CP])(\d{1,8}(?:\.\d+)?)", osi)
+                # E*TRADE uses dash padding: IBM---180817C00200000.
+                # Padding separates the root and date; it is not part of OPRA's root.
+                match = re.fullmatch(r"([A-Z][A-Z0-9.]*?)-{0,5}(\d{6})([CP])(\d{1,8}(?:\.\d+)?)", osi)
                 if not match or match.group(2) != expiry or match.group(3) != side:
                     raise ValueError("Option identity does not match the spread")
                 raw_strike = match.group(4)
@@ -1157,18 +1159,14 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     }
 
 
-def _pricing_mode_flip_switch() -> str | None:
-    """Restore the last browser pricing mode before showing the live switch.
-
-    Separate session memory survives tab changes; the browser bridge survives
-    reloads in the same browser profile. Never write a default before reading.
-    """
+def _hydrate_vertical_options_pricing() -> bool:
+    """Read the browser preference before any default can overwrite it."""
     if not st.session_state.get("_vo_pricing_mode_hydrated", False):
         restored = _PRICING_PREFERENCE_COMPONENT(
             action="read", key="vo_pricing_preference_reader", height=0, default=None,
         )
         if not isinstance(restored, dict) or not restored.get("ready"):
-            return None  # No transient NORMAL mode may overwrite saved SMART.
+            return False
         previous = restored.get("mode")
         if previous not in {"NORMAL", "SMART FILL"}:
             # Migrate an existing segmented selection in this live session.
@@ -1176,6 +1174,13 @@ def _pricing_mode_flip_switch() -> str | None:
         mode = previous if previous in {"NORMAL", "SMART FILL"} else "NORMAL"
         st.session_state["_vo_pricing_mode_preference"] = mode
         st.session_state["_vo_pricing_mode_hydrated"] = True
+    return True
+
+
+def _pricing_mode_flip_switch() -> str | None:
+    """Restore saved pricing before showing the live switch."""
+    if not _hydrate_vertical_options_pricing():
+        return None
 
     # Streamlit can clean up a widget key when another top-level tab renders.
     # The non-widget preference remains stable for this server-side session.
@@ -2055,8 +2060,27 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
 
 
+@st.fragment(run_every=.5)
+def _render_vertical_options_bootstrap(vault_key: str) -> None:
+    """Retry initial browser reads automatically; stop polling once both finish.
+
+    Component replies can race a top-tab rerun. A transient missing reply must
+    not leave the workspace cut off until the user switches tabs manually.
+    This bootstrap never downloads chains or touches broker orders.
+    """
+    snapshots_ready = hydrate_gex_snapshots(vault_key)
+    pricing_ready = _hydrate_vertical_options_pricing()
+    if snapshots_ready and pricing_ready:
+        st.session_state["_vo_workspace_ready"] = vault_key
+        st.rerun()
+    st.caption("RESTORING VERTICAL OPTIONS PREFERENCES…")
+
+
 def render_vertical_options(client, touch_session, *, vault_key: str = "default") -> None:
     """Render the isolated Vertical Options workspace."""
     st.html(_VERTICAL_OPTIONS_CSS)
     install_native_switch_theme("vo_smart_fill")
+    if st.session_state.get("_vo_workspace_ready") != vault_key:
+        _render_vertical_options_bootstrap(vault_key)
+        return
     _render_vertical_options_fragment(client, touch_session, vault_key)
