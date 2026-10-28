@@ -602,8 +602,9 @@ def test() -> None:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
             leave_button.click()
             wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input'))
-            assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
+            # Existence can observe Streamlit's temporary cached mount before
+            # the returned fragment's actual values reach the frontend.
+            wait.until(lambda _: not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
             assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_range_percent input').get_attribute("value") in ("3.00", "3.0", "3")
             assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3

@@ -40,6 +40,35 @@ class VerticalOptionsTests(unittest.TestCase):
             vo._restore_presentation()
             self.assertEqual(vo.st.session_state["vo_results_view"], "BEST PER YEAR")
 
+    def test_real_streamlit_widget_cleanup_restores_manual_presentation(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_string("""
+import streamlit as st
+from src.vertical_options_ui import _restore_presentation, _remember_presentation
+if st.session_state.get('away'):
+    if st.button('RETURN'):
+        st.session_state['away'] = False
+        st.rerun()
+else:
+    if st.button('LEAVE'):
+        st.session_state['away'] = True
+        st.rerun()
+    _restore_presentation()
+    st.toggle('BE', key='vo_be_filter_enabled', on_change=_remember_presentation,
+              args=('vo_be_filter_enabled',))
+    st.radio('VIEW', ('BEST PER YEAR', 'ALL QUALIFIED'), key='vo_results_view',
+             on_change=_remember_presentation, args=('vo_results_view',))
+""").run()
+        self.assertTrue(app.toggle[0].value)
+        self.assertEqual(app.radio[0].value, 'BEST PER YEAR')
+        app.toggle[0].set_value(False).run()
+        app.radio[0].set_value('ALL QUALIFIED').run()
+        app.button[0].click().run()
+        app.button[0].click().run()
+        self.assertFalse(app.toggle[0].value)
+        self.assertEqual(app.radio[0].value, 'ALL QUALIFIED')
+        self.assertFalse(app.exception)
+
     def test_bootstrap_timeout_is_actionable_without_overwriting_preferences(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
