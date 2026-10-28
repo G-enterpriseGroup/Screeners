@@ -1083,17 +1083,19 @@ def render_gex() -> None:
         connect_etrade,
     ) = _discover_terminal_context()
 
-    # Style-only HTML is applied without creating a visible Streamlit row.
+    # One compact GEX-owned layout avoids hidden/style-only nodes introducing
+    # blank rows between the build marker, publication receipt and ticker controls.
     st.html(_gex_subtab_skin_css())
-    st.html(_gex_build_badge())
-    _render_with_style_only_html(
-        client,
-        vault_key,
-        touch,
-        background_factory,
-        login_marker,
-        connect_etrade,
-    )
+    with st.container(key="gexv3_workspace", gap=None):
+        st.html(_gex_build_badge())
+        _render_with_style_only_html(
+            client,
+            vault_key,
+            touch,
+            background_factory,
+            login_marker,
+            connect_etrade,
+        )
 
 
 __all__ = ["render_gex", "maybe_auto_refresh_on_login"]
