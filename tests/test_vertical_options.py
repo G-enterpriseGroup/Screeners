@@ -13,6 +13,109 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_large_chain_guard_preserves_small_exhaustive_scans(self):
+        from src.vertical_options_ui import _safe_vertical_pair_limit
+        expiry = date(2027, 1, 15)
+        small = [
+            {"expiry": expiry, "call_put": side, "strike": float(k), "osi": f"{side}{k}"}
+            for side in ("CALL", "PUT") for k in range(1, 11)
+        ]
+        self.assertEqual(_safe_vertical_pair_limit(small), (None, 90))
+        # One very liquid expiration: 500 strikes on both sides.
+        massive = [
+            {"expiry": expiry, "call_put": side, "strike": float(k), "osi": f"{side}{k}"}
+            for side in ("CALL", "PUT") for k in range(1, 501)
+        ]
+        self.assertEqual(_safe_vertical_pair_limit(massive), (100, 249500))
+        massive.append(dict(massive[0]))  # duplicate transport row not double-counted
+        self.assertEqual(_safe_vertical_pair_limit(massive), (100, 249500))
+
+    def test_chain_scan_returns_partial_result_and_resumes_without_refetch(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, i, 15) for i in (1, 2, 3)]
+        client = MagicMock()
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        rows_loaded = []
+        def load_chain(client, symbol, expiry, touch_session):
+            rows_loaded.append(expiry)
+            return [{"expiry": expiry, "call_put": "CALL", "strike": 100.0,
+                     "last": 1.0, "bid": .95, "ask": 1.05, "osi": "TEST"}]
+        state = {}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries) as get_expiries,
+              patch.object(vo, "_chain", side_effect=load_chain),
+              patch.object(vo, "_tradingview_listing_exchange", return_value="NASDAQ"),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_SECONDS", -1)):
+            partial = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertFalse(partial["scan_complete"])
+            self.assertEqual(partial["next_expiry_index"], 1)
+            self.assertEqual(len(partial["rows"]), 1)
+            with patch.object(vo, "_SCAN_BATCH_SECONDS", 999):
+                complete = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertTrue(complete["scan_complete"])
+            self.assertEqual(complete["next_expiry_index"], 3)
+            self.assertEqual(len(complete["rows"]), 3)
+            self.assertEqual(rows_loaded, expiries)
+            self.assertEqual(client.get_quote.call_count, 1)
+            self.assertEqual(get_expiries.call_count, 1)
+            self.assertIs(vo._scan_all_years(client, "QQQ", lambda: None), complete)
+
+    def test_empty_expiration_chains_do_not_hide_later_valid_chains(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, i, 15) for i in (1, 2, 3)]
+        client = MagicMock()
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        def chain_for_expiry(client, symbol, expiry, touch_session):
+            if expiry == expiries[-1]:
+                return [{"expiry": expiry, "call_put": "CALL", "strike": 100,
+                         "last": 1, "bid": .9, "ask": 1.1, "osi": "TEST"}]
+            return []
+        with (patch.object(vo.st, "session_state", {}),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries),
+              patch.object(vo, "_chain", side_effect=chain_for_expiry) as chains,
+              patch.object(vo, "_tradingview_listing_exchange", return_value="NASDAQ"),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_SECONDS", 999)):
+            result = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertEqual(result["loaded_expirations"], 1)
+            self.assertEqual(len(result["errors"]), 2)
+            self.assertTrue(result["scan_complete"])
+            self.assertEqual(chains.call_count, 3)
+
+    def test_repeated_chain_failures_stop_without_hammering_broker(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, i, 15) for i in range(1, 7)]
+        client = MagicMock()
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        with (patch.object(vo.st, "session_state", {}),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries),
+              patch.object(vo, "_chain", side_effect=RuntimeError("HTTP 401")) as chains,
+              patch.object(vo, "_tradingview_listing_exchange", return_value="NASDAQ"),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_SECONDS", 999)):
+            with self.assertRaisesRegex(ValueError, "No option contracts loaded"):
+                vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertEqual(chains.call_count, 2)
+
     def test_expiration_detail_uses_calendar_days_and_fractional_years(self):
         from src.vertical_options_ui import _expiry_time_label
         self.assertEqual(_expiry_time_label(date(2026, 10, 23), date(2026, 10, 21)), "2d · 0.01y")
