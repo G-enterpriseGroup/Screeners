@@ -18,13 +18,13 @@ class VerticalOptionsTests(unittest.TestCase):
         expiry = date(2027, 1, 15)
         small = [
             {"expiry": expiry, "call_put": side, "strike": float(k), "osi": f"{side}{k}"}
-            for side in ("CALL", "PUT") for k in range(10)
+            for side in ("CALL", "PUT") for k in range(1, 11)
         ]
         self.assertEqual(_safe_vertical_pair_limit(small), (None, 90))
         # One very liquid expiration: 500 strikes on both sides.
         massive = [
             {"expiry": expiry, "call_put": side, "strike": float(k), "osi": f"{side}{k}"}
-            for side in ("CALL", "PUT") for k in range(500)
+            for side in ("CALL", "PUT") for k in range(1, 501)
         ]
         self.assertEqual(_safe_vertical_pair_limit(massive), (100, 249500))
         massive.append(dict(massive[0]))  # duplicate transport row not double-counted
