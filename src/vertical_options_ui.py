@@ -1120,7 +1120,8 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
         raw, result["target"], result["max_cost"], mode,
     )
     scope = hashlib.sha256(
-        repr((raw["scan_id"], result["target"], result["max_cost"], mode)).encode("utf-8")
+        repr((raw["scan_id"], result["target"], result["max_cost"], mode,
+              bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
         **result, "pricing_mode": mode, "scope": scope,
@@ -1399,11 +1400,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     and last_result.get("max_cost") == max_cost
                     and (use_auto_target or last_result.get("target") == custom_target)
                 )
-                raw = _scan_all_years(
-                    client, symbol, touch_session,
-                    refresh=repeat_scan and bool(last_result.get("scan_complete", True))
-                    and not resume_clicked,
-                )
+                with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
+                    raw = _scan_all_years(
+                        client, symbol, touch_session,
+                        refresh=repeat_scan and bool(last_result.get("scan_complete", True))
+                        and not resume_clicked,
+                    )
                 preview_source = "E*TRADE" if broker_live else "YFINANCE"
                 st.session_state.setdefault("_vo_ticker_quotes", {})[f"{preview_source}:{symbol}"] = {
                     "last": raw["spot"], "name": raw["name"], "source": preview_source,
@@ -1415,7 +1417,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     raw, target, max_cost, pricing_mode,
                 )
                 scope = hashlib.sha256(
-                    repr((raw["scan_id"], target, max_cost, pricing_mode)).encode("utf-8")
+                    # Entering shortlist mode can remove checked candidates.
+                    # Reset selection only then, not on ordinary continuation.
+                    repr((raw["scan_id"], target, max_cost, pricing_mode,
+                          safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["vo_scan_result"] = {
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
