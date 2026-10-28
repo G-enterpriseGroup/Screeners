@@ -1620,11 +1620,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             )
             max_distance = result["target"] * be_percent / 100 if be_enabled else None
             be_matching_count = candidates.count(max_distance=max_distance)
+            range_text = (f'BREAKEVEN {_money(result["target"] - max_distance)} TO '
+                          f'{_money(result["target"] + max_distance)} // '
+                          if be_enabled else 'ALL BREAKEVENS // ')
             with be_cols[2]:
                 st.caption(
-                    (f'BREAKEVEN {_money(result["target"] - max_distance)} TO '
-                     f'{_money(result["target"] + max_distance)} // '
-                     if be_enabled else 'ALL BREAKEVENS // ')
+                    range_text.replace("$", r"\$")
                     + f'{be_matching_count:,} OF {len(candidates):,} QUALIFYING PAIRS '
                     '// RISK:REWARD ≥ 1:2 // FILTERING DOES NOT RESCAN.'
                 )
@@ -1674,7 +1675,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 view_identity += f"|{expiry_filter}|{side_filter}|{sort_filter}|{sort_direction}|{page}"
                 st.caption(
                     f"ALL {matching_count:,} QUALIFIED IN FILTER // PAGE {page:,}/{pages:,} "
-                    f"// ROWS {offset + 1:,}–{offset + len(displayed_candidates):,} "
+                    f"// ROWS {offset + 1 if displayed_candidates else 0:,}–{offset + len(displayed_candidates):,} "
                     "// 1:2 MINIMUM R:R, NOT A FILL GUARANTEE // NO BROKER REQUESTS ON FILTER/SORT."
                 )
                 exports = st.columns(2, gap="small")

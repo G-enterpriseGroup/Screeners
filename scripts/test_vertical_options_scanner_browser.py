@@ -991,6 +991,10 @@ def test() -> None:
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
+            if driver is not None:
+                print(driver.find_element(By.TAG_NAME, "body").text[-6000:], file=sys.stderr)
+                print([(item.get_attribute("aria-label"), item.get_attribute("value"))
+                       for item in driver.find_elements(By.CSS_SELECTOR, 'input[aria-label]')], file=sys.stderr)
             raise
         finally:
             if driver is not None:
