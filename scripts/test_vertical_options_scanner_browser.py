@@ -43,6 +43,9 @@ from pathlib import Path
 
 import streamlit as st
 from src.vertical_options_ui import render_vertical_options
+if os.environ.get("VO_SCANNER_PARTIAL_TEST"):
+    import src.vertical_options_ui as vo
+    vo._SCAN_BATCH_EXPIRATIONS = 1
 
 LOG = Path(os.environ["VO_SCANNER_TEST_LOG"])
 EXPIRIES = [date(date.today().year + offset, 6, 20) for offset in (1, 2, 3)]
@@ -814,6 +817,7 @@ def test() -> None:
             server.terminate()
             server.wait(timeout=8)
             environment["VO_SCANNER_SKIP_GEX_SEED"] = "1"
+            environment["VO_SCANNER_PARTIAL_TEST"] = "1"
             with server_log.open("a", encoding="utf-8") as output:
                 server = subprocess.Popen(
                     [sys.executable, "-m", "streamlit", "run", str(app_path),
@@ -836,6 +840,29 @@ def test() -> None:
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_restart
             assert not any(item["event"] == "place" for item in events(event_path))
             print("GEX browser cache PASS after real process restart; nearest call/put presets PASS", flush=True)
+            # The production renderer must show useful partial results, keep
+            # checked identities and finish without fetching completed chains.
+            form = wait.until(ready_scanner_form)
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN // 1/3" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: bool(grid_snapshot(driver)["rows"]))
+            in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
+            wait.until(lambda _: checked_count(driver) == 1)
+            for checked in (2, 3):
+                resume = driver.find_element(By.XPATH, '//button[contains(., "CONTINUE ALL YEARS")]')
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'})", resume)
+                resume.click()
+                wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"]) == chain_before_restart + checked)
+                if checked == 2:
+                    wait.until(lambda _: "PARTIAL ALL-YEAR SCAN // 2/3" in driver.find_element(By.TAG_NAME, "body").text)
+                else:
+                    wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
+                wait.until(lambda _: checked_count(driver) == 1)
+            calls = [e for e in events(event_path) if e["event"] == "chain"][chain_before_restart:]
+            assert len(calls) == len({(e["year"], e["month"], e["day"]) for e in calls}) == 3
+            assert "LAST SCAN PASS" in driver.find_element(By.TAG_NAME, "body").text
+            assert not any(e["event"] == "place" for e in events(event_path))
+            print("Vertical Options partial results and continuation PASS (3 unique chains, no orders)", flush=True)
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)

@@ -13,6 +13,81 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_incremental_ranking_matches_full_scan_and_only_prices_new_expiries(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, 1, 15), date(2027, 6, 18), date(2028, 1, 21)]
+        rows = [self._row(expiry, side, 100 + k, 10 - .2 * k if side == "CALL" else 2 + .2 * k,
+                          bid=9.98 - .2 * k if side == "CALL" else 1.98 + .2 * k,
+                          ask=10.02 - .2 * k if side == "CALL" else 2.02 + .2 * k)
+                for expiry in expiries for side in ("CALL", "PUT") for k in range(8)]
+        raw = {"symbol": "QQQ", "spot": 103, "rows": rows[:16]}
+        with (patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "scan_vertical_candidates", wraps=scan_vertical_candidates) as calculate):
+            first = vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL")
+            self.assertEqual(calculate.call_count, 1)
+            raw["rows"] = rows
+            complete = vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL")
+            self.assertEqual(calculate.call_count, 3)
+            self.assertEqual(vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL"), complete)
+            self.assertEqual(calculate.call_count, 3)
+            for mode in ("SMART FILL", "NORMAL"):
+                actual = vo._rank_cached_vertical_chains(raw, 103, None, mode)
+                expected = scan_vertical_candidates(symbol="QQQ", spot_last=103, option_rows=rows,
+                    target_breakeven=103, max_cost=None, max_per_expiration=None, pricing_mode=mode)
+                self.assertEqual(actual[:2], expected)
+            self.assertEqual(calculate.call_count, 6)  # NORMAL reused after SMART.
+            self.assertTrue(set(first[1]).issubset({r["id"] for r in complete[0]}))
+            vo._rank_cached_vertical_chains(raw, 104, 100, "NORMAL")
+            self.assertEqual(calculate.call_count, 9)
+            self.assertEqual(len(raw["rank_cache"]), 2)
+
+    def test_incremental_ranking_rebuilds_when_safety_threshold_changes(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, 1, 15), date(2028, 1, 21)]
+        rows = [self._row(expiry, side, 100 + k, 10 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for expiry in expiries for side in ("CALL", "PUT") for k in range(8)]
+        raw = {"symbol": "QQQ", "spot": 103, "rows": rows[:16]}
+        with (patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "_SCAN_EXHAUSTIVE_PAIR_BUDGET", 60),
+              patch.object(vo, "_SCAN_SAFETY_ROWS_PER_EXPIRY", 3),
+              patch.object(vo, "scan_vertical_candidates", wraps=scan_vertical_candidates) as calculate):
+            self.assertIsNone(vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL")[2])
+            raw["rows"] = rows
+            actual = vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL")
+            self.assertEqual(calculate.call_count, 3)
+            self.assertEqual(actual[2:], (3, 112))
+            expected = scan_vertical_candidates(symbol="QQQ", spot_last=103, option_rows=rows,
+                target_breakeven=103, max_cost=None, max_per_expiration=3)
+            self.assertEqual(actual[:2], expected)
+
+    def test_capped_ranking_preserves_full_scan_winners_and_exact_top_rows(self):
+        import random
+        rng = random.Random(2031)
+        rows = []
+        for expiry in (date(2027, 1, 15), date(2027, 6, 18), date(2028, 1, 21)):
+            for side in ("CALL", "PUT"):
+                for k in range(20):
+                    last = 12 - .3 * k if side == "CALL" else 2 + .3 * k
+                    rows.append(self._row(expiry, side, 100 + k, last,
+                        bid=last - rng.uniform(.01, .08), ask=last + rng.uniform(.01, .08)))
+        rng.shuffle(rows)
+        for mode in ("NORMAL", "SMART FILL"):
+            args = dict(symbol="QQQ", spot_last=110, option_rows=rows,
+                        target_breakeven=110, max_cost=None, pricing_mode=mode)
+            all_rows, all_winners = scan_vertical_candidates(**args, max_per_expiration=None)
+            counts = {}
+            expected = []
+            for row in all_rows:
+                count = counts.get(row["expiry"], 0)
+                if count < 7:
+                    expected.append(row)
+                    counts[row["expiry"]] = count + 1
+            actual, winners = scan_vertical_candidates(**args, max_per_expiration=7)
+            self.assertEqual(actual, expected)
+            self.assertEqual(winners, all_winners)
+
     def test_large_chain_guard_preserves_small_exhaustive_scans(self):
         from src.vertical_options_ui import _safe_vertical_pair_limit
         expiry = date(2027, 1, 15)
@@ -62,10 +137,46 @@ class VerticalOptionsTests(unittest.TestCase):
             self.assertTrue(complete["scan_complete"])
             self.assertEqual(complete["next_expiry_index"], 3)
             self.assertEqual(len(complete["rows"]), 3)
+            self.assertEqual(complete["loaded_at"], partial["loaded_at"])
+            self.assertEqual(complete["scan_id"], partial["scan_id"])
             self.assertEqual(rows_loaded, expiries)
             self.assertEqual(client.get_quote.call_count, 1)
             self.assertEqual(get_expiries.call_count, 1)
             self.assertIs(vo._scan_all_years(client, "QQQ", lambda: None), complete)
+
+    def test_empty_first_batch_remains_resumable_and_expired_snapshot_restarts(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, 1, 15), date(2028, 1, 21)]
+        client = MagicMock(is_offline=False)
+        state = {}
+        row = self._row(expiries[1], "CALL", 100, 1)
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries) as expirations,
+              patch.object(vo, "_chain", side_effect=[[], [row], [], [row]]) as chains,
+              patch.object(vo, "_tradingview_listing_exchange", return_value="NASDAQ"),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_EXPIRATIONS", 1),
+              patch.object(vo.time, "time", return_value=1000)):
+            partial = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertEqual(partial["rows"], [])
+            self.assertFalse(partial["scan_complete"])
+            complete = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertEqual(complete["rows"], [row])
+            self.assertTrue(complete["scan_complete"])
+            complete["rank_cache"] = {"old": "must be discarded"}
+            with patch.object(vo.time, "time", return_value=1301):
+                restarted = vo._scan_all_years(client, "QQQ", lambda: None)
+                self.assertFalse(restarted["scan_complete"])
+                self.assertEqual(restarted["next_expiry_index"], 1)
+                self.assertEqual(restarted["rank_cache"], {})
+                self.assertEqual(restarted["loaded_at"], 1301)
+            self.assertEqual(expirations.call_count, 2)
+            self.assertEqual(chains.call_count, 3)
 
     def test_empty_expiration_chains_do_not_hide_later_valid_chains(self):
         from unittest.mock import MagicMock, patch
