@@ -86,7 +86,7 @@ class StubETrade:
         record("expirations", symbol=symbol)
         return {"OptionExpireDateResponse": {"ExpirationDate": [
             {"year": day.year, "month": day.month, "day": day.day}
-            for day in EXPIRIES
+            for day in ([EXPIRIES[0]] if symbol == "MASSIVE" else EXPIRIES)
         ]}}
 
     def get_option_chain(self, symbol, year, month, day,
@@ -1017,9 +1017,11 @@ def test() -> None:
             target.send_keys("100")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
             # The preceding manual BEST selection must survive a fresh scan.
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
             if driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
                 driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
