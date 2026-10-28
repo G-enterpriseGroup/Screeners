@@ -1753,7 +1753,6 @@ def render_gex(
     vault_key = str(vault_key or "default")
     if not hydrate_gex_snapshots(vault_key):
         return
-    _render_cboe_publication_status(vault_key)
     st.html('<style>.gexv3-summary a.gexv3-dte-edit {color:#fb8b1e!important;text-decoration:underline dotted!important;cursor:pointer;font:inherit;}</style>')
     if "gex_dte" in st.query_params:
         st.session_state["gex_dte_edit_ticker"] = _core._normalize_ticker(st.query_params["gex_dte"])
@@ -1773,6 +1772,7 @@ def render_gex(
     original_cboe_refresh_runner = _proven._base._run_cboe_refresh_all
     original_render_cboe_overview = _proven._base._render_cboe_overview
     original_render_morningstar = _proven._base._render_morningstar_gex
+    original_publication_status = _proven._base._render_cboe_publication_status
     original_render_settings = _proven._base._render_settings
     original_tradingview = _proven._render_tradingview_pine
     original_background_status = _proven._render_background_status
@@ -1978,6 +1978,7 @@ def render_gex(
     _proven._base._run_cboe_refresh_all = _run_cboe_refresh_all
     _proven._base._render_cboe_overview = render_cboe_overview_production
     _proven._base._render_morningstar_gex = lambda key, value: _render_morningstar_gex(key, value, original_overview)
+    _proven._base._render_cboe_publication_status = lambda: _render_cboe_publication_status(vault_key)
     _proven._base._render_settings = render_settings_with_auto_refresh
     _proven._decorate_overview = decorate_without_iv_rank
     _proven._render_tradingview_pine = render_tradingview_with_sources
@@ -1998,6 +1999,7 @@ def render_gex(
         _proven._base._render_settings = original_render_settings
         _proven._base._render_cboe_overview = original_render_cboe_overview
         _proven._base._render_morningstar_gex = original_render_morningstar
+        _proven._base._render_cboe_publication_status = original_publication_status
         _proven._base._run_cboe_refresh_all = original_cboe_refresh_runner
         _proven._base._render_cboe_refresh_all_control = original_cboe_refresh_control
         _proven._base._render_cboe_txt_control = original_cboe_txt_control
