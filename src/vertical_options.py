@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import secrets
 import math
+from bisect import bisect_left
 from datetime import date, datetime
 from typing import Any, Iterable
 
@@ -344,21 +345,23 @@ def scan_vertical_candidates(
                 ratio = profit / cost
                 if not math.isfinite(breakeven) or not math.isfinite(ratio):
                     continue
-                identity = "|".join((
-                    ticker, expiry.isoformat(), side,
-                    f'{buy["strike"]:.6f}', f'{sell["strike"]:.6f}',
-                    buy["osi"], sell["osi"],
-                ))
                 rank = (
                     price["grade"], abs(breakeven - target), cost, -ratio, expiry,
                     side, buy["strike"], sell["strike"],
                     buy["osi"], sell["osi"],
                 )
+                if max_per_expiration is not None and len(top) == max_per_expiration and rank >= top[-1][0]:
+                    # A pair worse than this expiry's retained best cannot be
+                    # the annual winner. Avoid allocating its identity/payload.
+                    continue
+                identity = "|".join((
+                    ticker, expiry.isoformat(), side,
+                    f'{buy["strike"]:.6f}', f'{sell["strike"]:.6f}',
+                    buy["osi"], sell["osi"],
+                ))
                 yearly = annual_best.get(expiry.year)
                 if yearly is None or rank < yearly[0]:
                     annual_best[expiry.year] = (rank, identity)
-                if max_per_expiration is not None and len(top) == max_per_expiration and rank >= top[-1][0]:
-                    continue
                 candidate = {
                     "id": identity, "symbol": ticker, "spot_last": spot,
                     "expiry": expiry, "year": expiry.year, "call_put": side,
@@ -376,10 +379,7 @@ def scan_vertical_candidates(
                     # Inserting each row into a ranked list would be O(M²).
                     top.append((rank, candidate))
                 else:
-                    insert_at = next(
-                        (index for index, (saved_rank, _) in enumerate(top)
-                         if rank < saved_rank), len(top),
-                    )
+                    insert_at = bisect_left(top, rank, key=lambda item: item[0])
                     top.insert(insert_at, (rank, candidate))
                     if len(top) > max_per_expiration:
                         top.pop()

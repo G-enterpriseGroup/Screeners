@@ -63,7 +63,8 @@ from src.vertical_options import (
 _PREVIEW_FRESH_SECONDS = 150.0
 _DEFAULT_ACCOUNT_SUFFIX = "5474"
 _SCAN_CACHE_SECONDS = 300.0
-_SCAN_BATCH_SECONDS = 25.0  # Return partial results rather than blocking for every expiry.
+_SCAN_BATCH_SECONDS = 4.0  # Yield between requests; a single source request may take longer.
+_SCAN_BATCH_EXPIRATIONS = 4
 _SCAN_EXHAUSTIVE_PAIR_BUDGET = 100_000
 _SCAN_SAFETY_ROWS_PER_EXPIRY = 100
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
@@ -864,23 +865,78 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
             if consecutive_failures >= 2:
                 errors.append("SCAN STOPPED // consecutive chain failures; check source/connection.")
                 break
-            if time.monotonic() - batch_started >= _SCAN_BATCH_SECONDS:
+            if (next_index - start_index >= _SCAN_BATCH_EXPIRATIONS
+                    or time.monotonic() - batch_started >= _SCAN_BATCH_SECONDS):
                 break
     finally:
         progress.empty()
-    if not rows:
-        detail = errors[-2] if len(errors) >= 2 else (errors[-1] if errors else "unknown source error")
-        raise ValueError(f"No option contracts loaded // {detail}")
     result = {
-        "loaded_at": time.time(), "scan_id": time.time_ns(),
+        # All continued rows belong to the original snapshot. Continuing must
+        # never renew stale contracts or reset checked-spread identities.
+        "loaded_at": cached["loaded_at"] if fresh_cached else now,
+        "scan_id": cached["scan_id"] if fresh_cached else time.time_ns(),
         "source": source, "symbol": symbol, "spot": spot, "name": name,
         "expirations": expirations, "loaded_expirations": loaded,
         "rows": rows, "errors": errors, "tv_exchange": tv_exchange,
         "next_expiry_index": next_index,
         "scan_complete": next_index >= len(expirations),
+        "rank_cache": cached.get("rank_cache", {}) if fresh_cached else {},
     }
     cache[cache_key] = result
+    # Bound multi-ticker session memory as well as per-expiry pair retention.
+    while len(cache) > 3:
+        cache.pop(next(key for key in cache if key != cache_key))
+    if not rows and (result["scan_complete"] or consecutive_failures >= 2):
+        detail = errors[-2] if len(errors) >= 2 else (errors[-1] if errors else "unknown source error")
+        raise ValueError(f"No option contracts loaded // {detail}")
     return result
+
+
+def _rank_cached_vertical_chains(raw: dict[str, Any], target: float,
+                                 max_cost: float | None, mode: str
+                                 ) -> tuple[list[dict[str, Any]], set[str], int | None, int]:
+    """Evaluate new expirations only; preserve the exact full-scan ranking.
+
+    Cache up to two filter/mode policies inside the raw snapshot, so returning
+    to NORMAL/SMART does not recompute old pairs. Threshold changes invalidate
+    the retention policy, and fresh raw snapshots start with an empty cache.
+    """
+    safe_limit, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
+    policies = raw.setdefault("rank_cache", {})
+    policy = (target, max_cost, mode, safe_limit)
+    by_expiry = policies.pop(policy, {})
+    policies[policy] = by_expiry
+    while len(policies) > 2:
+        policies.pop(next(iter(policies)))
+    groups: dict[date, list[dict[str, Any]]] = {}
+    for row in raw["rows"]:
+        groups.setdefault(row["expiry"], []).append(row)
+    progress = st.progress(0.0, text="RANKING CALL + PUT SPREADS")
+    try:
+        for index, (expiry, rows) in enumerate(sorted(groups.items())):
+            saved = by_expiry.get(expiry)
+            if saved is None or saved[0] != len(rows):
+                progress.progress(index / len(groups), text=f"RANKING {_date_label(expiry)} // {raw['symbol']}")
+                candidates, _ = scan_vertical_candidates(
+                    symbol=raw["symbol"], spot_last=raw["spot"], option_rows=rows,
+                    target_breakeven=target, max_cost=max_cost,
+                    max_per_expiration=safe_limit, pricing_mode=mode,
+                )
+                by_expiry[expiry] = (len(rows), candidates)
+    finally:
+        progress.empty()
+    candidates = sorted(
+        (row for expiry in groups for row in by_expiry[expiry][1]),
+        key=lambda row: (
+            row["grade"], abs(row["breakeven"] - target), row["cost"],
+            -row["reward_risk"], row["expiry"], row["call_put"],
+            row["buy_strike"], row["sell_strike"], row["buy_osi"], row["sell_osi"],
+        ),
+    )
+    annual: dict[int, str] = {}
+    for row in candidates:
+        annual.setdefault(row["year"], row["id"])
+    return candidates, set(annual.values()), safe_limit, potential_pairs
 
 def _optionstrat_url(candidate: dict[str, Any]) -> str:
     """Open the exact two-leg debit spread in OptionStrat's strategy builder."""
@@ -1060,13 +1116,12 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     if (not isinstance(raw, dict) or raw.get("scan_id") != result.get("raw_scan_id")
             or time.time() - float(raw.get("loaded_at") or 0) >= _SCAN_CACHE_SECONDS):
         return None
-    candidates, annual_ids = scan_vertical_candidates(
-        symbol=result["symbol"], spot_last=raw["spot"], option_rows=raw["rows"],
-        target_breakeven=result["target"], max_cost=result["max_cost"],
-        max_per_expiration=(_SCAN_SAFETY_ROWS_PER_EXPIRY if result.get("capacity_limited") else None), pricing_mode=mode,
+    candidates, annual_ids, _, _ = _rank_cached_vertical_chains(
+        raw, result["target"], result["max_cost"], mode,
     )
     scope = hashlib.sha256(
-        repr((raw["scan_id"], result["target"], result["max_cost"], mode)).encode("utf-8")
+        repr((raw["scan_id"], result["target"], result["max_cost"], mode,
+              bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
         **result, "pricing_mode": mode, "scope": scope,
@@ -1324,6 +1379,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             st.session_state.pop("vo_live_confirm", None)
             st.session_state.pop("_vo_order_candidate", None)
             st.session_state.pop("vo_last_send_results", None)
+            scan_started = time.monotonic()
             try:
                 if not symbol:
                     raise ValueError("Enter a ticker to scan.")
@@ -1344,11 +1400,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     and last_result.get("max_cost") == max_cost
                     and (use_auto_target or last_result.get("target") == custom_target)
                 )
-                raw = _scan_all_years(
-                    client, symbol, touch_session,
-                    refresh=repeat_scan and bool(last_result.get("scan_complete", True))
-                    and not resume_clicked,
-                )
+                with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
+                    raw = _scan_all_years(
+                        client, symbol, touch_session,
+                        refresh=repeat_scan and bool(last_result.get("scan_complete", True))
+                        and not resume_clicked,
+                    )
                 preview_source = "E*TRADE" if broker_live else "YFINANCE"
                 st.session_state.setdefault("_vo_ticker_quotes", {})[f"{preview_source}:{symbol}"] = {
                     "last": raw["spot"], "name": raw["name"], "source": preview_source,
@@ -1356,16 +1413,14 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 }
                 default_target, target_basis = _default_breakeven(symbol, raw["spot"], vault_key)
                 target = default_target if use_auto_target else custom_target
-                safe_limit, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
-                candidates, annual_ids = scan_vertical_candidates(
-                    symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
-                    target_breakeven=target, max_cost=max_cost,
-                    max_per_expiration=safe_limit, pricing_mode=pricing_mode,
-                    # Exhaustive for ordinary chains; top-ranked retention for
-                    # large chains prevents Streamlit memory exhaustion.
+                candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_vertical_chains(
+                    raw, target, max_cost, pricing_mode,
                 )
                 scope = hashlib.sha256(
-                    repr((raw["scan_id"], target, max_cost, pricing_mode)).encode("utf-8")
+                    # Entering shortlist mode can remove checked candidates.
+                    # Reset selection only then, not on ordinary continuation.
+                    repr((raw["scan_id"], target, max_cost, pricing_mode,
+                          safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["vo_scan_result"] = {
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
@@ -1383,6 +1438,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "potential_pairs": potential_pairs,
                     "scan_complete": raw["scan_complete"],
                     "next_expiry_index": raw["next_expiry_index"],
+                    "pass_seconds": time.monotonic() - scan_started,
                     "tv_exchange": raw.get("tv_exchange", ""),
                 }
                 st.session_state["vo_results_view"] = "BEST PER YEAR"
@@ -1452,6 +1508,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         st.caption(
             f'{result["source"]} LAST AS OF '
             f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
+            f'LAST SCAN PASS {result.get("pass_seconds", 0):.1f}s // '
             'BOTH CALL + PUT DEBIT SPREADS // '
             'MINIMUM RISK:REWARD 1:2 AT THE SELECTED ORDER PRICE // ' +
             ('PRICING: SMART FILL = ADAPTIVE MID-TO-ASK LIMIT, CAPPED BY 1:2 AND COST; '
