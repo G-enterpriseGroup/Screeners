@@ -1224,15 +1224,24 @@ _PRESENTATION_DEFAULTS = {
 
 
 def _remember_presentation(key: str) -> None:
-    st.session_state.setdefault("_vo_presentation", {})[key] = st.session_state[key]
+    saved = dict(st.session_state.get("_vo_presentation") or {})
+    saved[key] = st.session_state[key]
+    st.session_state["_vo_presentation"] = saved
+
+
+def _remember_scan_inputs() -> None:
+    for key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost"):
+        _remember_presentation(key)
 
 
 def _restore_presentation() -> None:
-    saved = st.session_state.setdefault("_vo_presentation", {})
+    saved = dict(st.session_state.get("_vo_presentation") or {})
     for key, default in _PRESENTATION_DEFAULTS.items():
-        if key not in st.session_state:
-            st.session_state[key] = saved.get(key, default)
-        saved.setdefault(key, st.session_state[key])
+        saved.setdefault(key, st.session_state.get(key, default))
+        # A returning frontend may send widget defaults before registration.
+        # Callbacks save user changes first; the durable state owns hydration.
+        st.session_state[key] = saved[key]
+    st.session_state["_vo_presentation"] = saved
 
 
 def _scanner_help(label: str, explanation: str) -> None:
@@ -1486,6 +1495,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             with scan_fields[2]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
+                    on_click=_remember_scan_inputs,
                 )
         for form_key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost"):
             _remember_presentation(form_key)
@@ -1738,9 +1748,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 page_scope = hashlib.sha256(
                     repr((scope, expiry_filter, side_filter, sort_filter, sort_direction, max_distance)).encode("utf-8")
                 ).hexdigest()[:12]
+                page_key = "vo_all_pair_page_" + page_scope
+                st.session_state[page_key] = min(pages, max(1, int(
+                    st.session_state["_vo_presentation"].get(page_key, 1))))
                 page = int(filter_cols[4].number_input(
                     f"PAGE / {pages:,}", min_value=1, max_value=pages, step=1,
-                    value=1, key="vo_all_pair_page_" + page_scope,
+                    key=page_key, on_change=_remember_presentation, args=(page_key,),
                 ))
                 offset = (page - 1) * 200
                 displayed_candidates = candidates.page(

@@ -34,6 +34,11 @@ class VerticalOptionsTests(unittest.TestCase):
             vo._restore_presentation()
             for key, value in chosen.items():
                 self.assertEqual(state[key], value)
+            # Reproduce defaults arriving from a newly mounted frontend.
+            state.update({key: vo._PRESENTATION_DEFAULTS[key] for key in chosen})
+            vo._restore_presentation()
+            for key, value in chosen.items():
+                self.assertEqual(state[key], value)
             vo._restore_presentation()  # Ordinary rerun cannot override choices.
             self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
         with patch.object(vo.st, "session_state", {}):
