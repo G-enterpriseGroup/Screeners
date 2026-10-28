@@ -242,7 +242,7 @@ def scan_vertical_candidates(
     symbol: str,
     spot_last: float,
     option_rows: Iterable[dict[str, Any]],
-    target_breakeven: float,
+    target_breakeven: float | None,
     max_cost: float | None,
     max_per_expiration: int | None = 20,
     pricing_mode: str = "NORMAL",
@@ -263,12 +263,14 @@ def scan_vertical_candidates(
     """
     ticker = str(symbol or "").strip().upper()
     spot = _finite_number(spot_last, positive=True)
-    target = _finite_number(target_breakeven, positive=True)
+    target = (_finite_number(target_breakeven, positive=True)
+              if target_breakeven is not None else None)
     budget = None if max_cost is None else _finite_number(max_cost)
     if pricing_mode not in {"NORMAL", "SMART FILL"}:
         raise ValueError("Invalid Vertical Options pricing mode.")
-    if not ticker or spot is None or target is None or (max_cost is not None and budget is None):
-        raise ValueError("Ticker, underlying Last, breakeven, and cost must be valid.")
+    if (not ticker or spot is None or (target_breakeven is not None and target is None)
+            or (max_cost is not None and budget is None)):
+        raise ValueError("Ticker and underlying Last must be valid; supplied breakeven and cost must be positive.")
     if max_per_expiration is not None and (type(max_per_expiration) is not int or max_per_expiration < 1):
         raise ValueError("max_per_expiration must be a positive integer or None for exhaustive scanning.")
     if candidate_sink is not None and max_per_expiration is not None:
@@ -354,7 +356,8 @@ def scan_vertical_candidates(
                 if not math.isfinite(breakeven) or not math.isfinite(ratio):
                     continue
                 rank = (
-                    price["grade"], abs(breakeven - target), cost, -ratio, expiry,
+                    price["grade"], abs(breakeven - target) if target is not None else 0,
+                    cost, -ratio, expiry,
                     side, buy["strike"], sell["strike"],
                     buy["osi"], sell["osi"],
                 )
@@ -434,8 +437,12 @@ def build_vertical_preview_payload(
         debit = float(limit_price)
     except (TypeError, ValueError) as exc:
         raise ValueError("Enter a valid debit limit.") from exc
-    if debit <= 0:
+    if not math.isfinite(debit) or debit <= 0:
         raise ValueError("Debit limit must be positive.")
+    sent_debit = round(debit, 4)
+    width = abs(float(sell_strike) - float(buy_strike))
+    if sent_debit <= 0 or width - sent_debit + 1e-8 < 2 * sent_debit:
+        raise ValueError("Debit limit must keep risk:reward at 1:2 or better.")
 
     client_id = str(client_order_id or new_vertical_client_order_id()).strip()
     if not client_id.isalnum() or len(client_id) > 20:
@@ -470,7 +477,7 @@ def build_vertical_preview_payload(
                 {
                     "allOrNone": False,
                     "priceType": "NET_DEBIT",
-                    "limitPrice": round(debit, 4),
+                    "limitPrice": sent_debit,
                     "stopPrice": 0.0,
                     "orderTerm": term,
                     "marketSession": "REGULAR",

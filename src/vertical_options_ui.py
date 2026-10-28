@@ -68,6 +68,8 @@ _SCAN_CACHE_SECONDS = 300.0
 _SCAN_BATCH_SECONDS = 4.0  # Yield between requests; a single source request may take longer.
 _SCAN_BATCH_EXPIRATIONS = 4
 _SCAN_RANK_SECONDS = 4.0
+_NO_BREAKEVEN = "no break even provided"
+_NO_COST_CEILING = "no ceiling cost provided"
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_vo_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
@@ -501,26 +503,24 @@ def _default_breakeven(symbol: str, spot: Any, vault_key: str) -> tuple[float | 
 
 
 def _seed_breakeven_preset(symbol: str, spot: Any, vault_key: str) -> None:
-    """Seed only blank/automatic fields; a manual target always takes precedence."""
+    """Preserve per-ticker manual targets without inventing a scan filter."""
     text = str(st.session_state.get("vo_target_breakeven") or "").strip()
-    previous = st.session_state.get("_vo_auto_target") or {}
+    previous_auto = st.session_state.get("_vo_auto_target") or {}
+    if previous_auto.get("symbol") == symbol and text == previous_auto.get("text"):
+        text = _NO_BREAKEVEN
     manual_targets = st.session_state.setdefault("_vo_manual_targets", {})
     active = st.session_state.get("_vo_breakeven_symbol")
     if active is not None and active != symbol:
         target_map = st.session_state.get("vo_ticker_targets") or {}
-        text = str(target_map.get(symbol, manual_targets.get(symbol, "")) or "").strip()
+        text = str(target_map.get(symbol, manual_targets.get(symbol, _NO_BREAKEVEN)) or "").strip()
         st.session_state["vo_target_breakeven"] = text
-        previous = {}
     st.session_state["_vo_breakeven_symbol"] = symbol
-    if text and text != previous.get("text"):
+    if text and text.casefold() != _NO_BREAKEVEN:
         manual_targets[symbol] = text
-        st.session_state.pop("_vo_auto_target", None)
-        return
-    manual_targets.pop(symbol, None)
-    target, basis = _default_breakeven(symbol, spot, vault_key)
-    seeded = str(target) if target is not None else ""
-    st.session_state["vo_target_breakeven"] = seeded
-    st.session_state["_vo_auto_target"] = {"symbol": symbol, "text": seeded, "basis": basis}
+    else:
+        manual_targets.pop(symbol, None)
+        st.session_state["vo_target_breakeven"] = _NO_BREAKEVEN
+    st.session_state.pop("_vo_auto_target", None)
 
 
 def _cboe_wall_markup(symbol: str, vault_key: str) -> str:
@@ -918,7 +918,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
     return result
 
 
-def _rank_cached_vertical_chains(raw: dict[str, Any], target: float,
+def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
                                  max_cost: float | None, mode: str
                                  ) -> tuple[VerticalResultStore, set[str], None, int]:
     """Stream every qualifying pair to disk and reuse completed expirations."""
@@ -1105,18 +1105,18 @@ _QUALIFIED_SORT_FIELDS = (
 
 
 def _sort_qualified_spreads(
-    rows: list[dict[str, Any]], sort_by: str, direction: str, target: float,
+    rows: list[dict[str, Any]], sort_by: str, direction: str, target: float | None,
 ) -> list[dict[str, Any]]:
     """Sort the complete result set without changing original ranking or IDs."""
     if sort_by not in _QUALIFIED_SORT_FIELDS or direction not in {"ASC", "DESC"}:
         raise ValueError("Invalid qualified-spread sorting controls.")
     if sort_by == "FILL + TARGET":
         key = lambda row: (
-            row["grade"], abs(row["breakeven"] - target),
+            row["grade"], abs(row["breakeven"] - target) if target is not None else 0,
             row["cost"], -row["reward_risk"],
         )
     elif sort_by == "TARGET DISTANCE":
-        key = lambda row: abs(row["breakeven"] - target)
+        key = lambda row: abs(row["breakeven"] - target) if target is not None else 0
     elif sort_by == "FILL QUALITY":
         key = lambda row: row["grade"]
     else:
@@ -1140,7 +1140,7 @@ def _sort_qualified_spreads(
 
 def _qualified_spreads_csv(
     rows: list[dict[str, Any]], annual_ids: set[str], *,
-    source: str, loaded_at: float, target: float, max_cost: float | None,
+    source: str, loaded_at: float, target: float | None, max_cost: float | None,
 ) -> str:
     """Export EVERY supplied qualifying row in current sort order, not just a page."""
     output = io.StringIO(newline="")
@@ -1166,7 +1166,8 @@ def _qualified_spreads_csv(
             row.get("spread_bid"), row.get("spread_mid"), row.get("spread_ask"),
             "YES" if row.get("orderable") else "NO",
             "YES" if row["id"] in annual_ids else "NO",
-            row["spot_last"], target, max_cost if max_cost is not None else "",
+            row["spot_last"], target if target is not None else "",
+            max_cost if max_cost is not None else "",
             source, snapshot, row.get("buy_osi", ""), row.get("sell_osi", ""),
             _optionstrat_url(row),
         ))
@@ -1174,14 +1175,14 @@ def _qualified_spreads_csv(
 
 
 def _qualified_store_csv(store: VerticalResultStore, *, source: str, loaded_at: float,
-                         target: float, max_cost: float | None, expiry="ALL",
+                         target: float | None, max_cost: float | None, expiry="ALL",
                          side="CALL + PUT", sort_by="FILL + TARGET", direction="ASC",
-                         max_distance=None) -> str:
+                         max_distance=None, column_filters=None) -> str:
     """Generate the full CSV on click, off the UI thread, from one revision."""
     with store.snapshot():
         return _qualified_spreads_csv(
             store.iter_rows(expiry=expiry, side=side, sort_by=sort_by, direction=direction,
-                            max_distance=max_distance),
+                            max_distance=max_distance, column_filters=column_filters),
             store.annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
         )
 
@@ -1215,9 +1216,10 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
 
 
 _PRESENTATION_DEFAULTS = {
-    "vo_symbol_value": "", "vo_target_breakeven": "", "vo_max_cost": "",
-    "vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": True,
-    "vo_be_range_percent": 5.0, "vo_all_pair_sort": "TARGET DISTANCE",
+    "vo_symbol_value": "", "vo_target_breakeven": _NO_BREAKEVEN,
+    "vo_max_cost": _NO_COST_CEILING,
+    "vo_results_view": "ALL QUALIFIED", "vo_be_filter_enabled": False,
+    "vo_be_range_percent": 5.0, "vo_all_pair_sort": "FILL + TARGET",
     "vo_all_pair_direction": "ASC", "vo_all_pair_expiry": "ALL",
     "vo_all_pair_side": "CALL + PUT", "vo_auto_finish": True,
 }
@@ -1316,7 +1318,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         _render_saved_spread_drafts()
         st.markdown(
             '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
-            '<span class="muted">ENTER TICKER, TARGET BREAKEVEN, AND MAX COST // PRESS ENTER TO SCAN</span></div>',
+            '<span class="muted">ENTER TICKER // BREAKEVEN AND COST OPTIONAL // PRESS ENTER TO SCAN</span></div>',
             unsafe_allow_html=True,
         )
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
@@ -1389,14 +1391,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
 
         loaded_tickers = st.session_state.get("vo_ticker_list") or []
         if loaded_tickers:
-            # Per-symbol targets remain independent; blank means the live spot
-            # default when that particular symbol is scanned.
+            # Per-symbol targets remain independent; blank means no target filter.
             target_map = dict(st.session_state.get("vo_ticker_targets") or {})
             with st.expander(
                 f"EDIT TICKER BREAKEVENS // {len(loaded_tickers)} LOADED",
                 expanded=False,
             ):
-                st.caption("BLANK = NEAREST CBOE WALL, ELSE SPOT // EDIT INDIVIDUAL TARGETS // NO AUTO SCANS")
+                st.caption("BLANK = NO BREAKEVEN TARGET // EDIT INDIVIDUAL TARGETS // NO AUTO SCANS")
                 edited = st.data_editor(
                     [
                         {"Ticker": ticker, "Breakeven ($)": target_map.get(ticker, "")}
@@ -1407,7 +1408,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     column_config={
                         "Ticker": st.column_config.TextColumn("TICKER", width="small"),
                         "Breakeven ($)": st.column_config.TextColumn(
-                            "TARGET BREAKEVEN ($)", help="Blank uses the CBOE wall nearest spot, or spot when walls are unavailable."
+                            "TARGET BREAKEVEN ($)", help="Blank scans without a breakeven target. Filter the Breakeven column afterward."
                         ),
                     },
                     key=f"vo_ticker_editor_{st.session_state.get('vo_ticker_editor_revision', 0)}",
@@ -1418,7 +1419,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 }
                 try:
                     for ticker, value in updated_targets.items():
-                        if value:
+                        if value and value.casefold() != _NO_BREAKEVEN:
                             _entered_price(value, f"{ticker} breakeven")
                 except ValueError as exc:
                     st.error(str(exc))
@@ -1432,7 +1433,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         target_map = updated_targets
                         if st.session_state.get("vo_list_selection") in changed_targets:
                             selected_target = st.session_state["vo_list_selection"]
-                            st.session_state["vo_target_breakeven"] = target_map.get(selected_target, "")
+                            st.session_state["vo_target_breakeven"] = target_map.get(selected_target) or _NO_BREAKEVEN
                             st.session_state.pop("_vo_auto_target", None)
                             st.session_state.pop("_vo_auto_target_pending", None)
                             for state_key in (
@@ -1449,7 +1450,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if picked_ticker != st.session_state.get("_vo_last_list_selection"):
                 st.session_state["_vo_last_list_selection"] = picked_ticker
                 st.session_state["vo_symbol_value"] = picked_ticker
-                st.session_state["vo_target_breakeven"] = target_map.get(picked_ticker, "")
+                st.session_state["vo_target_breakeven"] = target_map.get(picked_ticker) or _NO_BREAKEVEN
                 for state_key in (
                     "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
                     "_vo_order_candidate", "vo_last_send_results",
@@ -1458,12 +1459,14 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.session_state.pop("_vo_auto_target", None)
                 st.session_state.pop("_vo_auto_target_pending", None)
 
-        pending_target = st.session_state.pop("_vo_auto_target_pending", None)
-        if (isinstance(pending_target, tuple) and len(pending_target) == 2
-                and pending_target[0] == str(st.session_state.get("vo_symbol_value") or "").strip().upper()):
-            seeded_text = str(pending_target[1])
-            st.session_state["vo_target_breakeven"] = seeded_text
-            st.session_state["_vo_auto_target"] = {"symbol": pending_target[0], "text": seeded_text}
+        st.session_state.pop("_vo_auto_target_pending", None)
+        if st.session_state.pop("_vo_optional_inputs_pending", False):
+            if not str(st.session_state.get("vo_target_breakeven") or "").strip():
+                st.session_state["vo_target_breakeven"] = _NO_BREAKEVEN
+                _remember_presentation("vo_target_breakeven")
+            if not str(st.session_state.get("vo_max_cost") or "").strip():
+                st.session_state["vo_max_cost"] = _NO_COST_CEILING
+                _remember_presentation("vo_max_cost")
 
         last_result = st.session_state.get("vo_scan_result") or {}
         # Ticker lives outside the submit form so its quote/name update on
@@ -1490,13 +1493,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             scan_fields = st.columns([1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 breakeven_text = st.text_input(
-                    "Target Breakeven", key="vo_target_breakeven", placeholder="AUTO: NEAREST WALL / SPOT",
-                    help="Preset: cached CBOE call or put wall nearest current Last (ties use call wall). Falls back to spot. Edit freely; clear to restore the preset.",
+                    "Target Breakeven", key="vo_target_breakeven", placeholder=_NO_BREAKEVEN,
+                    help="Optional target. Blank or the default text scans every breakeven; filter the Breakeven column afterward.",
                 )
             with scan_fields[1]:
                 cost_text = st.text_input(
-                    "Max Cost", key="vo_max_cost", placeholder="NO CEILING",
-                    help="Optional maximum one-spread debit in dollars. Blank means no cost ceiling.",
+                    "Max Cost", key="vo_max_cost", placeholder=_NO_COST_CEILING,
+                    help="Optional maximum one-spread debit in dollars. Blank or the default text means no cost ceiling.",
                 )
             with scan_fields[2]:
                 scan_clicked = st.form_submit_button(
@@ -1533,21 +1536,16 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 if not symbol:
                     raise ValueError("Enter a ticker to scan.")
                 entered_target = str(breakeven_text or "").strip()
-                previous_auto = st.session_state.get("_vo_auto_target")
-                use_auto_target = not entered_target or (
-                    isinstance(previous_auto, dict)
-                    and previous_auto.get("symbol") == symbol
-                    and entered_target == previous_auto.get("text")
-                )
-                custom_target = None if use_auto_target else _entered_price(
+                target = None if entered_target.casefold() in {"", _NO_BREAKEVEN} else _entered_price(
                     entered_target, "target breakeven"
                 )
-                max_cost = (None if not str(cost_text or "").strip()
-                            else _entered_price(cost_text, "maximum cost"))
+                entered_cost = str(cost_text or "").strip()
+                max_cost = (None if entered_cost.casefold() in {"", _NO_COST_CEILING}
+                            else _entered_price(entered_cost, "maximum cost"))
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
-                    and (use_auto_target or last_result.get("target") == custom_target)
+                    and last_result.get("target") == target
                 )
                 with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
                     raw = _scan_all_years(
@@ -1560,8 +1558,6 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "last": raw["spot"], "name": raw["name"], "source": preview_source,
                     "loaded_at": raw["loaded_at"],
                 }
-                default_target, target_basis = _default_breakeven(symbol, raw["spot"], vault_key)
-                target = default_target if use_auto_target else custom_target
                 candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_vertical_chains(
                     raw, target, max_cost, pricing_mode,
                 )
@@ -1573,8 +1569,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
                     "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
-                    "target_defaulted": use_auto_target,
-                    "target_basis": target_basis if use_auto_target else "CUSTOM",
+                    "target_defaulted": False,
+                    "target_basis": "NOT PROVIDED" if target is None else "CUSTOM",
                     "loaded_at": raw["loaded_at"],
                     "scope": scope, "candidates": candidates, "annual_ids": annual_ids,
                     "loaded_expirations": raw["loaded_expirations"],
@@ -1594,13 +1590,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 }
                 if symbol in (st.session_state.get("vo_ticker_list") or []):
                     st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
-                        "" if use_auto_target else entered_target
+                        "" if target is None else entered_target
                     )
-                if use_auto_target:
-                    # Seed the editable widget before it renders on the next pass.
-                    st.session_state["_vo_auto_target_pending"] = (symbol, target)
-                else:
-                    st.session_state.pop("_vo_auto_target", None)
+                st.session_state.pop("_vo_auto_target", None)
+                st.session_state["_vo_optional_inputs_pending"] = True
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
@@ -1659,9 +1652,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             f'LAST SCAN PASS {result.get("pass_seconds", 0):.1f}s // RISK:REWARD ≥ 1:2'
         )
         st.caption((
-            f'TARGET BREAKEVEN {_money(result["target"])} '
-            f'({result.get("target_basis") or ("SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM")}) '
-            f'// MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "NO CEILING"}'
+            f'TARGET BREAKEVEN {(_money(result["target"]) + " (CUSTOM)") if result["target"] is not None else _NO_BREAKEVEN} '
+            f'// MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else _NO_COST_CEILING}'
         ).replace("$", r"\$"))
         if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
             st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
@@ -1675,8 +1667,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
             "Snapshot age does not establish when an individual option last traded. "
             "Quotes may be delayed; no reference price guarantees execution or a fill. "
-            f'Target: {_money(result["target"])}; max cost: '
-            f'{_money(result["max_cost"]) if result["max_cost"] is not None else "no ceiling"}.'
+            f'Target: {_money(result["target"]) if result["target"] is not None else _NO_BREAKEVEN}; max cost: '
+            f'{_money(result["max_cost"]) if result["max_cost"] is not None else _NO_COST_CEILING}.'
         ))
         candidates = result["candidates"]
         if not candidates:
@@ -1690,11 +1682,21 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if not isinstance(state, dict) or state.get("scope") != scope:
                 state = {"scope": scope, "ids": set(), "revision": 0}
                 st.session_state["_vo_checked_spreads"] = state
+            filter_state = st.session_state.get("_vo_column_filters")
+            if not isinstance(filter_state, dict) or filter_state.get("scope") != scope:
+                filter_state = {"scope": scope, "filters": {}, "revision": 0}
+                st.session_state["_vo_column_filters"] = filter_state
+            column_filters = dict(filter_state["filters"])
+            filter_choices = candidates.column_filter_choices()
             saved_ids = set(state["ids"])
             by_id = candidates.get_many(saved_ids)
+            if result["target"] is None and st.session_state.get("vo_be_filter_enabled"):
+                st.session_state["vo_be_filter_enabled"] = False
+                _remember_presentation("vo_be_filter_enabled")
             be_cols = st.columns([1.1, 1, 3], gap="small", vertical_alignment="bottom")
             be_enabled = be_cols[0].toggle(
                 "BREAKEVEN FILTER", key="vo_be_filter_enabled",
+                disabled=result["target"] is None,
                 on_change=_remember_presentation, args=("vo_be_filter_enabled",),
                 help="ON: include every qualifying spread within the selected range of the scan target. "
                      "OFF: show all qualifying breakevens. Minimum risk:reward 1:2 always applies.",
@@ -1704,7 +1706,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 key="vo_be_range_percent", disabled=not be_enabled,
                 on_change=_remember_presentation, args=("vo_be_range_percent",),
             )
-            max_distance = result["target"] * be_percent / 100 if be_enabled else None
+            max_distance = result["target"] * be_percent / 100 if be_enabled and result["target"] is not None else None
             be_matching_count = candidates.count(max_distance=max_distance)
             range_text = (f'BREAKEVEN {_money(result["target"] - max_distance)} TO '
                           f'{_money(result["target"] + max_distance)} // '
@@ -1721,11 +1723,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 on_change=_remember_presentation, args=("vo_results_view",),
                 help="BEST PER YEAR: top-ranked eligible result in each year within the active BE range. ALL QUALIFIED: every eligible result, paged. No chain download.",
             )
-            view_identity = f"{view}|{max_distance}"
+            view_identity = f"{view}|{max_distance}|{repr(sorted(column_filters.items()))}"
             if view == "BEST PER YEAR":
-                displayed_candidates = candidates.best_by_year(max_distance=max_distance)
+                displayed_candidates = candidates.best_by_year(
+                    max_distance=max_distance, column_filters=column_filters,
+                )
                 annual_ids = {row["id"] for row in displayed_candidates}
-                st.caption("ONE WINNER PER CALENDAR YEAR // ACTIVE BREAKEVEN RANGE")
+                st.caption("ONE WINNER PER CALENDAR YEAR // ACTIVE COLUMN FILTERS")
             else:
                 expirations = candidates.expirations
                 filter_cols = st.columns([1.45, .9, 1.5, .74, .84], gap="small", vertical_alignment="bottom")
@@ -1746,13 +1750,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "ORDER", ("ASC", "DESC"), key="vo_all_pair_direction",
                     on_change=_remember_presentation, args=("vo_all_pair_direction",),
                 )
-                matching_count = (be_matching_count if expiry_filter == "ALL" and side_filter == "CALL + PUT"
-                                  else candidates.count(expiry=expiry_filter, side=side_filter,
-                                                        max_distance=max_distance))
+                matching_count = candidates.count(
+                    expiry=expiry_filter, side=side_filter, max_distance=max_distance,
+                    column_filters=column_filters,
+                )
                 # Send only the current page to the scroller; exports include all pages.
                 pages = max(1, (matching_count + 199) // 200)
                 page_scope = hashlib.sha256(
-                    repr((scope, expiry_filter, side_filter, sort_filter, sort_direction, max_distance)).encode("utf-8")
+                    repr((scope, expiry_filter, side_filter, sort_filter, sort_direction,
+                          max_distance, sorted(column_filters.items()))).encode("utf-8")
                 ).hexdigest()[:12]
                 page_key = "vo_all_pair_page_" + page_scope
                 st.session_state[page_key] = min(pages, max(1, int(
@@ -1765,7 +1771,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 displayed_candidates = candidates.page(
                     expiry=expiry_filter, side=side_filter, sort_by=sort_filter,
                     direction=sort_direction, offset=offset, limit=200,
-                    max_distance=max_distance,
+                    max_distance=max_distance, column_filters=column_filters,
                 )
                 view_identity += f"|{expiry_filter}|{side_filter}|{sort_filter}|{sort_direction}|{page}"
                 st.caption(
@@ -1793,7 +1799,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         loaded_at=result["loaded_at"], target=result["target"],
                         max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
                         sort_by=sort_filter, direction=sort_direction,
-                        max_distance=max_distance,
+                        max_distance=max_distance, column_filters=column_filters,
                     ),
                     file_name=f'{result["symbol"]}_vertical_filtered.csv',
                     mime="text/csv", key="vo_export_filtered_qualified",
@@ -1801,16 +1807,35 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     use_container_width=True,
                 )
             if not displayed_candidates:
-                st.info("No spreads match these display filters. Widen BE RANGE or turn BREAKEVEN FILTER off to include more qualifying pairs.")
+                st.info("No spreads match these filters. Clear a column filter or change the range, expiration, or type.")
             displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
                          for row in displayed_candidates]
             by_id.update({row["id"]: row for row in displayed_candidates})
             selected_update = _SPREAD_SCROLL_COMPONENT(
                 scope=scope, sort_key=view_identity, rows=displayed,
                 selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
+                column_filters=column_filters, filter_choices=filter_choices,
+                filter_ack_revision=int(filter_state["revision"]),
                 key="vo_spread_scroll_" + scope, default=None,
             )
             if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
+                rerun_for_component = False
+                incoming_filters = selected_update.get("column_filters")
+                try:
+                    incoming_filter_revision = int(selected_update.get("filter_revision", 0))
+                except (TypeError, ValueError, OverflowError):
+                    incoming_filter_revision = 0
+                if incoming_filter_revision > int(filter_state["revision"]):
+                    if isinstance(incoming_filters, dict):
+                        try:
+                            candidates._where(column_filters=incoming_filters)
+                        except ValueError:
+                            pass
+                        else:
+                            filter_state["filters"] = incoming_filters
+                            rerun_for_component = True
+                    filter_state["revision"] = incoming_filter_revision
+                    st.session_state["_vo_column_filters"] = filter_state
                 incoming = selected_update.get("selected_ids")
                 if isinstance(incoming, list):
                     checked = set(candidates.get_many(incoming))
@@ -1825,15 +1850,17 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         st.session_state.pop("vo_review_bundle", None)
                         st.session_state.pop("vo_live_confirm", None)
                         st.session_state.pop("vo_last_send_results", None)
-                        st.rerun(scope="fragment")
+                        rerun_for_component = True
+                if rerun_for_component:
+                    st.rerun(scope="fragment")
             checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
             st.caption(
                 f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
                 f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // {len(checked_ids)} CHECKED'
             )
             _scanner_help("RESULTS, RANGE & LINKS", (
-                "The BE filter includes every eligible spread within the inclusive percentage "
-                "of the scan target. OFF removes only this restriction. Filtering, sorting and "
+                "Each column filter applies to all stored scan results, including exports. "
+                "The BE range applies when a target was entered. Filtering, sorting and "
                 "paging reuse stored results without downloading chains. Annual best is ranked "
                 "inside the active range; ALL QUALIFIED exposes every match. "
                 "Green = annual CALL winner; red = annual PUT winner, not profit/loss. "
