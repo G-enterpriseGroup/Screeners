@@ -67,6 +67,34 @@ class VerticalOptionsTests(unittest.TestCase):
             self.assertEqual(get_expiries.call_count, 1)
             self.assertIs(vo._scan_all_years(client, "QQQ", lambda: None), complete)
 
+    def test_empty_expiration_chains_do_not_hide_later_valid_chains(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, i, 15) for i in (1, 2, 3)]
+        client = MagicMock()
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        def chain_for_expiry(client, symbol, expiry, touch_session):
+            if expiry == expiries[-1]:
+                return [{"expiry": expiry, "call_put": "CALL", "strike": 100,
+                         "last": 1, "bid": .9, "ask": 1.1, "osi": "TEST"}]
+            return []
+        with (patch.object(vo.st, "session_state", {}),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries),
+              patch.object(vo, "_chain", side_effect=chain_for_expiry) as chains,
+              patch.object(vo, "_tradingview_listing_exchange", return_value="NASDAQ"),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_SECONDS", 999)):
+            result = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertEqual(result["loaded_expirations"], 1)
+            self.assertEqual(len(result["errors"]), 2)
+            self.assertTrue(result["scan_complete"])
+            self.assertEqual(chains.call_count, 3)
+
     def test_repeated_chain_failures_stop_without_hammering_broker(self):
         from unittest.mock import MagicMock, patch
         import src.vertical_options_ui as vo
