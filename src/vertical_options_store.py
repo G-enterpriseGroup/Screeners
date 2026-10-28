@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date
 import json
+import math
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -75,6 +76,7 @@ class VerticalResultStore:
             db.execute(f"CREATE INDEX canonical ON spreads ({_CANONICAL_ORDER})")
             db.execute("CREATE INDEX expiry_side ON spreads (expiry, side)")
             db.execute("CREATE INDEX side_expiry ON spreads (side, expiry)")
+            db.execute("CREATE INDEX target_distance ON spreads (distance, id)")
 
     @contextmanager
     def _connect(self):
@@ -106,6 +108,20 @@ class VerticalResultStore:
     def expirations(self) -> list[date]:
         with self._connect() as db:
             return [date.fromisoformat(row[0]) for row in db.execute("SELECT DISTINCT expiry FROM spreads ORDER BY expiry")]
+
+    def best_by_year(self, *, max_distance=None) -> list[dict[str, Any]]:
+        if max_distance is None:
+            return self.annual_rows
+        where, args = self._where(max_distance=max_distance)
+        result = []
+        with self._connect() as db:
+            for year in sorted({expiry.year for expiry in self._completed}):
+                row = db.execute("SELECT * FROM spreads" + where
+                    + " AND expiry>=? AND expiry<? ORDER BY " + _CANONICAL_ORDER + " LIMIT 1",
+                    args + [f"{year:04d}-01-01", f"{year + 1:04d}-01-01"]).fetchone()
+                if row is not None:
+                    result.append(self._decode(row))
+        return sorted(result, key=lambda row: _rank(row, self.target))
 
     @contextmanager
     def snapshot(self):
@@ -157,7 +173,7 @@ class VerticalResultStore:
             return True
 
     @staticmethod
-    def _where(expiry="ALL", side="CALL + PUT"):
+    def _where(expiry="ALL", side="CALL + PUT", max_distance=None):
         clauses, args = [], []
         if expiry != "ALL":
             if not isinstance(expiry, date):
@@ -169,12 +185,17 @@ class VerticalResultStore:
         if side != "CALL + PUT":
             clauses.append("side=?")
             args.append(side)
+        if max_distance is not None:
+            if not math.isfinite(max_distance) or max_distance < 0:
+                raise ValueError("Invalid breakeven distance filter.")
+            clauses.append("distance<=?")
+            args.append(max_distance + 1e-8)
         return (" WHERE " + " AND ".join(clauses) if clauses else ""), args
 
-    def count(self, *, expiry="ALL", side="CALL + PUT") -> int:
-        if expiry == "ALL" and side == "CALL + PUT":
+    def count(self, *, expiry="ALL", side="CALL + PUT", max_distance=None) -> int:
+        if expiry == "ALL" and side == "CALL + PUT" and max_distance is None:
             return len(self)
-        where, args = self._where(expiry, side)
+        where, args = self._where(expiry, side, max_distance)
         with self._connect() as db:
             return db.execute("SELECT count(*) FROM spreads" + where, args).fetchone()[0]
 
@@ -191,6 +212,8 @@ class VerticalResultStore:
         return ", ".join(terms + ["id ASC"])
 
     def _ensure_index(self, sort_by, direction):
+        if sort_by == "TARGET DISTANCE" and direction == "ASC":
+            return  # Covered by the permanent distance index; do not duplicate it.
         key = (sort_by, direction)
         if key not in self._indexes:
             order = self._order(sort_by, direction)
@@ -217,11 +240,11 @@ class VerticalResultStore:
         }
 
     def page(self, *, expiry="ALL", side="CALL + PUT", sort_by="FILL + TARGET",
-             direction="ASC", offset=0, limit=200) -> list[dict[str, Any]]:
+             direction="ASC", offset=0, limit=200, max_distance=None) -> list[dict[str, Any]]:
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("Invalid spread page.")
         self._ensure_index(sort_by, direction)
-        where, args = self._where(expiry, side)
+        where, args = self._where(expiry, side, max_distance)
         # Locate page IDs through the index before reading their detail payloads.
         sql = ("SELECT * FROM spreads WHERE rowid IN (SELECT rowid FROM spreads" + where
                + " ORDER BY " + self._order(sort_by, direction) + " LIMIT ? OFFSET ?) ORDER BY "
@@ -242,10 +265,10 @@ class VerticalResultStore:
         return dict(sorted(found.items(), key=lambda item: _rank(item[1], self.target)))
 
     def iter_rows(self, *, expiry="ALL", side="CALL + PUT", sort_by="FILL + TARGET",
-                  direction="ASC"):
+                  direction="ASC", max_distance=None):
         """Stream the entire filtered universe, never just the displayed page."""
         self._ensure_index(sort_by, direction)
-        where, args = self._where(expiry, side)
+        where, args = self._where(expiry, side, max_distance)
         yield from self._iterate(where, args, self._order(sort_by, direction))
 
     def iter_ranked(self):

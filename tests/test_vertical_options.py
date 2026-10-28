@@ -98,6 +98,32 @@ class VerticalOptionsTests(unittest.TestCase):
         late = store.page(offset=800, limit=1)[0]
         self.assertEqual(store.get_many([late["id"], "unknown"]), {late["id"]: late})
         self.assertLessEqual(len(store._indexes), 3)
+        from src.vertical_options_store import _rank
+        # A display-only range must agree across count, all pages and full CSV.
+        edge = abs(expected[0]["breakeven"] - 110)
+        for distance in (0, 2.5, 5, edge, 999):
+            filtered = _sort_qualified_spreads([r for r in expected
+                if abs(r["breakeven"] - 110) <= distance + 1e-8], "TARGET DISTANCE", "ASC", 110)
+            self.assertEqual(store.count(max_distance=distance), len(filtered))
+            self.assertEqual(list(store.iter_rows(max_distance=distance, sort_by="TARGET DISTANCE")), filtered)
+            for offset in range(0, len(filtered), 200):
+                self.assertEqual(store.page(max_distance=distance, sort_by="TARGET DISTANCE", offset=offset),
+                                 filtered[offset:offset + 200])
+            exported = list(csv.DictReader(io.StringIO(_qualified_store_csv(store,
+                source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+                max_distance=distance, sort_by="TARGET DISTANCE"))))
+            self.assertEqual([float(r["Breakeven ($)"]) for r in exported], [r["breakeven"] for r in filtered])
+            winners = {year: min((r for r in filtered if r["year"] == year), key=lambda r: _rank(r, 110))
+                       for year in {r["year"] for r in filtered}}
+            self.assertEqual({r["year"]: r for r in store.best_by_year(max_distance=distance)}, winners)
+            self.assertTrue(all(r["reward_risk"] >= 2 - 1e-8 for r in filtered))
+        self.assertEqual(store.count(), len(expected))  # Turning OFF restores every retained pair.
+        for invalid in (-1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                store.count(max_distance=invalid)
+        with store._connect() as db:
+            plan = str(db.execute("EXPLAIN QUERY PLAN SELECT count(*) FROM spreads WHERE distance<=?", [5]).fetchall())
+            self.assertIn("target_distance", plan)
 
     def test_disk_store_keeps_249500_pairs_and_last_page_without_a_cutoff(self):
         from src.vertical_options_store import VerticalResultStore
@@ -241,6 +267,49 @@ class VerticalOptionsTests(unittest.TestCase):
         self.assertEqual(_safe_vertical_pair_limit(massive), (None, 249500))
         massive.append(dict(massive[0]))  # duplicate transport row not double-counted
         self.assertEqual(_safe_vertical_pair_limit(massive), (None, 249500))
+
+    def test_auto_continuation_finishes_same_snapshot_without_broker_orders(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, month, 15) for month in (1, 2, 3)]
+        client = MagicMock()
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        def chain(client, symbol, expiry, touch):
+            return [self._row(expiry, "CALL", 100, 1.2), self._row(expiry, "CALL", 105, .2)]
+        state = {"_vo_checked_spreads": {"ids": {"preserve-me"}}}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries) as get_expiries,
+              patch.object(vo, "_chain", side_effect=chain) as get_chain,
+              patch.object(vo, "record_lookup"), patch.object(vo, "_SCAN_BATCH_EXPIRATIONS", 1)):
+            raw = vo._scan_all_years(client, "QQQ", lambda: None)
+            store, annual, _, _ = vo._rank_cached_vertical_chains(raw, 100, None, "NORMAL")
+            result = {"symbol": "QQQ", "source": "E*TRADE", "raw_scan_id": raw["scan_id"],
+                      "loaded_at": raw["loaded_at"], "scope": "stable", "target": 100,
+                      "max_cost": None, "pricing_mode": "NORMAL", "candidates": store,
+                      "annual_ids": annual, "scan_complete": False}
+            original_time = result["loaded_at"]
+            for _ in range(2):
+                result = vo._continue_vertical_scan(result, client, lambda: None)
+            self.assertTrue(result["scan_complete"])
+            self.assertEqual(result["next_expiry_index"], 3)
+            self.assertEqual(result["loaded_at"], original_time)
+            self.assertEqual(result["scope"], "stable")
+            self.assertEqual(len(result["candidates"]), 3)
+            self.assertEqual(get_chain.call_count, 3)
+            self.assertEqual(get_expiries.call_count, 1)
+            self.assertEqual(client.get_quote.call_count, 1)
+            self.assertEqual(state["_vo_checked_spreads"]["ids"], {"preserve-me"})
+            client.preview_order.assert_not_called()
+            client.place_order.assert_not_called()
+            with patch.object(vo.time, "time", return_value=original_time + 301):
+                with self.assertRaisesRegex(ValueError, "EXPIRED"):
+                    vo._continue_vertical_scan(result, client, lambda: None)
+            self.assertEqual(get_chain.call_count, 3)
 
     def test_chain_scan_returns_partial_result_and_resumes_without_refetch(self):
         from unittest.mock import MagicMock, patch
