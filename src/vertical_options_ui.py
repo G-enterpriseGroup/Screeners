@@ -33,6 +33,7 @@ from pathlib import Path
 import re
 import time
 from datetime import date, datetime, timezone
+from functools import partial
 from typing import Any
 from urllib.parse import quote as url_quote
 from zoneinfo import ZoneInfo
@@ -58,6 +59,7 @@ from src.vertical_options import (
     smart_fill_ladder,
     validate_vertical,
 )
+from src.vertical_options_store import VerticalResultStore
 
 
 _PREVIEW_FRESH_SECONDS = 150.0
@@ -65,8 +67,7 @@ _DEFAULT_ACCOUNT_SUFFIX = "5474"
 _SCAN_CACHE_SECONDS = 300.0
 _SCAN_BATCH_SECONDS = 4.0  # Yield between requests; a single source request may take longer.
 _SCAN_BATCH_EXPIRATIONS = 4
-_SCAN_EXHAUSTIVE_PAIR_BUDGET = 100_000
-_SCAN_SAFETY_ROWS_PER_EXPIRY = 100
+_SCAN_RANK_SECONDS = 4.0
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_vo_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
@@ -760,11 +761,7 @@ def _entered_price(value: str, label: str) -> float:
 
 
 def _safe_vertical_pair_limit(rows: list[dict[str, Any]]) -> tuple[int | None, int]:
-    """Bound candidate retention on huge chains without hiding incomplete exports.
-
-    All available strikes still participate in ranking and annual-winner
-    selection. Smaller universes retain every qualified pair as before.
-    """
+    """Count all potential pairs; disk-backed results never require a row cap."""
     groups: dict[tuple[date, str], set[tuple[float, str]]] = {}
     for item in rows:
         if not isinstance(item, dict):
@@ -780,7 +777,7 @@ def _safe_vertical_pair_limit(rows: list[dict[str, Any]]) -> tuple[int | None, i
             continue
         groups.setdefault((expiry, side), set()).add((strike, str(item.get("osi") or "")))
     possible = sum(len(legs) * (len(legs) - 1) // 2 for legs in groups.values())
-    return (_SCAN_SAFETY_ROWS_PER_EXPIRY if possible > _SCAN_EXHAUSTIVE_PAIR_BUDGET else None, possible)
+    return None, possible
 
 
 def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False) -> dict[str, Any]:
@@ -880,7 +877,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         "rows": rows, "errors": errors, "tv_exchange": tv_exchange,
         "next_expiry_index": next_index,
         "scan_complete": next_index >= len(expirations),
-        "rank_cache": cached.get("rank_cache", {}) if fresh_cached else {},
+        "result_stores": cached.get("result_stores", {}) if fresh_cached else {},
     }
     cache[cache_key] = result
     # Bound multi-ticker session memory as well as per-expiry pair retention.
@@ -894,49 +891,35 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
 
 def _rank_cached_vertical_chains(raw: dict[str, Any], target: float,
                                  max_cost: float | None, mode: str
-                                 ) -> tuple[list[dict[str, Any]], set[str], int | None, int]:
-    """Evaluate new expirations only; preserve the exact full-scan ranking.
-
-    Cache up to two filter/mode policies inside the raw snapshot, so returning
-    to NORMAL/SMART does not recompute old pairs. Threshold changes invalidate
-    the retention policy, and fresh raw snapshots start with an empty cache.
-    """
-    safe_limit, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
-    policies = raw.setdefault("rank_cache", {})
-    policy = (target, max_cost, mode, safe_limit)
-    by_expiry = policies.pop(policy, {})
-    policies[policy] = by_expiry
+                                 ) -> tuple[VerticalResultStore, set[str], None, int]:
+    """Stream every qualifying pair to disk and reuse completed expirations."""
+    _, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
+    raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
+    policies = raw.setdefault("result_stores", {})
+    policy = (target, max_cost, mode)
+    store = policies.pop(policy, None)
+    if not isinstance(store, VerticalResultStore):
+        store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode)
+    policies[policy] = store
     while len(policies) > 2:
         policies.pop(next(iter(policies)))
     groups: dict[date, list[dict[str, Any]]] = {}
     for row in raw["rows"]:
         groups.setdefault(row["expiry"], []).append(row)
     progress = st.progress(0.0, text="RANKING CALL + PUT SPREADS")
+    started = time.monotonic()
     try:
         for index, (expiry, rows) in enumerate(sorted(groups.items())):
-            saved = by_expiry.get(expiry)
-            if saved is None or saved[0] != len(rows):
-                progress.progress(index / len(groups), text=f"RANKING {_date_label(expiry)} // {raw['symbol']}")
-                candidates, _ = scan_vertical_candidates(
-                    symbol=raw["symbol"], spot_last=raw["spot"], option_rows=rows,
-                    target_breakeven=target, max_cost=max_cost,
-                    max_per_expiration=safe_limit, pricing_mode=mode,
-                )
-                by_expiry[expiry] = (len(rows), candidates)
+            def update(checked, index=index, expiry=expiry):
+                progress.progress(index / len(groups),
+                    text=f"SCANNING {_date_label(expiry)} // {checked:,} PAIRS CHECKED // {raw['symbol']}")
+            update(0)
+            added = store.add_expiration(expiry, rows, scan_vertical_candidates, update)
+            if added and time.monotonic() - started >= _SCAN_RANK_SECONDS:
+                break  # Resume calculation from disk without dropping a pair.
     finally:
         progress.empty()
-    candidates = sorted(
-        (row for expiry in groups for row in by_expiry[expiry][1]),
-        key=lambda row: (
-            row["grade"], abs(row["breakeven"] - target), row["cost"],
-            -row["reward_risk"], row["expiry"], row["call_put"],
-            row["buy_strike"], row["sell_strike"], row["buy_osi"], row["sell_osi"],
-        ),
-    )
-    annual: dict[int, str] = {}
-    for row in candidates:
-        annual.setdefault(row["year"], row["id"])
-    return candidates, set(annual.values()), safe_limit, potential_pairs
+    return store, store.annual_ids, None, potential_pairs
 
 def _optionstrat_url(candidate: dict[str, Any]) -> str:
     """Open the exact two-leg debit spread in OptionStrat's strategy builder."""
@@ -1105,6 +1088,17 @@ def _qualified_spreads_csv(
     return output.getvalue()
 
 
+def _qualified_store_csv(store: VerticalResultStore, *, source: str, loaded_at: float,
+                         target: float, max_cost: float | None, expiry="ALL",
+                         side="CALL + PUT", sort_by="FILL + TARGET", direction="ASC") -> str:
+    """Generate the full CSV on click, off the UI thread, from one revision."""
+    with store.snapshot():
+        return _qualified_spreads_csv(
+            store.iter_rows(expiry=expiry, side=side, sort_by=sort_by, direction=direction),
+            store.annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
+        )
+
+
 # ==============================
 # ISOLATED NORMAL / SMART FILL MODE (NO BROKER SIDE EFFECTS)
 # ==============================
@@ -1126,6 +1120,10 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     return {
         **result, "pricing_mode": mode, "scope": scope,
         "candidates": candidates, "annual_ids": annual_ids,
+        "ranked_expirations": candidates.ranked_expirations,
+        "chains_complete": raw["scan_complete"],
+        "scan_complete": (raw["scan_complete"]
+                          and candidates.ranked_expirations == raw["loaded_expirations"]),
     }
 
 
@@ -1417,8 +1415,6 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     raw, target, max_cost, pricing_mode,
                 )
                 scope = hashlib.sha256(
-                    # Entering shortlist mode can remove checked candidates.
-                    # Reset selection only then, not on ordinary continuation.
                     repr((raw["scan_id"], target, max_cost, pricing_mode,
                           safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
@@ -1436,12 +1432,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "contract_count": len(raw["rows"]), "errors": raw["errors"],
                     "capacity_limited": safe_limit is not None,
                     "potential_pairs": potential_pairs,
-                    "scan_complete": raw["scan_complete"],
+                    "chains_complete": raw["scan_complete"],
+                    "ranked_expirations": candidates.ranked_expirations,
+                    "scan_complete": (raw["scan_complete"]
+                                      and candidates.ranked_expirations == raw["loaded_expirations"]),
                     "next_expiry_index": raw["next_expiry_index"],
                     "pass_seconds": time.monotonic() - scan_started,
                     "tv_exchange": raw.get("tv_exchange", ""),
                 }
-                st.session_state["vo_results_view"] = "BEST PER YEAR"
+                st.session_state["vo_results_view"] = "ALL QUALIFIED"
                 if symbol in (st.session_state.get("vo_ticker_list") or []):
                     st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
                         "" if use_auto_target else entered_target
@@ -1459,6 +1458,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         result = st.session_state.get("vo_scan_result")
         if not isinstance(result, dict):
             return
+        if not isinstance(result.get("candidates"), VerticalResultStore):
+            st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
+            return
         if result.get("pricing_mode", "NORMAL") != pricing_mode:
             updated = _reprice_cached_vertical_scan(result, pricing_mode)
             st.session_state.pop("vo_review_bundle", None)
@@ -1474,18 +1476,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         if not result.get("scan_complete", True):
             st.warning(
                 f'PARTIAL ALL-YEAR SCAN // {result["next_expiry_index"]}/'
-                f'{result["listed_expirations"]} expirations checked. '
+                f'{result["listed_expirations"]} expirations checked; '
+                f'{result["ranked_expirations"]}/{result["loaded_expirations"]} loaded chains ranked. '
                 'Results are available now; press CONTINUE ALL YEARS to load '
-                'the remaining chains without restarting.'
-            )
-        if result.get("capacity_limited"):
-            st.warning(
-                f'LARGE-CHAIN SAFETY MODE // {result["potential_pairs"]:,} possible '
-                f'leg pairs; retained only the top {_SCAN_SAFETY_ROWS_PER_EXPIRY} '
-                'qualified spreads per expiration to prevent memory exhaustion. '
-                'Annual best still considers every checked pair. '
-                'Displayed results and CSV exports are a QUALIFIED SHORTLIST, '
-                'not the complete all-qualified universe.'
+                'or calculate the remaining pairs without restarting.'
             )
         if result["source"] == "E*TRADE" and not broker_live:
             st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
@@ -1501,9 +1495,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             unsafe_allow_html=True,
         )
         st.markdown(
-            '<div class="vo-section">VERTICAL SPREADS // '
-            + ('QUALIFIED SHORTLIST' if result.get("capacity_limited") else 'ALL QUALIFYING PAIRS')
-            + '</div>', unsafe_allow_html=True,
+            '<div class="vo-section">VERTICAL SPREADS // ALL QUALIFYING PAIRS</div>',
+            unsafe_allow_html=True,
         )
         st.caption(
             f'{result["source"]} LAST AS OF '
@@ -1530,22 +1523,22 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     + " at a qualifying quoted price across the loaded years.")
         else:
             annual_ids = set(result["annual_ids"])
-            by_id = {row["id"]: row for row in candidates}
             scope = result["scope"]
             state = st.session_state.get("_vo_checked_spreads")
             if not isinstance(state, dict) or state.get("scope") != scope:
                 state = {"scope": scope, "ids": set(), "revision": 0}
                 st.session_state["_vo_checked_spreads"] = state
             saved_ids = set(state["ids"])
+            by_id = candidates.get_many(saved_ids)
             view = st.radio(
                 "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
                 key="vo_results_view", horizontal=True, label_visibility="collapsed",
             )
             view_identity = view
             if view == "BEST PER YEAR":
-                displayed_candidates = [row for row in candidates if row["id"] in annual_ids]
+                displayed_candidates = candidates.annual_rows
             else:
-                expirations = sorted({row["expiry"] for row in candidates})
+                expirations = candidates.expirations
                 filter_cols = st.columns([1.45, .9, 1.5, .74, .84], gap="small", vertical_alignment="bottom")
                 expiry_filter = filter_cols[0].selectbox(
                     "EXPIRATION", ["ALL"] + expirations, key="vo_all_pair_expiry",
@@ -1560,16 +1553,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 sort_direction = filter_cols[3].selectbox(
                     "ORDER", ("ASC", "DESC"), key="vo_all_pair_direction",
                 )
-                ordered = _sort_qualified_spreads(
-                    candidates, sort_filter, sort_direction, result["target"],
-                )
-                matching = [
-                    row for row in ordered
-                    if (expiry_filter == "ALL" or row["expiry"] == expiry_filter)
-                    and (side_filter == "CALL + PUT" or row["call_put"] == side_filter)
-                ]
+                matching_count = candidates.count(expiry=expiry_filter, side=side_filter)
                 # Send only the current page to the scroller; exports include all pages.
-                pages = max(1, (len(matching) + 199) // 200)
+                pages = max(1, (matching_count + 199) // 200)
                 page_scope = hashlib.sha256(
                     repr((scope, expiry_filter, side_filter, sort_filter, sort_direction)).encode("utf-8")
                 ).hexdigest()[:12]
@@ -1578,39 +1564,45 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     value=1, key="vo_all_pair_page_" + page_scope,
                 ))
                 offset = (page - 1) * 200
-                displayed_candidates = matching[offset:offset + 200]
+                displayed_candidates = candidates.page(
+                    expiry=expiry_filter, side=side_filter, sort_by=sort_filter,
+                    direction=sort_direction, offset=offset, limit=200,
+                )
                 view_identity = f"{view}|{expiry_filter}|{side_filter}|{sort_filter}|{sort_direction}|{page}"
                 st.caption(
-                    f"ALL {len(matching):,} QUALIFIED IN FILTER // PAGE {page:,}/{pages:,} "
+                    f"ALL {matching_count:,} QUALIFIED IN FILTER // PAGE {page:,}/{pages:,} "
                     f"// ROWS {offset + 1:,}–{offset + len(displayed_candidates):,} "
                     "// 1:2 MINIMUM R:R, NOT A FILL GUARANTEE // NO BROKER REQUESTS ON FILTER/SORT."
                 )
                 exports = st.columns(2, gap="small")
                 exports[0].download_button(
-                    f'EXPORT {"RETAINED" if result.get("capacity_limited") else "ALL"} '
-                    f'QUALIFIED CSV // {len(ordered):,}',
-                    data=_qualified_spreads_csv(
-                        ordered, annual_ids, source=result["source"],
+                    f'EXPORT ALL QUALIFIED CSV // {len(candidates):,}',
+                    data=partial(
+                        _qualified_store_csv, candidates, source=result["source"],
                         loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"],
+                        max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
                     ),
                     file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
                     mime="text/csv", key="vo_export_all_qualified",
+                    on_click="ignore",
                     use_container_width=True,
                 )
                 exports[1].download_button(
-                    f"EXPORT FILTERED CSV // {len(matching):,}",
-                    data=_qualified_spreads_csv(
-                        matching, annual_ids, source=result["source"],
+                    f"EXPORT FILTERED CSV // {matching_count:,}",
+                    data=partial(
+                        _qualified_store_csv, candidates, source=result["source"],
                         loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"],
+                        max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
+                        sort_by=sort_filter, direction=sort_direction,
                     ),
                     file_name=f'{result["symbol"]}_vertical_filtered.csv',
                     mime="text/csv", key="vo_export_filtered_qualified",
+                    on_click="ignore",
                     use_container_width=True,
                 )
             displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
                          for row in displayed_candidates]
+            by_id.update({row["id"]: row for row in displayed_candidates})
             selected_update = _SPREAD_SCROLL_COMPONENT(
                 scope=scope, sort_key=view_identity, rows=displayed,
                 selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
@@ -1619,7 +1611,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
                 incoming = selected_update.get("selected_ids")
                 if isinstance(incoming, list):
-                    checked = {item for item in incoming if isinstance(item, str) and item in by_id}
+                    checked = set(candidates.get_many(incoming))
                     try:
                         incoming_revision = int(selected_update.get("revision", 0))
                     except (TypeError, ValueError, OverflowError):
@@ -1635,7 +1627,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
             st.caption(
                 f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
-                f'FROM {result["loaded_expirations"]} COMPLETE CHAINS // '
+                f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // '
                 f'{len(checked_ids)} CHECKED // LIME GREEN = ANNUAL BEST CALL; TONINO RED = ANNUAL BEST PUT. '
                 'ALL QUALIFIED TESTS EVERY UNIQUE VALID STRIKE PAIR PER EXPIRATION '
                 '(BUY LOWER/SELL HIGHER CALL OR BUY HIGHER/SELL LOWER PUT). ' +
@@ -1646,7 +1638,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 'OPENING EITHER LINK NEVER SENDS AN ORDER.'
             )
             if checked_ids:
-                checked_rows = [row for row in candidates if row["id"] in checked_ids]
+                checked_by_id = candidates.get_many(checked_ids)
+                by_id.update(checked_by_id)
+                checked_rows = list(checked_by_id.values())
                 if st.button(
                     f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
                     key="vo_save_checked_spread_drafts", use_container_width=True,

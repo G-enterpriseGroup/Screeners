@@ -13,6 +13,145 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_calculation_budget_resumes_all_pairs_without_repricing_old_expirations(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        rows = [self._row(expiry, side, 100 + k, 15 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for expiry in (date(2027, 1, 15), date(2028, 1, 21), date(2029, 1, 19))
+                for side in ("CALL", "PUT") for k in range(20)]
+        raw = {"symbol": "QQQ", "spot": 110, "rows": rows}
+        with (patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "_SCAN_RANK_SECONDS", -1),
+              patch.object(vo, "scan_vertical_candidates", wraps=scan_vertical_candidates) as calculate):
+            for count in (1, 2, 3):
+                store, winners, _, _ = vo._rank_cached_vertical_chains(raw, 110, None, "NORMAL")
+                self.assertEqual(store.ranked_expirations, count)
+                self.assertEqual(calculate.call_count, count)
+            vo._rank_cached_vertical_chains(raw, 110, None, "NORMAL")
+            self.assertEqual(calculate.call_count, 3)
+            expected = scan_vertical_candidates(symbol="QQQ", spot_last=110, option_rows=rows,
+                target_breakeven=110, max_cost=None, max_per_expiration=None)
+            self.assertEqual((list(store.iter_ranked()), winners), expected)
+
+    def test_streaming_preserves_every_price_and_annual_winner(self):
+        from src.vertical_options_store import _rank
+        rows = [self._row(date(2027, 1, 15), side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k,
+                         bid=None if k % 3 else 3, ask=None if k % 3 else 3.02)
+                for side in ("CALL", "PUT") for k in range(25)]
+        rows += [dict(rows[0])]  # Duplicate transport contract.
+        for mode in ("NORMAL", "SMART FILL"):
+            args = dict(symbol="QQQ", spot_last=110, option_rows=rows,
+                        target_breakeven=110, max_cost=None, max_per_expiration=None,
+                        pricing_mode=mode)
+            expected, winners = scan_vertical_candidates(**args)
+            streamed = []
+            retained, actual_winners = scan_vertical_candidates(**args, candidate_sink=streamed.append)
+            self.assertEqual(retained, [])
+            self.assertEqual(sorted(streamed, key=lambda row: _rank(row, 110)), expected)
+            self.assertEqual(actual_winners, winners)
+
+    def test_disk_store_all_sorts_filters_pages_selection_and_full_csv(self):
+        import csv
+        import io
+        from src.vertical_options_store import VerticalResultStore
+        from src.vertical_options_ui import _sort_qualified_spreads, _QUALIFIED_SORT_FIELDS, _qualified_store_csv
+        rows = [self._row(expiry, side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for expiry in (date(2027, 1, 15), date(2028, 1, 21))
+                for side in ("CALL", "PUT") for k in range(22)]
+        # Exercise missing Last values and quoted-only candidates as well.
+        rows.extend([self._row(date(2028, 1, 21), "CALL", 130, None, bid=.5, ask=.52),
+                     self._row(date(2028, 1, 21), "CALL", 140, None, bid=.1, ask=.12)])
+        store = VerticalResultStore("QQQ", 110, 110, None, "NORMAL")
+        for expiry in sorted({r["expiry"] for r in rows}):
+            store.add_expiration(expiry, [r for r in rows if r["expiry"] == expiry], scan_vertical_candidates)
+        expected, annual = scan_vertical_candidates(symbol="QQQ", spot_last=110, option_rows=rows,
+            target_breakeven=110, max_cost=None, max_per_expiration=None)
+        self.assertGreater(len(store), 900)
+        self.assertEqual(len(store), len(expected))
+        self.assertEqual(list(store.iter_ranked()), expected)
+        self.assertEqual(store.annual_ids, annual)
+        self.assertEqual({r["id"] for r in store.annual_rows}, annual)
+        for sort_by in _QUALIFIED_SORT_FIELDS:
+            for direction in ("ASC", "DESC"):
+                ordered = _sort_qualified_spreads(expected, sort_by, direction, 110)
+                for offset in (0, 200, len(ordered) - 13):
+                    self.assertEqual(store.page(sort_by=sort_by, direction=direction, offset=offset),
+                                     ordered[offset:offset + 200], (sort_by, direction, offset))
+        for expiry in ("ALL", date(2027, 1, 15), date(2028, 1, 21)):
+            for side in ("CALL + PUT", "CALL", "PUT"):
+                ordered = _sort_qualified_spreads(expected, "COST", "DESC", 110)
+                filtered = [r for r in ordered if (expiry == "ALL" or r["expiry"] == expiry)
+                            and (side == "CALL + PUT" or r["call_put"] == side)]
+                self.assertEqual(store.count(expiry=expiry, side=side), len(filtered))
+                self.assertEqual(store.page(expiry=expiry, side=side, sort_by="COST", direction="DESC"),
+                                 filtered[:200])
+                data = _qualified_store_csv(store, source="E*TRADE", loaded_at=1000, target=110,
+                    max_cost=None, expiry=expiry, side=side, sort_by="COST", direction="DESC")
+                exported = list(csv.DictReader(io.StringIO(data)))
+                self.assertEqual(len(exported), len(filtered))
+                self.assertEqual([float(r["Cost Per Contract ($)"]) for r in exported],
+                                 [r["cost"] for r in filtered])
+                self.assertEqual(sum(r["Annual Best"] == "YES" for r in exported),
+                                 sum(r["id"] in annual for r in filtered))
+        late = store.page(offset=800, limit=1)[0]
+        self.assertEqual(store.get_many([late["id"], "unknown"]), {late["id"]: late})
+        self.assertLessEqual(len(store._indexes), 3)
+
+    def test_disk_store_keeps_249500_pairs_and_last_page_without_a_cutoff(self):
+        from src.vertical_options_store import VerticalResultStore
+        expiry = date(2027, 1, 15)
+        rows = [self._row(expiry, side, 100 + k,
+                         110 - .2 * k if side == "CALL" else 2 + .2 * k,
+                         bid=109.99 - .2 * k if side == "CALL" else 1.99 + .2 * k,
+                         ask=110.01 - .2 * k if side == "CALL" else 2.01 + .2 * k)
+                for side in ("CALL", "PUT") for k in range(500)]
+        store = VerticalResultStore("QQQ", 350, 350, None, "NORMAL")
+        store.add_expiration(expiry, rows, scan_vertical_candidates)
+        self.assertEqual(len(store), 249500)
+        self.assertEqual(store.count(side="CALL"), 124750)
+        self.assertEqual(store.count(side="PUT"), 124750)
+        self.assertEqual(len(store.page(offset=249400)), 100)
+        final = store.page(offset=249499, limit=1)[0]
+        self.assertEqual(store.get_many([final["id"]]), {final["id"]: final})
+        self.assertFalse(store.add_expiration(expiry, rows, scan_vertical_candidates))
+        self.assertEqual(len(store), 249500)
+        for key in ("CALL", "PUT"):
+            self.assertEqual(sum(1 for _ in store.iter_rows(side=key)), 124750)
+
+    def test_disk_store_rolls_back_failed_expiration_and_cleans_up(self):
+        import gc
+        import weakref
+        from src.vertical_options_store import VerticalResultStore
+        expiry = date(2027, 1, 15)
+        rows = [self._row(expiry, side, 100 + k, 15 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for side in ("CALL", "PUT") for k in range(30)]
+        store = VerticalResultStore("QQQ", 110, 110, None, "NORMAL")
+        def fail_after_flush(**kwargs):
+            sink = kwargs.pop("candidate_sink")
+            count = 0
+            def failing_sink(row):
+                nonlocal count
+                sink(row)
+                count += 1
+                if count == 600:
+                    raise RuntimeError("source failed mid-expiration")
+            return scan_vertical_candidates(**kwargs, candidate_sink=failing_sink)
+        with self.assertRaisesRegex(RuntimeError, "mid-expiration"):
+            store.add_expiration(expiry, rows, fail_after_flush)
+        self.assertEqual(len(store), 0)
+        self.assertEqual(store.count(side="CALL"), 0)
+        self.assertEqual(store.annual_ids, set())
+        store.add_expiration(expiry, rows, scan_vertical_candidates)
+        self.assertEqual(len(store), 870)
+        directory = store.path.parent
+        reference = weakref.ref(store)
+        del store
+        gc.collect()
+        self.assertIsNone(reference())
+        self.assertFalse(directory.exists())
+
     def test_incremental_ranking_matches_full_scan_and_only_prices_new_expiries(self):
         from unittest.mock import MagicMock, patch
         import src.vertical_options_ui as vo
@@ -35,14 +174,14 @@ class VerticalOptionsTests(unittest.TestCase):
                 actual = vo._rank_cached_vertical_chains(raw, 103, None, mode)
                 expected = scan_vertical_candidates(symbol="QQQ", spot_last=103, option_rows=rows,
                     target_breakeven=103, max_cost=None, max_per_expiration=None, pricing_mode=mode)
-                self.assertEqual(actual[:2], expected)
+                self.assertEqual((list(actual[0].iter_ranked()), actual[1]), expected)
             self.assertEqual(calculate.call_count, 6)  # NORMAL reused after SMART.
-            self.assertTrue(set(first[1]).issubset({r["id"] for r in complete[0]}))
+            self.assertTrue(set(first[1]).issubset(complete[0].get_many(first[1])))
             vo._rank_cached_vertical_chains(raw, 104, 100, "NORMAL")
             self.assertEqual(calculate.call_count, 9)
-            self.assertEqual(len(raw["rank_cache"]), 2)
+            self.assertEqual(len(raw["result_stores"]), 2)
 
-    def test_incremental_ranking_rebuilds_when_safety_threshold_changes(self):
+    def test_incremental_ranking_retains_every_pair_as_universe_grows(self):
         from unittest.mock import MagicMock, patch
         import src.vertical_options_ui as vo
         expiries = [date(2027, 1, 15), date(2028, 1, 21)]
@@ -50,17 +189,15 @@ class VerticalOptionsTests(unittest.TestCase):
                 for expiry in expiries for side in ("CALL", "PUT") for k in range(8)]
         raw = {"symbol": "QQQ", "spot": 103, "rows": rows[:16]}
         with (patch.object(vo.st, "progress", return_value=MagicMock()),
-              patch.object(vo, "_SCAN_EXHAUSTIVE_PAIR_BUDGET", 60),
-              patch.object(vo, "_SCAN_SAFETY_ROWS_PER_EXPIRY", 3),
               patch.object(vo, "scan_vertical_candidates", wraps=scan_vertical_candidates) as calculate):
             self.assertIsNone(vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL")[2])
             raw["rows"] = rows
             actual = vo._rank_cached_vertical_chains(raw, 103, None, "NORMAL")
-            self.assertEqual(calculate.call_count, 3)
-            self.assertEqual(actual[2:], (3, 112))
+            self.assertEqual(calculate.call_count, 2)
+            self.assertEqual(actual[2:], (None, 112))
             expected = scan_vertical_candidates(symbol="QQQ", spot_last=103, option_rows=rows,
-                target_breakeven=103, max_cost=None, max_per_expiration=3)
-            self.assertEqual(actual[:2], expected)
+                target_breakeven=103, max_cost=None, max_per_expiration=None)
+            self.assertEqual((list(actual[0].iter_ranked()), actual[1]), expected)
 
     def test_capped_ranking_preserves_full_scan_winners_and_exact_top_rows(self):
         import random
@@ -88,7 +225,7 @@ class VerticalOptionsTests(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertEqual(winners, all_winners)
 
-    def test_large_chain_guard_preserves_small_exhaustive_scans(self):
+    def test_pair_count_never_caps_even_massive_universes(self):
         from src.vertical_options_ui import _safe_vertical_pair_limit
         expiry = date(2027, 1, 15)
         small = [
@@ -101,9 +238,9 @@ class VerticalOptionsTests(unittest.TestCase):
             {"expiry": expiry, "call_put": side, "strike": float(k), "osi": f"{side}{k}"}
             for side in ("CALL", "PUT") for k in range(1, 501)
         ]
-        self.assertEqual(_safe_vertical_pair_limit(massive), (100, 249500))
+        self.assertEqual(_safe_vertical_pair_limit(massive), (None, 249500))
         massive.append(dict(massive[0]))  # duplicate transport row not double-counted
-        self.assertEqual(_safe_vertical_pair_limit(massive), (100, 249500))
+        self.assertEqual(_safe_vertical_pair_limit(massive), (None, 249500))
 
     def test_chain_scan_returns_partial_result_and_resumes_without_refetch(self):
         from unittest.mock import MagicMock, patch
@@ -168,12 +305,12 @@ class VerticalOptionsTests(unittest.TestCase):
             complete = vo._scan_all_years(client, "QQQ", lambda: None)
             self.assertEqual(complete["rows"], [row])
             self.assertTrue(complete["scan_complete"])
-            complete["rank_cache"] = {"old": "must be discarded"}
+            complete["result_stores"] = {"old": "must be discarded"}
             with patch.object(vo.time, "time", return_value=1301):
                 restarted = vo._scan_all_years(client, "QQQ", lambda: None)
                 self.assertFalse(restarted["scan_complete"])
                 self.assertEqual(restarted["next_expiry_index"], 1)
-                self.assertEqual(restarted["rank_cache"], {})
+                self.assertEqual(restarted["result_stores"], {})
                 self.assertEqual(restarted["loaded_at"], 1301)
             self.assertEqual(expirations.call_count, 2)
             self.assertEqual(chains.call_count, 3)

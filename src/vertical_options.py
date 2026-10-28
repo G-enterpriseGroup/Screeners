@@ -21,7 +21,7 @@ import secrets
 import math
 from bisect import bisect_left
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -246,6 +246,8 @@ def scan_vertical_candidates(
     max_cost: float | None,
     max_per_expiration: int | None = 20,
     pricing_mode: str = "NORMAL",
+    candidate_sink: Callable[[dict[str, Any]], None] | None = None,
+    progress: Callable[[int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
 
@@ -269,6 +271,8 @@ def scan_vertical_candidates(
         raise ValueError("Ticker, underlying Last, breakeven, and cost must be valid.")
     if max_per_expiration is not None and (type(max_per_expiration) is not int or max_per_expiration < 1):
         raise ValueError("max_per_expiration must be a positive integer or None for exhaustive scanning.")
+    if candidate_sink is not None and max_per_expiration is not None:
+        raise ValueError("Streaming requires exhaustive scanning without a retention limit.")
 
     # One normalized chain row per exact contract. This bounds memory by the
     # input chain size, rather than the quadratic number of possible spreads.
@@ -315,11 +319,15 @@ def scan_vertical_candidates(
 
     retained: dict[date, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
     annual_best: dict[int, tuple[tuple[Any, ...], str]] = {}
+    pairs_checked = 0
     for (expiry, side), group in sorted(groups.items()):
         legs = sorted(group.values(), key=lambda row: (row["strike"], row["osi"]))
         top = retained.setdefault(expiry, [])
         for lower_index, lower in enumerate(legs):
             for higher in legs[lower_index + 1:]:
+                pairs_checked += 1
+                if progress is not None and pairs_checked % 4096 == 0:
+                    progress(pairs_checked)
                 if lower["strike"] == higher["strike"]:
                     continue
                 buy, sell = (lower, higher) if side == "CALL" else (higher, lower)
@@ -374,7 +382,9 @@ def scan_vertical_candidates(
                     "max_profit": profit, "max_loss": cost,
                     "breakeven": breakeven, "reward_risk": ratio,
                 }
-                if max_per_expiration is None:
+                if candidate_sink is not None:
+                    candidate_sink(candidate)
+                elif max_per_expiration is None:
                     # Exhaustive case: append O(1), then sort globally once.
                     # Inserting each row into a ranked list would be O(M²).
                     top.append((rank, candidate))
