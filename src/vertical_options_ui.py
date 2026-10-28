@@ -1273,6 +1273,12 @@ def _hydrate_vertical_options_pricing() -> bool:
     return True
 
 
+def _remember_pricing_mode() -> None:
+    st.session_state["_vo_pricing_mode_preference"] = (
+        "SMART FILL" if st.session_state["vo_smart_fill"] else "NORMAL"
+    )
+
+
 def _pricing_mode_flip_switch() -> str | None:
     """Restore saved pricing before showing the live switch."""
     if not _hydrate_vertical_options_pricing():
@@ -1280,12 +1286,12 @@ def _pricing_mode_flip_switch() -> str | None:
 
     # Streamlit can clean up a widget key when another top-level tab renders.
     # The non-widget preference remains stable for this server-side session.
-    if "vo_smart_fill" not in st.session_state:
-        st.session_state["vo_smart_fill"] = (
-            st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
-        )
+    st.session_state["vo_smart_fill"] = (
+        st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
+    )
     smart = st.toggle(
         "SMART FILL", key="vo_smart_fill", label_visibility="collapsed",
+        on_change=_remember_pricing_mode,
         help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
              "Saved for this browser profile, including after page reload.",
     )

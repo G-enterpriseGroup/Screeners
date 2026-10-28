@@ -876,7 +876,7 @@ else:
             self.assertTrue(session["_vo_pricing_mode_hydrated"])
             self.assertEqual(memory.call_args.kwargs["value"], "SMART FILL")
             self.assertEqual(toggle.call_count, 1)
-            del session["vo_smart_fill"]  # Widget is removed on a tab switch.
+            session["vo_smart_fill"] = False  # Returning frontend sends its default.
             self.assertEqual(vo._pricing_mode_flip_switch(), "SMART FILL")
             self.assertTrue(session["vo_smart_fill"])
 

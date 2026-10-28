@@ -506,6 +506,11 @@ def test() -> None:
                 "return i && i.checked;"
             ))
             assert_switch_visibility(True)
+            leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
+            leave_button.click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected())
             driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
             wait.until(lambda _: pricing_preference_in_browser(driver) == "NORMAL")
             assert_switch_visibility(False)
