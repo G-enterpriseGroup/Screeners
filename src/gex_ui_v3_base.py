@@ -96,6 +96,62 @@ def _css() -> None:
             font-size:.76rem!important;
         }
 
+        /*
+           SCREENSHOT REGRESSION // GEX-ONLY COMPACT CONTROLS.
+           The terminal's global widget theme can render native Streamlit
+           buttons as oversized electric-blue blocks. Keep all overrides
+           inside the explicit GEX workspace; no other terminal tab changes.
+        */
+        .st-key-gexv3_workspace[data-testid="stVerticalBlock"],
+        .st-key-gexv3_workspace > div[data-testid="stVerticalBlock"] {
+            gap: .36rem !important;
+        }
+        .st-key-gexv3_workspace div[data-testid="stButton"] button,
+        .st-key-gexv3_workspace div[data-testid="stDownloadButton"] button,
+        .st-key-gexv3_workspace div[data-testid="stLinkButton"] a {
+            height: 36px !important;
+            min-height: 36px !important;
+            padding: .24rem .48rem !important;
+            border: 1px solid #fb8b1e !important;
+            border-radius: 0 !important;
+            background: #050505 !important;
+            color: #fb8b1e !important;
+            -webkit-text-fill-color: #fb8b1e !important;
+            box-shadow: none !important;
+            font: 800 .72rem/1.1 "Courier New", monospace !important;
+            letter-spacing: .01em !important;
+        }
+        .st-key-gexv3_workspace div[data-testid="stButton"] button *,
+        .st-key-gexv3_workspace div[data-testid="stDownloadButton"] button *,
+        .st-key-gexv3_workspace div[data-testid="stLinkButton"] a * {
+            color: inherit !important;
+            -webkit-text-fill-color: inherit !important;
+            font: inherit !important;
+        }
+        .st-key-gexv3_workspace button[data-testid="baseButton-primary"] {
+            background: #fb8b1e !important;
+            color: #050505 !important;
+            -webkit-text-fill-color: #050505 !important;
+        }
+        .st-key-gexv3_workspace div[data-testid="stButton"] button:hover:not(:disabled),
+        .st-key-gexv3_workspace div[data-testid="stDownloadButton"] button:hover:not(:disabled),
+        .st-key-gexv3_workspace div[data-testid="stLinkButton"] a:hover {
+            background: #fb8b1e !important;
+            color: #000 !important;
+            -webkit-text-fill-color: #000 !important;
+        }
+        .st-key-gexv3_workspace div[data-testid="stButton"] button:disabled,
+        .st-key-gexv3_workspace div[data-testid="stDownloadButton"] button:disabled {
+            opacity: .42 !important;
+            box-shadow: none !important;
+        }
+        .st-key-gexv3_workspace [data-testid="stCaptionContainer"],
+        .st-key-gexv3_workspace [data-testid="stCaptionContainer"] * {
+            color: #e99734 !important;
+            -webkit-text-fill-color: #e99734 !important;
+            line-height: 1.2 !important;
+        }
+
         /* TradingView bridge: readable text, compact height, no black-on-black. */
         .st-key-gexv3_bridge_code [data-testid="stCodeBlock"],
         .st-key-gexv3_bridge_code pre,
