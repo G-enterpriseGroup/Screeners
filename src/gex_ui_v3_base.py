@@ -984,11 +984,16 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         unsafe_allow_html=True,
     )
 
-    add_col, etrade_refresh_col, cboe_refresh_col = st.columns(
-        [3.7, 1.15, 1.15],
-        gap="small",
-        vertical_alignment="bottom",
-    )
+    # Keep E*TRADE refresh aligned with its temporarily hidden Overview tab.
+    show_etrade_overview = False
+    if show_etrade_overview:
+        add_col, etrade_refresh_col, cboe_refresh_col = st.columns(
+            [3.7, 1.15, 1.15], gap="small", vertical_alignment="bottom",
+        )
+    else:
+        add_col, cboe_refresh_col = st.columns(
+            [4.85, 1.15], gap="small", vertical_alignment="bottom",
+        )
     with add_col:
         batch = st.text_input(
             "ADD TICKERS",
@@ -996,14 +1001,16 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
             placeholder="AAPL or Apple // multiple: SPY, QQQ",
             help="Ticker or company-name lookup uses yfinance. Separate multiple tickers with commas or spaces.",
         )
-    with etrade_refresh_col:
-        refresh_all = st.button(
-            "REFRESH E*TRADE GEX",
-            type="primary",
-            width="stretch",
-            disabled=not state["tickers"] or client is None,
-            key="gexv3_refresh_all",
-        )
+    refresh_all = False
+    if show_etrade_overview:
+        with etrade_refresh_col:
+            refresh_all = st.button(
+                "REFRESH E*TRADE GEX",
+                type="primary",
+                width="stretch",
+                disabled=not state["tickers"] or client is None,
+                key="gexv3_refresh_all",
+            )
     with cboe_refresh_col:
         cboe_refresh_all = _render_cboe_refresh_all_control(vault_key, state)
 
@@ -1107,8 +1114,7 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     if cboe_refresh_all:
         _run_cboe_refresh_all(vault_key, state)
 
-    # Hidden for now; switch to True to restore the existing E*TRADE subtab.
-    show_etrade_overview = False
+    # Same switch restores E*TRADE Overview and its refresh button together.
     subtab_names = (
         (["E*TRADE OVERVIEW"] if show_etrade_overview else [])
         + ["CBOE OVERVIEW", "MORNINGSTAR GEX", "SETTINGS", "NOTES"]
