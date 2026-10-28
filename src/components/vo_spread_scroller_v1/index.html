@@ -64,8 +64,8 @@ function safeTradingViewUrl(raw){
  try{
   const url=new URL(String(raw||""));
   return url.protocol==="https:"&&!url.username&&!url.password&&
-   url.hostname==="www.tradingview.com"&&url.pathname==="/options/strategies/handbook/"&&
-   (!url.search||url.searchParams.has("symbol"))?url.href:"";
+   url.hostname==="www.tradingview.com"&&url.pathname==="/chart/"&&
+   /^OPRA:[A-Z][A-Z0-9.]*\d{6}[CP]\d+\.\d+-OPRA:[A-Z][A-Z0-9.]*\d{6}[CP]\d+\.\d+$/.test(url.searchParams.get("symbol")||"")?url.href:"";
  }catch{return "";}
 }
 function safeOptionStratUrl(raw){
@@ -95,7 +95,7 @@ function makeRow(row,index){
  const links=document.createElement("div");links.className="link-pair";
  for(const [label,href,service,descriptionText] of [
   ["OS",safeOptionStratUrl(row.optionstrat_url),"OptionStrat","Exact debit spread payoff"],
-  ["TV",safeTradingViewUrl(row.tradingview_url),"TradingView","Options Strategy Builder: select displayed BUY/SELL legs manually"]
+  ["TV",safeTradingViewUrl(row.tradingview_url),"TradingView","Exact spread chart: BUY option premium minus SELL option premium"]
  ]){
   if(href){
    const open=document.createElement("a");open.className="open";open.textContent=label;open.href=href;

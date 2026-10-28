@@ -951,7 +951,6 @@ def _optionstrat_url(candidate: dict[str, Any]) -> str:
     return f"https://optionstrat.com/build/{strategy}/{url_quote(symbol, safe='')}/{url_quote(legs, safe='.,-')}"
 
 
-_TV_OPTIONS_BUILDER = "https://www.tradingview.com/options/strategies/handbook/"
 # Verified TradingView symbol pages; never guess an unverified exchange.
 _TV_KNOWN_LISTINGS = {"SOXX": "NASDAQ", "SPY": "AMEX", "SPX": "SP"}
 
@@ -977,18 +976,49 @@ def _tradingview_listing_exchange(symbol: str, quote_payload: dict[str, Any] | N
     }.get(code, "")
 
 
-def _tradingview_spread_url(candidate: dict[str, Any], *, exchange: str = "") -> str:
-    """Open the real TradingView options builder, not an unverified OPRA spread chart.
+def _tradingview_spread_formula(candidate: dict[str, Any]) -> str:
+    """Exact long-premium minus short-premium symbols, not an expiry payoff.
 
-    TradingView documents symbol preselection but not URL-prefilled option legs.
-    Unknown exchanges safely open the generic builder for manual symbol search.
+    TradingView's OPRA chain uses a decimal suffix even for integer strikes:
+    QQQ261218P701.0 (verified in its chain and on the rendered spread chart).
+    Preserve broker option roots such as SPXW independently for each leg.
     """
-    symbol = str(candidate["symbol"]).strip().upper()
-    known = _TV_KNOWN_LISTINGS.get(symbol)
-    listing = known or str(exchange or "").upper().strip()
-    if listing not in {"NASDAQ", "NYSE", "AMEX", "SP"}:
-        return _TV_OPTIONS_BUILDER
-    return _TV_OPTIONS_BUILDER + "?symbol=" + url_quote(f"{listing}:{symbol}", safe="")
+    try:
+        symbol = str(candidate["symbol"]).strip().upper()
+        expiry = candidate["expiry"].strftime("%y%m%d")
+        side = {"CALL": "C", "PUT": "P"}[candidate["call_put"]]
+
+        def leg(prefix: str) -> str:
+            strike = float(candidate[f"{prefix}_strike"])
+            if not math.isfinite(strike) or strike <= 0:
+                raise ValueError("Invalid option strike")
+            root = symbol
+            osi = str(candidate.get(f"{prefix}_osi") or "").upper().replace(" ", "").lstrip(".")
+            if osi:
+                match = re.fullmatch(r"([A-Z][A-Z0-9.]*?)(\d{6})([CP])(\d{1,8}(?:\.\d+)?)", osi)
+                if not match or match.group(2) != expiry or match.group(3) != side:
+                    raise ValueError("Option identity does not match the spread")
+                raw_strike = match.group(4)
+                osi_strike = float(raw_strike) / 1000 if raw_strike.isdigit() and len(raw_strike) == 8 else float(raw_strike)
+                if abs(osi_strike - strike) >= .0001:
+                    raise ValueError("Option identity strike does not match")
+                root = match.group(1)
+            if not re.fullmatch(r"[A-Z][A-Z0-9.]*", root):
+                raise ValueError("Invalid option root")
+            text = f"{strike:.8f}".rstrip("0").rstrip(".")
+            if "." not in text:
+                text += ".0"
+            return f"OPRA:{root}{expiry}{side}{text}"
+
+        return f'{leg("buy")}-{leg("sell")}'
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        return ""  # Never send an incomplete/mismatched spread to another chart.
+
+
+def _tradingview_spread_url(candidate: dict[str, Any], *, exchange: str = "") -> str:
+    """Chart both exact OPRA legs; underlying listing exchange is irrelevant."""
+    formula = _tradingview_spread_formula(candidate)
+    return "https://www.tradingview.com/chart/?symbol=" + url_quote(formula, safe="") if formula else ""
 
 def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "") -> dict[str, Any]:
     return {
@@ -1440,7 +1470,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "pass_seconds": time.monotonic() - scan_started,
                     "tv_exchange": raw.get("tv_exchange", ""),
                 }
-                st.session_state["vo_results_view"] = "ALL QUALIFIED"
+                # Presentation default only: every eligible pair stays in the store.
+                st.session_state["vo_results_view"] = "BEST PER YEAR"
                 if symbol in (st.session_state.get("vo_ticker_list") or []):
                     st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
                         "" if use_auto_target else entered_target
@@ -1634,7 +1665,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 ('FILL = SMART FILL BASIS (SMART / MID / LAST*). '
                  if result.get("pricing_mode") == "SMART FILL" else
                  'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ') +
-                'OS = EXACT OPTIONSTRAT SPREAD; TV = TRADINGVIEW OPTIONS BUILDER (SELECT LEGS THERE). '
+                'OS = EXACT OPTIONSTRAT SPREAD; TV = BUY MINUS SELL PREMIUM CHART. '
                 'OPENING EITHER LINK NEVER SENDS AN ORDER.'
             )
             if checked_ids:
@@ -1670,16 +1701,16 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         _optionstrat_url(chosen), use_container_width=True,
                     )
                 with tv_col:
+                    tv_url = _tradingview_spread_url(chosen, exchange=result.get("tv_exchange", ""))
                     st.link_button(
-                        "OPEN TRADINGVIEW OPTIONS BUILDER",
-                        _tradingview_spread_url(chosen, exchange=result.get("tv_exchange", "")),
-                        use_container_width=True,
+                        "OPEN SPREAD CHART IN TRADINGVIEW",
+                        tv_url or "https://www.tradingview.com/chart/",
+                        use_container_width=True, disabled=not tv_url,
                     )
                 st.caption(
-                    f'TRADINGVIEW LEG SETUP // {chosen["symbol"]} '
-                    f'{chosen["expiry"].isoformat()} {chosen["call_put"]}: '
-                    f'BUY {chosen["buy_strike"]:g} / SELL {chosen["sell_strike"]:g}. '
-                    'The builder does not auto-import option legs from external links.'
+                    f'TV FORMULA // {_tradingview_spread_formula(chosen) or "CONTRACT IDENTITY UNAVAILABLE"} // '
+                    'BUY premium minus SELL premium, per share. Chart history and delay '
+                    'depend on TradingView contract coverage and your market-data access.'
                 )
                 with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
                     _render_selected_order(client, touch_session, chosen, result, broker_live)
