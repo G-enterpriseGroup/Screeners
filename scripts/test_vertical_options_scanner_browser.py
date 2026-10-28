@@ -263,7 +263,7 @@ def checked_count(driver: webdriver.Chrome) -> int:
     return driver.execute_script(
         """
         for(const caption of document.querySelectorAll('[data-testid="stCaptionContainer"]')){
-          const match=caption.textContent.match(/(\\d+) CHECKED \\/\\/ LIME GREEN/);
+          const match=caption.textContent.match(/(\\d+) CHECKED(?:\\s|$)/);
           if(match)return Number(match[1]);
         }
         return -1;
@@ -542,6 +542,29 @@ def test() -> None:
             assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
                        for item in chain_calls), chain_calls
 
+            # Both native switches use one role-based local geometry contract.
+            switches = driver.execute_script("""
+                return ['vo_smart_fill','vo_be_filter_enabled'].map(key=>{
+                    const label=document.querySelector('.st-key-'+key+' label');
+                    const track=label.querySelector(':scope > div:first-of-type');
+                    const rect=track.getBoundingClientRect();
+                    return {width:rect.width,height:rect.height,on:getComputedStyle(label,'::after').content};
+                });
+            """)
+            assert all(item['width'] == 36 and item['height'] == 20 for item in switches), switches
+            assert switches[1]['on'] == '"ON"', switches
+            help_button = driver.find_element(By.CSS_SELECTOR, '.vo-help button')
+            ActionChains(driver).move_to_element(help_button).perform()
+            def help_visible(_):
+                return driver.execute_script("""
+                    const panel=document.querySelector('.vo-help>div'),box=panel.getBoundingClientRect();
+                    return getComputedStyle(panel).display!=='none'&&box.width>0&&box.left>=0&&box.right<=innerWidth;
+                """)
+            wait.until(help_visible)
+            help_button.click()  # Click/focus keeps the same panel accessible.
+            wait.until(help_visible)
+            driver.find_element(By.CSS_SELECTOR, '.vo-note').click()
+            ActionChains(driver).move_to_element(driver.find_element(By.CSS_SELECTOR, '.vo-note')).perform()
             # New sessions default to annual winners; explicit ALL stays selected.
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)

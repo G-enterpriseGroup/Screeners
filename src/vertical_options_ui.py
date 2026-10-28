@@ -372,12 +372,12 @@ _VERTICAL_OPTIONS_CSS = """
 @media (max-width:760px){.vo-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
 
 /* Local financial-terminal controls; native inputs retain keyboard semantics. */
-.st-key-vertical_options_workspace [data-testid="stToggle"] label{display:flex;align-items:center;gap:8px;min-height:32px;}
-.st-key-vertical_options_workspace [data-testid="stToggle"] label:has(input[role="switch"]) > div:first-of-type{width:36px!important;min-width:36px!important;height:20px!important;}
-.st-key-vertical_options_workspace [data-testid="stToggle"] label:has(input[role="switch"]) > div:first-of-type > div{width:16px!important;height:16px!important;transition:transform .15s ease,background-color .15s ease!important;}
-.st-key-vertical_options_workspace [data-testid="stToggle"] label::after{content:"OFF";width:24px;color:var(--vo-muted);font:700 10px/1 "Courier New",monospace;}
-.st-key-vertical_options_workspace [data-testid="stToggle"] label:has(input:checked)::after{content:"ON";color:var(--vo-orange);}
-.st-key-vertical_options_workspace [data-testid="stToggle"] label:has(input:disabled){opacity:.5;cursor:not-allowed;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]){display:flex;align-items:center;gap:8px;min-height:32px;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]) > div:first-of-type{width:36px!important;min-width:36px!important;height:20px!important;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]) > div:first-of-type > div{width:16px!important;height:16px!important;transition:transform .15s ease,background-color .15s ease!important;}
+.st-key-vertical_options_workspace label:has(input[role="switch"])::after{content:"OFF";width:24px;color:var(--vo-muted);font:700 10px/1 "Courier New",monospace;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]):has(input:checked)::after{content:"ON";color:var(--vo-orange);}
+.st-key-vertical_options_workspace label:has(input[role="switch"]):has(input:disabled){opacity:.5;cursor:not-allowed;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] [role="radiogroup"]{gap:0!important;flex-wrap:wrap;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] label{min-height:34px;padding:4px 12px!important;border:1px solid var(--vo-border);background:#080808;cursor:pointer;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] label:has(input:checked){background:#fb8b1e!important;border-color:#fb8b1e;}
@@ -388,12 +388,12 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace [data-testid="stNumberInput"] input{background:#050505!important;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;font:700 13px "Courier New",monospace!important;}
 .st-key-vertical_options_workspace [data-testid="stFormSubmitButton"] button{background:#fb8b1e!important;color:#000!important;border:1px solid #fb8b1e!important;border-radius:0!important;}
 .st-key-vertical_options_workspace .vo-help{position:relative;display:inline-block;margin:2px 0 4px;color:#fb8b1e;font:700 11px/1.4 "Courier New",monospace;}
-.st-key-vertical_options_workspace .vo-help summary{cursor:help;list-style:none;min-height:24px;display:flex;align-items:center;}
-.st-key-vertical_options_workspace .vo-help summary::-webkit-details-marker{display:none;}
-.st-key-vertical_options_workspace .vo-help summary:focus-visible{outline:2px solid #fb8b1e;outline-offset:2px;}
+.st-key-vertical_options_workspace .vo-help button{cursor:help;list-style:none;min-height:24px;display:flex;align-items:center;}
+.st-key-vertical_options_workspace .vo-help button{border:0;background:transparent;color:#fb8b1e;font:inherit;padding:0;}
+.st-key-vertical_options_workspace .vo-help button:focus-visible{outline:2px solid #fb8b1e;outline-offset:2px;}
 .st-key-vertical_options_workspace .vo-help>div,
 .st-key-vertical_options_workspace .vo-mode-tooltip{position:absolute;top:100%;left:0;z-index:9999;width:360px;max-width:calc(100vw - 48px);padding:10px 12px;border:1px solid #fb8b1e;background:#080808;color:#f5f5f5;-webkit-text-fill-color:#f5f5f5;font:500 12px/1.5 "Courier New",monospace;white-space:normal;box-shadow:0 4px 12px #000;pointer-events:auto;}
-.st-key-vertical_options_workspace .vo-help:not([open])>div{display:none;}
+.st-key-vertical_options_workspace .vo-help>div{display:none;}
 .st-key-vertical_options_workspace .vo-help:hover>div,
 .st-key-vertical_options_workspace .vo-help:focus-within>div{display:block;}
 .st-key-vertical_options_workspace .vo-mode-help:focus-within .vo-mode-tooltip{visibility:visible;opacity:1;}
@@ -1236,11 +1236,13 @@ def _restore_presentation() -> None:
 
 
 def _scanner_help(label: str, explanation: str) -> None:
-    # Native disclosure supports touch, Enter/Space and focus without a rerun.
+    # Native button focus supports touch, Enter/Space and hover without a rerun.
     st.html(
-        '<details class="vo-help"><summary aria-label="' + html.escape(label, quote=True)
-        + '">ⓘ ' + html.escape(label) + '</summary><div role="note">'
-        + html.escape(explanation) + '</div></details>'
+        '<div class="vo-help"><button type="button" aria-label="' + html.escape(label, quote=True)
+        + '" aria-describedby="vo-help-' + hashlib.sha256(label.encode()).hexdigest()[:8]
+        + '">ⓘ ' + html.escape(label) + '</button><div role="note" id="vo-help-'
+        + hashlib.sha256(label.encode()).hexdigest()[:8] + '">'
+        + html.escape(explanation) + '</div></div>'
     )
 
 
@@ -1315,7 +1317,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         with paste_cols[0]:
             if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
                 st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
-        with paste_cols[1], st.container(width=380):
+        with paste_cols[1], st.container(width=440):
             # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
