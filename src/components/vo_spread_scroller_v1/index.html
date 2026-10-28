@@ -175,6 +175,7 @@ window.addEventListener("message",event=>{
  empty.style.display=rows.length?"none":"block";
  start=-1;end=-1;paint(true);syncHeight();
 });
+new ResizeObserver(()=>syncHeight()).observe(document.getElementById("table"));
 post("streamlit:componentReady",{apiVersion:1});syncHeight();
 })();
 </script>

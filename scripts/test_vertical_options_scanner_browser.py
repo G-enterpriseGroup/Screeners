@@ -449,12 +449,6 @@ def test() -> None:
                 assert not geometry["overflow"], geometry
             driver.set_window_size(1440, 900)
             print("Vertical Options aligned scan controls PASS (1440 + 1100)", flush=True)
-            print("LOCAL STYLE DIAGNOSTIC", driver.execute_script("""
-                const label=document.querySelector('.st-key-vo_smart_fill label');
-                return {workspace:!!label.closest('.st-key-vertical_options_workspace'),
-                    after:getComputedStyle(label,'::after').content,
-                    rules:[...document.querySelectorAll('style')].filter(s=>s.textContent.includes('width:36px')).map(s=>s.textContent.slice(-7000))};
-            """), flush=True)
             def assert_switch_visibility(checked, key="vo_smart_fill"):
                 # Click a static note to remove keyboard focus, then move the
                 # pointer away. Hover/focus must not be required for contrast.
@@ -604,7 +598,9 @@ def test() -> None:
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
-            driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]').click()
+            leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
+            leave_button.click()
             wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input'))
             assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
