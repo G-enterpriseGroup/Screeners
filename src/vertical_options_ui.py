@@ -63,6 +63,9 @@ from src.vertical_options import (
 _PREVIEW_FRESH_SECONDS = 150.0
 _DEFAULT_ACCOUNT_SUFFIX = "5474"
 _SCAN_CACHE_SECONDS = 300.0
+_SCAN_BATCH_SECONDS = 25.0  # Return partial results rather than blocking for every expiry.
+_SCAN_EXHAUSTIVE_PAIR_BUDGET = 100_000
+_SCAN_SAFETY_ROWS_PER_EXPIRY = 100
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_vo_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
@@ -755,6 +758,30 @@ def _entered_price(value: str, label: str) -> float:
     return amount
 
 
+def _safe_vertical_pair_limit(rows: list[dict[str, Any]]) -> tuple[int | None, int]:
+    """Bound candidate retention on huge chains without hiding incomplete exports.
+
+    All available strikes still participate in ranking and annual-winner
+    selection. Smaller universes retain every qualified pair as before.
+    """
+    groups: dict[tuple[date, str], set[tuple[float, str]]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        expiry, side = item.get("expiry"), str(item.get("call_put") or "").upper()
+        try:
+            strike = float(item.get("strike"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not isinstance(expiry, date) or side not in {"CALL", "PUT"}:
+            continue
+        if not math.isfinite(strike) or strike <= 0:
+            continue
+        groups.setdefault((expiry, side), set()).add((strike, str(item.get("osi") or "")))
+    possible = sum(len(legs) * (len(legs) - 1) // 2 for legs in groups.values())
+    return (_SCAN_SAFETY_ROWS_PER_EXPIRY if possible > _SCAN_EXHAUSTIVE_PAIR_BUDGET else None, possible)
+
+
 def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False) -> dict[str, Any]:
     source = "E*TRADE" if client is not None and not bool(getattr(client, "is_offline", False)) else "PUBLIC"
     cache_key = f"{source}:{symbol}"
@@ -765,57 +792,93 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
                 or now - float(old_value.get("loaded_at") or 0) >= _SCAN_CACHE_SECONDS):
             cache.pop(old_key, None)
     cached = cache.get(cache_key)
-    if (not refresh and isinstance(cached, dict)
-            and now - float(cached.get("loaded_at") or 0) < _SCAN_CACHE_SECONDS):
+    fresh_cached = (not refresh and isinstance(cached, dict)
+                    and now - float(cached.get("loaded_at") or 0) < _SCAN_CACHE_SECONDS)
+    if fresh_cached and cached.get("scan_complete", True):
         return cached
 
     market_client = options_market_client(client)
-    quote_payload = market_client.get_quote(symbol)
-    quote = quote_summary(quote_payload)
-    touch_session()
-    spot = _entered_price(
-        find_number(quote_payload, "lastTrade", "lastPrice"),
-        "E*TRADE Last price" if source == "E*TRADE" else "public Last price",
-    )
-    name = str(quote.get("description") or company_name(symbol) or "").strip()
-    record_lookup(symbol, name)
-    expirations = [item for item in _expirations(market_client, symbol, touch_session) if item >= date.today()]
-    if not expirations:
-        raise ValueError(f"No future listed option expirations are available for {symbol}.")
+    if fresh_cached:
+        # Continue from the first unvisited expiration; never silently retry
+        # already downloaded chains or discard successfully loaded contracts.
+        spot, name = cached["spot"], cached["name"]
+        quote_payload = None
+        expirations = list(cached["expirations"])
+        rows = list(cached["rows"])
+        errors = list(cached["errors"])
+        loaded = int(cached["loaded_expirations"])
+        start_index = int(cached["next_expiry_index"])
+        tv_exchange = cached.get("tv_exchange", "")
+    else:
+        quote_payload = market_client.get_quote(symbol)
+        quote = quote_summary(quote_payload)
+        touch_session()
+        spot = _entered_price(
+            find_number(quote_payload, "lastTrade", "lastPrice"),
+            "E*TRADE Last price" if source == "E*TRADE" else "public Last price",
+        )
+        name = str(quote.get("description") or company_name(symbol) or "").strip()
+        record_lookup(symbol, name)
+        expirations = [item for item in _expirations(market_client, symbol, touch_session)
+                       if item >= date.today()]
+        if not expirations:
+            raise ValueError(f"No future listed option expirations are available for {symbol}.")
+        rows, errors, loaded, start_index = [], [], 0, 0
+        tv_exchange = _tradingview_listing_exchange(symbol, quote_payload)
 
-    rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    loaded = 0
-    progress = st.progress(0, text=f"LOADING {len(expirations)} EXPIRATION CHAINS // {symbol}")
+    batch_started = time.monotonic()
+    next_index = start_index
+    consecutive_failures = 0
+    progress = st.progress(
+        start_index / len(expirations),
+        text=f"LOADING EXPIRATION {start_index + 1}/{len(expirations)} // {symbol}",
+    )
     try:
-        for index, expiry in enumerate(expirations, 1):
+        for index in range(start_index, len(expirations)):
+            expiry = expirations[index]
+            progress.progress(
+                index / len(expirations),
+                text=f"LOADING {index + 1}/{len(expirations)} // {_date_label(expiry)} // {symbol}",
+            )
             try:
                 chain_rows = _chain(market_client, symbol, expiry, touch_session)
                 if chain_rows:
                     rows.extend(chain_rows)
                     loaded += 1
+                    consecutive_failures = 0
                 else:
+                    consecutive_failures += 1
                     errors.append(f"{_date_label(expiry)} // no quoted contracts returned")
             except Exception as exc:
+                consecutive_failures += 1
                 errors.append(f"{_date_label(expiry)} // {exc}")
+            next_index = index + 1
             progress.progress(
-                index / len(expirations),
-                text=f"LOADED {loaded} / {len(expirations)} EXPIRATION CHAINS // {symbol}",
+                next_index / len(expirations),
+                text=f"LOADED {loaded} / {next_index} CHECKED // {len(expirations)} LISTED // {symbol}",
             )
+            # Many missing/unauthorized chains should never cause dozens more
+            # blocking broker calls. Keep the actual failures visible.
+            if consecutive_failures >= 2:
+                errors.append("SCAN STOPPED // consecutive chain failures; check source/connection.")
+                break
+            if time.monotonic() - batch_started >= _SCAN_BATCH_SECONDS:
+                break
     finally:
         progress.empty()
     if not rows:
-        raise ValueError("No option contracts could be loaded from the listed expirations.")
+        detail = errors[-2] if len(errors) >= 2 else (errors[-1] if errors else "unknown source error")
+        raise ValueError(f"No option contracts loaded // {detail}")
     result = {
         "loaded_at": time.time(), "scan_id": time.time_ns(),
         "source": source, "symbol": symbol, "spot": spot, "name": name,
         "expirations": expirations, "loaded_expirations": loaded,
-        "rows": rows, "errors": errors,
-        "tv_exchange": _tradingview_listing_exchange(symbol, quote_payload),
+        "rows": rows, "errors": errors, "tv_exchange": tv_exchange,
+        "next_expiry_index": next_index,
+        "scan_complete": next_index >= len(expirations),
     }
     cache[cache_key] = result
     return result
-
 
 def _optionstrat_url(candidate: dict[str, Any]) -> str:
     """Open the exact two-leg debit spread in OptionStrat's strategy builder."""
@@ -998,7 +1061,7 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     candidates, annual_ids = scan_vertical_candidates(
         symbol=result["symbol"], spot_last=raw["spot"], option_rows=raw["rows"],
         target_breakeven=result["target"], max_cost=result["max_cost"],
-        max_per_expiration=None, pricing_mode=mode,
+        max_per_expiration=(_SCAN_SAFETY_ROWS_PER_EXPIRY if result.get("capacity_limited") else None), pricing_mode=mode,
     )
     scope = hashlib.sha256(
         repr((raw["scan_id"], result["target"], result["max_cost"], mode)).encode("utf-8")
@@ -1245,7 +1308,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
 
-        if scan_clicked:
+        resume_clicked = False
+        if (last_result.get("symbol") == symbol
+                and not last_result.get("scan_complete", True)):
+            resume_clicked = st.button(
+                f'CONTINUE ALL YEARS // {last_result.get("next_expiry_index", 0)}'
+                f'/{last_result.get("listed_expirations", 0)} CHECKED',
+                key="vo_resume_partial_scan",
+            )
+        if scan_clicked or resume_clicked:
             st.session_state.pop("vo_scan_result", None)
             st.session_state.pop("vo_review_bundle", None)
             st.session_state.pop("vo_live_confirm", None)
@@ -1271,7 +1342,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     and last_result.get("max_cost") == max_cost
                     and (use_auto_target or last_result.get("target") == custom_target)
                 )
-                raw = _scan_all_years(client, symbol, touch_session, refresh=repeat_scan)
+                raw = _scan_all_years(
+                    client, symbol, touch_session,
+                    refresh=repeat_scan and bool(last_result.get("scan_complete", True))
+                    and not resume_clicked,
+                )
                 preview_source = "E*TRADE" if broker_live else "YFINANCE"
                 st.session_state.setdefault("_vo_ticker_quotes", {})[f"{preview_source}:{symbol}"] = {
                     "last": raw["spot"], "name": raw["name"], "source": preview_source,
@@ -1279,11 +1354,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 }
                 default_target, target_basis = _default_breakeven(symbol, raw["spot"], vault_key)
                 target = default_target if use_auto_target else custom_target
+                safe_limit, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
                 candidates, annual_ids = scan_vertical_candidates(
                     symbol=symbol, spot_last=raw["spot"], option_rows=raw["rows"],
                     target_breakeven=target, max_cost=max_cost,
-                    max_per_expiration=None, pricing_mode=pricing_mode,
-                    # Enumerate all qualifying canonical pairs.
+                    max_per_expiration=safe_limit, pricing_mode=pricing_mode,
+                    # Exhaustive for ordinary chains; top-ranked retention for
+                    # large chains prevents Streamlit memory exhaustion.
                 )
                 scope = hashlib.sha256(
                     repr((raw["scan_id"], target, max_cost, pricing_mode)).encode("utf-8")
@@ -1300,6 +1377,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "listed_expirations": len(raw["expirations"]),
                     "listed_years": len({item.year for item in raw["expirations"]}),
                     "contract_count": len(raw["rows"]), "errors": raw["errors"],
+                    "capacity_limited": safe_limit is not None,
+                    "potential_pairs": potential_pairs,
+                    "scan_complete": raw["scan_complete"],
+                    "next_expiry_index": raw["next_expiry_index"],
                     "tv_exchange": raw.get("tv_exchange", ""),
                 }
                 st.session_state["vo_results_view"] = "BEST PER YEAR"
@@ -1332,6 +1413,22 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 return
             result = updated
             st.session_state["vo_scan_result"] = result
+        if not result.get("scan_complete", True):
+            st.warning(
+                f'PARTIAL ALL-YEAR SCAN // {result["next_expiry_index"]}/'
+                f'{result["listed_expirations"]} expirations checked. '
+                'Results are available now; press CONTINUE ALL YEARS to load '
+                'the remaining chains without restarting.'
+            )
+        if result.get("capacity_limited"):
+            st.warning(
+                f'LARGE-CHAIN SAFETY MODE // {result["potential_pairs"]:,} possible '
+                f'leg pairs; retained only the top {_SCAN_SAFETY_ROWS_PER_EXPIRY} '
+                'qualified spreads per expiration to prevent memory exhaustion. '
+                'Annual best still considers every checked pair. '
+                'Displayed results and CSV exports are a QUALIFIED SHORTLIST, '
+                'not the complete all-qualified universe.'
+            )
         if result["source"] == "E*TRADE" and not broker_live:
             st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
         st.markdown(
@@ -1345,7 +1442,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             ]),
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="vo-section">VERTICAL SPREADS // ALL QUALIFYING PAIRS</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="vo-section">VERTICAL SPREADS // '
+            + ('QUALIFIED SHORTLIST' if result.get("capacity_limited") else 'ALL QUALIFYING PAIRS')
+            + '</div>', unsafe_allow_html=True,
+        )
         st.caption(
             f'{result["source"]} LAST AS OF '
             f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
@@ -1427,7 +1528,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 )
                 exports = st.columns(2, gap="small")
                 exports[0].download_button(
-                    f"EXPORT ALL QUALIFIED CSV // {len(ordered):,}",
+                    f'EXPORT {"RETAINED" if result.get("capacity_limited") else "ALL"} '
+                    f'QUALIFIED CSV // {len(ordered):,}',
                     data=_qualified_spreads_csv(
                         ordered, annual_ids, source=result["source"],
                         loaded_at=result["loaded_at"], target=result["target"],
