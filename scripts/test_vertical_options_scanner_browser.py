@@ -86,7 +86,7 @@ class StubETrade:
         record("expirations", symbol=symbol)
         return {"OptionExpireDateResponse": {"ExpirationDate": [
             {"year": day.year, "month": day.month, "day": day.day}
-            for day in EXPIRIES
+            for day in ([EXPIRIES[0]] if symbol == "MASSIVE" else EXPIRIES)
         ]}}
 
     def get_option_chain(self, symbol, year, month, day,
@@ -154,7 +154,15 @@ if not os.environ.get("VO_SCANNER_SKIP_GEX_SEED"):
     _results("scanner-fixture").setdefault("ETRADE_TEST", {
         "callWall": {"strike": 120}, "updated": "2026-10-21T12:00:00-04:00",
     })
-render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
+if st.session_state.get("fixture_away"):
+    if st.button("RETURN TO SCANNER"):
+        st.session_state["fixture_away"] = False
+        st.rerun()
+else:
+    if st.button("LEAVE SCANNER"):
+        st.session_state["fixture_away"] = True
+        st.rerun()
+    render_vertical_options(StubETrade(), lambda: None, vault_key="scanner-fixture")
 # Same keyed native control and shared helper used by production Risk Sizing.
 from src.theme import install_native_switch_theme
 install_native_switch_theme("risk_capital_source_tactical")
@@ -255,7 +263,7 @@ def checked_count(driver: webdriver.Chrome) -> int:
     return driver.execute_script(
         """
         for(const caption of document.querySelectorAll('[data-testid="stCaptionContainer"]')){
-          const match=caption.textContent.match(/(\\d+) CHECKED \\/\\/ LIME GREEN/);
+          const match=caption.textContent.match(/(\\d+) CHECKED(?:\\s|$)/);
           if(match)return Number(match[1]);
         }
         return -1;
@@ -469,8 +477,15 @@ def test() -> None:
                 assert appearance["track"] == ("rgb(251, 139, 30)" if checked else "rgb(0, 0, 0)"), appearance
                 assert appearance["thumb"] == ("rgb(0, 0, 0)" if checked else "rgb(251, 139, 30)"), appearance
                 # An actual hover followed by leaving must keep the same colors.
-                target = driver.find_element(By.CSS_SELECTOR, f".st-key-{key} label")
-                ActionChains(driver).move_to_element(target).move_to_element(note).perform()
+                def hover_and_leave(_):
+                    try:
+                        target = driver.find_element(By.CSS_SELECTOR, f".st-key-{key} label")
+                        stable_note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        ActionChains(driver).move_to_element(target).move_to_element(stable_note).perform()
+                        return True
+                    except StaleElementReferenceException:
+                        return False
+                wait.until(hover_and_leave)
                 assert wait.until(settled)["track"] == appearance["track"]
                 print("Native switch resting contrast PASS", key, appearance, flush=True)
             assert_switch_visibility(False)
@@ -491,6 +506,11 @@ def test() -> None:
                 "return i && i.checked;"
             ))
             assert_switch_visibility(True)
+            leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
+            leave_button.click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected())
             driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
             wait.until(lambda _: pricing_preference_in_browser(driver) == "NORMAL")
             assert_switch_visibility(False)
@@ -534,8 +554,33 @@ def test() -> None:
             assert all(item["no_of_strikes"] is None and item["chain_type"] == "CALLPUT"
                        for item in chain_calls), chain_calls
 
-            # User-selected default: every nearby pair, nearest breakeven first.
-            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            # Both native switches use one role-based local geometry contract.
+            switches = driver.execute_script("""
+                return ['vo_smart_fill','vo_be_filter_enabled'].map(key=>{
+                    const label=document.querySelector('.st-key-'+key+' label');
+                    const track=label.querySelector(':scope > div:first-of-type');
+                    const rect=track.getBoundingClientRect();
+                    return {width:rect.width,height:rect.height,on:getComputedStyle(label,'::after').content};
+                });
+            """)
+            assert all(item['width'] == 36 and item['height'] == 20 for item in switches), switches
+            assert switches[1]['on'] == '"ON"', switches
+            help_button = driver.find_element(By.CSS_SELECTOR, '.vo-help button')
+            ActionChains(driver).move_to_element(help_button).perform()
+            def help_visible(_):
+                return driver.execute_script("""
+                    const panel=document.querySelector('.vo-help>div'),box=panel.getBoundingClientRect();
+                    return getComputedStyle(panel).display!=='none'&&box.width>0&&box.left>=0&&box.right<=innerWidth;
+                """)
+            wait.until(help_visible)
+            help_button.click()  # Click/focus keeps the same panel accessible.
+            wait.until(help_visible)
+            driver.find_element(By.CSS_SELECTOR, '.vo-note').click()
+            ActionChains(driver).move_to_element(driver.find_element(By.CSS_SELECTOR, '.vo-note')).perform()
+            # New sessions default to annual winners; explicit ALL stays selected.
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) > 3)
             nearby = grid_snapshot(driver)["rows"]
@@ -557,6 +602,16 @@ def test() -> None:
             assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
+            leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
+            leave_button.click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
+            # Existence can observe Streamlit's temporary cached mount before
+            # the returned fragment's actual values reach the frontend.
+            wait.until(lambda _: not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
+            assert driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_range_percent input').get_attribute("value") in ("3.00", "3.0", "3")
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
@@ -962,7 +1017,11 @@ def test() -> None:
             target.send_keys("100")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
-            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
+            # The preceding manual BEST selection must survive a fresh scan.
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
             if driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
                 driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)

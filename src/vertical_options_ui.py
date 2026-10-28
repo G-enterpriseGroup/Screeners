@@ -370,6 +370,34 @@ _VERTICAL_OPTIONS_CSS = """
 }
 @media (max-width:1100px){.vo-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
 @media (max-width:760px){.vo-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+
+/* Local financial-terminal controls; native inputs retain keyboard semantics. */
+.st-key-vertical_options_workspace label:has(input[role="switch"]){display:flex;align-items:center;gap:8px;min-height:32px;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]) > div:first-of-type{width:36px!important;min-width:36px!important;height:20px!important;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]) > div:first-of-type > div{width:16px!important;height:16px!important;transition:transform .15s ease,background-color .15s ease!important;}
+.st-key-vertical_options_workspace label:has(input[role="switch"])::after{content:"OFF";width:24px;color:var(--vo-muted);font:700 10px/1 "Courier New",monospace;}
+.st-key-vertical_options_workspace label:has(input[role="switch"]):has(input:checked)::after{content:"ON";color:var(--vo-orange);}
+.st-key-vertical_options_workspace label:has(input[role="switch"]):has(input:disabled){opacity:.5;cursor:not-allowed;}
+.st-key-vertical_options_workspace [data-testid="stRadio"] [role="radiogroup"]{gap:0!important;flex-wrap:wrap;}
+.st-key-vertical_options_workspace [data-testid="stRadio"] label{min-height:34px;padding:4px 12px!important;border:1px solid var(--vo-border);background:#080808;cursor:pointer;}
+.st-key-vertical_options_workspace [data-testid="stRadio"] label:has(input:checked){background:#fb8b1e!important;border-color:#fb8b1e;}
+.st-key-vertical_options_workspace [data-testid="stRadio"] label:has(input:checked) *{color:#000!important;-webkit-text-fill-color:#000!important;}
+.st-key-vertical_options_workspace [data-testid="stRadio"] label:hover{border-color:#fb8b1e;}
+.st-key-vertical_options_workspace label:has(input:focus-visible),
+.st-key-vertical_options_workspace button:focus-visible{outline:2px solid #fb8b1e!important;outline-offset:2px;}
+.st-key-vertical_options_workspace [data-testid="stNumberInput"] input{background:#050505!important;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;font:700 13px "Courier New",monospace!important;}
+.st-key-vertical_options_workspace [data-testid="stFormSubmitButton"] button{background:#fb8b1e!important;color:#000!important;border:1px solid #fb8b1e!important;border-radius:0!important;}
+.st-key-vertical_options_workspace .vo-help{position:relative;display:inline-block;margin:2px 0 4px;color:#fb8b1e;font:700 11px/1.4 "Courier New",monospace;}
+.st-key-vertical_options_workspace .vo-help button{cursor:help;list-style:none;min-height:24px;display:flex;align-items:center;}
+.st-key-vertical_options_workspace .vo-help button{border:0;background:transparent;color:#fb8b1e;font:inherit;padding:0;}
+.st-key-vertical_options_workspace .vo-help button:focus-visible{outline:2px solid #fb8b1e;outline-offset:2px;}
+.st-key-vertical_options_workspace .vo-help>div,
+.st-key-vertical_options_workspace .vo-mode-tooltip{position:absolute;top:100%;left:0;z-index:9999;width:360px;max-width:calc(100vw - 48px);padding:10px 12px;border:1px solid #fb8b1e;background:#080808;color:#f5f5f5;-webkit-text-fill-color:#f5f5f5;font:500 12px/1.5 "Courier New",monospace;white-space:normal;box-shadow:0 4px 12px #000;pointer-events:auto;}
+.st-key-vertical_options_workspace .vo-help>div{display:none;}
+.st-key-vertical_options_workspace .vo-help:hover>div,
+.st-key-vertical_options_workspace .vo-help:focus-within>div{display:block;}
+.st-key-vertical_options_workspace .vo-mode-help:focus-within .vo-mode-tooltip{visibility:visible;opacity:1;}
+@media(prefers-reduced-motion:reduce){.st-key-vertical_options_workspace *{transition:none!important;}}
 </style>
 """
 
@@ -1186,6 +1214,47 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     }
 
 
+_PRESENTATION_DEFAULTS = {
+    "vo_symbol_value": "", "vo_target_breakeven": "", "vo_max_cost": "",
+    "vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": True,
+    "vo_be_range_percent": 5.0, "vo_all_pair_sort": "TARGET DISTANCE",
+    "vo_all_pair_direction": "ASC", "vo_all_pair_expiry": "ALL",
+    "vo_all_pair_side": "CALL + PUT", "vo_auto_finish": True,
+}
+
+
+def _remember_presentation(key: str) -> None:
+    saved = dict(st.session_state.get("_vo_presentation") or {})
+    saved[key] = st.session_state[key]
+    st.session_state["_vo_presentation"] = saved
+
+
+def _remember_scan_inputs() -> None:
+    for key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost"):
+        _remember_presentation(key)
+
+
+def _restore_presentation() -> None:
+    saved = dict(st.session_state.get("_vo_presentation") or {})
+    for key, default in _PRESENTATION_DEFAULTS.items():
+        saved.setdefault(key, st.session_state.get(key, default))
+        # A returning frontend may send widget defaults before registration.
+        # Callbacks save user changes first; the durable state owns hydration.
+        st.session_state[key] = saved[key]
+    st.session_state["_vo_presentation"] = saved
+
+
+def _scanner_help(label: str, explanation: str) -> None:
+    # Native button focus supports touch, Enter/Space and hover without a rerun.
+    st.html(
+        '<div class="vo-help"><button type="button" aria-label="' + html.escape(label, quote=True)
+        + '" aria-describedby="vo-help-' + hashlib.sha256(label.encode()).hexdigest()[:8]
+        + '">ⓘ ' + html.escape(label) + '</button><div role="note" id="vo-help-'
+        + hashlib.sha256(label.encode()).hexdigest()[:8] + '">'
+        + html.escape(explanation) + '</div></div>'
+    )
+
+
 def _hydrate_vertical_options_pricing() -> bool:
     """Read the browser preference before any default can overwrite it."""
     if not st.session_state.get("_vo_pricing_mode_hydrated", False):
@@ -1204,6 +1273,12 @@ def _hydrate_vertical_options_pricing() -> bool:
     return True
 
 
+def _remember_pricing_mode() -> None:
+    st.session_state["_vo_pricing_mode_preference"] = (
+        "SMART FILL" if st.session_state["vo_smart_fill"] else "NORMAL"
+    )
+
+
 def _pricing_mode_flip_switch() -> str | None:
     """Restore saved pricing before showing the live switch."""
     if not _hydrate_vertical_options_pricing():
@@ -1211,12 +1286,12 @@ def _pricing_mode_flip_switch() -> str | None:
 
     # Streamlit can clean up a widget key when another top-level tab renders.
     # The non-widget preference remains stable for this server-side session.
-    if "vo_smart_fill" not in st.session_state:
-        st.session_state["vo_smart_fill"] = (
-            st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
-        )
+    st.session_state["vo_smart_fill"] = (
+        st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
+    )
     smart = st.toggle(
         "SMART FILL", key="vo_smart_fill", label_visibility="collapsed",
+        on_change=_remember_pricing_mode,
         help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
              "Saved for this browser profile, including after page reload.",
     )
@@ -1230,10 +1305,14 @@ def _pricing_mode_flip_switch() -> str | None:
 
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session, vault_key: str = "default") -> None:
-    if not hydrate_gex_snapshots(vault_key):
-        return
-    persist_gex_snapshots(vault_key)
+    _restore_presentation()
+    # GEX wall restoration is optional scanner context, never a page-load gate.
+    if hydrate_gex_snapshots(vault_key):
+        persist_gex_snapshots(vault_key)
     with st.container(key="vertical_options_workspace"):
+        st.markdown(_VERTICAL_OPTIONS_CSS, unsafe_allow_html=True)
+        for switch in ("vo_smart_fill", "vo_be_filter_enabled", "vo_auto_finish"):
+            install_native_switch_theme(switch)
         _render_saved_spread_drafts()
         st.markdown(
             '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
@@ -1253,7 +1332,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         with paste_cols[0]:
             if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
                 st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
-        with paste_cols[1], st.container(width=380):
+        with paste_cols[1], st.container(width=440):
             # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
@@ -1393,6 +1472,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         with fields[0]:
             symbol_text = st.text_input(
                 "Ticker", key="vo_symbol_value", placeholder="SPY",
+                on_change=_remember_presentation, args=("vo_symbol_value",),
                 help="Enter a ticker and press Tab or Enter to show its company / ETF, Last and CBOE walls.",
             )
         symbol = str(symbol_text or "").strip().upper()
@@ -1421,14 +1501,18 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             with scan_fields[2]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
+                    on_click=_remember_scan_inputs,
                 )
+        for form_key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost"):
+            _remember_presentation(form_key)
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
 
         resume_clicked = False
         if (last_result.get("symbol") == symbol
                 and not last_result.get("scan_complete", True)):
-            auto_finish = st.toggle("AUTO FINISH SCAN", value=True, key="vo_auto_finish",
+            auto_finish = st.toggle("AUTO FINISH SCAN", key="vo_auto_finish",
+                on_change=_remember_presentation, args=("vo_auto_finish",),
                 help="Continue in short batches while this page is open. Turn off to pause after the current batch. Never places orders.")
             if auto_finish != st.session_state.get("_vo_auto_finish_previous", True):
                 st.session_state["_vo_auto_finish_previous"] = auto_finish
@@ -1440,7 +1524,6 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             )
         if scan_clicked or resume_clicked:
             st.session_state.pop("_vo_auto_scan_error", None)
-            st.session_state.pop("vo_scan_result", None)
             st.session_state.pop("vo_review_bundle", None)
             st.session_state.pop("vo_live_confirm", None)
             st.session_state.pop("_vo_order_candidate", None)
@@ -1509,11 +1592,6 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "tv_exchange": raw.get("tv_exchange", ""),
                     "stopped_on_errors": raw.get("stopped_on_errors", False),
                 }
-                # Presentation default only: every eligible pair stays in the store.
-                if scan_clicked:
-                    st.session_state["vo_results_view"] = "ALL QUALIFIED"
-                    st.session_state["vo_all_pair_sort"] = "TARGET DISTANCE"
-                    st.session_state["vo_all_pair_direction"] = "ASC"
                 if symbol in (st.session_state.get("vo_ticker_list") or []):
                     st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
                         "" if use_auto_target else entered_target
@@ -1526,7 +1604,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
-                return
+                # Preserve the last successful snapshot if a new scan fails.
 
         result = st.session_state.get("vo_scan_result")
         if not isinstance(result, dict):
@@ -1541,8 +1619,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             st.session_state.pop("vo_last_send_results", None)
             st.session_state.pop("_vo_order_candidate", None)
             if updated is None:
-                st.session_state.pop("vo_scan_result", None)
-                st.warning("QUOTE SNAPSHOT EXPIRED // Press SCAN ALL YEARS for the selected pricing mode.")
+                st.warning("QUOTE SNAPSHOT EXPIRED // Last results retained. Scan again for the selected pricing mode.")
                 return
             result = updated
             st.session_state["vo_scan_result"] = result
@@ -1576,24 +1653,31 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             '<div class="vo-section">VERTICAL SPREADS // ALL QUALIFYING PAIRS</div>',
             unsafe_allow_html=True,
         )
+        stamp = datetime.fromtimestamp(result["loaded_at"], ZoneInfo("America/New_York"))
         st.caption(
-            f'{result["source"]} LAST AS OF '
-            f'{time.strftime("%I:%M:%S %p", time.localtime(result["loaded_at"]))} // '
-            f'LAST SCAN PASS {result.get("pass_seconds", 0):.1f}s // '
-            'BOTH CALL + PUT DEBIT SPREADS // '
-            'MINIMUM RISK:REWARD 1:2 AT THE SELECTED ORDER PRICE // ' +
-            ('PRICING: SMART FILL = ADAPTIVE MID-TO-ASK LIMIT, CAPPED BY 1:2 AND COST; '
-             'NO AUTOMATIC REPRICING OR FILL PROBABILITY. '
-             if result.get("pricing_mode") == "SMART FILL" else
-             'PRIORITY: ASK (NATURAL) > IN-MARKET LAST > MID > UNQUOTED LAST*; '
-             'THEN CLOSEST BREAKEVEN AND LOWEST COST. ') +
-            f'TARGET BREAKEVEN {_money(result["target"])}'
-            f' ({result.get("target_basis") or ("SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM")}). '
-            f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "NO CEILING"} PER SPREAD. '
-            'ASK = BUY ASK MINUS SELL BID; MID = TWO-LEG MARKET MIDPOINT. '
-            'LAST* HAS NO RELIABLE LIVE SPREAD QUOTE AND CANNOT BE ORDERED. '
-            'NO PRICING BASIS GUARANTEES A FILL.'
+            f'{result["source"]} // SNAPSHOT {stamp:%b %d, %I:%M:%S %p %Z} // '
+            f'LAST SCAN PASS {result.get("pass_seconds", 0):.1f}s // RISK:REWARD ≥ 1:2'
         )
+        st.caption((
+            f'TARGET BREAKEVEN {_money(result["target"])} '
+            f'({result.get("target_basis") or ("SPOT DEFAULT" if result.get("target_defaulted") else "CUSTOM")}) '
+            f'// MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "NO CEILING"}'
+        ).replace("$", r"\$"))
+        if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
+            st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
+        _scanner_help("PRICING & RISK", (
+            "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
+            "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
+            "SMART FILL suggests a MID-to-ASK limit, capped by the cost and 1:2 requirement. "
+            "For one standard 100-share contract: max loss = debit × 100; max profit = "
+            "(strike width − debit) × 100. Reward/risk must be at least 2. "
+            "CALL breakeven = BUY strike + debit; PUT breakeven = BUY strike − debit. "
+            "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
+            "Snapshot age does not establish when an individual option last traded. "
+            "Quotes may be delayed; no reference price guarantees execution or a fill. "
+            f'Target: {_money(result["target"])}; max cost: '
+            f'{_money(result["max_cost"]) if result["max_cost"] is not None else "no ceiling"}.'
+        ))
         candidates = result["candidates"]
         if not candidates:
             st.info("No call or put debit spreads met the 1:2 ratio"
@@ -1610,13 +1694,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             by_id = candidates.get_many(saved_ids)
             be_cols = st.columns([1.1, 1, 3], gap="small", vertical_alignment="bottom")
             be_enabled = be_cols[0].toggle(
-                "BREAKEVEN FILTER", value=True, key="vo_be_filter_enabled",
+                "BREAKEVEN FILTER", key="vo_be_filter_enabled",
+                on_change=_remember_presentation, args=("vo_be_filter_enabled",),
                 help="ON: include every qualifying spread within the selected range of the scan target. "
                      "OFF: show all qualifying breakevens. Minimum risk:reward 1:2 always applies.",
             )
             be_percent = be_cols[1].number_input(
-                "BE RANGE ± (%)", min_value=0.0, max_value=100.0, value=5.0, step=.5,
+                "BE RANGE ± (%)", min_value=0.0, max_value=100.0, step=.5,
                 key="vo_be_range_percent", disabled=not be_enabled,
+                on_change=_remember_presentation, args=("vo_be_range_percent",),
             )
             max_distance = result["target"] * be_percent / 100 if be_enabled else None
             be_matching_count = candidates.count(max_distance=max_distance)
@@ -1627,32 +1713,38 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.caption(
                     range_text.replace("$", r"\$")
                     + f'{be_matching_count:,} OF {len(candidates):,} QUALIFYING PAIRS '
-                    '// RISK:REWARD ≥ 1:2 // FILTERING DOES NOT RESCAN.'
+                    '// RISK:REWARD ≥ 1:2'
                 )
             view = st.radio(
                 "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
                 key="vo_results_view", horizontal=True, label_visibility="collapsed",
+                on_change=_remember_presentation, args=("vo_results_view",),
+                help="BEST PER YEAR: top-ranked eligible result in each year within the active BE range. ALL QUALIFIED: every eligible result, paged. No chain download.",
             )
             view_identity = f"{view}|{max_distance}"
             if view == "BEST PER YEAR":
                 displayed_candidates = candidates.best_by_year(max_distance=max_distance)
                 annual_ids = {row["id"] for row in displayed_candidates}
-                st.caption("ONE WINNER PER CALENDAR YEAR. SELECT ALL QUALIFIED TO SEE EVERY MATCH IN THE BREAKEVEN RANGE.")
+                st.caption("ONE WINNER PER CALENDAR YEAR // ACTIVE BREAKEVEN RANGE")
             else:
                 expirations = candidates.expirations
                 filter_cols = st.columns([1.45, .9, 1.5, .74, .84], gap="small", vertical_alignment="bottom")
                 expiry_filter = filter_cols[0].selectbox(
                     "EXPIRATION", ["ALL"] + expirations, key="vo_all_pair_expiry",
+                    on_change=_remember_presentation, args=("vo_all_pair_expiry",),
                     format_func=lambda value: "ALL EXPIRATIONS" if value == "ALL" else _date_label(value),
                 )
                 side_filter = filter_cols[1].selectbox(
                     "TYPE", ("CALL + PUT", "CALL", "PUT"), key="vo_all_pair_side",
+                    on_change=_remember_presentation, args=("vo_all_pair_side",),
                 )
                 sort_filter = filter_cols[2].selectbox(
                     "SORT BY", _QUALIFIED_SORT_FIELDS, key="vo_all_pair_sort",
+                    on_change=_remember_presentation, args=("vo_all_pair_sort",),
                 )
                 sort_direction = filter_cols[3].selectbox(
                     "ORDER", ("ASC", "DESC"), key="vo_all_pair_direction",
+                    on_change=_remember_presentation, args=("vo_all_pair_direction",),
                 )
                 matching_count = (be_matching_count if expiry_filter == "ALL" and side_filter == "CALL + PUT"
                                   else candidates.count(expiry=expiry_filter, side=side_filter,
@@ -1662,9 +1754,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 page_scope = hashlib.sha256(
                     repr((scope, expiry_filter, side_filter, sort_filter, sort_direction, max_distance)).encode("utf-8")
                 ).hexdigest()[:12]
+                page_key = "vo_all_pair_page_" + page_scope
+                st.session_state[page_key] = min(pages, max(1, int(
+                    st.session_state["_vo_presentation"].get(page_key, 1))))
                 page = int(filter_cols[4].number_input(
                     f"PAGE / {pages:,}", min_value=1, max_value=pages, step=1,
-                    value=1, key="vo_all_pair_page_" + page_scope,
+                    key=page_key, on_change=_remember_presentation, args=(page_key,),
                 ))
                 offset = (page - 1) * 200
                 displayed_candidates = candidates.page(
@@ -1734,16 +1829,18 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
             st.caption(
                 f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
-                f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // '
-                f'{len(checked_ids)} CHECKED // LIME GREEN = ANNUAL BEST CALL; TONINO RED = ANNUAL BEST PUT. '
-                'ALL QUALIFIED TESTS EVERY UNIQUE VALID STRIKE PAIR PER EXPIRATION '
-                '(BUY LOWER/SELL HIGHER CALL OR BUY HIGHER/SELL LOWER PUT). ' +
-                ('FILL = SMART FILL BASIS (SMART / MID / LAST*). '
-                 if result.get("pricing_mode") == "SMART FILL" else
-                 'FILL = PRICING BASIS (ASK / LAST / MID / LAST*). ') +
-                'OS = EXACT OPTIONSTRAT SPREAD; TV = BUY MINUS SELL PREMIUM CHART. '
-                'OPENING EITHER LINK NEVER SENDS AN ORDER.'
+                f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // {len(checked_ids)} CHECKED'
             )
+            _scanner_help("RESULTS, RANGE & LINKS", (
+                "The BE filter includes every eligible spread within the inclusive percentage "
+                "of the scan target. OFF removes only this restriction. Filtering, sorting and "
+                "paging reuse stored results without downloading chains. Annual best is ranked "
+                "inside the active range; ALL QUALIFIED exposes every match. "
+                "Green = annual CALL winner; red = annual PUT winner, not profit/loss. "
+                "COST is maximum loss per spread before fees. LAST* marks an unreliable quote "
+                "and cannot be ordered. OS opens the exact OptionStrat payoff; TV opens BUY "
+                "minus SELL option premiums. Links never send orders; chart coverage varies."
+            ))
             if checked_ids:
                 checked_by_id = candidates.get_many(checked_ids)
                 by_id.update(checked_by_id)
@@ -2133,18 +2230,23 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
 
 @st.fragment(run_every=.5)
 def _render_vertical_options_bootstrap(vault_key: str) -> None:
-    """Retry initial browser reads automatically; stop polling once both finish.
+    """Retry pricing restoration; stop polling on completion or timeout.
 
     Component replies can race a top-tab rerun. A transient missing reply must
     not leave the workspace cut off until the user switches tabs manually.
     This bootstrap never downloads chains or touches broker orders.
     """
-    snapshots_ready = hydrate_gex_snapshots(vault_key)
+    started = st.session_state.setdefault("_vo_bootstrap_started", time.monotonic())
     pricing_ready = _hydrate_vertical_options_pricing()
-    if snapshots_ready and pricing_ready:
+    if pricing_ready:
         st.session_state["_vo_workspace_ready"] = vault_key
         st.rerun()
+    if time.monotonic() - started >= 12:
+        st.session_state["_vo_bootstrap_failed"] = True
+        st.rerun()  # Remove the polling fragment and show a stable retry state.
+        return
     st.caption("RESTORING VERTICAL OPTIONS PREFERENCES…")
+
 
 
 @st.fragment(run_every=1)
@@ -2166,12 +2268,15 @@ def render_vertical_options(client, touch_session, *, vault_key: str = "default"
     """Render the isolated Vertical Options workspace."""
     st.html(_VERTICAL_OPTIONS_CSS)
     install_native_switch_theme("vo_smart_fill")
-    if not st.session_state.get("_vo_breakeven_filters_v1"):
-        st.session_state["vo_results_view"] = "ALL QUALIFIED"
-        st.session_state["vo_all_pair_sort"] = "TARGET DISTANCE"
-        st.session_state["vo_all_pair_direction"] = "ASC"
-        st.session_state["_vo_breakeven_filters_v1"] = True
+    _restore_presentation()
     if st.session_state.get("_vo_workspace_ready") != vault_key:
+        if st.session_state.get("_vo_bootstrap_failed"):
+            st.error("PREFERENCE STORAGE DID NOT RESPOND // Retry initialization. Saved settings have not been overwritten.")
+            if st.button("RETRY INITIALIZATION", key="vo_retry_initialization"):
+                st.session_state.pop("_vo_bootstrap_failed", None)
+                st.session_state.pop("_vo_bootstrap_started", None)
+                st.rerun()
+            return
         _render_vertical_options_bootstrap(vault_key)
         return
     _render_vertical_options_fragment(client, touch_session, vault_key)
