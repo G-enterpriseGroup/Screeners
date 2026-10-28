@@ -752,7 +752,7 @@ ui._render_gex_exports(
             base,
         )
         self.assertIn(
-            '.st-key-gexv3_workspace button[data-testid="baseButton-primary"]',
+            '.st-key-gexv3_workspace button[data-testid="stBaseButton-primary"]',
             base,
         )
         self.assertIn('background: #050505 !important;', base)
