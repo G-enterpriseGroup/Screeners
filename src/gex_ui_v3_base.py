@@ -128,7 +128,7 @@ def _css() -> None:
             -webkit-text-fill-color: inherit !important;
             font: inherit !important;
         }
-        .st-key-gexv3_workspace button[data-testid="baseButton-primary"] {
+        .st-key-gexv3_workspace button[data-testid="stBaseButton-primary"] {
             background: #fb8b1e !important;
             color: #050505 !important;
             -webkit-text-fill-color: #050505 !important;
