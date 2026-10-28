@@ -958,6 +958,10 @@ def _render_morningstar_gex(vault_key: str, state: dict[str, Any]) -> None:
     del vault_key, state
 
 
+def _render_cboe_publication_status() -> None:
+    """Production adapter inserts CBOE receipt immediately above ticker inputs."""
+
+
 def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
     _css()
     vault_key = str(vault_key or "default")
@@ -983,6 +987,9 @@ def render_gex(client: Any, vault_key: str, touch_session: Any) -> None:
         'GAMMA × OI × 100 × SPOT² × 1% // INDIVIDUAL DTE // PACKED A6 // NOTES HISTORY</div>',
         unsafe_allow_html=True,
     )
+
+    # No state iframe or style-only markdown should separate this receipt from ADD TICKERS.
+    _render_cboe_publication_status()
 
     # Keep E*TRADE refresh aligned with its temporarily hidden Overview tab.
     show_etrade_overview = False
