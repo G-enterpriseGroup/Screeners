@@ -291,6 +291,149 @@ else:
         for key in ("CALL", "PUT"):
             self.assertEqual(sum(1 for _ in store.iter_rows(side=key)), 124750)
 
+    def test_year_grouped_pages_keep_every_pair_and_one_annual_marker_per_year(self):
+        import csv
+        import io
+        from src.vertical_options_store import VerticalResultStore, _rank
+        from src.vertical_options_ui import _qualified_store_csv
+
+        expiries = (date(2027, 1, 15), date(2027, 6, 18), date(2028, 1, 21))
+        rows = [self._row(expiry, side, 100 + strike,
+                          15 - .2 * strike if side == "CALL" else 2 + .2 * strike)
+                for expiry in expiries for side in ("CALL", "PUT")
+                for strike in range(20)]
+        expected, annual = scan_vertical_candidates(
+            symbol="QQQ", spot_last=110, option_rows=rows,
+            target_breakeven=110, max_cost=None, max_per_expiration=None,
+        )
+        expected = sorted(expected, key=lambda row: (row["year"], _rank(row, 110)))
+        store = VerticalResultStore("QQQ", 110, 110, None, "NORMAL")
+        for expiry in expiries:
+            self.assertTrue(store.add_expiration(
+                expiry, [row for row in rows if row["expiry"] == expiry],
+                scan_vertical_candidates,
+            ))
+
+        self.assertEqual(len(expected), 1140)
+        self.assertEqual(store.count(), len(expected))
+        self.assertEqual([row["id"] for row in store.iter_rows(sort_by="YEAR + FILL")],
+                         [row["id"] for row in expected])
+        pages = [store.page(sort_by="YEAR + FILL", direction="ASC", offset=offset, limit=200)
+                 for offset in range(0, len(expected), 200)]
+        self.assertEqual([len(page) for page in pages], [200, 200, 200, 200, 200, 140])
+        self.assertEqual([row["id"] for page in pages for row in page],
+                         [row["id"] for row in expected])
+        self.assertEqual([row["year"] for row in expected].count(2027), 760)
+        self.assertEqual([row["year"] for row in expected].count(2028), 380)
+        self.assertEqual(store.counts_by_year(), {2027: 760, 2028: 380})
+        self.assertEqual(store.annual_ids, annual)
+        self.assertEqual(len(annual), 2)
+        self.assertEqual({row["year"] for row in store.annual_rows}, {2027, 2028})
+
+        year_rows = [row for row in expected if row["year"] == 2028]
+        self.assertEqual(store.count(year=2028), 380)
+        self.assertEqual([row["id"] for row in store.iter_rows(
+            year=2028, sort_by="YEAR + FILL")], [row["id"] for row in year_rows])
+        self.assertEqual([row["id"] for offset in (0, 200)
+                          for row in store.page(year=2028, sort_by="YEAR + FILL",
+                                                direction="ASC", offset=offset, limit=200)],
+                         [row["id"] for row in year_rows])
+        self.assertEqual([row["id"] for row in store.best_by_year(year=2028)],
+                         [row["id"] for row in store.annual_rows if row["year"] == 2028])
+        year_csv = list(csv.DictReader(io.StringIO(_qualified_store_csv(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL", year=2028,
+        ))))
+        self.assertEqual(len(year_csv), 380)
+        self.assertEqual([row["Expiration"] for row in year_csv],
+                         [row["expiry"].isoformat() for row in year_rows])
+        self.assertEqual(sum(row["Annual Best"] == "YES" for row in year_csv), 1)
+
+        filters = {"side": ["PUT"], "cost": {"max": 100}}
+        filtered = [row for row in expected
+                    if row["call_put"] == "PUT" and row["cost"] <= 100 + 1e-8]
+        self.assertEqual(len(filtered), 255)
+        self.assertEqual(store.count(column_filters=filters), len(filtered))
+        self.assertEqual(store.counts_by_year(column_filters=filters),
+                         {2027: 170, 2028: 85})
+        self.assertEqual([row["id"] for row in store.iter_rows(
+            sort_by="YEAR + FILL", column_filters=filters)],
+            [row["id"] for row in filtered])
+        self.assertEqual([row["id"] for offset in (0, 200)
+                          for row in store.page(sort_by="YEAR + FILL", direction="ASC",
+                                                offset=offset, limit=200, column_filters=filters)],
+                         [row["id"] for row in filtered])
+        filtered_year = [row for row in filtered if row["year"] == 2028]
+        self.assertEqual(store.count(year=2028, column_filters=filters), len(filtered_year))
+        self.assertEqual([row["id"] for row in store.page(
+            year=2028, sort_by="YEAR + FILL", column_filters=filters)],
+            [row["id"] for row in filtered_year])
+        filtered_year_csv = list(csv.DictReader(io.StringIO(_qualified_store_csv(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL", year=2028, column_filters=filters,
+        ))))
+        self.assertEqual(len(filtered_year_csv), len(filtered_year))
+        self.assertEqual([(row["Type"], row["Expiration"], float(row["Buy Strike"]),
+                           float(row["Sell Strike"])) for row in filtered_year_csv],
+                         [(row["call_put"], row["expiry"].isoformat(), row["buy_strike"],
+                           row["sell_strike"]) for row in filtered_year])
+        within_range = [row for row in filtered
+                        if abs(row["breakeven"] - 110) <= 5 + 1e-8]
+        self.assertTrue(0 < len(within_range) < len(filtered))
+        self.assertEqual(store.count(max_distance=5, column_filters=filters), len(within_range))
+        self.assertEqual([row["id"] for row in store.page(
+            sort_by="YEAR + FILL", direction="ASC", offset=0, limit=200,
+            max_distance=5, column_filters=filters)],
+            [row["id"] for row in within_range[:200]])
+        filtered_winners = store.best_by_year(max_distance=5, column_filters=filters)
+        self.assertEqual(len(filtered_winners), len({row["year"] for row in within_range}))
+        self.assertTrue({row["id"] for row in filtered_winners}.issubset(
+            {row["id"] for row in within_range}))
+        year_winner = store.best_by_year(max_distance=5, column_filters=filters, year=2028)
+        self.assertEqual(len(year_winner), 1)
+        self.assertEqual(year_winner[0]["year"], 2028)
+        self.assertIn(year_winner[0]["id"], {row["id"] for row in within_range})
+
+        # Excluding the unfiltered winner must move the CSV's annual marker to
+        # the best remaining spread in this year and active breakeven range.
+        original_winner = store.best_by_year(year=2028)[0]
+        without_original = {"cost": {"min": original_winner["cost"] + 1}}
+        scoped_rows = list(store.iter_rows(
+            year=2028, sort_by="YEAR + FILL", max_distance=5,
+            column_filters=without_original,
+        ))
+        self.assertTrue(scoped_rows)
+        self.assertNotIn(original_winner["id"], {row["id"] for row in scoped_rows})
+        scoped_winner = store.best_by_year(
+            year=2028, max_distance=5, column_filters=without_original,
+        )
+        self.assertEqual(len(scoped_winner), 1)
+        scoped_csv = list(csv.DictReader(io.StringIO(_qualified_store_csv(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL", year=2028, max_distance=5,
+            column_filters=without_original,
+        ))))
+        self.assertEqual(len(scoped_csv), len(scoped_rows))
+        self.assertEqual([
+            (row["Type"], row["Expiration"], float(row["Buy Strike"]),
+             float(row["Sell Strike"]))
+            for row in scoped_csv if row["Annual Best"] == "YES"
+        ], [
+            (scoped_winner[0]["call_put"], scoped_winner[0]["expiry"].isoformat(),
+             scoped_winner[0]["buy_strike"], scoped_winner[0]["sell_strike"])
+        ])
+
+        for invalid_year in (0, 9999, "2028", True, 2028.0):
+            with self.subTest(invalid_year=invalid_year):
+                with self.assertRaises(ValueError):
+                    store.count(year=invalid_year)
+                with self.assertRaises(ValueError):
+                    store.page(year=invalid_year)
+                with self.assertRaises(ValueError):
+                    list(store.iter_rows(year=invalid_year))
+                with self.assertRaises(ValueError):
+                    store.best_by_year(year=invalid_year)
+
     def test_column_filters_cover_full_store_pages_and_csv_without_target(self):
         import csv
         import io

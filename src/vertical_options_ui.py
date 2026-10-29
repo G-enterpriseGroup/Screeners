@@ -1201,13 +1201,17 @@ def _qualified_spreads_csv(
 def _qualified_store_csv(store: VerticalResultStore, *, source: str, loaded_at: float,
                          target: float | None, max_cost: float | None, expiry="ALL",
                          side="CALL + PUT", sort_by="FILL + TARGET", direction="ASC",
-                         max_distance=None, column_filters=None) -> str:
+                         max_distance=None, column_filters=None, year=None) -> str:
     """Generate the full CSV on click, off the UI thread, from one revision."""
     with store.snapshot():
+        annual_ids = (store.annual_ids if max_distance is None and not column_filters and year is None
+                      else {row["id"] for row in store.best_by_year(
+                          max_distance=max_distance, column_filters=column_filters, year=year
+                      )})
         return _qualified_spreads_csv(
             store.iter_rows(expiry=expiry, side=side, sort_by=sort_by, direction=direction,
-                            max_distance=max_distance, column_filters=column_filters),
-            store.annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
+                            max_distance=max_distance, column_filters=column_filters, year=year),
+            annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
         )
 
 
@@ -1314,6 +1318,11 @@ def _navigate_all_pairs(page_key: str, pages: int, action: str) -> None:
     saved[page_key] = page
     st.session_state["_vo_presentation"] = saved
     st.session_state[page_key] = page
+
+
+def _select_results_year(year_key: str, year: int | None) -> None:
+    st.session_state[year_key] = year
+    _remember_presentation(year_key)
 
 
 def _restore_presentation() -> None:
@@ -1773,7 +1782,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     ("CHAINS LOADED", f'{result["loaded_expirations"]}/{result["listed_expirations"]}', "orange"),
                     ("CONTRACTS READ", f'{result["contract_count"]:,}', "green"),
                     ("QUALIFIED PAIRS", f'{len(result["candidates"]):,}', "green"),
-                    ("ANNUAL BEST", str(len(result["annual_ids"])), "blue"),
+                    ("YEARS WITH RESULTS", str(len(result["annual_ids"])), "blue"),
                 ]),
                 unsafe_allow_html=True,
             )
@@ -1852,79 +1861,112 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 # Give each scan a fresh widget identity; the previous scan's
                 # frontend radio value must not override this scan's BEST default.
                 view_key = f"vo_results_view_{scope}"
-                st.session_state.setdefault(view_key, st.session_state["vo_results_view"])
+                st.session_state[view_key] = st.session_state["vo_results_view"]
                 view = st.radio(
                     "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
                     key=view_key, horizontal=True, label_visibility="collapsed",
                     on_change=_remember_results_view, args=(view_key,),
-                    help="BEST PER YEAR: top-ranked eligible result in each year within the active BE range. ALL QUALIFIED: every eligible result, paged. No chain download.",
+                    help="BEST PER YEAR: every eligible result grouped and ranked within its calendar year, with the top pick highlighted. ALL QUALIFIED: the same complete set ranked across all years. Both views are paged without downloading chains again.",
                 )
-                view_identity = f"{view}|{max_distance}|{repr(sorted(column_filters.items()))}"
+                expiry_filter, side_filter = "ALL", "CALL + PUT"
+                sort_filter = "YEAR + FILL" if view == "BEST PER YEAR" else "FILL + TARGET"
+                sort_direction = "ASC"
+                all_matching_count = candidates.count(
+                    max_distance=max_distance, column_filters=column_filters,
+                )
+                active_year = None
                 if view == "BEST PER YEAR":
-                    displayed_candidates = candidates.best_by_year(
+                    year_counts = candidates.counts_by_year(
                         max_distance=max_distance, column_filters=column_filters,
                     )
-                    annual_ids = {row["id"] for row in displayed_candidates}
-                else:
-                    expiry_filter, side_filter = "ALL", "CALL + PUT"
-                    sort_filter, sort_direction = "FILL + TARGET", "ASC"
-                    matching_count = candidates.count(
+                    year_key = "vo_results_year_" + scope
+                    selected_year = st.session_state["_vo_presentation"].get(year_key)
+                    if type(selected_year) is int and selected_year in year_counts:
+                        active_year = selected_year
+                    elif selected_year is not None:
+                        _select_results_year(year_key, None)
+                    if len(year_counts) > 1:
+                        year_buttons = [(None, f"ALL YEARS // {all_matching_count:,}")]
+                        year_buttons.extend((year, f"{year} // {count:,}")
+                                            for year, count in year_counts.items())
+                        for start in range(0, len(year_buttons), 6):
+                            cols = st.columns(len(year_buttons[start:start + 6]), gap="small")
+                            for col, (year, label) in zip(cols, year_buttons[start:start + 6]):
+                                col.button(
+                                    label, key=f"vo_year_select_{scope}_{year}",
+                                    type="primary" if active_year == year else "secondary",
+                                    on_click=_select_results_year, args=(year_key, year),
+                                    use_container_width=True,
+                                )
+                matching_count = (all_matching_count if active_year is None else
+                                  candidates.count(max_distance=max_distance,
+                                                   column_filters=column_filters,
+                                                   year=active_year))
+                annual_ids = {row["id"] for row in candidates.best_by_year(
+                    max_distance=max_distance, column_filters=column_filters,
+                    year=active_year,
+                )}
+                view_identity = (
+                    f"{view}|{active_year}|{max_distance}|{repr(sorted(column_filters.items()))}"
+                )
+                # Keep the full result set in SQLite and send only one page to
+                # the scroller, including in the default year-grouped view.
+                pages = max(1, (matching_count + 199) // 200)
+                page_scope = hashlib.sha256(
+                    repr((scope, view, active_year, max_distance,
+                          sorted(column_filters.items()))).encode("utf-8")
+                ).hexdigest()[:12]
+                page_key = "vo_all_pair_page_" + page_scope
+                page = min(pages, max(1, int(st.session_state["_vo_presentation"].get(page_key, 1))))
+                if pages > 1:
+                    nav = st.columns([.7, .9, 1.8, .9, .7], gap="small", vertical_alignment="center")
+                    nav[0].button("« FIRST", key="vo_all_pair_first", disabled=page == 1,
+                                  on_click=_navigate_all_pairs, args=(page_key, pages, "first"))
+                    nav[1].button("← PREVIOUS", key="vo_all_pair_previous", disabled=page == 1,
+                                  on_click=_navigate_all_pairs, args=(page_key, pages, "previous"))
+                    nav[3].button("NEXT →", key="vo_all_pair_next", disabled=page == pages,
+                                  on_click=_navigate_all_pairs, args=(page_key, pages, "next"))
+                    nav[4].button("LAST »", key="vo_all_pair_last", disabled=page == pages,
+                                  on_click=_navigate_all_pairs, args=(page_key, pages, "last"))
+                    with nav[2]:
+                        st.caption(f"ROWS {(page - 1) * 200 + 1:,}–{min(page * 200, matching_count):,} OF {matching_count:,}")
+                st.session_state[page_key] = page
+                _remember_presentation(page_key)
+                displayed_candidates = candidates.page(
+                    offset=(page - 1) * 200, limit=200,
+                    sort_by=sort_filter, direction=sort_direction,
+                    max_distance=max_distance, column_filters=column_filters,
+                    year=active_year,
+                )
+                view_identity += f"|{page}"
+                exports = st.columns(2, gap="small")
+                exports[0].download_button(
+                    f'EXPORT ALL QUALIFIED CSV // {len(candidates):,}',
+                    data=partial(
+                        _qualified_store_csv, candidates, source=result["source"],
+                        loaded_at=result["loaded_at"], target=result["target"],
+                        max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
+                    ),
+                    file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
+                    mime="text/csv", key="vo_export_all_qualified",
+                    on_click="ignore",
+                    use_container_width=True,
+                )
+                exports[1].download_button(
+                    f"EXPORT FILTERED CSV // {matching_count:,}",
+                    data=partial(
+                        _qualified_store_csv, candidates, source=result["source"],
+                        loaded_at=result["loaded_at"], target=result["target"],
+                        max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
+                        sort_by=sort_filter, direction=sort_direction,
                         max_distance=max_distance, column_filters=column_filters,
-                    )
-                    # Send only the current page to the scroller; exports include all pages.
-                    pages = max(1, (matching_count + 199) // 200)
-                    page_scope = hashlib.sha256(
-                        repr((scope, max_distance, sorted(column_filters.items()))).encode("utf-8")
-                    ).hexdigest()[:12]
-                    page_key = "vo_all_pair_page_" + page_scope
-                    page = min(pages, max(1, int(st.session_state["_vo_presentation"].get(page_key, 1))))
-                    if pages > 1:
-                        nav = st.columns([.7, .9, 1.8, .9, .7], gap="small", vertical_alignment="center")
-                        nav[0].button("« FIRST", key="vo_all_pair_first", disabled=page == 1,
-                                      on_click=_navigate_all_pairs, args=(page_key, pages, "first"))
-                        nav[1].button("← PREVIOUS", key="vo_all_pair_previous", disabled=page == 1,
-                                      on_click=_navigate_all_pairs, args=(page_key, pages, "previous"))
-                        nav[3].button("NEXT →", key="vo_all_pair_next", disabled=page == pages,
-                                      on_click=_navigate_all_pairs, args=(page_key, pages, "next"))
-                        nav[4].button("LAST »", key="vo_all_pair_last", disabled=page == pages,
-                                      on_click=_navigate_all_pairs, args=(page_key, pages, "last"))
-                        with nav[2]:
-                            st.caption(f"ROWS {(page - 1) * 200 + 1:,}–{min(page * 200, matching_count):,} OF {matching_count:,}")
-                    st.session_state[page_key] = page
-                    _remember_presentation(page_key)
-                    offset = (page - 1) * 200
-                    displayed_candidates = candidates.page(
-                        offset=offset, limit=200,
-                        max_distance=max_distance, column_filters=column_filters,
-                    )
-                    view_identity += f"|{page}"
-                    exports = st.columns(2, gap="small")
-                    exports[0].download_button(
-                        f'EXPORT ALL QUALIFIED CSV // {len(candidates):,}',
-                        data=partial(
-                            _qualified_store_csv, candidates, source=result["source"],
-                            loaded_at=result["loaded_at"], target=result["target"],
-                            max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
-                        ),
-                        file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
-                        mime="text/csv", key="vo_export_all_qualified",
-                        on_click="ignore",
-                        use_container_width=True,
-                    )
-                    exports[1].download_button(
-                        f"EXPORT FILTERED CSV // {matching_count:,}",
-                        data=partial(
-                            _qualified_store_csv, candidates, source=result["source"],
-                            loaded_at=result["loaded_at"], target=result["target"],
-                            max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
-                            sort_by=sort_filter, direction=sort_direction,
-                            max_distance=max_distance, column_filters=column_filters,
-                        ),
-                        file_name=f'{result["symbol"]}_vertical_filtered.csv',
-                        mime="text/csv", key="vo_export_filtered_qualified",
-                        on_click="ignore",
-                        use_container_width=True,
-                    )
+                        year=active_year,
+                    ),
+                    file_name=f'{result["symbol"]}_vertical_filtered.csv',
+                    mime="text/csv", key="vo_export_filtered_qualified",
+                    on_click="ignore",
+                    use_container_width=True,
+                )
                 if not displayed_candidates:
                     st.info("No spreads match these filters. Clear a column filter or change the breakeven range.")
                 displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
@@ -1976,14 +2018,17 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         st.rerun()
                 checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
                 st.caption(
-                    f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
+                    f'{len(displayed):,} ON THIS PAGE // {matching_count:,} MATCHING OF '
+                    f'{len(candidates):,} QUALIFIED PAIRS '
                     f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // {len(checked_ids)} CHECKED'
                 )
                 _scanner_help("RESULTS, RANGE & LINKS", (
                     "Each column filter applies to all stored scan results, including exports. "
                     "The BE range applies when a target was entered. Filtering, sorting and "
-                    "paging reuse stored results without downloading chains. Annual best is ranked "
-                    "inside the active range; ALL QUALIFIED exposes every match. "
+                    "paging reuse stored results without downloading chains. BEST PER YEAR "
+                    "shows every match grouped and ranked within its year; its year buttons "
+                    "show all matches for the selected year. ALL QUALIFIED ranks the same matches "
+                    "across all years. The top pick in each year is ranked inside the active filters. "
                     "Green = annual CALL winner; red = annual PUT winner, not profit/loss. "
                     "COST is maximum loss per spread before fees. LAST* marks an unreliable quote "
                     "and cannot be ordered. OS opens the exact OptionStrat payoff; TV opens BUY "
