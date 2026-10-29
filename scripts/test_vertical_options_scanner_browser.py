@@ -326,13 +326,26 @@ def assert_exact_tradingview_formula(row: dict) -> None:
 
 def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
     """Wait for the rerendered export action and inspect its actual download."""
+    settled = {"button": None, "since": 0.0}
+
     def ready(_):
+        # A filter/sort event can leave the old enabled button visible while
+        # Streamlit replaces its deferred callback. Wait for the actual render
+        # to settle instead of clicking an orphaned pre-update callback.
+        app = driver.find_element(By.CSS_SELECTOR, '[data-testid="stApp"]')
+        if (app.get_attribute("data-test-script-state") != "notRunning"
+                or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
+            settled.update(button=None, since=0.0)
+            return False
         for button in driver.find_elements(By.CSS_SELECTOR, f".st-key-{key} button"):
             try:
                 if button.is_displayed() and button.is_enabled():
-                    return button
+                    if settled["button"] != button.id:
+                        settled.update(button=button.id, since=time.monotonic())
+                    elif time.monotonic() - settled["since"] >= 0.5:
+                        return button
             except StaleElementReferenceException:
-                pass
+                settled.update(button=None, since=0.0)
         return False
 
     target = folder / filename
