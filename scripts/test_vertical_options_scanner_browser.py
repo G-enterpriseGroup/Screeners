@@ -129,6 +129,7 @@ class StubETrade:
         record("place")
         raise AssertionError("Checkbox selection must never place an order")
 
+record("fixture-render", pid=os.getpid())
 st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
 # Match the real shared production CSS without executing broker/auth code.
 import ast
@@ -433,6 +434,10 @@ def test() -> None:
             expected_labels = ["Target Breakeven", "Max Cost"]
             def ready_scanner_form(_):
                 # Streamlit can mount stForm before its inputs hydrate on CI.
+                apps = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stApp"]')
+                if (not apps or apps[0].get_attribute("data-test-script-state") != "notRunning"
+                        or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
+                    return False
                 forms = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
                 if not forms:
                     return False
@@ -1084,8 +1089,14 @@ def test() -> None:
                 )
             wait_for_server(server, base, server_log)
             driver.get(base)
+            # Do not type into the old frontend while its websocket reconnects.
+            # Require a render from the replacement process first.
+            wait.until(lambda _: any(event["event"] == "fixture-render"
+                                     and event.get("pid") == server.pid
+                                     for event in events(event_path)))
             wait.until(ready_scanner_form)
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
