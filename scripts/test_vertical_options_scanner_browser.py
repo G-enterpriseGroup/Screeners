@@ -63,8 +63,6 @@ vo._PRICING_PREFERENCE_COMPONENT = delayed_preference_component
 if os.environ.get("VO_SCANNER_PARTIAL_TEST"):
     import src.vertical_options_ui as vo
     vo._SCAN_BATCH_EXPIRATIONS = 1
-    st.session_state.setdefault("vo_auto_finish", False)
-    st.session_state.setdefault("_vo_auto_finish_previous", False)
 
 LOG = Path(os.environ["VO_SCANNER_TEST_LOG"])
 EXPIRIES = [date(date.today().year + offset, 6, 20) for offset in (1, 2, 3)]
@@ -94,6 +92,10 @@ class StubETrade:
                          no_of_strikes=100, chain_type="CALLPUT"):
         record("chain", symbol=symbol, year=year, month=month, day=day,
                no_of_strikes=no_of_strikes, chain_type=chain_type)
+        if os.environ.get("VO_SCANNER_PARTIAL_TEST") and symbol == "QQQ":
+            time.sleep(.8)  # Keep automatic in-progress browser state observable.
+        if symbol == "SPY" and Path(os.environ["VO_SCANNER_SLOW_RESCAN_FILE"]).exists():
+            time.sleep(2)  # Expose a new scan while an older completed grid exists.
         expiry_code = f"{year % 100:02d}{month:02d}{day:02d}"
         pairs = []
         strikes = range(50, 151) if symbol == "MASSIVE" else (90, 95, 100, 105, 110)
@@ -229,6 +231,44 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
 
 
+def grid_is_mounted(driver: webdriver.Chrome) -> bool:
+    """Check for a result grid without waiting for one to appear."""
+    try:
+        driver.switch_to.default_content()
+        for frame in driver.find_elements(By.TAG_NAME, "iframe"):
+            try:
+                driver.switch_to.frame(frame)
+                if driver.find_elements(By.ID, "scroll"):
+                    return True
+            except StaleElementReferenceException:
+                pass
+            finally:
+                driver.switch_to.default_content()
+        return False
+    finally:
+        driver.switch_to.default_content()
+
+
+def grid_is_visible(driver: webdriver.Chrome) -> bool:
+    """Detect a displayed result grid, including a stale grid during a rescan."""
+    try:
+        driver.switch_to.default_content()
+        for frame in driver.find_elements(By.TAG_NAME, "iframe"):
+            try:
+                if not frame.is_displayed():
+                    continue
+                driver.switch_to.frame(frame)
+                if driver.find_elements(By.ID, "scroll"):
+                    return True
+            except StaleElementReferenceException:
+                pass
+            finally:
+                driver.switch_to.default_content()
+        return False
+    finally:
+        driver.switch_to.default_content()
+
+
 def grid_snapshot(driver: webdriver.Chrome) -> dict:
     return in_grid(driver, lambda: driver.execute_script(
         """
@@ -330,9 +370,6 @@ def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[di
     settled = {"button": None, "since": 0.0}
 
     def ready(_):
-        # A filter/sort event can leave the old enabled button visible while
-        # Streamlit replaces its deferred callback. Wait for the actual render
-        # to settle instead of clicking an orphaned pre-update callback.
         app = driver.find_element(By.CSS_SELECTOR, '[data-testid="stApp"]')
         if (app.get_attribute("data-test-script-state") != "notRunning"
                 or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
@@ -405,6 +442,9 @@ def test() -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
         environment["VO_SCANNER_TEST_LOG"] = str(event_path)
+        # Keep the timing marker outside Streamlit's watched app directory.
+        slow_rescan_file = folder.parent / f"{folder.name}_slow_rescan"
+        environment["VO_SCANNER_SLOW_RESCAN_FILE"] = str(slow_rescan_file)
         with server_log.open("w", encoding="utf-8") as output:
             server = subprocess.Popen(
                 [sys.executable, "-m", "streamlit", "run", str(app_path),
@@ -431,7 +471,7 @@ def test() -> None:
             driver.get(base)
             wait = WebDriverWait(driver, 60)
 
-            expected_labels = ["Target Breakeven", "Max Cost"]
+            expected_labels = ["Target Breakeven", "Max Cost", "MIN RISK:REWARD 1:"]
             def ready_scanner_form(_):
                 # Streamlit can mount stForm before its inputs hydrate on CI.
                 apps = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stApp"]')
@@ -452,6 +492,7 @@ def test() -> None:
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("placeholder") == "no break even provided"
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("placeholder") == "no ceiling cost provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="MIN RISK:REWARD 1:"]').get_attribute("value") == "2"
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
             assert any(not event["waiting"] for event in initial_reads), initial_reads
@@ -491,7 +532,7 @@ def test() -> None:
                 geometry = driver.execute_script("""
                     const rect = el => { const r=el.getBoundingClientRect();
                         return {top:r.top,bottom:r.bottom,height:r.height,left:r.left,right:r.right}; };
-                    const inputs = ['Ticker','Target Breakeven','Max Cost'].map(name =>
+                    const inputs = ['Ticker','Target Breakeven','Max Cost','MIN RISK:REWARD 1:'].map(name =>
                         document.querySelector('input[aria-label="'+name+'"]'));
                     const labels = inputs.map(input => input.closest('[data-testid="stTextInput"]')
                         .querySelector('[data-testid="stWidgetLabel"]'));
@@ -500,6 +541,7 @@ def test() -> None:
                         inputDOM:inputs[0].parentElement.outerHTML.slice(0,1600),
                         company:rect(document.querySelector('.vo-company-box')),
                         labels:labels.map(rect),
+                        labelFits:labels.map(label=>label.scrollWidth<=label.clientWidth+1),
                         companyLabel:rect(document.querySelector('.vo-company-label')),
                         scan:rect(document.querySelector('[data-testid="stFormSubmitButton"] button')),
                         formPadding:getComputedStyle(document.querySelector('[data-testid="stForm"]')).padding,
@@ -512,6 +554,7 @@ def test() -> None:
                 assert max(b["top"] for b in boxes)-min(b["top"] for b in boxes) <= 2, geometry
                 assert max(b["bottom"] for b in boxes)-min(b["bottom"] for b in boxes) <= 2, geometry
                 assert max(b["top"] for b in labels)-min(b["top"] for b in labels) <= 2, geometry
+                assert all(geometry["labelFits"]), geometry
                 assert geometry["formPadding"] == "0px", geometry
                 assert not geometry["overflow"], geometry
             driver.set_window_size(1440, 900)
@@ -654,25 +697,27 @@ def test() -> None:
             wait.until(help_visible)
             driver.find_element(By.CSS_SELECTOR, '.vo-note').click()
             ActionChains(driver).move_to_element(driver.find_element(By.CSS_SELECTOR, '.vo-note')).perform()
-            # The full qualified universe is the default; the optional BE
-            # filter requires a user-selected target and explicit opt-in.
-            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            # A completed scan starts with one annual winner per year. The BE
+            # filter still requires a user-selected target and explicit opt-in.
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
-            wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            result_spacing = driver.execute_script("""
+                const metrics=document.querySelector('.vo-grid').getBoundingClientRect();
+                const section=document.querySelector('.vo-section').getBoundingClientRect();
+                return {metricsBottom:metrics.bottom,sectionTop:section.top};
+            """)
+            assert result_spacing["sectionTop"] >= result_spacing["metricsBottom"] + 2, result_spacing
+            if os.environ.get("VO_SCANNER_SCREENSHOT"):
+                driver.execute_script("window.scrollTo(0,0)")
+                driver.save_screenshot(os.environ["VO_SCANNER_SCREENSHOT"])
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
-            driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
-            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) > 3)
-            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_sort [role="combobox"]').click()
-            wait.until(lambda _: driver.find_element(
-                By.XPATH, '//*[@role="option" and normalize-space(.)="TARGET DISTANCE"]',
-            )).click()
             nearby = grid_snapshot(driver)["rows"]
             be_values = [float(row["values"][8].replace('$', '').replace(',', '')) for row in nearby]
             assert all(95 <= value <= 105 for value in be_values), be_values
-            assert [abs(value - 100) for value in be_values] == sorted(abs(value - 100) for value in be_values), be_values
             filtered_near = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
                                         "SPY_vertical_filtered.csv")
             assert len(filtered_near) > 3
@@ -687,11 +732,7 @@ def test() -> None:
             assert 0 < len(tighter) < len(filtered_near)
             assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
-            wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
-            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_sort [role="combobox"]').click()
-            wait.until(lambda _: driver.find_element(
-                By.XPATH, '//*[@role="option" and normalize-space(.)="FILL + TARGET"]',
-            )).click()
+            wait.until(lambda _: "60 DISPLAYED // 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
@@ -774,26 +815,26 @@ def test() -> None:
             print("TradingView button click opens exact broker-normalized formula in a new chart tab PASS")
 
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: "60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "60 DISPLAYED // 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             # The count above already exists in BEST PER YEAR. Wait for the
             # new view's keyed export controls, then verify real CSV downloads.
             full_csv = download_csv(driver, wait, downloads, "vo_export_all_qualified",
                                     "SPY_vertical_all_qualified.csv")
             assert len(full_csv) == 60 and {row["Type"] for row in full_csv} == {"CALL", "PUT"}
-            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_side [role="combobox"]').click()
-            wait.until(lambda _: driver.find_element(By.XPATH, '//*[@role="option" and normalize-space(.)="CALL"]')).click()
+            toggle_put_column_filter(driver)
             wait.until(lambda _: "30" in driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
             filtered_csv = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
                                         "SPY_vertical_filtered.csv")
             assert len(filtered_csv) == 30 and all(row["Type"] == "CALL" for row in filtered_csv)
-            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_all_pair_side [role="combobox"]').click()
-            wait.until(lambda _: driver.find_element(By.XPATH, '//*[@role="option" and normalize-space(.)="CALL + PUT"]')).click()
+            toggle_put_column_filter(driver)
             wait.until(lambda _: "60" in driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
             print("Vertical Options CSV downloads PASS (60 all / 30 CALL-filtered)")
-            assert "SORT BY" in driver.find_element(By.TAG_NAME, "body").text
-            assert "ORDER" in driver.find_element(By.TAG_NAME, "body").text
+            for old_key in ("vo_all_pair_expiry", "vo_all_pair_side", "vo_all_pair_sort",
+                            "vo_all_pair_direction"):
+                assert not driver.find_elements(By.CSS_SELECTOR, f".st-key-{old_key}"), old_key
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
             def expanded_grid(_):
                 snapshot = grid_snapshot(driver)
                 return snapshot if len(snapshot["rows"]) > 3 else False
@@ -883,7 +924,7 @@ def test() -> None:
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Debit Limit"]'), (
                 "Debit Limit must not be editable in the optional order review"
             )
-            assert "TOTAL ORDER DEBIT" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "TOTAL ORDER DEBIT" in driver.find_element(By.TAG_NAME, "body").text)
             assert not any(item["event"] in {"preview", "place"} for item in events(event_path)), (
                 "Opening the optional order expander sent a broker order call"
             )
@@ -961,6 +1002,8 @@ def test() -> None:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'})", be_label)
                 be_label.click()
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
             # Bulk paste must not fetch quotes or chains by itself or place orders.
             chain_before_list = len([item for item in events(event_path) if item["event"] == "chain"])
             paste_button = driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]')
@@ -981,7 +1024,7 @@ def test() -> None:
             assert not any(item["event"] == "place" for item in events(event_path))
             # Loading a list resets the prior ticker's result without scanning.
             assert driver.find_elements(By.CSS_SELECTOR, '[data-testid="stSelectbox"]')
-            assert "BEST VERTICAL SPREADS BY YEAR" not in driver.find_element(By.TAG_NAME, "body").text
+            assert not grid_is_mounted(driver)
             # Clearing either input restores the literal no-filter defaults.
             # The scan must not derive a BE ceiling from spot or a wall.
             form = wait.until(ready_scanner_form)
@@ -992,22 +1035,20 @@ def test() -> None:
                 field.send_keys(Keys.BACKSPACE)
                 assert field.get_attribute("value") == "", (label, field.get_attribute("value"))
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "MAX COST ANY" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "TARGET ANY" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
             ).get_attribute("value") == "")
             assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
-            # Empty placeholders are already true before submit; wait for the
-            # new scan's results controls instead of using prompt text as a
-            # completion signal.
-            wait.until(lambda _: driver.find_elements(
-                By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input'
-            ) and driver.find_element(By.CSS_SELECTOR, '[data-testid="stApp"]').get_attribute(
-                "data-test-script-state"
-            ) == "notRunning")
-            assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
-            if not driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected():
-                driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: "ALL 60 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert not driver.find_elements(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled'), (
+                "An unused breakeven target reserved filter space"
+            )
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected(), (
+                "A new scan retained the previous ALL QUALIFIED view"
+            )
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            wait.until(lambda _: "60 DISPLAYED // 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             uncapped = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
                                     "MSFT_vertical_filtered.csv")
             assert len(uncapped) == 60
@@ -1029,7 +1070,8 @@ def test() -> None:
             cost_input.send_keys(SELECT_ALL, "a")
             cost_input.send_keys("150")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "(CUSTOM)" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "TARGET $103.00 // MAX COST $150.00" in driver.find_element(By.TAG_NAME, "body").text)
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             assert "MAX COST" in driver.find_element(By.TAG_NAME, "body").text
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "150"
             assert not any(item["event"] == "place" for item in events(event_path))
@@ -1089,8 +1131,6 @@ def test() -> None:
                 )
             wait_for_server(server, base, server_log)
             driver.get(base)
-            # Do not type into the old frontend while its websocket reconnects.
-            # Require a render from the replacement process first.
             wait.until(lambda _: any(event["event"] == "fixture-render"
                                      and event.get("pid") == server.pid
                                      for event in events(event_path)))
@@ -1108,32 +1148,26 @@ def test() -> None:
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_restart
             assert not any(item["event"] == "place" for item in events(event_path))
             print("GEX browser cache PASS after real process restart; optional breakeven defaults PASS", flush=True)
-            # The production renderer must show useful partial results, keep
-            # checked identities and finish without fetching completed chains.
+            # Automatic continuation works through one-expiration batches.
+            # Neither metrics nor a result grid mount during an unfinished pass.
             form = wait.until(ready_scanner_form)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN // 1/3" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: bool(grid_snapshot(driver)["rows"]))
+            wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"])
+                       > chain_before_restart)
+            assert not grid_is_mounted(driver), "Incomplete scan displayed a result grid"
+            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
-            wait.until(lambda _: checked_count(driver) == 1)
-            resume = driver.find_element(By.XPATH, '//button[contains(., "CONTINUE ALL YEARS")]')
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", resume)
-            resume.click()
-            wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"]) == chain_before_restart + 2)
-            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN // 2/3" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: checked_count(driver) == 1)
-            driver.find_element(By.CSS_SELECTOR, '.st-key-vo_auto_finish label').click()
-            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: checked_count(driver) == 1)
             calls = [e for e in events(event_path) if e["event"] == "chain"][chain_before_restart:]
             assert len(calls) == len({(e["year"], e["month"], e["day"]) for e in calls}) == 3
-            assert "LAST SCAN PASS" in driver.find_element(By.TAG_NAME, "body").text
+            assert "RISK:REWARD ≥ 1:2" in driver.find_element(By.TAG_NAME, "body").text
             assert not any(e["event"] == "place" for e in events(event_path))
-            print("Vertical Options partial results and continuation PASS (3 unique chains, no orders)", flush=True)
+            print("Vertical Options complete-only results PASS (3 unique chains, no orders)", flush=True)
 
             # 101 strikes per side => 10,100 qualifying spreads for ONE expiry.
-            # Jump past the old cutoff, select there, return to page one and
-            # download the entire dataset rather than the 200-row screen page.
+            # Reach results beyond row 200 through compact navigation, preserve
+            # a selection, and export every row rather than the visible page.
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MASSIVE", Keys.TAB)
@@ -1143,27 +1177,44 @@ def test() -> None:
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)
-            # A fresh session starts with every qualifying spread visible.
-            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            wait.until(lambda _: "SCANNING ALL YEARS //" not in driver.find_element(By.TAG_NAME, "body").text)
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            assert len(grid_snapshot(driver)["rows"]) == 1
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
             wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
-            if driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected():
-                driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
-            wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert not driver.find_elements(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled')
+            wait.until(lambda _: "ROWS 1–200 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
             assert "SHORTLIST" not in driver.find_element(By.TAG_NAME, "body").text
             assert "SAFETY MODE" not in driver.find_element(By.TAG_NAME, "body").text
-            page = driver.find_element(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
-            page.send_keys(SELECT_ALL, "a")
-            page.send_keys("51", Keys.TAB)
-            wait.until(lambda _: "PAGE 51/51" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "100 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
+            wait.until(lambda _: "200 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
+            first_page_row = grid_snapshot(driver)["rows"][0]["values"]
+            next_button = driver.find_element(By.XPATH, '//button[normalize-space(.)="NEXT →"]')
+            assert next_button.is_enabled()
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", next_button)
+            next_button.click()
+            wait.until(lambda _: grid_snapshot(driver)["rows"][0]["values"] != first_page_row)
+            assert driver.find_element(By.XPATH, '//button[normalize-space(.)="← PREVIOUS"]').is_enabled()
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
-            page = driver.find_element(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
-            page.send_keys(SELECT_ALL, "a")
-            page.send_keys("1", Keys.TAB)
-            wait.until(lambda _: "PAGE 1/51" in driver.find_element(By.TAG_NAME, "body").text)
+            previous_button = driver.find_element(By.XPATH, '//button[normalize-space(.)="← PREVIOUS"]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", previous_button)
+            previous_button.click()
+            wait.until(lambda _: grid_snapshot(driver)["rows"][0]["values"] == first_page_row)
             wait.until(lambda _: checked_count(driver) == 1)
+            last_button = driver.find_element(By.XPATH, '//button[normalize-space(.)="LAST »"]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", last_button)
+            last_button.click()
+            wait.until(lambda _: "ROWS 10,001–10,100 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "100 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
+            assert not driver.find_element(By.XPATH, '//button[normalize-space(.)="LAST »"]').is_enabled()
+            in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
+            wait.until(lambda _: checked_count(driver) == 2)
+            first_button = driver.find_element(By.XPATH, '//button[normalize-space(.)="« FIRST"]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", first_button)
+            first_button.click()
+            wait.until(lambda _: grid_snapshot(driver)["rows"][0]["values"] == first_page_row)
+            wait.until(lambda _: checked_count(driver) == 2)
             whole = download_csv(driver, wait, downloads, "vo_export_all_qualified",
                                  "MASSIVE_vertical_all_qualified.csv")
             assert len(whole) == 10100
@@ -1175,11 +1226,11 @@ def test() -> None:
             # A custom component's checkbox event can arrive during a full-app
             # rerun. The backend count must update without a fragment-scope error.
             toggle_put_column_filter(driver)
-            wait.until(lambda _: "ALL 5,050 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "ROWS 1–200 OF 5,050" in driver.find_element(By.TAG_NAME, "body").text)
             assert "EXPORT FILTERED CSV // 5,050" in driver.find_element(By.TAG_NAME, "body").text
             assert "StreamlitInvalidLayoutContextError" not in driver.find_element(By.TAG_NAME, "body").text
             toggle_put_column_filter(driver)
-            wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "ROWS 1–200 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
             late_row = whole[-1]
             late_identity = (late_row["Type"], late_row["Buy Strike"], late_row["Sell Strike"])
             assert late_identity not in {
@@ -1189,10 +1240,10 @@ def test() -> None:
             # The row came from the far end of the 10,100-result export. Header
             # filters must search the stored universe, not the 200-row page.
             set_exact_grid_filter(driver, "buy", "BUY STRIKE", float(late_row["Buy Strike"]))
-            wait.until(lambda _: "ALL 100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "EXPORT FILTERED CSV // 100" in driver.find_element(By.TAG_NAME, "body").text)
             set_exact_grid_filter(driver, "sell", "SELL STRIKE", float(late_row["Sell Strike"]))
-            wait.until(lambda _: "ALL 1 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "PAGE 1/1" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "EXPORT FILTERED CSV // 1" in driver.find_element(By.TAG_NAME, "body").text)
+            assert not driver.find_elements(By.XPATH, '//button[normalize-space(.)="NEXT →"]')
             isolated = wait.until(lambda _: grid_snapshot(driver)["rows"] if len(grid_snapshot(driver)["rows"]) == 1 else False)
             assert (isolated[0]["values"][1], float(isolated[0]["values"][3]),
                     float(isolated[0]["values"][4])) == (
@@ -1208,7 +1259,57 @@ def test() -> None:
                 isolated_csv[0][column] == late_row[column] for column in identifying_columns
             ), isolated_csv
             assert not any(e["event"] == "place" for e in events(event_path))
-            print("Full-universe browser PASS: 10,100 pairs, last page, cross-page selection, full CSV and late-row column filtering", flush=True)
+            print("Full-universe browser PASS: 10,100 pairs, first/next/last navigation, cross-page selection, full CSV and late-row column filtering", flush=True)
+
+            # A user-edited threshold must reach the actual candidate scan,
+            # while the next scan still opens on BEST PER YEAR. This fixture
+            # has some SPY spreads above 1:4.01 but fewer than at default 1:2.
+            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(SELECT_ALL, "a")
+            ticker.send_keys("SPY", Keys.TAB)
+            form = wait.until(ready_scanner_form)
+            ratio = form.find_element(By.CSS_SELECTOR, 'input[aria-label="MIN RISK:REWARD 1:"]')
+            assert ratio.get_attribute("value") == "2"
+            ratio.send_keys(SELECT_ALL, "a")
+            ratio.send_keys("4.01")
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            def custom_best_ready(_):
+                snapshot = grid_snapshot(driver)
+                return snapshot if len(snapshot["rows"]) == 3 and all(
+                    row["values"][0] == "SPY" for row in snapshot["rows"]
+                ) else False
+            custom_best = wait.until(custom_best_ready)
+            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            assert all(float(row["values"][9].split(":", 1)[1]) >= 4.01
+                       for row in custom_best["rows"]), custom_best
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            custom_csv = download_csv(driver, wait, downloads, "vo_export_all_qualified",
+                                      "SPY_vertical_all_qualified.csv")
+            assert 0 < len(custom_csv) < 60, len(custom_csv)
+            assert all(float(row["Risk Reward (to 1)"]) >= 4.01 for row in custom_csv)
+            assert not any(e["event"] == "place" for e in events(event_path))
+            print(f"Editable risk:reward browser PASS (default 1:2, custom 1:4.01, {len(custom_csv)} matches)", flush=True)
+
+            # Starting another scan from a completed grid must clear old
+            # results before a deliberately slow broker chain can finish.
+            slow_rescan_file.touch()
+            prior_chain_count = len([e for e in events(event_path) if e["event"] == "chain"])
+            form = wait.until(ready_scanner_form)
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: "SCANNING ALL YEARS // SPY" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"]) > prior_chain_count)
+            assert not grid_is_visible(driver), "Previous scan results flashed during a new scan"
+            assert not any(item.is_displayed() for item in driver.find_elements(By.CSS_SELECTOR, ".vo-grid")), (
+                "Previous scan metrics remained visible during a new scan"
+            )
+            assert not any(item.is_displayed() for item in driver.find_elements(
+                By.CSS_SELECTOR, ".st-key-vo_export_all_qualified button"
+            )), "Previous scan export remained visible during a new scan"
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected())
+            wait.until(custom_best_ready)
+            slow_rescan_file.unlink()
+            assert not any(e["event"] == "place" for e in events(event_path))
+            print("Completed grid clears before slow rescan and reappears only after completion PASS", flush=True)
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
@@ -1218,6 +1319,7 @@ def test() -> None:
                        for item in driver.find_elements(By.CSS_SELECTOR, 'input[aria-label]')], file=sys.stderr)
             raise
         finally:
+            slow_rescan_file.unlink(missing_ok=True)
             if driver is not None:
                 driver.quit()
             server.terminate()
