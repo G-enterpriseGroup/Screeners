@@ -23,6 +23,8 @@ import threading
 import weakref
 from typing import Any, Callable, Iterable
 
+from src.vertical_options import _MIN_REWARD_RISK, _reward_risk_floor
+
 
 _CANONICAL_ORDER = (
     "grade ASC, distance ASC, cost ASC, ratio DESC, expiry ASC, side ASC, "
@@ -70,9 +72,11 @@ class VerticalResultStore:
     is released; expired snapshots and evicted policies cannot leak databases.
     """
 
-    def __init__(self, symbol: str, spot: float, target: float | None, max_cost: float | None, mode: str):
+    def __init__(self, symbol: str, spot: float, target: float | None, max_cost: float | None, mode: str,
+                 *, min_reward_risk: float = _MIN_REWARD_RISK):
         self.symbol, self.spot, self.target = symbol, spot, target
         self.max_cost, self.mode = max_cost, mode
+        self.min_reward_risk = _reward_risk_floor(min_reward_risk)
         self._directory = tempfile.TemporaryDirectory(prefix="terminal_vertical_")
         self._cleanup = weakref.finalize(self, self._directory.cleanup)
         self.path = Path(self._directory.name) / "spreads.sqlite3"
@@ -183,7 +187,8 @@ class VerticalResultStore:
 
                 calculator(symbol=self.symbol, spot_last=self.spot, option_rows=rows,
                            target_breakeven=self.target, max_cost=self.max_cost,
-                           pricing_mode=self.mode, max_per_expiration=None,
+                           pricing_mode=self.mode, min_reward_risk=self.min_reward_risk,
+                           max_per_expiration=None,
                            candidate_sink=retain, progress=progress)
                 flush()
                 added = db.total_changes

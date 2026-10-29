@@ -19,14 +19,16 @@ class VerticalOptionsTests(unittest.TestCase):
         state = {}
         with patch.object(vo.st, "session_state", state):
             vo._restore_presentation()
-            self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
+            self.assertEqual(state["vo_results_view"], "BEST PER YEAR")
             self.assertFalse(state["vo_be_filter_enabled"])
             self.assertEqual(state["vo_be_range_percent"], 5)
             self.assertEqual(state["vo_target_breakeven"], "no break even provided")
             self.assertEqual(state["vo_max_cost"], "no ceiling cost provided")
-            chosen = {"vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": True,
+            self.assertEqual(state["vo_min_reward_risk"], "2")
+            chosen = {"vo_results_view": "ALL QUALIFIED", "vo_be_filter_enabled": True,
                       "vo_be_range_percent": 0.0, "vo_all_pair_side": "PUT",
-                      "vo_all_pair_direction": "DESC", "vo_auto_finish": False}
+                      "vo_all_pair_direction": "DESC", "vo_auto_finish": False,
+                      "vo_min_reward_risk": "1.5"}
             for key, value in chosen.items():
                 state[key] = value
                 vo._remember_presentation(key)
@@ -42,10 +44,11 @@ class VerticalOptionsTests(unittest.TestCase):
             for key, value in chosen.items():
                 self.assertEqual(state[key], value)
             vo._restore_presentation()  # Ordinary rerun cannot override choices.
-            self.assertEqual(state["vo_results_view"], "BEST PER YEAR")
+            self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
         with patch.object(vo.st, "session_state", {}):
             vo._restore_presentation()
-            self.assertEqual(vo.st.session_state["vo_results_view"], "ALL QUALIFIED")
+            self.assertEqual(vo.st.session_state["vo_results_view"], "BEST PER YEAR")
+            self.assertEqual(vo.st.session_state["vo_min_reward_risk"], "2")
 
     def test_real_streamlit_widget_cleanup_restores_manual_presentation(self):
         from streamlit.testing.v1 import AppTest
@@ -65,15 +68,20 @@ else:
               args=('vo_be_filter_enabled',))
     st.radio('VIEW', ('BEST PER YEAR', 'ALL QUALIFIED'), key='vo_results_view',
              on_change=_remember_presentation, args=('vo_results_view',))
+    st.text_input('MIN R:R', key='vo_min_reward_risk',
+                  on_change=_remember_presentation, args=('vo_min_reward_risk',))
 """).run()
         self.assertFalse(app.toggle[0].value)
-        self.assertEqual(app.radio[0].value, 'ALL QUALIFIED')
+        self.assertEqual(app.radio[0].value, 'BEST PER YEAR')
+        self.assertEqual(app.text_input[0].value, '2')
         app.toggle[0].set_value(True).run()
-        app.radio[0].set_value('BEST PER YEAR').run()
+        app.radio[0].set_value('ALL QUALIFIED').run()
+        app.text_input[0].set_value('1.5').run()
         app.button[0].click().run()
         app.button[0].click().run()
         self.assertTrue(app.toggle[0].value)
-        self.assertEqual(app.radio[0].value, 'BEST PER YEAR')
+        self.assertEqual(app.radio[0].value, 'ALL QUALIFIED')
+        self.assertEqual(app.text_input[0].value, '1.5')
         self.assertFalse(app.exception)
 
     def test_bootstrap_timeout_is_actionable_without_overwriting_preferences(self):
@@ -578,6 +586,42 @@ else:
                 vo._scan_all_years(client, "QQQ", lambda: None)
             self.assertEqual(chains.call_count, 2)
 
+    def test_single_chain_failure_is_recorded_and_full_retry_clears_it(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiries = [date(2027, i, 15) for i in (1, 2, 3)]
+        client = MagicMock(is_offline=False)
+        rows = {expiry: [self._row(expiry, "CALL", 100, 1)] for expiry in expiries}
+        attempts = []
+
+        def chain(_client, _symbol, expiry, _touch):
+            attempts.append(expiry)
+            if expiry == expiries[1] and attempts.count(expiry) == 1:
+                raise RuntimeError("temporary chain error")
+            return rows[expiry]
+
+        state = {}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "quote_summary", return_value={"description": "Test"}),
+              patch.object(vo, "find_number", return_value=100),
+              patch.object(vo, "_expirations", return_value=expiries),
+              patch.object(vo, "_chain", side_effect=chain),
+              patch.object(vo, "_tradingview_listing_exchange", return_value="NASDAQ"),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_EXPIRATIONS", 4),
+              patch.object(vo, "_SCAN_BATCH_SECONDS", 999)):
+            incomplete = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertTrue(incomplete["scan_complete"])
+            self.assertEqual(incomplete["failed_expirations"], [expiries[1]])
+            self.assertEqual(incomplete["loaded_expirations"], 2)
+            self.assertEqual(attempts, expiries)
+            retried = vo._scan_all_years(client, "QQQ", lambda: None, refresh=True)
+            self.assertEqual(retried["failed_expirations"], [])
+            self.assertEqual(retried["loaded_expirations"], 3)
+            self.assertEqual(attempts, expiries + expiries)
+
     def test_expiration_detail_uses_calendar_days_and_fractional_years(self):
         from src.vertical_options_ui import _expiry_time_label
         self.assertEqual(_expiry_time_label(date(2026, 10, 23), date(2026, 10, 21)), "2d · 0.01y")
@@ -840,7 +884,7 @@ else:
         self.assertIn('tabindex="0"', ui)
         self.assertIn(".vo-mode-help:hover .vo-mode-tooltip", ui)
         self.assertIn(".vo-mode-help:focus .vo-mode-tooltip", ui)
-        self.assertIn("natural ASK first when it meets your 2:1", ui)
+        self.assertIn("natural ASK first when it meets your selected reward-to-risk", ui)
         self.assertIn("Suggests a limit between spread MID and natural ASK", ui)
         self.assertIn("Does not guarantee a fill or place orders automatically.", ui)
         self.assertIn('pricing_mode = _pricing_mode_flip_switch()', ui)
@@ -1064,6 +1108,75 @@ else:
             target_breakeven=101, max_cost=99,
         )
         self.assertEqual((over_budget, winners), ([], set()))
+
+    def test_custom_reward_risk_floor_changes_scan_and_annual_winners(self):
+        rows = []
+        for expiry, width, debit in (
+            (date(2027, 1, 15), 3, 1),   # Exactly 1:2.
+            (date(2028, 1, 21), 5, 2),   # Exactly 1:1.5.
+            (date(2029, 1, 19), 4, 1),   # Exactly 1:3.
+        ):
+            rows.extend((
+                self._row(expiry, "CALL", 100, debit + 1, bid=debit + 1, ask=debit + 1),
+                self._row(expiry, "CALL", 100 + width, 1, bid=1, ask=1),
+            ))
+        controls = dict(symbol="SPY", spot_last=100, option_rows=rows,
+                        target_breakeven=None, max_cost=None, max_per_expiration=None)
+        expected_years = {2.0: {2027, 2029}, 1.5: {2027, 2028, 2029}, 3.0: {2029}}
+        for minimum, years in expected_years.items():
+            with self.subTest(minimum=minimum):
+                found, annual = scan_vertical_candidates(**controls, min_reward_risk=minimum)
+                self.assertEqual({row["year"] for row in found}, years)
+                self.assertEqual({row["year"] for row in found if row["id"] in annual}, years)
+                self.assertTrue(all(row["reward_risk"] >= minimum for row in found))
+        default, default_annual = scan_vertical_candidates(**controls)
+        explicit, explicit_annual = scan_vertical_candidates(**controls, min_reward_risk=2.0)
+        self.assertEqual((default, default_annual), (explicit, explicit_annual))
+
+    def test_disk_store_keeps_reward_risk_policy_across_expirations(self):
+        from src.vertical_options_store import VerticalResultStore
+        expiries = (date(2027, 1, 15), date(2028, 1, 21))
+        rows = [self._row(expiry, "CALL", strike, last, bid=last, ask=last)
+                for expiry, legs in zip(expiries,
+                    (((100, 2), (103, 1)), ((100, 3), (105, 1))))
+                for strike, last in legs]
+        for minimum, years in ((2.0, {2027}), (1.5, {2027, 2028}), (3.0, set())):
+            with self.subTest(minimum=minimum):
+                store = VerticalResultStore("SPY", 100, None, None, "NORMAL",
+                                            min_reward_risk=minimum)
+                for expiry in expiries:
+                    self.assertTrue(store.add_expiration(
+                        expiry, [row for row in rows if row["expiry"] == expiry],
+                        scan_vertical_candidates))
+                self.assertEqual({row["year"] for row in store.iter_ranked()}, years)
+                self.assertEqual({row["year"] for row in store.annual_rows}, years)
+                self.assertEqual(store.count(), len(years))
+        default = VerticalResultStore("SPY", 100, None, None, "NORMAL")
+        self.assertEqual(default.min_reward_risk, 2.0)
+
+    def test_cached_scan_does_not_mix_different_reward_risk_thresholds(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        rows = [self._row(expiry, "CALL", strike, last, bid=last, ask=last)
+                for expiry, legs in (
+                    (date(2027, 1, 15), ((100, 2), (103, 1))),
+                    (date(2028, 1, 21), ((100, 3), (105, 1))),
+                ) for strike, last in legs]
+        raw = {"symbol": "SPY", "spot": 100, "rows": rows}
+        with (patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "scan_vertical_candidates", wraps=scan_vertical_candidates) as calculate):
+            strict, _, _, _ = vo._rank_cached_vertical_chains(
+                raw, None, None, "NORMAL", min_reward_risk=2.0)
+            self.assertEqual(strict.count(), 1)
+            permissive, _, _, _ = vo._rank_cached_vertical_chains(
+                raw, None, None, "NORMAL", min_reward_risk=1.5)
+            self.assertEqual(permissive.count(), 2)
+            again, _, _, _ = vo._rank_cached_vertical_chains(
+                raw, None, None, "NORMAL", min_reward_risk=2.0)
+            self.assertIs(again, strict)
+            self.assertIsNot(strict, permissive)
+            self.assertEqual(strict.count(), 1)
+            self.assertEqual(calculate.call_count, 4)  # Two expirations per policy.
 
     def test_no_target_breakeven_preserves_all_qualifying_pairs(self):
         expiries = (date(2027, 1, 15), date(2028, 1, 21))
@@ -1359,7 +1472,10 @@ else:
                          target_breakeven=100, max_cost=100)
         for change in ({"spot_last": float("nan")},
                        {"target_breakeven": 0}, {"max_cost": float("inf")},
-                       {"max_per_expiration": 0}):
+                       {"max_per_expiration": 0},
+                       {"min_reward_risk": 0}, {"min_reward_risk": -1},
+                       {"min_reward_risk": float("nan")},
+                       {"min_reward_risk": float("inf")}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 scan_vertical_candidates(**(arguments | change))
 
@@ -1494,14 +1610,19 @@ else:
         self.assertIn('OPEN SPREAD CHART IN TRADINGVIEW', ui)
         self.assertIn('BUY premium minus SELL premium, per share.', ui)
 
-    def test_three_scan_controls_accept_prices_and_reject_invalid_values(self):
-        from src.vertical_options_ui import _entered_price
+    def test_scan_controls_accept_prices_and_reward_risk_ratio(self):
+        from src.vertical_options_ui import _entered_price, _entered_reward_risk
 
         self.assertEqual(_entered_price("$1,234.50", "target breakeven"), 1234.5)
         self.assertEqual(_entered_price("$250", "maximum cost"), 250)
+        for text, expected in (("2", 2.0), ("1:2", 2.0), ("1:1.5", 1.5), ("3", 3.0)):
+            with self.subTest(text=text):
+                self.assertEqual(_entered_reward_risk(text), expected)
         for value in ("", "0", "-1", "nan", "inf"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 _entered_price(value, "maximum cost")
+            with self.subTest(ratio=value), self.assertRaises(ValueError):
+                _entered_reward_risk(value)
 
     def test_optionstrat_uses_actual_weekly_option_root(self):
         from src.vertical_options_ui import _optionstrat_url
@@ -1568,6 +1689,26 @@ else:
             build_vertical_preview_payload(**args, limit_price=1.67)
         with self.assertRaises(ValueError):
             build_vertical_preview_payload(**args, limit_price=float("nan"))
+
+    def test_preview_uses_user_reward_risk_floor_on_rounded_debit(self):
+        args = dict(symbol="SPY", call_put="CALL", expiry=date(2027, 1, 15),
+                    buy_strike=100, sell_strike=105, quantity=1)
+        for minimum, edge in ((1.5, 2.0), (3.0, 1.25)):
+            with self.subTest(minimum=minimum):
+                payload = build_vertical_preview_payload(
+                    **args, limit_price=edge, min_reward_risk=minimum)
+                self.assertEqual(payload["PreviewOrderRequest"]["Order"][0]["limitPrice"], edge)
+                with self.assertRaisesRegex(ValueError, f"1:{minimum:g}"):
+                    build_vertical_preview_payload(
+                        **args, limit_price=edge + 0.0001, min_reward_risk=minimum)
+        rounded = build_vertical_preview_payload(
+            **args, limit_price=2.00004, min_reward_risk=1.5)
+        self.assertEqual(rounded["PreviewOrderRequest"]["Order"][0]["limitPrice"], 2.0)
+        with self.assertRaisesRegex(ValueError, "1:1.5"):
+            build_vertical_preview_payload(**args, limit_price=2.00006, min_reward_risk=1.5)
+        for invalid in (0, -1, float("nan"), float("inf")):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                build_vertical_preview_payload(**args, limit_price=1, min_reward_risk=invalid)
 
     def test_put_debit_vertical_requires_buy_above_sell(self):
         validate_vertical(

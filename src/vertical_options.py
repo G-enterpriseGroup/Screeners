@@ -98,6 +98,13 @@ def _finite_number(value: Any, *, positive: bool = False) -> float | None:
     return number
 
 
+def _reward_risk_floor(value: Any) -> float:
+    minimum = _finite_number(value, positive=True)
+    if minimum is None:
+        raise ValueError("Minimum reward-to-risk ratio must be positive and finite.")
+    return minimum
+
+
 def price_vertical_quote(
     *,
     buy_last: float | None,
@@ -109,6 +116,7 @@ def price_vertical_quote(
     width: float,
     max_cost: float | None,
     pricing_mode: str = "NORMAL",
+    min_reward_risk: float = _MIN_REWARD_RISK,
     buy_volume: float | None = None,
     sell_volume: float | None = None,
     buy_open_interest: float | None = None,
@@ -121,12 +129,13 @@ def price_vertical_quote(
     at or above its midpoint; an old Last below MID is not a likely fill.
     Missing bid/ask yields a visible LAST* estimate only, never an order.
     SMART FILL offers a conservative, liquidity-aware *indicative* price
-    between MID and natural ASK, capped by 2:1 reward/risk and max cost.
+    between MID and natural ASK, capped by the minimum reward/risk and max cost.
     It is not a calibrated fill probability and cannot place orders.
     No quote basis is a guarantee of execution or liquidity.
     """
     if pricing_mode not in {"NORMAL", "SMART FILL"}:
         raise ValueError("Invalid Vertical Options pricing mode.")
+    minimum = _reward_risk_floor(min_reward_risk)
     spread_width = _finite_number(width, positive=True)
     budget = None if max_cost is None else _finite_number(max_cost, positive=True)
     if spread_width is None or (max_cost is not None and budget is None):
@@ -169,7 +178,7 @@ def price_vertical_quote(
             # Round *up* to the next cent rather than guessing sub-cent limit
             # precision. Cap the order against both independent risk limits.
             target_cents = math.ceil((quote_mid + fraction * half_gap) * 100 - 1e-8)
-            max_debit = min(spread_width / (1 + _MIN_REWARD_RISK),
+            max_debit = min(spread_width / (1 + minimum),
                             budget / 100 if budget is not None else math.inf,
                             quote_ask)
             capped_cents = min(target_cents, math.floor(max_debit * 100 + 1e-8))
@@ -192,7 +201,7 @@ def price_vertical_quote(
         cost = round(100 * debit, 2)
         if (not math.isfinite(debit) or not .01 <= debit < spread_width
                 or (budget is not None and cost > budget + 1e-8)
-                or spread_width - debit + 1e-8 < _MIN_REWARD_RISK * debit):
+                or spread_width - debit + 1e-8 < minimum * debit):
             continue
         return {
             "debit": debit, "cost": cost, "basis": basis,
@@ -206,11 +215,13 @@ def price_vertical_quote(
 
 def smart_fill_ladder(
     candidate: dict[str, Any], max_cost: float | None, *, levels: int = 4,
+    min_reward_risk: float = _MIN_REWARD_RISK,
 ) -> list[float]:
     """Manual, risk-capped limit choices for one SMART-quoted candidate.
 
     Selecting a rung never changes or submits a broker order by itself.
     """
+    minimum = _reward_risk_floor(min_reward_risk)
     if candidate.get("basis") != "SMART":
         return []
     start = _finite_number(candidate.get("debit"), positive=True)
@@ -222,10 +233,12 @@ def smart_fill_ladder(
     budget = None if max_cost is None else _finite_number(max_cost, positive=True)
     if max_cost is not None and budget is None:
         return []
-    limit = min(natural, width / (1 + _MIN_REWARD_RISK),
+    limit = min(natural, width / (1 + minimum),
                 budget / 100 if budget is not None else math.inf)
     ceiling_cents = math.floor(limit * 100 + 1e-8)
     current = math.ceil(start * 100 - 1e-8)
+    if current > ceiling_cents:
+        return []
     gap = natural - midpoint
     step = 1 if gap <= .20 else (5 if gap <= 1 else 10)
     ladder = [round(current / 100, 2)]
@@ -246,6 +259,7 @@ def scan_vertical_candidates(
     max_cost: float | None,
     max_per_expiration: int | None = 20,
     pricing_mode: str = "NORMAL",
+    min_reward_risk: float = _MIN_REWARD_RISK,
     candidate_sink: Callable[[dict[str, Any]], None] | None = None,
     progress: Callable[[int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
@@ -268,6 +282,7 @@ def scan_vertical_candidates(
     budget = None if max_cost is None else _finite_number(max_cost)
     if pricing_mode not in {"NORMAL", "SMART FILL"}:
         raise ValueError("Invalid Vertical Options pricing mode.")
+    minimum = _reward_risk_floor(min_reward_risk)
     if (not ticker or spot is None or (target_breakeven is not None and target is None)
             or (max_cost is not None and budget is None)):
         raise ValueError("Ticker and underlying Last must be valid; supplied breakeven and cost must be positive.")
@@ -339,6 +354,7 @@ def scan_vertical_candidates(
                     buy_bid=buy["bid"], buy_ask=buy["ask"],
                     sell_bid=sell["bid"], sell_ask=sell["ask"],
                     width=width, max_cost=budget, pricing_mode=pricing_mode,
+                    min_reward_risk=minimum,
                     buy_volume=buy["volume"], sell_volume=sell["volume"],
                     buy_open_interest=buy["open_interest"],
                     sell_open_interest=sell["open_interest"],
@@ -417,6 +433,7 @@ def build_vertical_preview_payload(
     limit_price: float,
     order_term: str = "GOOD_FOR_DAY",
     client_order_id: str | None = None,
+    min_reward_risk: float = _MIN_REWARD_RISK,
 ) -> dict[str, Any]:
     """Build a two-leg E*TRADE NET_DEBIT vertical spread preview request."""
     symbol = str(symbol or "").strip().upper()
@@ -439,10 +456,11 @@ def build_vertical_preview_payload(
         raise ValueError("Enter a valid debit limit.") from exc
     if not math.isfinite(debit) or debit <= 0:
         raise ValueError("Debit limit must be positive.")
+    minimum = _reward_risk_floor(min_reward_risk)
     sent_debit = round(debit, 4)
     width = abs(float(sell_strike) - float(buy_strike))
-    if sent_debit <= 0 or width - sent_debit + 1e-8 < 2 * sent_debit:
-        raise ValueError("Debit limit must keep risk:reward at 1:2 or better.")
+    if sent_debit <= 0 or width - sent_debit + 1e-8 < minimum * sent_debit:
+        raise ValueError(f"Debit limit must keep risk:reward at 1:{minimum:g} or better.")
 
     client_id = str(client_order_id or new_vertical_client_order_id()).strip()
     if not client_id.isalnum() or len(client_id) > 20:

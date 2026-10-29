@@ -70,6 +70,7 @@ _SCAN_BATCH_EXPIRATIONS = 4
 _SCAN_RANK_SECONDS = 4.0
 _NO_BREAKEVEN = "no break even provided"
 _NO_COST_CEILING = "no ceiling cost provided"
+_DEFAULT_MIN_REWARD_RISK = 2.0
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_vo_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
@@ -232,8 +233,8 @@ _VERTICAL_OPTIONS_CSS = """
     display:flex;
     align-items:center;
     width:100%;
-    height:30px;
-    min-height:30px;
+    height:24px;
+    min-height:24px;
     box-sizing:border-box;
     margin:0 0 4px 0;
     padding:0 10px;
@@ -271,6 +272,7 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stWidgetLabel"],
 .st-key-vertical_options_workspace .st-key-vo_target_breakeven [data-testid="stWidgetLabel"],
 .st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stWidgetLabel"],
+.st-key-vertical_options_workspace .st-key-vo_min_reward_risk [data-testid="stWidgetLabel"],
 .st-key-vertical_options_workspace .vo-company-label{
     display:flex!important;align-items:center!important;
     height:20px!important;min-height:20px!important;
@@ -278,16 +280,19 @@ _VERTICAL_OPTIONS_CSS = """
 }
 .st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stWidgetLabel"] p,
 .st-key-vertical_options_workspace .st-key-vo_target_breakeven [data-testid="stWidgetLabel"] p,
-.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stWidgetLabel"] p{margin:0!important;}
+.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stWidgetLabel"] p,
+.st-key-vertical_options_workspace .st-key-vo_min_reward_risk [data-testid="stWidgetLabel"] p{margin:0!important;}
 /* Set the visible React Aria border box to the terminal's 38px control height. */
 .st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stTextInputRootElement"],
 .st-key-vertical_options_workspace .st-key-vo_target_breakeven [data-testid="stTextInputRootElement"],
-.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stTextInputRootElement"]{
+.st-key-vertical_options_workspace .st-key-vo_max_cost [data-testid="stTextInputRootElement"],
+.st-key-vertical_options_workspace .st-key-vo_min_reward_risk [data-testid="stTextInputRootElement"]{
     height:38px!important;min-height:38px!important;box-sizing:border-box!important;
 }
 .st-key-vertical_options_workspace .st-key-vo_symbol_value input,
 .st-key-vertical_options_workspace .st-key-vo_target_breakeven input,
-.st-key-vertical_options_workspace .st-key-vo_max_cost input{height:36px!important;min-height:0!important;}
+.st-key-vertical_options_workspace .st-key-vo_max_cost input,
+.st-key-vertical_options_workspace .st-key-vo_min_reward_risk input{height:36px!important;min-height:0!important;}
 .st-key-vertical_options_workspace [data-testid="stFormSubmitButton"] button{
     height:38px!important;min-height:38px!important;box-sizing:border-box!important;
 }
@@ -329,14 +334,18 @@ _VERTICAL_OPTIONS_CSS = """
     display:grid;
     grid-template-columns:repeat(6,minmax(0,1fr));
     gap:8px;
-    margin:0 0 4px 0;
+    margin:0 0 16px 0;
 }
 .vo-card{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:6px;
     min-width:0;
-    min-height:52px;
-    height:52px;
+    min-height:34px;
+    height:34px;
     box-sizing:border-box;
-    padding:6px 8px;
+    padding:4px 6px;
     border:1px solid var(--vo-orange);
     background:#000;
     overflow:hidden;
@@ -352,8 +361,7 @@ _VERTICAL_OPTIONS_CSS = """
 .vo-value{
     color:var(--vo-green)!important;
     -webkit-text-fill-color:var(--vo-green)!important;
-    font:900 1.02rem/1 "Courier New",monospace;
-    margin-top:4px;
+    font:900 .86rem/1 "Courier New",monospace;
     white-space:nowrap;
     overflow:hidden;
     text-overflow:ellipsis;
@@ -381,7 +389,7 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace label:has(input[role="switch"]):has(input:checked)::after{content:"ON";color:var(--vo-orange);}
 .st-key-vertical_options_workspace label:has(input[role="switch"]):has(input:disabled){opacity:.5;cursor:not-allowed;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] [role="radiogroup"]{gap:0!important;flex-wrap:wrap;}
-.st-key-vertical_options_workspace [data-testid="stRadio"] label{min-height:34px;padding:4px 12px!important;border:1px solid var(--vo-border);background:#080808;cursor:pointer;}
+.st-key-vertical_options_workspace [data-testid="stRadio"] label{min-height:30px;padding:3px 10px!important;border:1px solid var(--vo-border);background:#080808;cursor:pointer;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] label:has(input:checked){background:#fb8b1e!important;border-color:#fb8b1e;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] label:has(input:checked) *{color:#000!important;-webkit-text-fill-color:#000!important;}
 .st-key-vertical_options_workspace [data-testid="stRadio"] label:hover{border-color:#fb8b1e;}
@@ -610,6 +618,7 @@ def _review_fingerprint(
     sell_strike: float,
     quantity: int,
     limit_price: float,
+    min_reward_risk: float,
     order_term: str,
     account_keys: list[str],
 ) -> tuple[Any, ...]:
@@ -621,6 +630,7 @@ def _review_fingerprint(
         round(float(sell_strike), 4),
         int(quantity),
         round(float(limit_price), 4),
+        round(float(min_reward_risk), 6),
         order_term,
         tuple(sorted(account_keys)),
     )
@@ -788,6 +798,13 @@ def _entered_price(value: str, label: str) -> float:
     return amount
 
 
+def _entered_reward_risk(value: str) -> float:
+    text = str(value).strip()
+    if text.startswith("1:"):
+        text = text[2:].strip()
+    return _entered_price(text, "minimum risk:reward ratio (1:X)")
+
+
 def _safe_vertical_pair_limit(rows: list[dict[str, Any]]) -> tuple[int | None, int]:
     """Count all potential pairs; disk-backed results never require a row cap."""
     groups: dict[tuple[date, str], set[tuple[float, str]]] = {}
@@ -832,6 +849,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         expirations = list(cached["expirations"])
         rows = list(cached["rows"])
         errors = list(cached["errors"])
+        failed_expirations = list(cached.get("failed_expirations") or [])
         loaded = int(cached["loaded_expirations"])
         start_index = int(cached["next_expiry_index"])
         tv_exchange = cached.get("tv_exchange", "")
@@ -849,7 +867,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
                        if item >= date.today()]
         if not expirations:
             raise ValueError(f"No future listed option expirations are available for {symbol}.")
-        rows, errors, loaded, start_index = [], [], 0, 0
+        rows, errors, failed_expirations, loaded, start_index = [], [], [], 0, 0
         tv_exchange = _tradingview_listing_exchange(symbol, quote_payload)
 
     batch_started = time.monotonic()
@@ -880,6 +898,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
             except Exception as exc:
                 consecutive_failures += 1
                 errors.append(f"{_date_label(expiry)} // {exc}")
+                failed_expirations.append(expiry)
             next_index = index + 1
             progress.progress(
                 next_index / len(expirations),
@@ -902,7 +921,8 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         "scan_id": cached["scan_id"] if fresh_cached else time.time_ns(),
         "source": source, "symbol": symbol, "spot": spot, "name": name,
         "expirations": expirations, "loaded_expirations": loaded,
-        "rows": rows, "errors": errors, "tv_exchange": tv_exchange,
+        "rows": rows, "errors": errors, "failed_expirations": failed_expirations,
+        "tv_exchange": tv_exchange,
         "next_expiry_index": next_index,
         "scan_complete": next_index >= len(expirations),
         "stopped_on_errors": consecutive_failures >= 2,
@@ -919,16 +939,18 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
 
 
 def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
-                                 max_cost: float | None, mode: str
+                                 max_cost: float | None, mode: str,
+                                 min_reward_risk: float = _DEFAULT_MIN_REWARD_RISK,
                                  ) -> tuple[VerticalResultStore, set[str], None, int]:
     """Stream every qualifying pair to disk and reuse completed expirations."""
     _, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
-    policy = (target, max_cost, mode)
+    policy = (target, max_cost, mode, min_reward_risk)
     store = policies.pop(policy, None)
     if not isinstance(store, VerticalResultStore):
-        store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode)
+        store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
+                                    min_reward_risk=min_reward_risk)
     policies[policy] = store
     while len(policies) > 2:
         policies.pop(next(iter(policies)))
@@ -963,11 +985,13 @@ def _continue_vertical_scan(result: dict[str, Any], client, touch_session) -> di
     raw = _scan_all_years(client, result["symbol"], touch_session)
     candidates, annual_ids, _, potential_pairs = _rank_cached_vertical_chains(
         raw, result["target"], result["max_cost"], result["pricing_mode"],
+        result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
     )
     return {
         **result, "candidates": candidates, "annual_ids": annual_ids,
         "loaded_expirations": raw["loaded_expirations"], "contract_count": len(raw["rows"]),
-        "errors": raw["errors"], "potential_pairs": potential_pairs,
+        "errors": raw["errors"], "failed_expirations": raw.get("failed_expirations", []),
+        "potential_pairs": potential_pairs,
         "chains_complete": raw["scan_complete"], "ranked_expirations": candidates.ranked_expirations,
         "scan_complete": raw["scan_complete"] and candidates.ranked_expirations == raw["loaded_expirations"],
         "next_expiry_index": raw["next_expiry_index"], "pass_seconds": time.monotonic() - started,
@@ -1200,9 +1224,11 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
         return None
     candidates, annual_ids, _, _ = _rank_cached_vertical_chains(
         raw, result["target"], result["max_cost"], mode,
+        result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
     )
     scope = hashlib.sha256(
-        repr((raw["scan_id"], result["target"], result["max_cost"], mode,
+        repr((raw["scan_id"], result["target"], result["max_cost"],
+              result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK), mode,
               bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
@@ -1217,8 +1243,8 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
 
 _PRESENTATION_DEFAULTS = {
     "vo_symbol_value": "", "vo_target_breakeven": _NO_BREAKEVEN,
-    "vo_max_cost": _NO_COST_CEILING,
-    "vo_results_view": "ALL QUALIFIED", "vo_be_filter_enabled": False,
+    "vo_max_cost": _NO_COST_CEILING, "vo_min_reward_risk": "2",
+    "vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": False,
     "vo_be_range_percent": 5.0, "vo_all_pair_sort": "FILL + TARGET",
     "vo_all_pair_direction": "ASC", "vo_all_pair_expiry": "ALL",
     "vo_all_pair_side": "CALL + PUT", "vo_auto_finish": True,
@@ -1232,12 +1258,37 @@ def _remember_presentation(key: str) -> None:
 
 
 def _remember_scan_inputs() -> None:
-    for key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost"):
+    for key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost", "vo_min_reward_risk"):
         _remember_presentation(key)
+
+
+def _remember_results_view(widget_key: str) -> None:
+    st.session_state["vo_results_view"] = st.session_state[widget_key]
+    _remember_presentation("vo_results_view")
+
+
+def _navigate_all_pairs(page_key: str, pages: int, action: str) -> None:
+    """Update pagination before Streamlit builds the next button states."""
+    saved = dict(st.session_state.get("_vo_presentation") or {})
+    current = min(pages, max(1, int(saved.get(page_key, 1))))
+    if action == "first":
+        page = 1
+    elif action == "previous":
+        page = max(1, current - 1)
+    elif action == "next":
+        page = min(pages, current + 1)
+    else:
+        page = pages
+    saved[page_key] = page
+    st.session_state["_vo_presentation"] = saved
+    st.session_state[page_key] = page
 
 
 def _restore_presentation() -> None:
     saved = dict(st.session_state.get("_vo_presentation") or {})
+    if not st.session_state.get("_vo_best_default_initialized"):
+        saved["vo_results_view"] = "BEST PER YEAR"
+        st.session_state["_vo_best_default_initialized"] = True
     for key, default in _PRESENTATION_DEFAULTS.items():
         saved.setdefault(key, st.session_state.get(key, default))
         # A returning frontend may send widget defaults before registration.
@@ -1346,7 +1397,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     '<div class="vo-mode-guide" style="justify-content:flex-end">'
                     '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
-                    'Existing pricing: natural ASK first when it meets your 2:1 reward-to-risk '
+                    'Existing pricing: natural ASK first when it meets your selected reward-to-risk '
                     'and cost limits; otherwise qualifying LAST or MID. '
                     'Unquoted LAST* is information only. No guaranteed fill.'
                     '</span></span></span></div>'
@@ -1358,7 +1409,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
                     'Suggests a limit between spread MID and natural ASK using quote width '
-                    'and available leg volume/open interest. Keeps 2:1 minimum and cost cap; '
+                    'and available leg volume/open interest. Keeps your selected ratio and cost cap; '
                     'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
                     '</span></span></span></div>'
                 )
@@ -1471,7 +1522,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         last_result = st.session_state.get("vo_scan_result") or {}
         # Ticker lives outside the submit form so its quote/name update on
         # Enter or blur. Breakeven/cost retain Enter-to-scan form semantics.
-        fields = st.columns([1.05, 1.8, 3.1], gap="small", vertical_alignment="bottom")
+        fields = st.columns([1.05, 1.7, 3.55], gap="small", vertical_alignment="bottom")
         with fields[0]:
             symbol_text = st.text_input(
                 "Ticker", key="vo_symbol_value", placeholder="SPY",
@@ -1490,7 +1541,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             st.html(_company_display_markup(symbol, ticker_quote.get("name", ""),
                                             ticker_quote.get("last"), quote_title))
         with fields[2], st.form("vo_scan_form", clear_on_submit=False, border=False):
-            scan_fields = st.columns([1.0, 1.0, 1.1], gap="small", vertical_alignment="bottom")
+            scan_fields = st.columns([1.0, 1.0, .8, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 breakeven_text = st.text_input(
                     "Target Breakeven", key="vo_target_breakeven", placeholder=_NO_BREAKEVEN,
@@ -1502,18 +1553,38 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     help="Optional maximum one-spread debit in dollars. Blank or the default text means no cost ceiling.",
                 )
             with scan_fields[2]:
+                ratio_text = st.text_input(
+                    "MIN RISK:REWARD 1:", key="vo_min_reward_risk", placeholder="2",
+                    help="Minimum reward for each $1 risked. Standard is 1:2; enter 2, 1:2, or another positive value.",
+                )
+            with scan_fields[3]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
                     on_click=_remember_scan_inputs,
                 )
-        for form_key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost"):
+        for form_key in ("vo_symbol_value", "vo_target_breakeven", "vo_max_cost", "vo_min_reward_risk"):
             _remember_presentation(form_key)
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
+        # Reuse this position so a new scan clears the previous grid before broker calls.
+        results_slot = st.empty()
 
+        if scan_clicked:
+            # Clear the old grid in a fast rerun before any broker call begins.
+            st.session_state["_vo_previous_scan_result"] = st.session_state.pop("vo_scan_result", None)
+            st.session_state["_vo_scan_pending"] = True
+            st.rerun()
+        scan_clicked = bool(st.session_state.pop("_vo_scan_pending", False))
+        if scan_clicked:
+            last_result = st.session_state.get("_vo_previous_scan_result") or {}
+        if scan_clicked:
+            st.session_state["vo_auto_finish"] = True
+            st.session_state["_vo_auto_finish_previous"] = True
+            _remember_presentation("vo_auto_finish")
         resume_clicked = False
-        if (last_result.get("symbol") == symbol
-                and not last_result.get("scan_complete", True)):
+        if (not scan_clicked and last_result.get("symbol") == symbol
+                and not last_result.get("scan_complete", True)
+                and not last_result.get("failed_expirations")):
             auto_finish = st.toggle("AUTO FINISH SCAN", key="vo_auto_finish",
                 on_change=_remember_presentation, args=("vo_auto_finish",),
                 help="Continue in short batches while this page is open. Turn off to pause after the current batch. Never places orders.")
@@ -1526,6 +1597,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 key="vo_resume_partial_scan",
             )
         if scan_clicked or resume_clicked:
+            if scan_clicked:
+                st.caption(f"SCANNING ALL YEARS // {symbol} // results appear when complete")
             st.session_state.pop("_vo_auto_scan_error", None)
             st.session_state.pop("vo_review_bundle", None)
             st.session_state.pop("vo_live_confirm", None)
@@ -1536,22 +1609,31 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 if not symbol:
                     raise ValueError("Enter a ticker to scan.")
                 entered_target = str(breakeven_text or "").strip()
-                target = None if entered_target.casefold() in {"", _NO_BREAKEVEN} else _entered_price(
-                    entered_target, "target breakeven"
-                )
                 entered_cost = str(cost_text or "").strip()
-                max_cost = (None if entered_cost.casefold() in {"", _NO_COST_CEILING}
-                            else _entered_price(entered_cost, "maximum cost"))
+                if resume_clicked:
+                    target = last_result["target"]
+                    max_cost = last_result["max_cost"]
+                    min_reward_risk = last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
+                else:
+                    target = None if entered_target.casefold() in {"", _NO_BREAKEVEN} else _entered_price(
+                        entered_target, "target breakeven"
+                    )
+                    max_cost = (None if entered_cost.casefold() in {"", _NO_COST_CEILING}
+                                else _entered_price(entered_cost, "maximum cost"))
+                    min_reward_risk = _entered_reward_risk(ratio_text)
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
                     and last_result.get("target") == target
+                    and last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK) == min_reward_risk
                 )
                 with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
                     raw = _scan_all_years(
                         client, symbol, touch_session,
-                        refresh=repeat_scan and bool(last_result.get("scan_complete", True))
-                        and not resume_clicked,
+                        refresh=scan_clicked and (
+                            (repeat_scan and bool(last_result.get("scan_complete", True)))
+                            or bool(last_result.get("failed_expirations"))
+                        ),
                     )
                 preview_source = "E*TRADE" if broker_live else "YFINANCE"
                 st.session_state.setdefault("_vo_ticker_quotes", {})[f"{preview_source}:{symbol}"] = {
@@ -1559,15 +1641,16 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "loaded_at": raw["loaded_at"],
                 }
                 candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_vertical_chains(
-                    raw, target, max_cost, pricing_mode,
+                    raw, target, max_cost, pricing_mode, min_reward_risk,
                 )
                 scope = hashlib.sha256(
-                    repr((raw["scan_id"], target, max_cost, pricing_mode,
+                    repr((raw["scan_id"], target, max_cost, min_reward_risk, pricing_mode,
                           safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["vo_scan_result"] = {
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
+                    "min_reward_risk": min_reward_risk,
                     "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
                     "target_defaulted": False,
                     "target_basis": "NOT PROVIDED" if target is None else "CUSTOM",
@@ -1577,6 +1660,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "listed_expirations": len(raw["expirations"]),
                     "listed_years": len({item.year for item in raw["expirations"]}),
                     "contract_count": len(raw["rows"]), "errors": raw["errors"],
+                    "failed_expirations": raw.get("failed_expirations", []),
                     "capacity_limited": safe_limit is not None,
                     "potential_pairs": potential_pairs,
                     "chains_complete": raw["scan_complete"],
@@ -1594,343 +1678,349 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     )
                 st.session_state.pop("_vo_auto_target", None)
                 st.session_state["_vo_optional_inputs_pending"] = True
+                if scan_clicked:
+                    st.session_state["vo_results_view"] = "BEST PER YEAR"
+                    _remember_presentation("vo_results_view")
+                    st.session_state.pop("_vo_previous_scan_result", None)
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
                 # Preserve the last successful snapshot if a new scan fails.
+                if scan_clicked:
+                    st.session_state["vo_scan_result"] = st.session_state.pop("_vo_previous_scan_result", None)
 
-        result = st.session_state.get("vo_scan_result")
-        if not isinstance(result, dict):
-            return
-        if not isinstance(result.get("candidates"), VerticalResultStore):
-            st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
-            return
-        if result.get("pricing_mode", "NORMAL") != pricing_mode:
-            updated = _reprice_cached_vertical_scan(result, pricing_mode)
-            st.session_state.pop("vo_review_bundle", None)
-            st.session_state.pop("vo_live_confirm", None)
-            st.session_state.pop("vo_last_send_results", None)
-            st.session_state.pop("_vo_order_candidate", None)
-            if updated is None:
-                st.warning("QUOTE SNAPSHOT EXPIRED // Last results retained. Scan again for the selected pricing mode.")
+        with results_slot.container():
+            result = st.session_state.get("vo_scan_result")
+            if not isinstance(result, dict):
                 return
-            result = updated
-            st.session_state["vo_scan_result"] = result
-        if not result.get("scan_complete", True):
-            st.warning(
-                f'PARTIAL ALL-YEAR SCAN // {result["next_expiry_index"]}/'
-                f'{result["listed_expirations"]} expirations checked; '
-                f'{result["ranked_expirations"]}/{result["loaded_expirations"]} loaded chains ranked. '
-                + ('Continuing automatically in short batches. Turn off AUTO FINISH SCAN to pause.'
-                   if st.session_state.get("vo_auto_finish", True)
-                   and not result.get("stopped_on_errors")
-                   and not st.session_state.get("_vo_auto_scan_error") else
-                   'Paused. Press CONTINUE ALL YEARS to load or calculate remaining pairs without restarting.')
-            )
-        if st.session_state.get("_vo_auto_scan_error"):
-            st.warning(st.session_state["_vo_auto_scan_error"])
-        if result["source"] == "E*TRADE" and not broker_live:
-            st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
-        st.markdown(
-            _metric_markup([
-                ("UNDERLYING LAST", _money(result["spot"]), "green"),
-                ("LISTED YEARS", str(result["listed_years"]), "blue"),
-                ("CHAINS LOADED", f'{result["loaded_expirations"]}/{result["listed_expirations"]}', "orange"),
-                ("CONTRACTS READ", f'{result["contract_count"]:,}', "green"),
-                ("QUALIFIED PAIRS", f'{len(result["candidates"]):,}', "green"),
-                ("ANNUAL BEST", str(len(result["annual_ids"])), "blue"),
-            ]),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<div class="vo-section">VERTICAL SPREADS // ALL QUALIFYING PAIRS</div>',
-            unsafe_allow_html=True,
-        )
-        stamp = datetime.fromtimestamp(result["loaded_at"], ZoneInfo("America/New_York"))
-        st.caption(
-            f'{result["source"]} // SNAPSHOT {stamp:%b %d, %I:%M:%S %p %Z} // '
-            f'LAST SCAN PASS {result.get("pass_seconds", 0):.1f}s // RISK:REWARD ≥ 1:2'
-        )
-        st.caption((
-            f'TARGET BREAKEVEN {(_money(result["target"]) + " (CUSTOM)") if result["target"] is not None else _NO_BREAKEVEN} '
-            f'// MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else _NO_COST_CEILING}'
-        ).replace("$", r"\$"))
-        if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
-            st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
-        _scanner_help("PRICING & RISK", (
-            "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
-            "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
-            "SMART FILL suggests a MID-to-ASK limit, capped by the cost and 1:2 requirement. "
-            "For one standard 100-share contract: max loss = debit × 100; max profit = "
-            "(strike width − debit) × 100. Reward/risk must be at least 2. "
-            "CALL breakeven = BUY strike + debit; PUT breakeven = BUY strike − debit. "
-            "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
-            "Snapshot age does not establish when an individual option last traded. "
-            "Quotes may be delayed; no reference price guarantees execution or a fill. "
-            f'Target: {_money(result["target"]) if result["target"] is not None else _NO_BREAKEVEN}; max cost: '
-            f'{_money(result["max_cost"]) if result["max_cost"] is not None else _NO_COST_CEILING}.'
-        ))
-        candidates = result["candidates"]
-        if not candidates:
-            st.info("No call or put debit spreads met the 1:2 ratio"
-                    + (" and maximum cost" if result["max_cost"] is not None else "")
-                    + " at a qualifying quoted price across the loaded years.")
-        else:
-            annual_ids = set(result["annual_ids"])
-            scope = result["scope"]
-            state = st.session_state.get("_vo_checked_spreads")
-            if not isinstance(state, dict) or state.get("scope") != scope:
-                state = {"scope": scope, "ids": set(), "revision": 0}
-                st.session_state["_vo_checked_spreads"] = state
-            filter_state = st.session_state.get("_vo_column_filters")
-            if not isinstance(filter_state, dict) or filter_state.get("scope") != scope:
-                filter_state = {"scope": scope, "filters": {}, "revision": 0}
-                st.session_state["_vo_column_filters"] = filter_state
-            column_filters = dict(filter_state["filters"])
-            filter_choices = candidates.column_filter_choices()
-            saved_ids = set(state["ids"])
-            by_id = candidates.get_many(saved_ids)
-            if result["target"] is None and st.session_state.get("vo_be_filter_enabled"):
-                st.session_state["vo_be_filter_enabled"] = False
-                _remember_presentation("vo_be_filter_enabled")
-            be_cols = st.columns([1.1, 1, 3], gap="small", vertical_alignment="bottom")
-            be_enabled = be_cols[0].toggle(
-                "BREAKEVEN FILTER", key="vo_be_filter_enabled",
-                disabled=result["target"] is None,
-                on_change=_remember_presentation, args=("vo_be_filter_enabled",),
-                help="ON: include every qualifying spread within the selected range of the scan target. "
-                     "OFF: show all qualifying breakevens. Minimum risk:reward 1:2 always applies.",
-            )
-            be_percent = be_cols[1].number_input(
-                "BE RANGE ± (%)", min_value=0.0, max_value=100.0, step=.5,
-                key="vo_be_range_percent", disabled=not be_enabled,
-                on_change=_remember_presentation, args=("vo_be_range_percent",),
-            )
-            max_distance = result["target"] * be_percent / 100 if be_enabled and result["target"] is not None else None
-            be_matching_count = candidates.count(max_distance=max_distance)
-            range_text = (f'BREAKEVEN {_money(result["target"] - max_distance)} TO '
-                          f'{_money(result["target"] + max_distance)} // '
-                          if be_enabled else 'ALL BREAKEVENS // ')
-            with be_cols[2]:
-                st.caption(
-                    range_text.replace("$", r"\$")
-                    + f'{be_matching_count:,} OF {len(candidates):,} QUALIFYING PAIRS '
-                    '// RISK:REWARD ≥ 1:2'
+            if result.get("symbol") != symbol:
+                return
+            if not isinstance(result.get("candidates"), VerticalResultStore):
+                st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
+                return
+            if result.get("pricing_mode", "NORMAL") != pricing_mode:
+                updated = _reprice_cached_vertical_scan(result, pricing_mode)
+                st.session_state.pop("vo_review_bundle", None)
+                st.session_state.pop("vo_live_confirm", None)
+                st.session_state.pop("vo_last_send_results", None)
+                st.session_state.pop("_vo_order_candidate", None)
+                if updated is None:
+                    st.warning("QUOTE SNAPSHOT EXPIRED // Last results retained. Scan again for the selected pricing mode.")
+                    return
+                result = updated
+                st.session_state["vo_scan_result"] = result
+            if not result.get("scan_complete", True):
+                listed = max(1, int(result["listed_expirations"]))
+                st.progress(
+                    min(1.0, result["ranked_expirations"] / listed),
+                    text=(f'SCANNING ALL YEARS // {result["next_expiry_index"]}/{listed} '
+                          f'expirations checked // {result["ranked_expirations"]} chains ranked'),
                 )
-            view = st.radio(
-                "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
-                key="vo_results_view", horizontal=True, label_visibility="collapsed",
-                on_change=_remember_presentation, args=("vo_results_view",),
-                help="BEST PER YEAR: top-ranked eligible result in each year within the active BE range. ALL QUALIFIED: every eligible result, paged. No chain download.",
-            )
-            view_identity = f"{view}|{max_distance}|{repr(sorted(column_filters.items()))}"
-            if view == "BEST PER YEAR":
-                displayed_candidates = candidates.best_by_year(
-                    max_distance=max_distance, column_filters=column_filters,
-                )
-                annual_ids = {row["id"] for row in displayed_candidates}
-                st.caption("ONE WINNER PER CALENDAR YEAR // ACTIVE COLUMN FILTERS")
-            else:
-                expirations = candidates.expirations
-                filter_cols = st.columns([1.45, .9, 1.5, .74, .84], gap="small", vertical_alignment="bottom")
-                expiry_filter = filter_cols[0].selectbox(
-                    "EXPIRATION", ["ALL"] + expirations, key="vo_all_pair_expiry",
-                    on_change=_remember_presentation, args=("vo_all_pair_expiry",),
-                    format_func=lambda value: "ALL EXPIRATIONS" if value == "ALL" else _date_label(value),
-                )
-                side_filter = filter_cols[1].selectbox(
-                    "TYPE", ("CALL + PUT", "CALL", "PUT"), key="vo_all_pair_side",
-                    on_change=_remember_presentation, args=("vo_all_pair_side",),
-                )
-                sort_filter = filter_cols[2].selectbox(
-                    "SORT BY", _QUALIFIED_SORT_FIELDS, key="vo_all_pair_sort",
-                    on_change=_remember_presentation, args=("vo_all_pair_sort",),
-                )
-                sort_direction = filter_cols[3].selectbox(
-                    "ORDER", ("ASC", "DESC"), key="vo_all_pair_direction",
-                    on_change=_remember_presentation, args=("vo_all_pair_direction",),
-                )
-                matching_count = candidates.count(
-                    expiry=expiry_filter, side=side_filter, max_distance=max_distance,
-                    column_filters=column_filters,
-                )
-                # Send only the current page to the scroller; exports include all pages.
-                pages = max(1, (matching_count + 199) // 200)
-                page_scope = hashlib.sha256(
-                    repr((scope, expiry_filter, side_filter, sort_filter, sort_direction,
-                          max_distance, sorted(column_filters.items()))).encode("utf-8")
-                ).hexdigest()[:12]
-                page_key = "vo_all_pair_page_" + page_scope
-                st.session_state[page_key] = min(pages, max(1, int(
-                    st.session_state["_vo_presentation"].get(page_key, 1))))
-                page = int(filter_cols[4].number_input(
-                    f"PAGE / {pages:,}", min_value=1, max_value=pages, step=1,
-                    key=page_key, on_change=_remember_presentation, args=(page_key,),
-                ))
-                offset = (page - 1) * 200
-                displayed_candidates = candidates.page(
-                    expiry=expiry_filter, side=side_filter, sort_by=sort_filter,
-                    direction=sort_direction, offset=offset, limit=200,
-                    max_distance=max_distance, column_filters=column_filters,
-                )
-                view_identity += f"|{expiry_filter}|{side_filter}|{sort_filter}|{sort_direction}|{page}"
-                st.caption(
-                    f"ALL {matching_count:,} QUALIFIED IN FILTER // PAGE {page:,}/{pages:,} "
-                    f"// ROWS {offset + 1 if displayed_candidates else 0:,}–{offset + len(displayed_candidates):,} "
-                    "// 1:2 MINIMUM R:R, NOT A FILL GUARANTEE // NO BROKER REQUESTS ON FILTER/SORT."
-                )
-                exports = st.columns(2, gap="small")
-                exports[0].download_button(
-                    f'EXPORT ALL QUALIFIED CSV // {len(candidates):,}',
-                    data=partial(
-                        _qualified_store_csv, candidates, source=result["source"],
-                        loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
-                    ),
-                    file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
-                    mime="text/csv", key="vo_export_all_qualified",
-                    on_click="ignore",
-                    use_container_width=True,
-                )
-                exports[1].download_button(
-                    f"EXPORT FILTERED CSV // {matching_count:,}",
-                    data=partial(
-                        _qualified_store_csv, candidates, source=result["source"],
-                        loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
-                        sort_by=sort_filter, direction=sort_direction,
-                        max_distance=max_distance, column_filters=column_filters,
-                    ),
-                    file_name=f'{result["symbol"]}_vertical_filtered.csv',
-                    mime="text/csv", key="vo_export_filtered_qualified",
-                    on_click="ignore",
-                    use_container_width=True,
-                )
-            if not displayed_candidates:
-                st.info("No spreads match these filters. Clear a column filter or change the range, expiration, or type.")
-            displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
-                         for row in displayed_candidates]
-            by_id.update({row["id"]: row for row in displayed_candidates})
-            selected_update = _SPREAD_SCROLL_COMPONENT(
-                scope=scope, sort_key=view_identity, rows=displayed,
-                selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
-                column_filters=column_filters, filter_choices=filter_choices,
-                filter_ack_revision=int(filter_state["revision"]),
-                key="vo_spread_scroll_" + scope, default=None,
-            )
-            if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
-                rerun_for_component = False
-                incoming_filters = selected_update.get("column_filters")
-                try:
-                    incoming_filter_revision = int(selected_update.get("filter_revision", 0))
-                except (TypeError, ValueError, OverflowError):
-                    incoming_filter_revision = 0
-                if incoming_filter_revision > int(filter_state["revision"]):
-                    if isinstance(incoming_filters, dict):
-                        try:
-                            candidates._where(column_filters=incoming_filters)
-                        except ValueError:
-                            pass
-                        else:
-                            filter_state["filters"] = incoming_filters
-                            rerun_for_component = True
-                    filter_state["revision"] = incoming_filter_revision
-                    st.session_state["_vo_column_filters"] = filter_state
-                incoming = selected_update.get("selected_ids")
-                if isinstance(incoming, list):
-                    checked = set(candidates.get_many(incoming))
-                    try:
-                        incoming_revision = int(selected_update.get("revision", 0))
-                    except (TypeError, ValueError, OverflowError):
-                        incoming_revision = 0
-                    if incoming_revision > int(state["revision"]):
-                        state["ids"] = checked
-                        state["revision"] = incoming_revision
-                        st.session_state["_vo_checked_spreads"] = state
-                        st.session_state.pop("vo_review_bundle", None)
-                        st.session_state.pop("vo_live_confirm", None)
-                        st.session_state.pop("vo_last_send_results", None)
-                        rerun_for_component = True
-                if rerun_for_component:
-                    # Custom-component updates may run this fragment during a
-                    # full-app rerun; fragment scope is invalid in that context.
-                    st.rerun()
-            checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
-            st.caption(
-                f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
-                f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // {len(checked_ids)} CHECKED'
-            )
-            _scanner_help("RESULTS, RANGE & LINKS", (
-                "Each column filter applies to all stored scan results, including exports. "
-                "The BE range applies when a target was entered. Filtering, sorting and "
-                "paging reuse stored results without downloading chains. Annual best is ranked "
-                "inside the active range; ALL QUALIFIED exposes every match. "
-                "Green = annual CALL winner; red = annual PUT winner, not profit/loss. "
-                "COST is maximum loss per spread before fees. LAST* marks an unreliable quote "
-                "and cannot be ordered. OS opens the exact OptionStrat payoff; TV opens BUY "
-                "minus SELL option premiums. Links never send orders; chart coverage varies."
-            ))
-            if checked_ids:
-                checked_by_id = candidates.get_many(checked_ids)
-                by_id.update(checked_by_id)
-                checked_rows = list(checked_by_id.values())
-                if st.button(
-                    f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
-                    key="vo_save_checked_spread_drafts", use_container_width=True,
-                ):
-                    drafts = st.session_state.setdefault("vo_saved_spread_drafts", {})
-                    _save_checked_spreads(drafts, checked_rows, result["source"])
-                    st.rerun(scope="fragment")
-                if len(checked_rows) == 1:
-                    chosen = checked_rows[0]
+                if result.get("failed_expirations"):
+                    st.warning(
+                        "CHAIN ERROR // Checking remaining expirations. Results stay hidden; "
+                        "press SCAN ALL YEARS to retry failed chains after this pass."
+                        if not result.get("stopped_on_errors") else
+                        "SCAN INCOMPLETE // Chain requests stopped. Press SCAN ALL YEARS to retry the full scan."
+                    )
+                elif st.session_state.get("_vo_auto_scan_error"):
+                    st.error(st.session_state["_vo_auto_scan_error"])
+                elif result.get("stopped_on_errors"):
+                    st.error("SCAN PAUSED // Chain requests failed. Press CONTINUE ALL YEARS to retry the remaining expirations.")
+                elif not st.session_state.get("vo_auto_finish", True):
+                    st.info("SCAN PAUSED // Press CONTINUE ALL YEARS to finish.")
                 else:
-                    selected_id = st.selectbox(
-                        f"OPTIONAL E*TRADE REVIEW // CHOOSE ONE OF {len(checked_rows)} CHECKED SPREADS",
-                        [row["id"] for row in checked_rows],
-                        format_func=lambda identity: (
-                            f'{by_id[identity]["symbol"]} '
-                            f'{by_id[identity]["call_put"]} '
-                            f'{_date_label(by_id[identity]["expiry"])} '
-                            f'{by_id[identity]["buy_strike"]:g}/{by_id[identity]["sell_strike"]:g}'
-                        ),
-                        key=f"vo_multi_review_choice_{scope}",
-                    )
-                    chosen = by_id[selected_id]
-                os_col, tv_col = st.columns(2, gap="small")
-                with os_col:
-                    st.link_button(
-                        "OPEN SELECTED SPREAD IN OPTIONSTRAT",
-                        _optionstrat_url(chosen), use_container_width=True,
-                    )
-                with tv_col:
-                    tv_url = _tradingview_spread_url(chosen, exchange=result.get("tv_exchange", ""))
-                    st.link_button(
-                        "OPEN SPREAD CHART IN TRADINGVIEW",
-                        tv_url or "https://www.tradingview.com/chart/",
-                        use_container_width=True, disabled=not tv_url,
-                    )
-                st.caption(
-                    f'TV FORMULA // {_tradingview_spread_formula(chosen) or "CONTRACT IDENTITY UNAVAILABLE"} // '
-                    'BUY premium minus SELL premium, per share. Chart history and delay '
-                    'depend on TradingView contract coverage and your market-data access.'
-                )
-                with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
-                    _render_selected_order(client, touch_session, chosen, result, broker_live)
-                if len(checked_rows) > 1:
-                    st.caption(
-                        "ALL CHECKED SPREADS CAN BE SAVED TOGETHER. E*TRADE PREVIEW AND "
-                        "LIVE SEND REMAIN ONE REVIEWED SPREAD AT A TIME; NO BATCH BROKER "
-                        "ORDER IS GENERATED BY CHECKING OR SAVING DRAFTS."
-                    )
-
-        if result["errors"]:
-            st.warning(
-                f'{len(result["errors"])} of {result["listed_expirations"]} listed chains could not load. '
-                'Annual highlights cover only the successfully loaded chains.'
+                    st.caption("Results will appear after every expiration and spread calculation finishes.")
+                return
+            if result.get("failed_expirations"):
+                st.error("SCAN INCOMPLETE // One or more option chains failed. Press SCAN ALL YEARS to retry the full scan; no partial results are shown.")
+                return
+            if result["source"] == "E*TRADE" and not broker_live:
+                st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
+            st.markdown(
+                _metric_markup([
+                    ("UNDERLYING LAST", _money(result["spot"]), "green"),
+                    ("LISTED YEARS", str(result["listed_years"]), "blue"),
+                    ("CHAINS LOADED", f'{result["loaded_expirations"]}/{result["listed_expirations"]}', "orange"),
+                    ("CONTRACTS READ", f'{result["contract_count"]:,}', "green"),
+                    ("QUALIFIED PAIRS", f'{len(result["candidates"]):,}', "green"),
+                    ("ANNUAL BEST", str(len(result["annual_ids"])), "blue"),
+                ]),
+                unsafe_allow_html=True,
             )
-            with st.expander("CHAIN DATA WARNINGS"):
-                for error in result["errors"]:
-                    st.warning(error)
+            st.markdown(
+                '<div class="vo-section">VERTICAL SPREADS // ALL YEARS</div>',
+                unsafe_allow_html=True,
+            )
+            stamp = datetime.fromtimestamp(result["loaded_at"], ZoneInfo("America/New_York"))
+            min_reward_risk = result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
+            st.caption((
+                f'{result["source"]} // {stamp:%b %d, %I:%M %p %Z} // '
+                f'RISK:REWARD ≥ 1:{min_reward_risk:g} // '
+                f'TARGET {_money(result["target"]) if result["target"] is not None else "ANY"} // '
+                f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "ANY"}'
+            ).replace("$", r"\$"))
+            if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
+                st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
+            _scanner_help("PRICING & RISK", (
+                "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
+                "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
+                f"SMART FILL suggests a MID-to-ASK limit, capped by the cost and 1:{min_reward_risk:g} requirement. "
+                "For one standard 100-share contract: max loss = debit × 100; max profit = "
+                f"(strike width − debit) × 100. Reward/risk must be at least {min_reward_risk:g}. "
+                "CALL breakeven = BUY strike + debit; PUT breakeven = BUY strike − debit. "
+                "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
+                "Snapshot age does not establish when an individual option last traded. "
+                "Quotes may be delayed; no reference price guarantees execution or a fill. "
+                f'Target: {_money(result["target"]) if result["target"] is not None else _NO_BREAKEVEN}; max cost: '
+                f'{_money(result["max_cost"]) if result["max_cost"] is not None else _NO_COST_CEILING}.'
+            ))
+            candidates = result["candidates"]
+            if not candidates:
+                st.info(f"No call or put debit spreads met the 1:{min_reward_risk:g} ratio"
+                        + (" and maximum cost" if result["max_cost"] is not None else "")
+                        + " at a qualifying quoted price across the loaded years.")
+            else:
+                annual_ids = set(result["annual_ids"])
+                scope = result["scope"]
+                state = st.session_state.get("_vo_checked_spreads")
+                if not isinstance(state, dict) or state.get("scope") != scope:
+                    state = {"scope": scope, "ids": set(), "revision": 0}
+                    st.session_state["_vo_checked_spreads"] = state
+                filter_state = st.session_state.get("_vo_column_filters")
+                if not isinstance(filter_state, dict) or filter_state.get("scope") != scope:
+                    filter_state = {"scope": scope, "filters": {}, "revision": 0}
+                    st.session_state["_vo_column_filters"] = filter_state
+                column_filters = dict(filter_state["filters"])
+                filter_choices = candidates.column_filter_choices()
+                saved_ids = set(state["ids"])
+                by_id = candidates.get_many(saved_ids)
+                if result["target"] is None and st.session_state.get("vo_be_filter_enabled"):
+                    st.session_state["vo_be_filter_enabled"] = False
+                    _remember_presentation("vo_be_filter_enabled")
+                max_distance = None
+                if result["target"] is not None:
+                    be_cols = st.columns([1.1, 1, 3], gap="small", vertical_alignment="bottom")
+                    be_enabled = be_cols[0].toggle(
+                        "BREAKEVEN FILTER", key="vo_be_filter_enabled",
+                        on_change=_remember_presentation, args=("vo_be_filter_enabled",),
+                        help="ON: include every qualifying spread within the selected range of the scan target. "
+                             f"OFF: show all qualifying breakevens. Minimum risk:reward 1:{min_reward_risk:g} applies.",
+                    )
+                    be_percent = be_cols[1].number_input(
+                        "BE RANGE ± (%)", min_value=0.0, max_value=100.0, step=.5,
+                        key="vo_be_range_percent", disabled=not be_enabled,
+                        on_change=_remember_presentation, args=("vo_be_range_percent",),
+                    )
+                    max_distance = result["target"] * be_percent / 100 if be_enabled else None
+                    if be_enabled:
+                        with be_cols[2]:
+                            st.caption((
+                                f'BREAKEVEN {_money(result["target"] - max_distance)} TO '
+                                f'{_money(result["target"] + max_distance)} // '
+                                f'{candidates.count(max_distance=max_distance):,} OF {len(candidates):,} PAIRS'
+                            ).replace("$", r"\$"))
+                # Give each scan a fresh widget identity; the previous scan's
+                # frontend radio value must not override this scan's BEST default.
+                view_key = f"vo_results_view_{scope}"
+                st.session_state.setdefault(view_key, st.session_state["vo_results_view"])
+                view = st.radio(
+                    "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
+                    key=view_key, horizontal=True, label_visibility="collapsed",
+                    on_change=_remember_results_view, args=(view_key,),
+                    help="BEST PER YEAR: top-ranked eligible result in each year within the active BE range. ALL QUALIFIED: every eligible result, paged. No chain download.",
+                )
+                view_identity = f"{view}|{max_distance}|{repr(sorted(column_filters.items()))}"
+                if view == "BEST PER YEAR":
+                    displayed_candidates = candidates.best_by_year(
+                        max_distance=max_distance, column_filters=column_filters,
+                    )
+                    annual_ids = {row["id"] for row in displayed_candidates}
+                else:
+                    expiry_filter, side_filter = "ALL", "CALL + PUT"
+                    sort_filter, sort_direction = "FILL + TARGET", "ASC"
+                    matching_count = candidates.count(
+                        max_distance=max_distance, column_filters=column_filters,
+                    )
+                    # Send only the current page to the scroller; exports include all pages.
+                    pages = max(1, (matching_count + 199) // 200)
+                    page_scope = hashlib.sha256(
+                        repr((scope, max_distance, sorted(column_filters.items()))).encode("utf-8")
+                    ).hexdigest()[:12]
+                    page_key = "vo_all_pair_page_" + page_scope
+                    page = min(pages, max(1, int(st.session_state["_vo_presentation"].get(page_key, 1))))
+                    if pages > 1:
+                        nav = st.columns([.7, .9, 1.8, .9, .7], gap="small", vertical_alignment="center")
+                        nav[0].button("« FIRST", key="vo_all_pair_first", disabled=page == 1,
+                                      on_click=_navigate_all_pairs, args=(page_key, pages, "first"))
+                        nav[1].button("← PREVIOUS", key="vo_all_pair_previous", disabled=page == 1,
+                                      on_click=_navigate_all_pairs, args=(page_key, pages, "previous"))
+                        nav[3].button("NEXT →", key="vo_all_pair_next", disabled=page == pages,
+                                      on_click=_navigate_all_pairs, args=(page_key, pages, "next"))
+                        nav[4].button("LAST »", key="vo_all_pair_last", disabled=page == pages,
+                                      on_click=_navigate_all_pairs, args=(page_key, pages, "last"))
+                        with nav[2]:
+                            st.caption(f"ROWS {(page - 1) * 200 + 1:,}–{min(page * 200, matching_count):,} OF {matching_count:,}")
+                    st.session_state[page_key] = page
+                    _remember_presentation(page_key)
+                    offset = (page - 1) * 200
+                    displayed_candidates = candidates.page(
+                        offset=offset, limit=200,
+                        max_distance=max_distance, column_filters=column_filters,
+                    )
+                    view_identity += f"|{page}"
+                    exports = st.columns(2, gap="small")
+                    exports[0].download_button(
+                        f'EXPORT ALL QUALIFIED CSV // {len(candidates):,}',
+                        data=partial(
+                            _qualified_store_csv, candidates, source=result["source"],
+                            loaded_at=result["loaded_at"], target=result["target"],
+                            max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
+                        ),
+                        file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
+                        mime="text/csv", key="vo_export_all_qualified",
+                        on_click="ignore",
+                        use_container_width=True,
+                    )
+                    exports[1].download_button(
+                        f"EXPORT FILTERED CSV // {matching_count:,}",
+                        data=partial(
+                            _qualified_store_csv, candidates, source=result["source"],
+                            loaded_at=result["loaded_at"], target=result["target"],
+                            max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
+                            sort_by=sort_filter, direction=sort_direction,
+                            max_distance=max_distance, column_filters=column_filters,
+                        ),
+                        file_name=f'{result["symbol"]}_vertical_filtered.csv',
+                        mime="text/csv", key="vo_export_filtered_qualified",
+                        on_click="ignore",
+                        use_container_width=True,
+                    )
+                if not displayed_candidates:
+                    st.info("No spreads match these filters. Clear a column filter or change the breakeven range.")
+                displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
+                             for row in displayed_candidates]
+                by_id.update({row["id"]: row for row in displayed_candidates})
+                selected_update = _SPREAD_SCROLL_COMPONENT(
+                    scope=scope, sort_key=view_identity, rows=displayed,
+                    selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
+                    column_filters=column_filters, filter_choices=filter_choices,
+                    filter_ack_revision=int(filter_state["revision"]),
+                    key="vo_spread_scroll_" + scope, default=None,
+                )
+                if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
+                    rerun_for_component = False
+                    incoming_filters = selected_update.get("column_filters")
+                    try:
+                        incoming_filter_revision = int(selected_update.get("filter_revision", 0))
+                    except (TypeError, ValueError, OverflowError):
+                        incoming_filter_revision = 0
+                    if incoming_filter_revision > int(filter_state["revision"]):
+                        if isinstance(incoming_filters, dict):
+                            try:
+                                candidates._where(column_filters=incoming_filters)
+                            except ValueError:
+                                pass
+                            else:
+                                filter_state["filters"] = incoming_filters
+                                rerun_for_component = True
+                        filter_state["revision"] = incoming_filter_revision
+                        st.session_state["_vo_column_filters"] = filter_state
+                    incoming = selected_update.get("selected_ids")
+                    if isinstance(incoming, list):
+                        checked = set(candidates.get_many(incoming))
+                        try:
+                            incoming_revision = int(selected_update.get("revision", 0))
+                        except (TypeError, ValueError, OverflowError):
+                            incoming_revision = 0
+                        if incoming_revision > int(state["revision"]):
+                            state["ids"] = checked
+                            state["revision"] = incoming_revision
+                            st.session_state["_vo_checked_spreads"] = state
+                            st.session_state.pop("vo_review_bundle", None)
+                            st.session_state.pop("vo_live_confirm", None)
+                            st.session_state.pop("vo_last_send_results", None)
+                            rerun_for_component = True
+                    if rerun_for_component:
+                        # Custom-component updates may run this fragment during a
+                        # full-app rerun; fragment scope is invalid in that context.
+                        st.rerun()
+                checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
+                st.caption(
+                    f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '
+                    f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // {len(checked_ids)} CHECKED'
+                )
+                _scanner_help("RESULTS, RANGE & LINKS", (
+                    "Each column filter applies to all stored scan results, including exports. "
+                    "The BE range applies when a target was entered. Filtering, sorting and "
+                    "paging reuse stored results without downloading chains. Annual best is ranked "
+                    "inside the active range; ALL QUALIFIED exposes every match. "
+                    "Green = annual CALL winner; red = annual PUT winner, not profit/loss. "
+                    "COST is maximum loss per spread before fees. LAST* marks an unreliable quote "
+                    "and cannot be ordered. OS opens the exact OptionStrat payoff; TV opens BUY "
+                    "minus SELL option premiums. Links never send orders; chart coverage varies."
+                ))
+                if checked_ids:
+                    checked_by_id = candidates.get_many(checked_ids)
+                    by_id.update(checked_by_id)
+                    checked_rows = list(checked_by_id.values())
+                    if st.button(
+                        f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
+                        key="vo_save_checked_spread_drafts", use_container_width=True,
+                    ):
+                        drafts = st.session_state.setdefault("vo_saved_spread_drafts", {})
+                        _save_checked_spreads(drafts, checked_rows, result["source"])
+                        st.rerun(scope="fragment")
+                    if len(checked_rows) == 1:
+                        chosen = checked_rows[0]
+                    else:
+                        selected_id = st.selectbox(
+                            f"OPTIONAL E*TRADE REVIEW // CHOOSE ONE OF {len(checked_rows)} CHECKED SPREADS",
+                            [row["id"] for row in checked_rows],
+                            format_func=lambda identity: (
+                                f'{by_id[identity]["symbol"]} '
+                                f'{by_id[identity]["call_put"]} '
+                                f'{_date_label(by_id[identity]["expiry"])} '
+                                f'{by_id[identity]["buy_strike"]:g}/{by_id[identity]["sell_strike"]:g}'
+                            ),
+                            key=f"vo_multi_review_choice_{scope}",
+                        )
+                        chosen = by_id[selected_id]
+                    os_col, tv_col = st.columns(2, gap="small")
+                    with os_col:
+                        st.link_button(
+                            "OPEN SELECTED SPREAD IN OPTIONSTRAT",
+                            _optionstrat_url(chosen), use_container_width=True,
+                        )
+                    with tv_col:
+                        tv_url = _tradingview_spread_url(chosen, exchange=result.get("tv_exchange", ""))
+                        st.link_button(
+                            "OPEN SPREAD CHART IN TRADINGVIEW",
+                            tv_url or "https://www.tradingview.com/chart/",
+                            use_container_width=True, disabled=not tv_url,
+                        )
+                    st.caption(
+                        f'TV FORMULA // {_tradingview_spread_formula(chosen) or "CONTRACT IDENTITY UNAVAILABLE"} // '
+                        'BUY premium minus SELL premium, per share. Chart history and delay '
+                        'depend on TradingView contract coverage and your market-data access.'
+                    )
+                    with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
+                        _render_selected_order(client, touch_session, chosen, result, broker_live)
+                    if len(checked_rows) > 1:
+                        st.caption(
+                            "ALL CHECKED SPREADS CAN BE SAVED TOGETHER. E*TRADE PREVIEW AND "
+                            "LIVE SEND REMAIN ONE REVIEWED SPREAD AT A TIME; NO BATCH BROKER "
+                            "ORDER IS GENERATED BY CHECKING OR SAVING DRAFTS."
+                        )
+
+            if result["errors"]:
+                st.warning(
+                    f'{len(result["errors"])} of {result["listed_expirations"]} listed chains could not load. '
+                    'Annual highlights cover only the successfully loaded chains.'
+                )
+                with st.expander("CHAIN DATA WARNINGS"):
+                    for error in result["errors"]:
+                        st.warning(error)
 
 
 # ==============================
@@ -1987,6 +2077,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     sell_strike = candidate["sell_strike"]
     order_seed = candidate["id"]
     smart_mode = result.get("pricing_mode", "NORMAL") == "SMART FILL"
+    min_reward_risk = result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
     if st.session_state.get("_vo_order_candidate") != order_seed:
         st.session_state.pop("vo_limit_price", None)  # Remove the old editable debit's stale value.
         st.session_state["vo_qty"] = 1
@@ -2005,7 +2096,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
     # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
-    ladder = (smart_fill_ladder(candidate, result["max_cost"])
+    ladder = (smart_fill_ladder(candidate, result["max_cost"], min_reward_risk=min_reward_risk)
               if smart_mode and candidate.get("basis") == "SMART" else
               [limit_price] if smart_mode and candidate.get("basis") == "MID" else [])
     if smart_mode and not ladder:
@@ -2054,14 +2145,15 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     elif result["max_cost"] is not None and limit_price * 100 > result["max_cost"] + 1e-6:
         validation_error = "Selected debit exceeds your maximum cost."
         st.error(validation_error)
-    elif candidate["width"] - limit_price + 1e-8 < 2 * limit_price:
-        validation_error = "Selected debit fails the minimum 1:2 reward-to-risk."
+    elif candidate["width"] - limit_price + 1e-8 < min_reward_risk * limit_price:
+        validation_error = f"Selected debit fails the minimum 1:{min_reward_risk:g} reward-to-risk."
         st.error(validation_error)
 
     fingerprint = _review_fingerprint(
         symbol=symbol, call_put=call_put, expiry=expiry,
         buy_strike=buy_strike, sell_strike=sell_strike, quantity=quantity,
-        limit_price=limit_price, order_term=order_term, account_keys=account_keys,
+        limit_price=limit_price, min_reward_risk=min_reward_risk,
+        order_term=order_term, account_keys=account_keys,
     )
     review_bundle = st.session_state.get("vo_review_bundle")
     if isinstance(review_bundle, dict) and review_bundle.get("fingerprint") != fingerprint:
@@ -2128,6 +2220,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                 sell_bid=sell_leg.get("bid"), sell_ask=sell_leg.get("ask"),
                 width=candidate["width"], max_cost=result["max_cost"],
                 pricing_mode=result.get("pricing_mode", "NORMAL"),
+                min_reward_risk=min_reward_risk,
                 buy_volume=buy_leg.get("volume"), sell_volume=sell_leg.get("volume"),
                 buy_open_interest=buy_leg.get("open_interest"),
                 sell_open_interest=sell_leg.get("open_interest"),
@@ -2138,14 +2231,14 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                         checked_price["debit"] != candidate["debit"]
                         or limit_price < checked_price["spread_mid"] - .005
                         or limit_price > checked_price["spread_ask"] + .005
-                        or candidate["width"] - limit_price + 1e-8 < 2 * limit_price
+                        or candidate["width"] - limit_price + 1e-8 < min_reward_risk * limit_price
                         or (result["max_cost"] is not None
                             and limit_price * 100 > result["max_cost"] + 1e-8)
                     ))
                     or (not smart_mode and checked_price["debit"] != limit_price)):
                 raise ValueError(
                     "The current spread market/SMART target changed or the selected limit "
-                    "no longer meets your 1:2 and cost criteria. "
+                    f"no longer meets your 1:{min_reward_risk:g} and cost criteria. "
                     "SCAN ALL YEARS again before reviewing."
                 )
         except Exception as exc:
@@ -2163,6 +2256,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                     quantity=quantity, limit_price=limit_price,
                     order_term=order_term,
                     client_order_id=new_vertical_client_order_id("VO"),
+                    min_reward_risk=min_reward_risk,
                 )
                 response = client.preview_order(account_key, preview_payload)
                 touch_session()
@@ -2284,7 +2378,8 @@ def _render_vertical_scan_continuation(client, touch_session) -> None:
     if (not result or result.get("scan_complete", True)
             or result.get("symbol") != str(st.session_state.get("vo_symbol_value") or "").strip().upper()
             or not st.session_state.get("vo_auto_finish", True)
-            or result.get("stopped_on_errors") or st.session_state.get("_vo_auto_scan_error")):
+            or result.get("stopped_on_errors")
+            or st.session_state.get("_vo_auto_scan_error")):
         return
     try:
         st.session_state["vo_scan_result"] = _continue_vertical_scan(result, client, touch_session)
@@ -2312,5 +2407,6 @@ def render_vertical_options(client, touch_session, *, vault_key: str = "default"
     result = st.session_state.get("vo_scan_result") or {}
     if (result.get("symbol") == str(st.session_state.get("vo_symbol_value") or "").strip().upper()
             and not result.get("scan_complete", True) and st.session_state.get("vo_auto_finish", True)
-            and not result.get("stopped_on_errors") and not st.session_state.get("_vo_auto_scan_error")):
+            and not result.get("stopped_on_errors")
+            and not st.session_state.get("_vo_auto_scan_error")):
         _render_vertical_scan_continuation(client, touch_session)
