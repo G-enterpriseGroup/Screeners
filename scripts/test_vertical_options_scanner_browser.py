@@ -430,8 +430,10 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided"
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == ""
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("placeholder") == "no break even provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("placeholder") == "no ceiling cost provided"
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
             assert any(not event["waiting"] for event in initial_reads), initial_reads
@@ -595,7 +597,7 @@ def test() -> None:
             assert not [item for item in events(event_path) if item["event"] == "chain"]
             form = wait.until(ready_scanner_form)
             target_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert target_input.get_attribute("value") == "no break even provided"
+            assert target_input.get_attribute("value") == ""
             target_input.send_keys(SELECT_ALL, "a")
             target_input.send_keys("100")
             cost_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
@@ -972,12 +974,10 @@ def test() -> None:
                 field.send_keys(Keys.BACKSPACE)
                 assert field.get_attribute("value") == "", (label, field.get_attribute("value"))
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "MAX COST no ceiling cost provided" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "TARGET BREAKEVEN no break even provided" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
-            ).get_attribute("value") == "no break even provided")
-            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            ).get_attribute("value") == "")
+            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
             if not driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected():
                 driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
@@ -1013,7 +1013,7 @@ def test() -> None:
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MSFT", Keys.TAB)
@@ -1067,12 +1067,12 @@ def test() -> None:
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_restart
             assert not any(item["event"] == "place" for item in events(event_path))
             print("GEX browser cache PASS after real process restart; optional breakeven defaults PASS", flush=True)
@@ -1107,8 +1107,8 @@ def test() -> None:
             ticker.send_keys("MASSIVE", Keys.TAB)
             form = wait.until(ready_scanner_form)
             target = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert target.get_attribute("value") == "no break even provided"
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            assert target.get_attribute("value") == ""
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "PARTIAL ALL-YEAR SCAN" not in driver.find_element(By.TAG_NAME, "body").text)

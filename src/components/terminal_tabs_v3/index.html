@@ -230,6 +230,7 @@
 
     function render() {
       const root = document.getElementById("tabs");
+      const scrollLeft = root.scrollLeft;
       root.innerHTML = "";
 
       tabs.forEach((label, index) => {
@@ -333,6 +334,7 @@
       hint.className = "hint";
       hint.textContent = "CLICK = OPEN  //  DRAG = REORDER";
       root.appendChild(hint);
+      root.scrollLeft = scrollLeft;
 
       enforceFrameHeight();
     }

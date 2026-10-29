@@ -13,6 +13,65 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_optional_prompt_migration_keeps_inputs_empty(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        state = {"_vo_presentation": {"vo_target_breakeven": vo._NO_BREAKEVEN,
+                                       "vo_max_cost": vo._NO_COST_CEILING}}
+        with patch.object(vo.st, "session_state", state):
+            vo._restore_presentation()
+            self.assertEqual(state["vo_target_breakeven"], "")
+            self.assertEqual(state["vo_max_cost"], "")
+            state["vo_target_breakeven"] = "125.50"
+            vo._remember_scan_inputs()
+            vo._restore_presentation()
+            self.assertEqual(state["vo_target_breakeven"], "125.50")
+
+    def test_scan_memory_restores_only_scan_state_for_same_vault(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        memories = {}
+        with patch.object(vo, "_scan_memory", side_effect=lambda key: memories.setdefault(key, {})):
+            state = {"vo_scan_result": {"symbol": "SPY", "loaded_at": 123},
+                     "_vo_chain_cache": {"ETRADE:SPY": {"scan_id": "snapshot"}},
+                     "vo_review_bundle": {"unsafe": True}, "vo_live_confirm": True}
+            with patch.object(vo.st, "session_state", state):
+                vo._restore_scan_memory("account-a")
+                vo._restore_presentation()
+                state["vo_symbol_value"] = "SPY"
+                vo._remember_scan_inputs()
+                vo._remember_scan_snapshot()
+            restored = {}
+            with patch.object(vo.st, "session_state", restored):
+                vo._restore_scan_memory("account-a")
+                vo._restore_presentation()
+                self.assertEqual(restored["vo_scan_result"], {"symbol": "SPY", "loaded_at": 123})
+                self.assertEqual(restored["vo_symbol_value"], "SPY")
+                self.assertNotIn("vo_review_bundle", restored)
+                self.assertNotIn("vo_live_confirm", restored)
+            for account in ("account-b", "default", ""):
+                with patch.object(vo.st, "session_state", {}):
+                    vo._restore_scan_memory(account)
+                    self.assertNotIn("vo_scan_result", vo.st.session_state)
+
+    def test_continuation_batches_do_not_rerun_terminal_shell(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        partial = {"symbol": "SPY", "scan_complete": False}
+        state = {"vo_scan_result": partial, "_vo_presentation": {"vo_symbol_value": "SPY"}}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo, "_continue_vertical_scan", return_value=dict(partial)) as advance,
+              patch.object(vo.st, "rerun") as rerun):
+            vo._continue_scan_if_due(None, None)
+            advance.assert_called_once()
+            rerun.assert_not_called()
+            vo._continue_scan_if_due(None, None)
+            advance.assert_called_once()  # Widget event cannot duplicate the batch.
+            state["_vo_last_batch_at"] = 0
+            advance.return_value = {"symbol": "SPY", "scan_complete": True}
+            vo._continue_scan_if_due(None, None)
+            rerun.assert_called_once()  # Unmount the timer at completion only.
+
     def test_presentation_defaults_and_widget_cleanup_preserve_user_choices(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
@@ -22,8 +81,8 @@ class VerticalOptionsTests(unittest.TestCase):
             self.assertEqual(state["vo_results_view"], "ALL QUALIFIED")
             self.assertFalse(state["vo_be_filter_enabled"])
             self.assertEqual(state["vo_be_range_percent"], 5)
-            self.assertEqual(state["vo_target_breakeven"], "no break even provided")
-            self.assertEqual(state["vo_max_cost"], "no ceiling cost provided")
+            self.assertEqual(state["vo_target_breakeven"], "")
+            self.assertEqual(state["vo_max_cost"], "")
             chosen = {"vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": True,
                       "vo_be_range_percent": 0.0, "vo_all_pair_side": "PUT",
                       "vo_all_pair_direction": "DESC", "vo_auto_finish": False}
@@ -608,19 +667,19 @@ else:
         with (patch.object(vo.st, "session_state", session),
               patch.object(vo, "cboe_results", return_value=results) as cboe):
             vo._seed_breakeven_preset("SPY", 108, "vault")
-            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
+            self.assertEqual(session["vo_target_breakeven"], "")
             session["vo_target_breakeven"] = "103"
             vo._seed_breakeven_preset("SPY", 108, "vault")
             self.assertEqual(session["vo_target_breakeven"], "103")
             vo._seed_breakeven_preset("QQQ", 400, "vault")
-            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
+            self.assertEqual(session["vo_target_breakeven"], "")
             vo._seed_breakeven_preset("SPY", 108, "vault")
             self.assertEqual(session["vo_target_breakeven"], "103")
             session["vo_target_breakeven"] = ""
             vo._seed_breakeven_preset("SPY", 108, "vault")
-            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
+            self.assertEqual(session["vo_target_breakeven"], "")
             vo._seed_breakeven_preset("MSFT", 400, "vault")
-            self.assertEqual(session["vo_target_breakeven"], vo._NO_BREAKEVEN)
+            self.assertEqual(session["vo_target_breakeven"], "")
             self.assertNotIn("_vo_auto_target", session)
             cboe.assert_not_called()
 
