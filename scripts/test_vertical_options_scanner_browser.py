@@ -991,6 +991,14 @@ def test() -> None:
                 By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
             ).get_attribute("value") == "")
             assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
+            # Empty placeholders are already true before submit; wait for the
+            # new scan's results controls instead of using prompt text as a
+            # completion signal.
+            wait.until(lambda _: driver.find_elements(
+                By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input'
+            ) and driver.find_element(By.CSS_SELECTOR, '[data-testid="stApp"]').get_attribute(
+                "data-test-script-state"
+            ) == "notRunning")
             assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
             if not driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected():
                 driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
