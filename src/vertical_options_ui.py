@@ -515,19 +515,19 @@ def _seed_breakeven_preset(symbol: str, spot: Any, vault_key: str) -> None:
     text = str(st.session_state.get("vo_target_breakeven") or "").strip()
     previous_auto = st.session_state.get("_vo_auto_target") or {}
     if previous_auto.get("symbol") == symbol and text == previous_auto.get("text"):
-        text = _NO_BREAKEVEN
+        text = ""
     manual_targets = st.session_state.setdefault("_vo_manual_targets", {})
     active = st.session_state.get("_vo_breakeven_symbol")
     if active is not None and active != symbol:
         target_map = st.session_state.get("vo_ticker_targets") or {}
-        text = str(target_map.get(symbol, manual_targets.get(symbol, _NO_BREAKEVEN)) or "").strip()
+        text = str(target_map.get(symbol, manual_targets.get(symbol, "")) or "").strip()
         st.session_state["vo_target_breakeven"] = text
     st.session_state["_vo_breakeven_symbol"] = symbol
     if text and text.casefold() != _NO_BREAKEVEN:
         manual_targets[symbol] = text
     else:
         manual_targets.pop(symbol, None)
-        st.session_state["vo_target_breakeven"] = _NO_BREAKEVEN
+        st.session_state["vo_target_breakeven"] = ""
     st.session_state.pop("_vo_auto_target", None)
 
 
@@ -1242,8 +1242,8 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
 
 
 _PRESENTATION_DEFAULTS = {
-    "vo_symbol_value": "", "vo_target_breakeven": _NO_BREAKEVEN,
-    "vo_max_cost": _NO_COST_CEILING, "vo_min_reward_risk": "2",
+    "vo_symbol_value": "", "vo_target_breakeven": "",
+    "vo_max_cost": "", "vo_min_reward_risk": "2",
     "vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": False,
     "vo_be_range_percent": 5.0, "vo_all_pair_sort": "FILL + TARGET",
     "vo_all_pair_direction": "ASC", "vo_all_pair_expiry": "ALL",
@@ -1251,10 +1251,42 @@ _PRESENTATION_DEFAULTS = {
 }
 
 
+@st.cache_resource(ttl=3600, max_entries=64)
+def _scan_memory(vault_key: str) -> dict[str, Any]:
+    """Account-scoped, process-local read-only scan recovery; never order state."""
+    return {}
+
+
+def _restore_scan_memory(vault_key: str) -> None:
+    # Never share anonymous/default workspaces between unrelated users.
+    if not vault_key or vault_key == "default":
+        return
+    memory = _scan_memory(vault_key)
+    st.session_state["_vo_memory"] = memory
+    for key, value in memory.items():
+        if key not in st.session_state:
+            st.session_state[key] = dict(value) if isinstance(value, dict) else value
+
+
+def _remember_scan_snapshot() -> None:
+    memory = st.session_state.get("_vo_memory")
+    if memory is None:
+        return
+    for key in ("vo_scan_result", "_vo_chain_cache", "_vo_ticker_quotes",
+                "_vo_manual_targets", "_vo_breakeven_symbol", "vo_ticker_list",
+                "vo_ticker_targets", "_vo_presentation"):
+        if key in st.session_state:
+            value = st.session_state[key]
+            memory[key] = dict(value) if isinstance(value, dict) else value
+
+
 def _remember_presentation(key: str) -> None:
     saved = dict(st.session_state.get("_vo_presentation") or {})
     saved[key] = st.session_state[key]
     st.session_state["_vo_presentation"] = saved
+    memory = st.session_state.get("_vo_memory")
+    if memory is not None:
+        memory["_vo_presentation"] = dict(saved)
 
 
 def _remember_scan_inputs() -> None:
@@ -1291,6 +1323,9 @@ def _restore_presentation() -> None:
         st.session_state["_vo_best_default_initialized"] = True
     for key, default in _PRESENTATION_DEFAULTS.items():
         saved.setdefault(key, st.session_state.get(key, default))
+        if ((key == "vo_target_breakeven" and str(saved[key]).casefold() == _NO_BREAKEVEN)
+                or (key == "vo_max_cost" and str(saved[key]).casefold() == _NO_COST_CEILING)):
+            saved[key] = ""
         # A returning frontend may send widget defaults before registration.
         # Callbacks save user changes first; the durable state owns hydration.
         st.session_state[key] = saved[key]
@@ -1484,7 +1519,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         target_map = updated_targets
                         if st.session_state.get("vo_list_selection") in changed_targets:
                             selected_target = st.session_state["vo_list_selection"]
-                            st.session_state["vo_target_breakeven"] = target_map.get(selected_target) or _NO_BREAKEVEN
+                            st.session_state["vo_target_breakeven"] = target_map.get(selected_target) or ""
                             st.session_state.pop("_vo_auto_target", None)
                             st.session_state.pop("_vo_auto_target_pending", None)
                             for state_key in (
@@ -1501,7 +1536,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if picked_ticker != st.session_state.get("_vo_last_list_selection"):
                 st.session_state["_vo_last_list_selection"] = picked_ticker
                 st.session_state["vo_symbol_value"] = picked_ticker
-                st.session_state["vo_target_breakeven"] = target_map.get(picked_ticker) or _NO_BREAKEVEN
+                st.session_state["vo_target_breakeven"] = target_map.get(picked_ticker) or ""
                 for state_key in (
                     "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
                     "_vo_order_candidate", "vo_last_send_results",
@@ -1511,13 +1546,6 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.session_state.pop("_vo_auto_target_pending", None)
 
         st.session_state.pop("_vo_auto_target_pending", None)
-        if st.session_state.pop("_vo_optional_inputs_pending", False):
-            if not str(st.session_state.get("vo_target_breakeven") or "").strip():
-                st.session_state["vo_target_breakeven"] = _NO_BREAKEVEN
-                _remember_presentation("vo_target_breakeven")
-            if not str(st.session_state.get("vo_max_cost") or "").strip():
-                st.session_state["vo_max_cost"] = _NO_COST_CEILING
-                _remember_presentation("vo_max_cost")
 
         last_result = st.session_state.get("vo_scan_result") or {}
         # Ticker lives outside the submit form so its quote/name update on
@@ -1677,11 +1705,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         "" if target is None else entered_target
                     )
                 st.session_state.pop("_vo_auto_target", None)
-                st.session_state["_vo_optional_inputs_pending"] = True
                 if scan_clicked:
                     st.session_state["vo_results_view"] = "BEST PER YEAR"
                     _remember_presentation("vo_results_view")
                     st.session_state.pop("_vo_previous_scan_result", None)
+                _remember_scan_snapshot()
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
@@ -1709,6 +1737,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     return
                 result = updated
                 st.session_state["vo_scan_result"] = result
+                _remember_scan_snapshot()
             if not result.get("scan_complete", True):
                 listed = max(1, int(result["listed_expirations"]))
                 st.progress(
@@ -2383,15 +2412,17 @@ def _render_vertical_scan_continuation(client, touch_session) -> None:
         return
     try:
         st.session_state["vo_scan_result"] = _continue_vertical_scan(result, client, touch_session)
+        _remember_scan_snapshot()
     except Exception as exc:
         st.session_state["_vo_auto_scan_error"] = f"AUTO SCAN PAUSED // {exc}"
-    st.rerun()  # Redraw new rows, or remove this timer when finished/paused.
+    st.rerun()  # Redraw the workspace, or remove this timer when finished/paused.
 
 
 def render_vertical_options(client, touch_session, *, vault_key: str = "default") -> None:
     """Render the isolated Vertical Options workspace."""
     st.html(_VERTICAL_OPTIONS_CSS)
     install_native_switch_theme("vo_smart_fill")
+    _restore_scan_memory(vault_key)
     _restore_presentation()
     if st.session_state.get("_vo_workspace_ready") != vault_key:
         if st.session_state.get("_vo_bootstrap_failed"):

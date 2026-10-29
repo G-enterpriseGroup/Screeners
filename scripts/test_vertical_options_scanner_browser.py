@@ -131,6 +131,7 @@ class StubETrade:
         record("place")
         raise AssertionError("Checkbox selection must never place an order")
 
+record("fixture-render", pid=os.getpid())
 st.set_page_config(page_title="Vertical scanner browser regression", layout="wide")
 # Match the real shared production CSS without executing broker/auth code.
 import ast
@@ -366,13 +367,23 @@ def assert_exact_tradingview_formula(row: dict) -> None:
 
 def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
     """Wait for the rerendered export action and inspect its actual download."""
+    settled = {"button": None, "since": 0.0}
+
     def ready(_):
+        app = driver.find_element(By.CSS_SELECTOR, '[data-testid="stApp"]')
+        if (app.get_attribute("data-test-script-state") != "notRunning"
+                or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
+            settled.update(button=None, since=0.0)
+            return False
         for button in driver.find_elements(By.CSS_SELECTOR, f".st-key-{key} button"):
             try:
                 if button.is_displayed() and button.is_enabled():
-                    return button
+                    if settled["button"] != button.id:
+                        settled.update(button=button.id, since=time.monotonic())
+                    elif time.monotonic() - settled["since"] >= 0.5:
+                        return button
             except StaleElementReferenceException:
-                pass
+                settled.update(button=None, since=0.0)
         return False
 
     target = folder / filename
@@ -431,7 +442,8 @@ def test() -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
         environment["VO_SCANNER_TEST_LOG"] = str(event_path)
-        slow_rescan_file = folder / "slow_rescan"
+        # Keep the timing marker outside Streamlit's watched app directory.
+        slow_rescan_file = folder.parent / f"{folder.name}_slow_rescan"
         environment["VO_SCANNER_SLOW_RESCAN_FILE"] = str(slow_rescan_file)
         with server_log.open("w", encoding="utf-8") as output:
             server = subprocess.Popen(
@@ -462,6 +474,10 @@ def test() -> None:
             expected_labels = ["Target Breakeven", "Max Cost", "MIN RISK:REWARD 1:"]
             def ready_scanner_form(_):
                 # Streamlit can mount stForm before its inputs hydrate on CI.
+                apps = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stApp"]')
+                if (not apps or apps[0].get_attribute("data-test-script-state") != "notRunning"
+                        or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
+                    return False
                 forms = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
                 if not forms:
                     return False
@@ -472,8 +488,10 @@ def test() -> None:
                 )
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided"
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == ""
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("placeholder") == "no break even provided"
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("placeholder") == "no ceiling cost provided"
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="MIN RISK:REWARD 1:"]').get_attribute("value") == "2"
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
@@ -640,7 +658,7 @@ def test() -> None:
             assert not [item for item in events(event_path) if item["event"] == "chain"]
             form = wait.until(ready_scanner_form)
             target_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert target_input.get_attribute("value") == "no break even provided"
+            assert target_input.get_attribute("value") == ""
             target_input.send_keys(SELECT_ALL, "a")
             target_input.send_keys("100")
             cost_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
@@ -906,7 +924,7 @@ def test() -> None:
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Debit Limit"]'), (
                 "Debit Limit must not be editable in the optional order review"
             )
-            assert "TOTAL ORDER DEBIT" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "TOTAL ORDER DEBIT" in driver.find_element(By.TAG_NAME, "body").text)
             assert not any(item["event"] in {"preview", "place"} for item in events(event_path)), (
                 "Opening the optional order expander sent a broker order call"
             )
@@ -1021,8 +1039,8 @@ def test() -> None:
             wait.until(lambda _: "TARGET ANY" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]'
-            ).get_attribute("value") == "no break even provided")
-            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            ).get_attribute("value") == "")
+            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             assert not driver.find_elements(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled'), (
                 "An unused breakeven target reserved filter space"
             )
@@ -1063,7 +1081,7 @@ def test() -> None:
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MSFT", Keys.TAB)
@@ -1113,16 +1131,20 @@ def test() -> None:
                 )
             wait_for_server(server, base, server_log)
             driver.get(base)
+            wait.until(lambda _: any(event["event"] == "fixture-render"
+                                     and event.get("pid") == server.pid
+                                     for event in events(event_path)))
             wait.until(ready_scanner_form)
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "no break even provided")
+            wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]').get_attribute("value") == "")
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_restart
             assert not any(item["event"] == "place" for item in events(event_path))
             print("GEX browser cache PASS after real process restart; optional breakeven defaults PASS", flush=True)
@@ -1130,9 +1152,9 @@ def test() -> None:
             # Neither metrics nor a result grid mount during an unfinished pass.
             form = wait.until(ready_scanner_form)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "SCANNING ALL YEARS // 1/3" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"])
+                       > chain_before_restart)
             assert not grid_is_mounted(driver), "Incomplete scan displayed a result grid"
-            wait.until(lambda _: "SCANNING ALL YEARS //" not in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
@@ -1151,8 +1173,8 @@ def test() -> None:
             ticker.send_keys("MASSIVE", Keys.TAB)
             form = wait.until(ready_scanner_form)
             target = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert target.get_attribute("value") == "no break even provided"
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "no ceiling cost provided"
+            assert target.get_attribute("value") == ""
+            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "SCANNING ALL YEARS //" not in driver.find_element(By.TAG_NAME, "body").text)
@@ -1297,6 +1319,7 @@ def test() -> None:
                        for item in driver.find_elements(By.CSS_SELECTOR, 'input[aria-label]')], file=sys.stderr)
             raise
         finally:
+            slow_rescan_file.unlink(missing_ok=True)
             if driver is not None:
                 driver.quit()
             server.terminate()
