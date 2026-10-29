@@ -1852,7 +1852,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         st.session_state.pop("vo_last_send_results", None)
                         rerun_for_component = True
                 if rerun_for_component:
-                    st.rerun(scope="fragment")
+                    # Custom-component updates may run this fragment during a
+                    # full-app rerun; fragment scope is invalid in that context.
+                    st.rerun()
             checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
             st.caption(
                 f'{len(displayed):,} DISPLAYED // {len(candidates):,} QUALIFIED PAIRS '

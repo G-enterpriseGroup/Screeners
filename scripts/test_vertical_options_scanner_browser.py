@@ -365,6 +365,19 @@ def set_exact_grid_filter(driver: webdriver.Chrome, key: str, label: str, value:
     in_grid(driver, enter)
 
 
+def toggle_put_column_filter(driver: webdriver.Chrome) -> None:
+    """Click the real TYPE menu checkbox, exercising component-to-app reruns."""
+    def enter() -> None:
+        panel = driver.find_element(By.ID, "filter-panel")
+        if not panel.is_displayed():
+            driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="side"]').click()
+        choices = panel.find_elements(By.CSS_SELECTOR, ".filter-choice")
+        assert {item.find_element(By.TAG_NAME, "span").text for item in choices} == {"CALL", "PUT"}
+        put = next(item for item in choices if item.find_element(By.TAG_NAME, "span").text == "PUT")
+        put.find_element(By.CSS_SELECTOR, 'input[type="checkbox"]').click()
+    in_grid(driver, enter)
+
+
 def test() -> None:
     with tempfile.TemporaryDirectory(prefix="vo_scanner_browser_") as temporary:
         folder = Path(temporary)
@@ -1127,6 +1140,14 @@ def test() -> None:
             assert len({(r["Type"], r["Buy Strike"], r["Sell Strike"]) for r in whole}) == 10100
             assert all(not row["Target Breakeven ($)"] and not row["Max Cost Filter ($)"]
                        for row in whole), whole[:2]
+            # A custom component's checkbox event can arrive during a full-app
+            # rerun. The backend count must update without a fragment-scope error.
+            toggle_put_column_filter(driver)
+            wait.until(lambda _: "ALL 5,050 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
+            assert "EXPORT FILTERED CSV // 5,050" in driver.find_element(By.TAG_NAME, "body").text
+            assert "StreamlitInvalidLayoutContextError" not in driver.find_element(By.TAG_NAME, "body").text
+            toggle_put_column_filter(driver)
+            wait.until(lambda _: "ALL 10,100 QUALIFIED IN FILTER" in driver.find_element(By.TAG_NAME, "body").text)
             late_row = whole[-1]
             late_identity = (late_row["Type"], late_row["Buy Strike"], late_row["Sell Strike"])
             assert late_identity not in {
