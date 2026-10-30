@@ -295,7 +295,7 @@ else:
         import csv
         import io
         from src.vertical_options_store import VerticalResultStore, _rank
-        from src.vertical_options_ui import _qualified_store_csv
+        from src.vertical_options_ui import _qualified_store_csv, _qualified_store_xlsx
 
         expiries = (date(2027, 1, 15), date(2027, 6, 18), date(2028, 1, 21))
         rows = [self._row(expiry, side, 100 + strike,
@@ -349,6 +349,48 @@ else:
                          [row["expiry"].isoformat() for row in year_rows])
         self.assertEqual(sum(row["Annual Best"] == "YES" for row in year_csv), 1)
 
+        xlsx_headers, xlsx_rows = self._xlsx_export_rows(_qualified_store_xlsx(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL",
+        ))
+        full_csv = list(csv.DictReader(io.StringIO(_qualified_store_csv(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL",
+        ))))
+        self.assertEqual(xlsx_headers, list(full_csv[0]))
+        self.assertEqual(len(xlsx_rows), 1140)  # More than one displayed page.
+        for xlsx_row, csv_row in zip(xlsx_rows, full_csv):
+            for header in xlsx_headers:
+                workbook_value, csv_value = xlsx_row["values"][header], csv_row[header]
+                if workbook_value != csv_value:
+                    try:
+                        self.assertAlmostEqual(float(workbook_value), float(csv_value), places=8,
+                                               msg=header)
+                    except (TypeError, ValueError):
+                        self.assertEqual(workbook_value, csv_value, header)
+        self.assertEqual([(row["values"]["Type"], row["values"]["Expiration"])
+                          for row in xlsx_rows],
+                         [(row["Type"], row["Expiration"]) for row in full_csv])
+        self.assertEqual([row["values"]["Annual Best"] for row in xlsx_rows],
+                         [row["Annual Best"] for row in full_csv])
+        self.assertEqual({row["values"]["Type"] for row in xlsx_rows}, {"CALL", "PUT"})
+        for row in xlsx_rows:
+            expected_fill = "A3E635" if row["values"]["Type"] == "CALL" else "EA0101"
+            self.assertTrue(row["styles"], row)
+            self.assertTrue(all(fill == expected_fill and font == "000000"
+                                for fill, font in row["styles"]), row)
+
+        year_xlsx_headers, year_xlsx_rows = self._xlsx_export_rows(_qualified_store_xlsx(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL", year=2028,
+        ))
+        self.assertEqual(year_xlsx_headers, xlsx_headers)
+        self.assertEqual(len(year_xlsx_rows), len(year_csv))
+        self.assertEqual([row["values"]["Annual Best"] for row in year_xlsx_rows],
+                         [row["Annual Best"] for row in year_csv])
+        self.assertEqual({row["values"]["Expiration"][:4] for row in year_xlsx_rows},
+                         {"2028"})
+
         filters = {"side": ["PUT"], "cost": {"max": 100}}
         filtered = [row for row in expected
                     if row["call_put"] == "PUT" and row["cost"] <= 100 + 1e-8]
@@ -377,6 +419,17 @@ else:
                            float(row["Sell Strike"])) for row in filtered_year_csv],
                          [(row["call_put"], row["expiry"].isoformat(), row["buy_strike"],
                            row["sell_strike"]) for row in filtered_year])
+        _, filtered_year_xlsx = self._xlsx_export_rows(_qualified_store_xlsx(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL", year=2028, column_filters=filters,
+        ))
+        self.assertEqual(len(filtered_year_xlsx), len(filtered_year_csv))
+        self.assertEqual([(row["values"]["Type"], row["values"]["Expiration"],
+                           float(row["values"]["Buy Strike"]),
+                           float(row["values"]["Sell Strike"]))
+                          for row in filtered_year_xlsx],
+                         [(row["Type"], row["Expiration"], float(row["Buy Strike"]),
+                           float(row["Sell Strike"])) for row in filtered_year_csv])
         within_range = [row for row in filtered
                         if abs(row["breakeven"] - 110) <= 5 + 1e-8]
         self.assertTrue(0 < len(within_range) < len(filtered))
@@ -422,6 +475,13 @@ else:
             (scoped_winner[0]["call_put"], scoped_winner[0]["expiry"].isoformat(),
              scoped_winner[0]["buy_strike"], scoped_winner[0]["sell_strike"])
         ])
+        _, scoped_xlsx = self._xlsx_export_rows(_qualified_store_xlsx(
+            store, source="E*TRADE", loaded_at=1000, target=110, max_cost=None,
+            sort_by="YEAR + FILL", year=2028, max_distance=5,
+            column_filters=without_original,
+        ))
+        self.assertEqual([row["values"]["Annual Best"] for row in scoped_xlsx],
+                         [row["Annual Best"] for row in scoped_csv])
 
         for invalid_year in (0, 9999, "2028", True, 2028.0):
             with self.subTest(invalid_year=invalid_year):
@@ -433,6 +493,23 @@ else:
                     list(store.iter_rows(year=invalid_year))
                 with self.assertRaises(ValueError):
                     store.best_by_year(year=invalid_year)
+
+    def test_xlsx_export_keeps_formula_like_ticker_as_text(self):
+        from src.vertical_options_store import VerticalResultStore
+        from src.vertical_options_ui import _qualified_store_xlsx
+
+        expiry = date(2028, 1, 21)
+        rows = [self._row(expiry, "CALL", 100, 2),
+                self._row(expiry, "CALL", 103, 1)]
+        store = VerticalResultStore("=1+1", 100, None, None, "NORMAL")
+        store.add_expiration(expiry, rows, scan_vertical_candidates)
+        _, exported = self._xlsx_export_rows(_qualified_store_xlsx(
+            store, source="E*TRADE", loaded_at=1000, target=None, max_cost=None,
+            sort_by="YEAR + FILL",
+        ))
+        self.assertEqual(len(exported), 1)
+        self.assertEqual(exported[0]["values"]["Ticker"], "=1+1")
+        self.assertNotIn(0, exported[0]["formula_columns"])
 
     def test_column_filters_cover_full_store_pages_and_csv_without_target(self):
         import csv
@@ -976,6 +1053,77 @@ else:
             "last": last, "bid": bid, "ask": ask,
             "osi": osi or f"{side}-{expiry}-{strike}",
         }
+
+    @staticmethod
+    def _xlsx_export_rows(payload):
+        import io
+        import zipfile
+        from datetime import timedelta
+        from xml.etree import ElementTree as ET
+
+        ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with zipfile.ZipFile(io.BytesIO(payload)) as book:
+            sheet = ET.fromstring(book.read("xl/worksheets/sheet1.xml"))
+            styles = ET.fromstring(book.read("xl/styles.xml"))
+            shared = []
+            if "xl/sharedStrings.xml" in book.namelist():
+                strings = ET.fromstring(book.read("xl/sharedStrings.xml"))
+                shared = ["".join(item.itertext()) for item in strings.findall("x:si", ns)]
+        xfs = styles.find("x:cellXfs", ns)
+        fills = styles.find("x:fills", ns)
+        fonts = styles.find("x:fonts", ns)
+
+        def column_index(reference):
+            index = 0
+            for character in reference:
+                if not character.isalpha():
+                    break
+                index = 26 * index + ord(character) - ord("A") + 1
+            return index - 1
+
+        def cell_value(cell):
+            if cell.get("t") == "inlineStr":
+                inline = cell.find("x:is", ns)
+                return "" if inline is None else "".join(inline.itertext())
+            value = cell.find("x:v", ns)
+            if value is None:
+                return ""
+            return shared[int(value.text)] if cell.get("t") == "s" else value.text
+
+        def colors(style_index):
+            style = xfs[int(style_index)]
+            fill = fills[int(style.get("fillId", "0"))]
+            font = fonts[int(style.get("fontId", "0"))]
+            background = fill.find("x:patternFill/x:fgColor", ns)
+            foreground = font.find("x:color", ns)
+            return (background.get("rgb", "")[-6:].upper() if background is not None else "",
+                    foreground.get("rgb", "")[-6:].upper() if foreground is not None else "")
+
+        report = []
+        for xml_row in sheet.findall("x:sheetData/x:row", ns):
+            cells = {}
+            row_colors = []
+            row_formulas = []
+            for cell in xml_row.findall("x:c", ns):
+                index = column_index(cell.get("r", ""))
+                cells[index] = cell_value(cell)
+                if int(xml_row.get("r", "0")) > 1:
+                    row_colors.append(colors(cell.get("s", xml_row.get("s", "0"))))
+                    row_formulas.append(index if cell.find("x:f", ns) is not None else -1)
+            report.append((cells, row_colors, row_formulas))
+        headers = [report[0][0][index] for index in range(len(report[0][0]))]
+        data = []
+        for cells, row_colors, formulas in report[1:]:
+            values = {header: cells.get(index, "") for index, header in enumerate(headers)}
+            expiration = values.get("Expiration", "")
+            if expiration and "-" not in expiration:
+                values["Expiration"] = (date(1899, 12, 30)
+                                        + timedelta(days=float(expiration))).isoformat()
+            data.append({
+                "values": values, "styles": row_colors,
+                "formula_columns": [item for item in formulas if item >= 0],
+            })
+        return headers, data
 
     def test_scan_both_canonical_sides_use_ask_when_it_meets_constraints(self):
         expiry = date(2027, 1, 15)

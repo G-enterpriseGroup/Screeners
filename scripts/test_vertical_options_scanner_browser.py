@@ -20,6 +20,8 @@ import time
 import urllib.request
 from urllib.parse import parse_qs, urlsplit
 import zlib
+import zipfile
+import xml.etree.ElementTree as ET
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -323,7 +325,14 @@ def grid_page_rows(driver: webdriver.Chrome) -> dict:
               index:Number(row.dataset.index),
               annual:row.classList.contains('annual'),
               values:[...row.querySelectorAll('.cell')].map(cell=>
-                cell.classList.contains('expiry') ? cell.firstChild.textContent : cell.textContent)
+                cell.classList.contains('expiry') ? cell.firstChild.textContent : cell.textContent),
+              background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
+              foreground:getComputedStyle(row.querySelector('.cell')).color,
+              selectBackground:getComputedStyle(row.querySelector('.select')).backgroundColor,
+              selectForeground:getComputedStyle(row.querySelector('.select')).color,
+              annualBorder:getComputedStyle(row.querySelector('.select')).boxShadow,
+              linkColors:[...row.querySelectorAll('.open')].map(link=>getComputedStyle(link).color),
+              lastColor:getComputedStyle(row.querySelector('.cell:last-child')).color
             });
           }
         };
@@ -355,6 +364,19 @@ def assert_year_grouping(page: dict, *, per_year: int | None = None) -> None:
     assert [index for index, row in enumerate(rows) if row["annual"]] == first_in_year, page
     if per_year is not None:
         assert all(years.count(year) == per_year for year in set(years)), years
+
+
+def assert_row_colors(page: dict) -> None:
+    """CALL/PUT fills and black text apply to ordinary and annual rows alike."""
+    assert len(page["rows"]) == page["total"], page
+    assert {row["values"][1] for row in page["rows"]} == {"CALL", "PUT"}, page
+    assert any(not row["annual"] for row in page["rows"]), page
+    for row in page["rows"]:
+        expected = "rgb(163, 230, 53)" if row["values"][1] == "CALL" else "rgb(234, 1, 1)"
+        assert row["background"] == row["selectBackground"] == expected, row
+        assert row["foreground"] == row["selectForeground"] == row["lastColor"] == "rgb(0, 0, 0)", row
+        assert row["linkColors"] and all(color == "rgb(0, 0, 0)" for color in row["linkColors"]), row
+        assert ("rgb(255, 255, 255)" in row["annualBorder"]) == row["annual"], row
 
 
 def grouped_page_if_ready(driver: webdriver.Chrome, total: int,
@@ -425,8 +447,8 @@ def assert_exact_tradingview_formula(row: dict) -> None:
     assert row["tvTarget"] == "_blank", row
 
 
-def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
-    """Wait for the rerendered export action and inspect its actual download."""
+def download_file(driver, wait, folder: Path, key: str, filename: str) -> Path:
+    """Wait for a settled export button and its actual browser download."""
     settled = {"button": None, "since": 0.0}
 
     def ready(_):
@@ -450,8 +472,32 @@ def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[di
     target.unlink(missing_ok=True)
     wait.until(ready).click()
     wait.until(lambda _: target.exists() and not list(folder.glob("*.crdownload")))
+    return target
+
+
+def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
+    """Read every row from an actual CSV download."""
+    target = download_file(driver, wait, folder, key, filename)
     with target.open(encoding="utf-8", newline="") as downloaded:
         return list(csv.DictReader(downloaded))
+
+
+def download_xlsx(driver, wait, folder: Path, key: str, filename: str,
+                  expected_sides=("CALL", "PUT")) -> dict:
+    """Verify the browser downloaded a readable, styled Excel workbook."""
+    target = download_file(driver, wait, folder, key, filename)
+    with zipfile.ZipFile(target) as workbook:
+        assert workbook.testzip() is None, filename
+        styles = workbook.read("xl/styles.xml").decode("utf-8").upper()
+        sheet = ET.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+    namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rows = sheet.findall(".//x:sheetData/x:row", namespace)
+    assert "000000" in styles, filename
+    if "CALL" in expected_sides:
+        assert "A3E635" in styles, filename
+    if "PUT" in expected_sides:
+        assert "EA0101" in styles, filename
+    return {"rows": len(rows) - 1, "styles": styles}
 
 
 def set_exact_grid_filter(driver: webdriver.Chrome, key: str, label: str, value: float) -> None:
@@ -765,10 +811,13 @@ def test() -> None:
             wait.until(lambda _: "60 ON THIS PAGE // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             initial_best = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
             assert_year_grouping(initial_best, per_year=20)
+            assert_row_colors(initial_best)
             years = sorted({datetime.strptime(row["values"][2], "%b-%d-%y").year
                             for row in initial_best["rows"]})
             assert len(years) == 3, years
             year_labels = ["ALL YEARS // 60"] + [f"{year} // 20" for year in years]
+            export_labels = ["ALL CSV // 60", "ALL EXCEL // 60",
+                             "FILTERED CSV // 60", "FILTERED EXCEL // 60"]
             for width in (1100, 1440):
                 driver.set_window_size(width, 900)
                 year_layout = driver.execute_script("""
@@ -788,6 +837,25 @@ def test() -> None:
                 assert all(button["height"] <= 42 and button["textHeight"] <= 20
                            and 0 <= button["left"] < button["right"] <= width
                            for button in year_layout["buttons"]), year_layout
+                export_layout = driver.execute_script("""
+                    const labels=new Set(arguments[0]);
+                    const buttons=[...document.querySelectorAll('button')].filter(button=>
+                      labels.has(button.textContent.trim().replace(/\\s+/g,' '))&&
+                      button.getBoundingClientRect().height>0);
+                    return {overflow:document.documentElement.scrollWidth>innerWidth,
+                      buttons:buttons.map(button=>{
+                        const text=button.querySelector('p')||button;
+                        const box=button.getBoundingClientRect();
+                        return {label:button.textContent.trim().replace(/\\s+/g,' '),
+                          height:box.height,textHeight:text.getBoundingClientRect().height,
+                          left:box.left,right:box.right};
+                      })};
+                """, export_labels)
+                assert len(export_layout["buttons"]) == 4 and not export_layout["overflow"], export_layout
+                assert all(button["height"] <= 42 and button["textHeight"] <= 20
+                           and 0 <= button["left"] < button["right"] <= width
+                           for button in export_layout["buttons"]), export_layout
+                assert_row_colors(grid_page_rows(driver))
             driver.set_window_size(1440, 900)
             year_button = driver.find_element(By.XPATH,
                 f'//button[contains(normalize-space(.), "{years[1]} // 20")]')
@@ -798,6 +866,9 @@ def test() -> None:
             assert all(datetime.strptime(row["values"][2], "%b-%d-%y").year == years[1]
                        for row in one_year["rows"]), one_year
             assert_year_grouping(one_year, per_year=20)
+            one_year_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_filtered_qualified_excel", "SPY_vertical_filtered.xlsx")
+            assert one_year_excel["rows"] == 20, one_year_excel["rows"]
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             all_years_button = driver.find_element(By.XPATH,
                 '//button[contains(normalize-space(.), "ALL YEARS // 60")]')
@@ -866,12 +937,7 @@ def test() -> None:
             print("Vertical Options tiny expiry detail PASS (calendar days + years, 43px rows)", flush=True)
             assert len(best_page["rows"]) == 60, best_page
             assert any(not row["annual"] for row in best["rows"]), best
-            assert all(
-                row["background"] == ("rgb(234, 1, 1)" if row["values"][1] == "PUT"
-                                      else "rgb(163, 230, 53)")
-                and row["foreground"] == "rgb(0, 0, 0)"
-                for row in best["rows"] if row["annual"]
-            ), best
+            assert_row_colors(best_page)
             assert all(
                 all(value["weight"] == "900" and "underline" in value["decoration"]
                     for value in row["emphasis"])
@@ -926,16 +992,23 @@ def test() -> None:
             full_csv = download_csv(driver, wait, downloads, "vo_export_all_qualified",
                                     "SPY_vertical_all_qualified.csv")
             assert len(full_csv) == 60 and {row["Type"] for row in full_csv} == {"CALL", "PUT"}
+            full_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_all_qualified_excel", "SPY_vertical_all_qualified.xlsx")
+            assert full_excel["rows"] == 60, full_excel["rows"]
             toggle_put_column_filter(driver)
             wait.until(lambda _: "30" in driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
             filtered_csv = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
                                         "SPY_vertical_filtered.csv")
             assert len(filtered_csv) == 30 and all(row["Type"] == "CALL" for row in filtered_csv)
+            filtered_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_filtered_qualified_excel", "SPY_vertical_filtered.xlsx",
+                expected_sides=("CALL",))
+            assert filtered_excel["rows"] == 30, filtered_excel["rows"]
             toggle_put_column_filter(driver)
             wait.until(lambda _: "60" in driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
-            print("Vertical Options CSV downloads PASS (60 all / 30 CALL-filtered)")
+            print("Vertical Options CSV/Excel downloads PASS (60 all / 30 CALL-filtered / 20 one-year)")
             for old_key in ("vo_all_pair_expiry", "vo_all_pair_side", "vo_all_pair_sort",
                             "vo_all_pair_direction"):
                 assert not driver.find_elements(By.CSS_SELECTOR, f".st-key-{old_key}"), old_key
@@ -976,22 +1049,23 @@ def test() -> None:
                 let put=null;
                 for(let offset=0;offset<=scroller.scrollHeight;offset+=scroller.clientHeight){
                   scroller.scrollTop=offset;scroller.dispatchEvent(new Event('scroll'));
-                  put=[...document.querySelectorAll('.row.put')].find(
+                  put=[...document.querySelectorAll('.row.put:not(.annual)')].find(
                     row=>row.querySelectorAll('.cell')[1].textContent==='PUT');
                   if(put)break;
                 }
                 if(!put)return null;
-                put.classList.add('annual');
                 return {
                   background:getComputedStyle(put.querySelector('.cell')).backgroundColor,
                   foreground:getComputedStyle(put.querySelector('.cell')).color,
-                  button:getComputedStyle(put.querySelector('.select')).backgroundColor
+                  button:getComputedStyle(put.querySelector('.select')).backgroundColor,
+                  link:getComputedStyle(put.querySelector('.open')).color
                 };
             """))
             assert put_style == {
                 "background": "rgb(234, 1, 1)",
                 "foreground": "rgb(0, 0, 0)",
                 "button": "rgb(234, 1, 1)",
+                "link": "rgb(0, 0, 0)",
             }, put_style
             assert {"90", "110"}.issubset(set(coverage["strikes"])), coverage
 
@@ -1335,6 +1409,9 @@ def test() -> None:
             whole = download_csv(driver, wait, downloads, "vo_export_all_qualified",
                                  "MASSIVE_vertical_all_qualified.csv")
             assert len(whole) == 10100
+            whole_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_all_qualified_excel", "MASSIVE_vertical_all_qualified.xlsx")
+            assert whole_excel["rows"] == 10100, whole_excel["rows"]
             assert sum(row["Type"] == "CALL" for row in whole) == 5050
             assert sum(row["Type"] == "PUT" for row in whole) == 5050
             assert len({(r["Type"], r["Buy Strike"], r["Sell Strike"]) for r in whole}) == 10100
@@ -1344,7 +1421,7 @@ def test() -> None:
             # rerun. The backend count must update without a fragment-scope error.
             toggle_put_column_filter(driver)
             wait.until(lambda _: "ROWS 1–200 OF 5,050" in driver.find_element(By.TAG_NAME, "body").text)
-            assert "EXPORT FILTERED CSV // 5,050" in driver.find_element(By.TAG_NAME, "body").text
+            assert "FILTERED CSV // 5,050" in driver.find_element(By.TAG_NAME, "body").text
             assert "StreamlitInvalidLayoutContextError" not in driver.find_element(By.TAG_NAME, "body").text
             toggle_put_column_filter(driver)
             wait.until(lambda _: "ROWS 1–200 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
@@ -1357,9 +1434,9 @@ def test() -> None:
             # The row came from the far end of the 10,100-result export. Header
             # filters must search the stored universe, not the 200-row page.
             set_exact_grid_filter(driver, "buy", "BUY STRIKE", float(late_row["Buy Strike"]))
-            wait.until(lambda _: "EXPORT FILTERED CSV // 100" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "FILTERED CSV // 100" in driver.find_element(By.TAG_NAME, "body").text)
             set_exact_grid_filter(driver, "sell", "SELL STRIKE", float(late_row["Sell Strike"]))
-            wait.until(lambda _: "EXPORT FILTERED CSV // 1" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "FILTERED CSV // 1" in driver.find_element(By.TAG_NAME, "body").text)
             assert not driver.find_elements(By.XPATH, '//button[normalize-space(.)="NEXT →"]')
             isolated = wait.until(lambda _: grid_snapshot(driver)["rows"] if len(grid_snapshot(driver)["rows"]) == 1 else False)
             assert (isolated[0]["values"][1], float(isolated[0]["values"][3]),
