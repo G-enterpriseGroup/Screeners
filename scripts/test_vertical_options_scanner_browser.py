@@ -20,6 +20,8 @@ import time
 import urllib.request
 from urllib.parse import parse_qs, urlsplit
 import zlib
+import zipfile
+import xml.etree.ElementTree as ET
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -310,6 +312,86 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
     ))
 
 
+def grid_page_rows(driver: webdriver.Chrome) -> dict:
+    """Read every row on the current 200-row page through the virtual scroller."""
+    return in_grid(driver, lambda: driver.execute_script(
+        """
+        const scroll=document.getElementById('scroll');
+        const space=document.getElementById('space');
+        const seen=new Map();
+        const capture=()=>{
+          for(const row of document.querySelectorAll('.row')){
+            seen.set(Number(row.dataset.index),{
+              index:Number(row.dataset.index),
+              annual:row.classList.contains('annual'),
+              values:[...row.querySelectorAll('.cell')].map(cell=>
+                cell.classList.contains('expiry') ? cell.firstChild.textContent : cell.textContent),
+              background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
+              foreground:getComputedStyle(row.querySelector('.cell')).color,
+              selectBackground:getComputedStyle(row.querySelector('.select')).backgroundColor,
+              selectForeground:getComputedStyle(row.querySelector('.select')).color,
+              annualBorder:getComputedStyle(row.querySelector('.select')).boxShadow,
+              linkColors:[...row.querySelectorAll('.open')].map(link=>getComputedStyle(link).color),
+              lastColor:getComputedStyle(row.querySelector('.cell:last-child')).color
+            });
+          }
+        };
+        const step=Math.max(43,Math.floor(scroll.clientHeight/2));
+        for(let offset=0;offset<=scroll.scrollHeight;offset+=step){
+          scroll.scrollTop=offset;
+          scroll.dispatchEvent(new Event('scroll'));
+          capture();
+        }
+        scroll.scrollTop=scroll.scrollHeight;
+        scroll.dispatchEvent(new Event('scroll'));
+        capture();
+        scroll.scrollTop=0;
+        scroll.dispatchEvent(new Event('scroll'));
+        return {total:Math.round(Number.parseInt(space.style.height||'0',10)/43),
+                rows:[...seen.values()].sort((a,b)=>a.index-b.index)};
+        """
+    ))
+
+
+def assert_year_grouping(page: dict, *, per_year: int | None = None) -> None:
+    """Every match is present, grouped by year, with one top marker per year."""
+    rows = page["rows"]
+    assert len(rows) == page["total"], page
+    years = [datetime.strptime(row["values"][2], "%b-%d-%y").year for row in rows]
+    assert years == sorted(years), years
+    first_in_year = [index for index, year in enumerate(years)
+                     if index == 0 or year != years[index - 1]]
+    assert [index for index, row in enumerate(rows) if row["annual"]] == first_in_year, page
+    if per_year is not None:
+        assert all(years.count(year) == per_year for year in set(years)), years
+
+
+def assert_row_colors(page: dict) -> None:
+    """CALL/PUT fills and black text apply to ordinary and annual rows alike."""
+    assert len(page["rows"]) == page["total"], page
+    assert {row["values"][1] for row in page["rows"]} == {"CALL", "PUT"}, page
+    assert any(not row["annual"] for row in page["rows"]), page
+    for row in page["rows"]:
+        expected = "rgb(163, 230, 53)" if row["values"][1] == "CALL" else "rgb(234, 1, 1)"
+        assert row["background"] == row["selectBackground"] == expected, row
+        assert row["foreground"] == row["selectForeground"] == row["lastColor"] == "rgb(0, 0, 0)", row
+        assert row["linkColors"] and all(color == "rgb(0, 0, 0)" for color in row["linkColors"]), row
+        assert ("rgb(255, 255, 255)" in row["annualBorder"]) == row["annual"], row
+
+
+def grouped_page_if_ready(driver: webdriver.Chrome, total: int,
+                          *, per_year: int | None = None) -> dict | bool:
+    """Wait through a radio rerun that may briefly retain the old grid rows."""
+    page = grid_page_rows(driver)
+    if page["total"] != total:
+        return False
+    try:
+        assert_year_grouping(page, per_year=per_year)
+    except AssertionError:
+        return False
+    return page
+
+
 def checked_count(driver: webdriver.Chrome) -> int:
     return driver.execute_script(
         """
@@ -365,8 +447,8 @@ def assert_exact_tradingview_formula(row: dict) -> None:
     assert row["tvTarget"] == "_blank", row
 
 
-def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
-    """Wait for the rerendered export action and inspect its actual download."""
+def download_file(driver, wait, folder: Path, key: str, filename: str) -> Path:
+    """Wait for a settled export button and its actual browser download."""
     settled = {"button": None, "since": 0.0}
 
     def ready(_):
@@ -390,8 +472,32 @@ def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[di
     target.unlink(missing_ok=True)
     wait.until(ready).click()
     wait.until(lambda _: target.exists() and not list(folder.glob("*.crdownload")))
+    return target
+
+
+def download_csv(driver, wait, folder: Path, key: str, filename: str) -> list[dict]:
+    """Read every row from an actual CSV download."""
+    target = download_file(driver, wait, folder, key, filename)
     with target.open(encoding="utf-8", newline="") as downloaded:
         return list(csv.DictReader(downloaded))
+
+
+def download_xlsx(driver, wait, folder: Path, key: str, filename: str,
+                  expected_sides=("CALL", "PUT")) -> dict:
+    """Verify the browser downloaded a readable, styled Excel workbook."""
+    target = download_file(driver, wait, folder, key, filename)
+    with zipfile.ZipFile(target) as workbook:
+        assert workbook.testzip() is None, filename
+        styles = workbook.read("xl/styles.xml").decode("utf-8").upper()
+        sheet = ET.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+    namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rows = sheet.findall(".//x:sheetData/x:row", namespace)
+    assert "000000" in styles, filename
+    if "CALL" in expected_sides:
+        assert "A3E635" in styles, filename
+    if "PUT" in expected_sides:
+        assert "EA0101" in styles, filename
+    return {"rows": len(rows) - 1, "styles": styles}
 
 
 def set_exact_grid_filter(driver: webdriver.Chrome, key: str, label: str, value: float) -> None:
@@ -697,11 +803,80 @@ def test() -> None:
             wait.until(help_visible)
             driver.find_element(By.CSS_SELECTOR, '.vo-note').click()
             ActionChains(driver).move_to_element(driver.find_element(By.CSS_SELECTOR, '.vo-note')).perform()
-            # A completed scan starts with one annual winner per year. The BE
-            # filter still requires a user-selected target and explicit opt-in.
+            # The default view includes every qualifying spread, grouped and
+            # ranked within each year. Only the top row per year is highlighted.
+            # The BE filter still requires a target and explicit opt-in.
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
             assert not driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected()
-            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            wait.until(lambda _: "60 ON THIS PAGE // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            initial_best = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
+            assert_year_grouping(initial_best, per_year=20)
+            assert_row_colors(initial_best)
+            years = sorted({datetime.strptime(row["values"][2], "%b-%d-%y").year
+                            for row in initial_best["rows"]})
+            assert len(years) == 3, years
+            year_labels = ["ALL YEARS // 60"] + [f"{year} // 20" for year in years]
+            export_labels = ["ALL CSV // 60", "ALL EXCEL // 60",
+                             "FILTERED CSV // 60", "FILTERED EXCEL // 60"]
+            for width in (1100, 1440):
+                driver.set_window_size(width, 900)
+                year_layout = driver.execute_script("""
+                    const labels=new Set(arguments[0]);
+                    const buttons=[...document.querySelectorAll('button')].filter(button=>
+                      labels.has(button.textContent.trim().replace(/\\s+/g,' ')));
+                    return {overflow:document.documentElement.scrollWidth>innerWidth,
+                      buttons:buttons.map(button=>{
+                        const text=button.querySelector('p')||button;
+                        const box=button.getBoundingClientRect();
+                        return {label:button.textContent.trim().replace(/\\s+/g,' '),
+                          height:box.height,textHeight:text.getBoundingClientRect().height,
+                          left:box.left,right:box.right};
+                      })};
+                """, year_labels)
+                assert len(year_layout["buttons"]) == 4 and not year_layout["overflow"], year_layout
+                assert all(button["height"] <= 42 and button["textHeight"] <= 20
+                           and 0 <= button["left"] < button["right"] <= width
+                           for button in year_layout["buttons"]), year_layout
+                export_layout = driver.execute_script("""
+                    const labels=new Set(arguments[0]);
+                    const buttons=[...document.querySelectorAll('button')].filter(button=>
+                      labels.has(button.textContent.trim().replace(/\\s+/g,' '))&&
+                      button.getBoundingClientRect().height>0);
+                    return {overflow:document.documentElement.scrollWidth>innerWidth,
+                      buttons:buttons.map(button=>{
+                        const text=button.querySelector('p')||button;
+                        const box=button.getBoundingClientRect();
+                        return {label:button.textContent.trim().replace(/\\s+/g,' '),
+                          height:box.height,textHeight:text.getBoundingClientRect().height,
+                          left:box.left,right:box.right};
+                      })};
+                """, export_labels)
+                assert len(export_layout["buttons"]) == 4 and not export_layout["overflow"], export_layout
+                assert all(button["height"] <= 42 and button["textHeight"] <= 20
+                           and 0 <= button["left"] < button["right"] <= width
+                           for button in export_layout["buttons"]), export_layout
+                assert_row_colors(grid_page_rows(driver))
+            driver.set_window_size(1440, 900)
+            year_button = driver.find_element(By.XPATH,
+                f'//button[contains(normalize-space(.), "{years[1]} // 20")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", year_button)
+            year_button.click()
+            one_year = wait.until(lambda _: (page if (page := grid_page_rows(driver))["total"] == 20 else False))
+            assert "20 ON THIS PAGE // 20 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            assert all(datetime.strptime(row["values"][2], "%b-%d-%y").year == years[1]
+                       for row in one_year["rows"]), one_year
+            assert_year_grouping(one_year, per_year=20)
+            one_year_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_filtered_qualified_excel", "SPY_vertical_filtered.xlsx")
+            assert one_year_excel["rows"] == 20, one_year_excel["rows"]
+            assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
+            all_years_button = driver.find_element(By.XPATH,
+                '//button[contains(normalize-space(.), "ALL YEARS // 60")]')
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", all_years_button)
+            all_years_button.click()
+            all_years_page = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
+            assert "60 ON THIS PAGE // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            assert_year_grouping(all_years_page, per_year=20)
             result_spacing = driver.execute_script("""
                 const metrics=document.querySelector('.vo-grid').getBoundingClientRect();
                 const section=document.querySelector('.vo-section').getBoundingClientRect();
@@ -714,8 +889,8 @@ def test() -> None:
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled input').is_selected())
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) > 3)
-            nearby = grid_snapshot(driver)["rows"]
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
+            nearby = wait.until(lambda _: (page["rows"] if 3 < (page := grid_page_rows(driver))["total"] < 60 else False))
             be_values = [float(row["values"][8].replace('$', '').replace(',', '')) for row in nearby]
             assert all(95 <= value <= 105 for value in be_values), be_values
             filtered_near = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
@@ -732,7 +907,7 @@ def test() -> None:
             assert 0 < len(tighter) < len(filtered_near)
             assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
             driver.find_element(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled label').click()
-            wait.until(lambda _: "60 DISPLAYED // 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "60 ON THIS PAGE // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", leave_button)
@@ -745,7 +920,9 @@ def test() -> None:
             assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
-            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected())
+            best_page = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
+            assert_year_grouping(best_page, per_year=20)
             best = grid_snapshot(driver)
             from datetime import date
             from zoneinfo import ZoneInfo
@@ -758,15 +935,9 @@ def test() -> None:
                 driver.set_window_size(width, 900)
                 assert all(row["expiryFits"] for row in grid_snapshot(driver)["rows"])
             print("Vertical Options tiny expiry detail PASS (calendar days + years, 43px rows)", flush=True)
-            assert len(best["rows"]) == 3, best
-            assert all(row["annual"] for row in best["rows"]), best
-            assert len({row["values"][2][-2:] for row in best["rows"]}) == 3, best
-            assert all(
-                row["background"] == ("rgb(234, 1, 1)" if row["values"][1] == "PUT"
-                                      else "rgb(163, 230, 53)")
-                and row["foreground"] == "rgb(0, 0, 0)"
-                for row in best["rows"]
-            ), best
+            assert len(best_page["rows"]) == 60, best_page
+            assert any(not row["annual"] for row in best["rows"]), best
+            assert_row_colors(best_page)
             assert all(
                 all(value["weight"] == "900" and "underline" in value["decoration"]
                     for value in row["emphasis"])
@@ -777,7 +948,7 @@ def test() -> None:
             assert "RISK:REWARD" in best["header"] and "FILL" in best["header"], best
             assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
-            assert best["height"] == 3 * 43, best
+            assert best["height"] == 516, best
             for row in best["rows"]:
                 assert_exact_tradingview_formula(row)
 
@@ -815,22 +986,29 @@ def test() -> None:
             print("TradingView button click opens exact broker-normalized formula in a new chart tab PASS")
 
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: "60 DISPLAYED // 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
-            # The count above already exists in BEST PER YEAR. Wait for the
-            # new view's keyed export controls, then verify real CSV downloads.
+            wait.until(lambda _: "60 ON THIS PAGE // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            # Both views contain all 60 results. Wait for the ALL view's keyed
+            # export controls, then verify real CSV downloads.
             full_csv = download_csv(driver, wait, downloads, "vo_export_all_qualified",
                                     "SPY_vertical_all_qualified.csv")
             assert len(full_csv) == 60 and {row["Type"] for row in full_csv} == {"CALL", "PUT"}
+            full_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_all_qualified_excel", "SPY_vertical_all_qualified.xlsx")
+            assert full_excel["rows"] == 60, full_excel["rows"]
             toggle_put_column_filter(driver)
             wait.until(lambda _: "30" in driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
             filtered_csv = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
                                         "SPY_vertical_filtered.csv")
             assert len(filtered_csv) == 30 and all(row["Type"] == "CALL" for row in filtered_csv)
+            filtered_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_filtered_qualified_excel", "SPY_vertical_filtered.xlsx",
+                expected_sides=("CALL",))
+            assert filtered_excel["rows"] == 30, filtered_excel["rows"]
             toggle_put_column_filter(driver)
             wait.until(lambda _: "60" in driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_export_filtered_qualified button').text)
-            print("Vertical Options CSV downloads PASS (60 all / 30 CALL-filtered)")
+            print("Vertical Options CSV/Excel downloads PASS (60 all / 30 CALL-filtered / 20 one-year)")
             for old_key in ("vo_all_pair_expiry", "vo_all_pair_side", "vo_all_pair_sort",
                             "vo_all_pair_direction"):
                 assert not driver.find_elements(By.CSS_SELECTOR, f".st-key-{old_key}"), old_key
@@ -871,27 +1049,29 @@ def test() -> None:
                 let put=null;
                 for(let offset=0;offset<=scroller.scrollHeight;offset+=scroller.clientHeight){
                   scroller.scrollTop=offset;scroller.dispatchEvent(new Event('scroll'));
-                  put=[...document.querySelectorAll('.row.put')].find(
+                  put=[...document.querySelectorAll('.row.put:not(.annual)')].find(
                     row=>row.querySelectorAll('.cell')[1].textContent==='PUT');
                   if(put)break;
                 }
                 if(!put)return null;
-                put.classList.add('annual');
                 return {
                   background:getComputedStyle(put.querySelector('.cell')).backgroundColor,
                   foreground:getComputedStyle(put.querySelector('.cell')).color,
-                  button:getComputedStyle(put.querySelector('.select')).backgroundColor
+                  button:getComputedStyle(put.querySelector('.select')).backgroundColor,
+                  link:getComputedStyle(put.querySelector('.open')).color
                 };
             """))
             assert put_style == {
                 "background": "rgb(234, 1, 1)",
                 "foreground": "rgb(0, 0, 0)",
                 "button": "rgb(234, 1, 1)",
+                "link": "rgb(0, 0, 0)",
             }, put_style
             assert {"90", "110"}.issubset(set(coverage["strikes"])), coverage
 
             driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]').click()
-            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected())
+            wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
             wait.until(lambda _: grid_snapshot(driver)["rows"][0]["selected"] == "true")
             assert checked_count(driver) == 1
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == 3
@@ -1048,7 +1228,7 @@ def test() -> None:
                 "A new scan retained the previous ALL QUALIFIED view"
             )
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: "60 DISPLAYED // 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "60 ON THIS PAGE // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             uncapped = download_csv(driver, wait, downloads, "vo_export_filtered_qualified",
                                     "MSFT_vertical_filtered.csv")
             assert len(uncapped) == 60
@@ -1155,8 +1335,9 @@ def test() -> None:
             wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"])
                        > chain_before_restart)
             assert not grid_is_mounted(driver), "Incomplete scan displayed a result grid"
-            wait.until(lambda _: len(grid_snapshot(driver)["rows"]) == 3)
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 60)
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            assert_year_grouping(grid_page_rows(driver), per_year=20)
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
             calls = [e for e in events(event_path) if e["event"] == "chain"][chain_before_restart:]
@@ -1166,8 +1347,9 @@ def test() -> None:
             print("Vertical Options complete-only results PASS (3 unique chains, no orders)", flush=True)
 
             # 101 strikes per side => 10,100 qualifying spreads for ONE expiry.
-            # Reach results beyond row 200 through compact navigation, preserve
-            # a selection, and export every row rather than the visible page.
+            # The default BEST view must page the entire one-year universe.
+            # Reach results beyond row 200, retain checked rows across pages,
+            # then export every row rather than only the visible page.
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MASSIVE", Keys.TAB)
@@ -1179,15 +1361,17 @@ def test() -> None:
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "SCANNING ALL YEARS //" not in driver.find_element(By.TAG_NAME, "body").text)
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
-            assert len(grid_snapshot(driver)["rows"]) == 1
-            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
-            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
             assert not driver.find_elements(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled')
             wait.until(lambda _: "ROWS 1–200 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
+            first_page = grid_page_rows(driver)
+            assert first_page["total"] == len(first_page["rows"]) == 200, first_page
+            assert first_page["rows"][0]["annual"] and sum(
+                row["annual"] for row in first_page["rows"]
+            ) == 1, first_page
             assert "SHORTLIST" not in driver.find_element(By.TAG_NAME, "body").text
             assert "SAFETY MODE" not in driver.find_element(By.TAG_NAME, "body").text
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label^="PAGE /"]')
-            wait.until(lambda _: "200 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "200 ON THIS PAGE // 10,100 MATCHING OF 10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             first_page_row = grid_snapshot(driver)["rows"][0]["values"]
             next_button = driver.find_element(By.XPATH, '//button[normalize-space(.)="NEXT →"]')
             assert next_button.is_enabled()
@@ -1206,7 +1390,10 @@ def test() -> None:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", last_button)
             last_button.click()
             wait.until(lambda _: "ROWS 10,001–10,100 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
-            wait.until(lambda _: "100 DISPLAYED" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "100 ON THIS PAGE // 10,100 MATCHING OF 10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            last_page = grid_page_rows(driver)
+            assert last_page["total"] == len(last_page["rows"]) == 100, last_page
+            assert not any(row["annual"] for row in last_page["rows"]), last_page
             assert not driver.find_element(By.XPATH, '//button[normalize-space(.)="LAST »"]').is_enabled()
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 2)
@@ -1215,9 +1402,16 @@ def test() -> None:
             first_button.click()
             wait.until(lambda _: grid_snapshot(driver)["rows"][0]["values"] == first_page_row)
             wait.until(lambda _: checked_count(driver) == 2)
+            driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()
+            wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
+            wait.until(lambda _: "ROWS 1–200 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
+            assert checked_count(driver) == 2
             whole = download_csv(driver, wait, downloads, "vo_export_all_qualified",
                                  "MASSIVE_vertical_all_qualified.csv")
             assert len(whole) == 10100
+            whole_excel = download_xlsx(driver, wait, downloads,
+                "vo_export_all_qualified_excel", "MASSIVE_vertical_all_qualified.xlsx")
+            assert whole_excel["rows"] == 10100, whole_excel["rows"]
             assert sum(row["Type"] == "CALL" for row in whole) == 5050
             assert sum(row["Type"] == "PUT" for row in whole) == 5050
             assert len({(r["Type"], r["Buy Strike"], r["Sell Strike"]) for r in whole}) == 10100
@@ -1227,7 +1421,7 @@ def test() -> None:
             # rerun. The backend count must update without a fragment-scope error.
             toggle_put_column_filter(driver)
             wait.until(lambda _: "ROWS 1–200 OF 5,050" in driver.find_element(By.TAG_NAME, "body").text)
-            assert "EXPORT FILTERED CSV // 5,050" in driver.find_element(By.TAG_NAME, "body").text
+            assert "FILTERED CSV // 5,050" in driver.find_element(By.TAG_NAME, "body").text
             assert "StreamlitInvalidLayoutContextError" not in driver.find_element(By.TAG_NAME, "body").text
             toggle_put_column_filter(driver)
             wait.until(lambda _: "ROWS 1–200 OF 10,100" in driver.find_element(By.TAG_NAME, "body").text)
@@ -1240,9 +1434,9 @@ def test() -> None:
             # The row came from the far end of the 10,100-result export. Header
             # filters must search the stored universe, not the 200-row page.
             set_exact_grid_filter(driver, "buy", "BUY STRIKE", float(late_row["Buy Strike"]))
-            wait.until(lambda _: "EXPORT FILTERED CSV // 100" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "FILTERED CSV // 100" in driver.find_element(By.TAG_NAME, "body").text)
             set_exact_grid_filter(driver, "sell", "SELL STRIKE", float(late_row["Sell Strike"]))
-            wait.until(lambda _: "EXPORT FILTERED CSV // 1" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: "FILTERED CSV // 1" in driver.find_element(By.TAG_NAME, "body").text)
             assert not driver.find_elements(By.XPATH, '//button[normalize-space(.)="NEXT →"]')
             isolated = wait.until(lambda _: grid_snapshot(driver)["rows"] if len(grid_snapshot(driver)["rows"]) == 1 else False)
             assert (isolated[0]["values"][1], float(isolated[0]["values"][3]),
@@ -1274,12 +1468,15 @@ def test() -> None:
             ratio.send_keys("4.01")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             def custom_best_ready(_):
-                snapshot = grid_snapshot(driver)
-                return snapshot if len(snapshot["rows"]) == 3 and all(
-                    row["values"][0] == "SPY" for row in snapshot["rows"]
+                if "RISK:REWARD ≥ 1:4.01" not in driver.find_element(By.TAG_NAME, "body").text:
+                    return False
+                page = grid_page_rows(driver)
+                return page if 3 < page["total"] < 60 and all(
+                    row["values"][0] == "SPY" for row in page["rows"]
                 ) else False
             custom_best = wait.until(custom_best_ready)
             assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
+            assert_year_grouping(custom_best)
             assert all(float(row["values"][9].split(":", 1)[1]) >= 4.01
                        for row in custom_best["rows"]), custom_best
             driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]').click()

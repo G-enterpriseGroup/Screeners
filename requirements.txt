@@ -1,5 +1,6 @@
 streamlit>=1.61,<2
 pandas>=2.2
+XlsxWriter>=3.2,<4  # Vertical Options formatted full-result downloads
 numpy>=2.0
 requests>=2.32
 yfinance>=1.7,<2
