@@ -60,6 +60,7 @@ from src.vertical_options import (
     validate_vertical,
 )
 from src.vertical_options_store import VerticalResultStore
+from src.risk_sizing_ui_v9 import _select_true_cash
 
 
 _PREVIEW_FRESH_SECONDS = 150.0
@@ -602,6 +603,47 @@ def _metric_markup(items: list[tuple[str, str, str]]) -> str:
         for label, value, tone in items
     )
     return '<div class="vo-grid">' + cells + "</div>"
+
+
+def _liquid_cash_markup(client, touch_session) -> str:
+    """Read selected-account broker cash for display only; never set a trade limit."""
+    items = []
+    try:
+        accounts = [account for account in (st.session_state.get("etrade_accounts") or [])
+                    if isinstance(account, dict) and _account_key(account)]
+        if not accounts and client is not None:
+            accounts = [account for account in client.list_accounts()
+                        if isinstance(account, dict) and _account_key(account)]
+            touch_session()
+        selected = set(st.session_state.get("vo_accounts") or [])
+        chosen = [account for account in accounts if _account_key(account) in selected]
+        if not chosen:
+            defaults = set(_default_account_keys(accounts))
+            chosen = [account for account in accounts if _account_key(account) in defaults]
+        for account in chosen:
+            label = "LIQUID CASH // " + _account_label(account)
+            try:
+                if client is None:
+                    raise ValueError("Broker unavailable")
+                payload = client.get_balance(_account_key(account))
+                event = st.session_state.get("_etrade_cache_last_event") or {}
+                cached = bool(getattr(client, "is_offline", False)
+                              or (event.get("resource") == "balance" and event.get("stale")))
+                cash, source, _ = _select_true_cash(payload)
+                touch_session()
+                if source == "NO CASH FIELD RETURNED" or not math.isfinite(cash):
+                    raise ValueError("Cash unavailable")
+                items.append((label + (" // CACHED" if cached else ""), _money(cash),
+                              "green" if cash >= 0 else "red"))
+            except Exception:
+                items.append((label, "UNAVAILABLE", "orange"))
+    except Exception:
+        pass
+    if not items:
+        items = [("LIQUID CASH", "UNAVAILABLE", "orange")]
+    return ('<div class="vo-liquid-cash" title="Selected account cash from the same broker field '
+            'used by Risk Sizing. Informational only; never a scan or order limit.">'
+            + _metric_markup(items) + '</div>')
 
 
 def _expirations(client, symbol: str, touch_session) -> list[date]:
@@ -1590,12 +1632,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         with paste_cols[0]:
             if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
                 st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
-        with paste_cols[1], st.container(width=440):
+        with paste_cols[1], st.container(width=820):
             # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
-            mode_guide_col, mode_switch_col, smart_label_col = st.columns(
-                [1.0, .4, 1.0], gap="small", vertical_alignment="center"
+            mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(
+                [1.0, .4, 1.0, 2.0], gap="small", vertical_alignment="center"
             )
             with mode_guide_col:
                 st.html(
@@ -1618,6 +1660,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
                     '</span></span></span></div>'
                 )
+            with cash_col:
+                st.html(_liquid_cash_markup(client, touch_session))
             if pricing_mode is None:
                 return
         if st.session_state.get("vo_list_open"):

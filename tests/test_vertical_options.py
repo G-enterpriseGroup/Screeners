@@ -13,6 +13,158 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_liquid_cash_uses_risk_cash_field_without_changing_trade_state(self):
+        from copy import deepcopy
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        account = {"accountIdKey": "cash-a", "accountId": "12345474", "accountDesc": "Trading"}
+        state = {"etrade_accounts": [account], "risk_sizing_account": 0,
+                 "risk_liquid_balance": 99999, "vo_max_cost": "500", "vo_min_reward_risk": "2",
+                 "vo_target_breakeven": "", "vo_scan_result": {"scope": "existing"},
+                 "etrade_balances": {"cash-a": {"old": True}}}
+        before = deepcopy(state)
+        client = MagicMock(is_offline=False)
+        client.get_balance.return_value = {"BalanceResponse": {"Computed": {
+            "cashAvailableForInvestment": 1234.56, "cashBalance": 9876.54,
+            "cashBuyingPower": 50000, "marginBuyingPower": 100000}}}
+        touch = MagicMock()
+        with patch.object(vo.st, "session_state", state):
+            markup = vo._liquid_cash_markup(client, touch)
+        self.assertIn('class="vo-liquid-cash"', markup)
+        self.assertIn("LIQUID CASH // Trading // x5474", markup)
+        self.assertIn("$1,234.56", markup)
+        self.assertNotIn("$9,876.54", markup)
+        self.assertNotIn("$50,000.00", markup)
+        self.assertNotIn("$100,000.00", markup)
+        client.get_balance.assert_called_once_with("cash-a")
+        client.list_accounts.assert_not_called()
+        touch.assert_called_once_with()
+        self.assertEqual(state, before)
+        self.assertEqual(client.method_calls, [("get_balance", ("cash-a",), {})])
+
+    def test_liquid_cash_follows_default_selected_and_multiple_accounts(self):
+        from unittest.mock import MagicMock, call, patch
+        import src.vertical_options_ui as vo
+        accounts = [{"accountIdKey": "cash-a", "accountId": "12345474", "accountDesc": "Trading"},
+                    {"accountIdKey": "cash-b", "accountId": "87651234", "accountDesc": "IRA <B>"}]
+        client = MagicMock(is_offline=False)
+        client.get_balance.side_effect = lambda key: {"Computed": {
+            "cashAvailableForInvestment": {"cash-a": 1000, "cash-b": 2500}[key]}}
+        state = {"etrade_accounts": accounts, "risk_sizing_account": 1}
+        with patch.object(vo.st, "session_state", state):
+            default = vo._liquid_cash_markup(client, MagicMock())
+            self.assertIn("$2,500.00", default)
+            self.assertNotIn("$1,000.00", default)
+            self.assertIn("IRA &lt;B&gt; // x1234", default)
+            self.assertNotIn("IRA <B>", default)
+            state["vo_accounts"] = ["cash-a"]
+            switched = vo._liquid_cash_markup(client, MagicMock())
+            self.assertIn("$1,000.00", switched)
+            self.assertNotIn("$2,500.00", switched)
+            state["vo_accounts"] = ["cash-a", "cash-b"]
+            multiple = vo._liquid_cash_markup(client, MagicMock())
+            self.assertEqual(multiple.count('class="vo-card'), 2)
+            self.assertIn("$1,000.00", multiple)
+            self.assertIn("$2,500.00", multiple)
+            self.assertNotIn("$3,500.00", multiple)
+            state["vo_accounts"] = ["removed-account"]
+            fallback = vo._liquid_cash_markup(client, MagicMock())
+            self.assertIn("$2,500.00", fallback)
+        self.assertEqual(client.get_balance.call_args_list,
+                         [call("cash-b"), call("cash-a"), call("cash-a"), call("cash-b"), call("cash-b")])
+
+    def test_liquid_cash_fetches_missing_account_inventory_read_only(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        client = MagicMock(is_offline=False)
+        client.list_accounts.return_value = [None, {},
+            {"accountIdKey": "cash-a", "accountId": "12345474", "accountDesc": "Trading"}]
+        client.get_balance.return_value = {"Computed": {"cashBalance": 321.45}}
+        state = {}
+        touch = MagicMock()
+        with patch.object(vo.st, "session_state", state):
+            markup = vo._liquid_cash_markup(client, touch)
+        self.assertIn("$321.45", markup)
+        client.list_accounts.assert_called_once_with()
+        client.get_balance.assert_called_once_with("cash-a")
+        self.assertEqual(touch.call_count, 2)
+        self.assertEqual(state, {})
+
+    def test_liquid_cash_preserves_zero_negative_and_cash_fallbacks(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        account = {"accountIdKey": "cash-a", "accountId": "12345474"}
+        for field, value, expected, tone in (
+            ("cashAvailableForInvestment", 0, "$0.00", "green"),
+            ("cashAvailableForInvestment", -25.5, "$-25.50", "red"),
+            ("cashBalance", 0, "$0.00", "green"),
+            ("cashBalance", -10, "$-10.00", "red"),
+            ("netCash", 876.54, "$876.54", "green"),
+        ):
+            with self.subTest(field=field, value=value):
+                client = MagicMock(is_offline=False)
+                client.get_balance.return_value = {"Computed": {
+                    field: value, "cashBuyingPower": 50000, "marginBuyingPower": 100000}}
+                with patch.object(vo.st, "session_state", {"etrade_accounts": [account]}):
+                    markup = vo._liquid_cash_markup(client, MagicMock())
+                self.assertIn(expected, markup)
+                self.assertIn('class="vo-card vo-' + tone + '"', markup)
+                self.assertNotIn("UNAVAILABLE", markup)
+
+    def test_liquid_cash_missing_nonfinite_or_failed_balance_is_unavailable(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        account = {"accountIdKey": "cash-a", "accountId": "12345474"}
+        for payload in ({}, {"Computed": {"marginBuyingPower": 50000, "cashBuyingPower": 30000}},
+                        {"Computed": {"cashAvailableForInvestment": float("nan")}},
+                        {"Computed": {"cashAvailableForInvestment": float("inf")}},
+                        {"Computed": {"cashAvailableForInvestment": "invalid"}}, None):
+            with self.subTest(payload=payload):
+                client = MagicMock(is_offline=False)
+                client.get_balance.return_value = payload
+                with patch.object(vo.st, "session_state", {"etrade_accounts": [account]}):
+                    markup = vo._liquid_cash_markup(client, MagicMock())
+                self.assertIn("UNAVAILABLE", markup)
+                self.assertNotIn("$0.00", markup)
+        client = MagicMock(is_offline=False)
+        client.get_balance.side_effect = RuntimeError("balance down")
+        with patch.object(vo.st, "session_state", {"etrade_accounts": [account]}):
+            self.assertIn("UNAVAILABLE", vo._liquid_cash_markup(client, MagicMock()))
+            self.assertIn("UNAVAILABLE", vo._liquid_cash_markup(None, MagicMock()))
+        client.list_accounts.side_effect = RuntimeError("accounts down")
+        with patch.object(vo.st, "session_state", {}):
+            self.assertIn("UNAVAILABLE", vo._liquid_cash_markup(client, MagicMock()))
+
+    def test_liquid_cash_labels_offline_and_stale_balance_per_account(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        accounts = [{"accountIdKey": "cash-a", "accountDesc": "Trading"},
+                    {"accountIdKey": "cash-b", "accountDesc": "IRA"}]
+        for offline, resource, stale, cached in (
+            (False, "balance", True, True), (True, "balance", False, True),
+            (False, "balance", False, False), (False, "quote", True, False),
+        ):
+            with self.subTest(offline=offline, resource=resource, stale=stale):
+                state = {"etrade_accounts": accounts,
+                         "_etrade_cache_last_event": {"resource": resource, "stale": stale}}
+                client = MagicMock(is_offline=offline)
+                client.get_balance.return_value = {"Computed": {"cashAvailableForInvestment": 75}}
+                with patch.object(vo.st, "session_state", state):
+                    markup = vo._liquid_cash_markup(client, MagicMock())
+                self.assertEqual("// CACHED" in markup, cached)
+                self.assertIn("$75.00", markup)
+        state = {"etrade_accounts": accounts, "vo_accounts": ["cash-a", "cash-b"]}
+        client = MagicMock(is_offline=False)
+        def balance(key):
+            state["_etrade_cache_last_event"] = {"resource": "balance", "stale": key == "cash-a"}
+            return {"Computed": {"cashAvailableForInvestment": 75}}
+        client.get_balance.side_effect = balance
+        with patch.object(vo.st, "session_state", state):
+            markup = vo._liquid_cash_markup(client, MagicMock())
+        self.assertEqual(markup.count("// CACHED"), 1)
+        self.assertIn("Trading // xsh-a // CACHED", markup)
+        self.assertNotIn("IRA // xsh-b // CACHED", markup)
+
     def test_optional_prompt_migration_keeps_inputs_empty(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
@@ -1459,7 +1611,7 @@ else:
         self.assertNotIn('.st-key-vertical_options_workspace input,', ui)
         self.assertNotIn('.st-key-vo_smart_fill label > div:first-of-type', ui)
         self.assertIn('label_visibility="collapsed"', ui)
-        self.assertIn('mode_guide_col, mode_switch_col, smart_label_col = st.columns(', ui)
+        self.assertIn('mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(', ui)
         self.assertIn('with mode_switch_col:', ui)
         self.assertIn('key="vo_pricing_preference_reader", height=0', ui)
         self.assertIn('key="vo_pricing_preference_writer", height=0', ui)
