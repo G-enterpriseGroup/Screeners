@@ -128,6 +128,13 @@ class StubETrade:
         return [{"accountIdKey": "stub-key", "accountId": "12345474",
                  "accountDesc": "Test Account"}]
 
+    def get_balance(self, account_key):
+        record("balance", account_key=account_key)
+        return {"BalanceResponse": {"Computed": {
+            "cashAvailableForInvestment": 12345.67, "cashBalance": 2345.67,
+            "cashBuyingPower": 999999.0, "marginBuyingPower": 999999.0,
+        }}}
+
     def preview_order(self, account_key, payload):
         record("preview", account_key=account_key, payload=payload)
         return {"PreviewOrderResponse": {
@@ -582,6 +589,30 @@ def assert_no_result_overlap(driver) -> None:
                                     'normalize-space(.)="NEXT →" or normalize-space(.)="LAST »"]')
 
 
+def assert_liquid_cash_display(driver) -> None:
+    geometry = driver.execute_script("""
+        const cash=document.querySelector('.vo-liquid-cash');
+        const smart=document.querySelector('.vo-mode-help--smart').closest('.vo-mode-guide');
+        const box=element=>{const r=element.getBoundingClientRect();
+            return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};};
+        return {cash:box(cash),smart:box(smart),text:cash.innerText,
+            inputs:cash.querySelectorAll('input,select,textarea,button').length,
+            cashFields:[...document.querySelectorAll('input')].filter(input=>
+                /cash|liquid/i.test(input.getAttribute('aria-label')||'')).length,
+            labelSize:getComputedStyle(cash.querySelector('.vo-label')).fontSize,
+            valueSize:getComputedStyle(cash.querySelector('.vo-value')).fontSize};
+    """)
+    assert "LIQUID CASH" in geometry["text"] and "x5474" in geometry["text"], geometry
+    assert "$12,345.67" in geometry["text"] and "999,999" not in geometry["text"], geometry
+    assert geometry["cash"]["left"] >= geometry["smart"]["right"], geometry
+    assert min(geometry["cash"]["bottom"], geometry["smart"]["bottom"]) > max(
+        geometry["cash"]["top"], geometry["smart"]["top"]
+    ), geometry
+    assert geometry["cash"]["right"] <= driver.execute_script("return window.innerWidth"), geometry
+    assert geometry["inputs"] == geometry["cashFields"] == 0, geometry
+    assert geometry["labelSize"] == "9.92px" and geometry["valueSize"] == "13.76px", geometry
+
+
 def grid_menu_action(driver, key: str, action: str) -> None:
     def enter():
         panel = driver.find_element(By.ID, "filter-panel")
@@ -786,8 +817,11 @@ def test() -> None:
                 assert all(geometry["labelFits"]), geometry
                 assert geometry["formPadding"] == "0px", geometry
                 assert not geometry["overflow"], geometry
+                assert_liquid_cash_display(driver)
             driver.set_window_size(1440, 900)
             print("Vertical Options aligned scan controls PASS (1440 + 1100)", flush=True)
+            assert [event for event in events(event_path) if event["event"] == "balance"]
+            print("Read-only selected-account liquid cash beside SMART FILL PASS (1440 + 1100)", flush=True)
             def assert_switch_visibility(checked, key="vo_smart_fill"):
                 # Click a static note to remove keyboard focus, then move the
                 # pointer away. Hover/focus must not be required for contrast.
@@ -989,7 +1023,8 @@ def test() -> None:
                 assert_no_result_overlap(driver)
                 assert grid_snapshot(driver)["rowFontSize"] == "11.68px"
                 card_fonts = driver.execute_script("""
-                    return [...document.querySelectorAll('.vo-grid .vo-card')].map(card=>({
+                    return [...document.querySelectorAll('.vo-grid .vo-card')]
+                        .filter(card=>!card.closest('.vo-liquid-cash')).map(card=>({
                         label:getComputedStyle(card.querySelector('.vo-label')).fontSize,
                         value:getComputedStyle(card.querySelector('.vo-value')).fontSize
                     }));
@@ -1650,7 +1685,9 @@ def test() -> None:
             wait.until(lambda _: "SCANNING ALL YEARS // SPY" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: len([e for e in events(event_path) if e["event"] == "chain"]) > prior_chain_count)
             assert not grid_is_visible(driver), "Previous scan results flashed during a new scan"
-            assert not any(item.is_displayed() for item in driver.find_elements(By.CSS_SELECTOR, ".vo-grid")), (
+            assert not any(item.is_displayed() for item in driver.find_elements(
+                By.CSS_SELECTOR, ".vo-grid:not(.vo-liquid-cash .vo-grid)"
+            )), (
                 "Previous scan metrics remained visible during a new scan"
             )
             assert not any(item.is_displayed() for item in driver.find_elements(
