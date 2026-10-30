@@ -511,6 +511,220 @@ else:
         self.assertEqual(exported[0]["values"]["Ticker"], "=1+1")
         self.assertNotIn(0, exported[0]["formula_columns"])
 
+    def test_minimum_expiry_prunes_cached_results_and_recomputes_annual_winners(self):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        from src.vertical_options_store import VerticalResultStore, _rank
+
+        today = date(2027, 1, 1)
+        expiries = [today + timedelta(days=days) for days in (0, 1, 6, 7, 8)]
+        expiries.append(date(2028, 1, 21))
+        rows = [self._row(expiry, side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for expiry in expiries for side in ("CALL", "PUT") for k in range(4)]
+        store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+        for expiry in expiries:
+            store.add_expiration(expiry, [row for row in rows if row["expiry"] == expiry],
+                                 scan_vertical_candidates)
+        original = list(store.iter_ranked())
+        original_ids = {row["id"] for row in original}
+        self.assertEqual(store.column_filter_choices()["expiry"],
+                         [expiry.isoformat() for expiry in expiries])
+        self.assertEqual(min(row["expiry"] for row in store.annual_rows), today)
+
+        cutoff = today + timedelta(days=7)
+        expected = [row for row in original if row["expiry"] >= cutoff]
+        expected_ids = {row["id"] for row in expected}
+        self.assertEqual(store.prune_before(cutoff), len(original) - len(expected))
+        self.assertEqual(len(store), len(expected))
+        self.assertEqual(store.count(), len(expected))
+        self.assertEqual(store.ranked_expirations, 3)
+        self.assertEqual(store.expirations, expiries[3:])
+        self.assertEqual(store.column_filter_choices()["expiry"],
+                         [expiry.isoformat() for expiry in expiries[3:]])
+        self.assertEqual(list(store.iter_ranked()), expected)
+        self.assertEqual({row["id"] for row in store.iter_rows()}, expected_ids)
+        self.assertEqual({row["id"] for row in store.page(limit=1000)}, expected_ids)
+        self.assertEqual(set(store.get_many(original_ids)), expected_ids)
+        self.assertEqual(store.count(expiry=expiries[0]), 0)
+        self.assertEqual(store.count(column_filters={"expiry": [expiries[0].isoformat()]}), 0)
+        for side in ("CALL", "PUT"):
+            self.assertEqual(store.count(side=side),
+                             sum(row["call_put"] == side for row in expected))
+        self.assertEqual(store.counts_by_year(),
+                         {year: sum(row["year"] == year for row in expected)
+                          for year in (2027, 2028)})
+        self.assertEqual(store.count(year=2027),
+                         sum(row["year"] == 2027 for row in expected))
+        self.assertEqual({row["id"] for row in store.iter_rows(sort_by="YEAR + FILL")}, expected_ids)
+        winners = {year: min((row for row in expected if row["year"] == year),
+                             key=lambda row: _rank(row, None))
+                   for year in {row["year"] for row in expected}}
+        self.assertEqual({row["year"]: row for row in store.annual_rows}, winners)
+        self.assertEqual({row["year"]: row for row in store.best_by_year()}, winners)
+        self.assertEqual(store.annual_ids, {row["id"] for row in winners.values()})
+        self.assertEqual(winners[2027]["expiry"], cutoff)
+
+        calculator = MagicMock()
+        self.assertFalse(store.add_expiration(expiries[0], rows[:8], calculator))
+        calculator.assert_not_called()
+        self.assertEqual(store.prune_before(cutoff), 0)
+        self.assertEqual(store.prune_before(today), 0)
+        self.assertEqual(len(store), len(expected))
+        next_cutoff = cutoff + timedelta(days=1)
+        self.assertEqual(store.prune_before(next_cutoff),
+                         sum(row["expiry"] == cutoff for row in expected))
+        self.assertEqual(min(row["expiry"] for row in store.annual_rows), next_cutoff)
+        self.assertNotIn(cutoff.isoformat(), store.column_filter_choices()["expiry"])
+
+        store.prune_before(date(2029, 1, 1))
+        self.assertEqual(len(store), 0)
+        self.assertEqual(store.count(), 0)
+        self.assertEqual(store.ranked_expirations, 0)
+        self.assertEqual(store.annual_ids, set())
+        self.assertEqual(store.annual_rows, [])
+        self.assertEqual(store.best_by_year(), [])
+        self.assertEqual(store.expirations, [])
+        self.assertEqual(store.column_filter_choices()["expiry"], [])
+        self.assertEqual(store.get_many(original_ids), {})
+        self.assertEqual(list(store.iter_rows()), [])
+        self.assertEqual(store.page(), [])
+        for invalid in (None, "2027-01-08"):
+            with self.assertRaisesRegex(ValueError, "minimum expiration"):
+                store.prune_before(invalid)
+
+    def test_minimum_expiry_exports_preserve_call_put_highlights_and_year_scope(self):
+        import csv
+        import io
+        from datetime import timedelta
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        from src.vertical_options_store import VerticalResultStore
+
+        today = date(2026, 12, 24)
+        cutoff = today + timedelta(days=7)
+        expiries = [today + timedelta(days=days) for days in (0, 1, 6, 7, 8)]
+        rows = [self._row(expiry, side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for expiry in expiries for side in ("CALL", "PUT") for k in range(4)]
+        all_rows, all_annual = scan_vertical_candidates(
+            symbol="QQQ", spot_last=110, option_rows=rows, target_breakeven=None,
+            max_cost=None, max_per_expiration=None,
+        )
+        expected = [row for row in all_rows if row["expiry"] >= cutoff]
+        metadata = dict(source="E*TRADE", loaded_at=1000, target=None, max_cost=None)
+        with patch.object(vo, "_minimum_expiry_date", return_value=cutoff):
+            direct_csv = list(csv.DictReader(io.StringIO(vo._qualified_spreads_csv(
+                all_rows, all_annual, **metadata))))
+            _, direct_xlsx = self._xlsx_export_rows(vo._qualified_spreads_xlsx(
+                all_rows, all_annual, **metadata))
+            self.assertEqual(len(direct_csv), len(expected))
+            self.assertEqual(len(direct_xlsx), len(expected))
+            for export in (vo._qualified_store_csv, vo._qualified_store_xlsx):
+                store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+                for expiry in expiries:
+                    store.add_expiration(expiry, [row for row in rows if row["expiry"] == expiry],
+                                         scan_vertical_candidates)
+                payload = export(store, sort_by="YEAR + FILL", **metadata)
+                if isinstance(payload, str):
+                    exported = [{"values": row} for row in csv.DictReader(io.StringIO(payload))]
+                else:
+                    _, exported = self._xlsx_export_rows(payload)
+                self.assertEqual(len(exported), len(expected))
+                self.assertEqual(len(store), len(expected))
+                self.assertEqual(store.expirations, expiries[3:])
+                self.assertEqual(sum(row["values"]["Annual Best"] == "YES" for row in exported), 2)
+                self.assertEqual({row["values"]["Highlight"] for row in exported}, {"GREEN", "RED"})
+                self.assertTrue(any(row["values"]["Annual Best"] == "NO" for row in exported))
+                for row in exported:
+                    values = row["values"]
+                    self.assertGreaterEqual(date.fromisoformat(values["Expiration"]), cutoff)
+                    self.assertEqual(values["Highlight"], "GREEN" if values["Type"] == "CALL" else "RED")
+                    if "styles" in row:
+                        color = "A3E635" if values["Type"] == "CALL" else "EA0101"
+                        self.assertTrue(row["styles"])
+                        self.assertEqual(set(row["styles"]), {(color, "000000")})
+                filtered = export(store, sort_by="YEAR + FILL", year=2027,
+                                  column_filters={"side": ["PUT"]}, **metadata)
+                if isinstance(filtered, str):
+                    filtered_rows = list(csv.DictReader(io.StringIO(filtered)))
+                else:
+                    _, filtered_workbook = self._xlsx_export_rows(filtered)
+                    filtered_rows = [row["values"] for row in filtered_workbook]
+                self.assertEqual(len(filtered_rows), 6)
+                self.assertEqual({row["Highlight"] for row in filtered_rows}, {"RED"})
+                self.assertEqual({row["Expiration"][:4] for row in filtered_rows}, {"2027"})
+                self.assertEqual(sum(row["Annual Best"] == "YES" for row in filtered_rows), 1)
+
+    def test_scan_skips_short_expiries_and_prunes_restored_cache_without_refetch(self):
+        from datetime import timedelta
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        from src.vertical_options_store import VerticalResultStore
+
+        today = date(2027, 1, 1)
+        cutoff = today + timedelta(days=7)
+        expiries = [today + timedelta(days=days) for days in (0, 1, 6, 7, 8)]
+        rows = [self._row(expiry, side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k)
+                for expiry in expiries for side in ("CALL", "PUT") for k in range(4)]
+        client = MagicMock(is_offline=False)
+        client.get_quote.return_value = {"lastTrade": 110}
+        state = {}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "_minimum_expiry_date", return_value=cutoff),
+              patch.object(vo, "options_market_client", return_value=client),
+              patch.object(vo, "_expirations", return_value=expiries),
+              patch.object(vo, "_chain", side_effect=lambda _, symbol, expiry, touch:
+                           [row for row in rows if row["expiry"] == expiry]) as chain,
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_EXPIRATIONS", 99),
+              patch.object(vo, "_SCAN_BATCH_SECONDS", 999)):
+            fresh = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertTrue(fresh["scan_complete"])
+            self.assertEqual(fresh["expirations"], expiries[3:])
+            self.assertEqual([call.args[2] for call in chain.call_args_list], expiries[3:])
+            self.assertEqual(fresh["loaded_expirations"], 2)
+
+            old_store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+            for expiry in expiries:
+                old_store.add_expiration(expiry, [row for row in rows if row["expiry"] == expiry],
+                                         scan_vertical_candidates)
+            restored = {**fresh, "expirations": expiries, "rows": rows,
+                        "loaded_expirations": len(expiries), "next_expiry_index": len(expiries),
+                        "scan_complete": False, "failed_expirations": [expiries[0]],
+                        "result_stores": {(None, None, "NORMAL", 2.0): old_store}}
+            state["_vo_chain_cache"]["E*TRADE:QQQ"] = restored
+            cached = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertIs(cached, restored)
+            self.assertEqual(cached["expirations"], expiries[3:])
+            self.assertEqual({row["expiry"] for row in cached["rows"]}, set(expiries[3:]))
+            self.assertEqual(cached["loaded_expirations"], 2)
+            self.assertEqual(cached["next_expiry_index"], 2)
+            self.assertTrue(cached["scan_complete"])
+            self.assertEqual(cached["failed_expirations"], [])
+            store, annual, _, _ = vo._rank_cached_vertical_chains(cached, None, None, "NORMAL")
+            self.assertIs(store, old_store)
+            self.assertEqual(store.expirations, expiries[3:])
+            self.assertEqual(store.ranked_expirations, 2)
+            self.assertEqual(len(annual), 1)
+            self.assertEqual(chain.call_count, 2)
+            self.assertEqual(client.get_quote.call_count, 1)
+            with patch.object(vo, "_minimum_expiry_date", return_value=cutoff + timedelta(days=1)):
+                tomorrow = vo._scan_all_years(client, "QQQ", lambda: None)
+                store, _, _, _ = vo._rank_cached_vertical_chains(tomorrow, None, None, "NORMAL")
+            self.assertEqual(store.expirations, [expiries[-1]])
+            self.assertEqual(store.ranked_expirations, 1)
+            self.assertEqual(chain.call_count, 2)
+            self.assertEqual(client.get_quote.call_count, 1)
+            with patch.object(vo, "_expirations", return_value=expiries[:3]):
+                with self.assertRaisesRegex(ValueError, "at least 7 days"):
+                    vo._scan_all_years(client, "QQQ", lambda: None, refresh=True)
+            self.assertEqual(chain.call_count, 2)
+            client.preview_order.assert_not_called()
+            client.place_order.assert_not_called()
+
     def test_column_filters_cover_full_store_pages_and_csv_without_target(self):
         import csv
         import io

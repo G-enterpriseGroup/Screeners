@@ -82,9 +82,12 @@ const KEYS=["ticker","side","expiry","buy","sell","buy_last","sell_last","cost",
 const NUMERIC=new Set(["buy","sell","buy_last","sell_last","cost","breakeven","ratio","profit"]);
 const table=document.getElementById("table"),head=document.getElementById("head"),scroll=document.getElementById("scroll"),space=document.getElementById("space"),visible=document.getElementById("visible"),empty=document.getElementById("empty"),panel=document.getElementById("filter-panel");
 let scope="",sortKey="",rows=[],selected=new Set(),pendingSelection=null;
+let totalRows=0,rowOffset=0,viewportTimer=null,pendingViewport=null;
 let start=-1,end=-1,revision=0,pendingRevision=0,acknowledgedRevision=0;
 let columnFilters={},filterChoices={},pendingFilters=null,filterRevision=0,pendingFilterRevision=0,acknowledgedFilterRevision=0;
 let openKey="",searchTerm="",filterTimer=null;
+const SORT_FIELDS={expiry:"EXPIRATION",buy:"BUY STRIKE",sell:"SELL STRIKE",buy_last:"BUY LAST",sell_last:"SELL LAST",cost:"COST",breakeven:"BREAKEVEN",ratio:"R:R",profit:"MAX PROFIT",basis:"FILL QUALITY"};
+let sortBy="FILL + TARGET",sortDirection="ASC",sortable=false,hasTarget=false;
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
 function syncHeight(){
  head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";
@@ -128,8 +131,10 @@ function normalizedChoices(raw){
 function sameFilters(left,right){return JSON.stringify(normalizedFilters(left))===JSON.stringify(normalizedFilters(right));}
 function emitValue(){
  if(filterTimer!==null){clearTimeout(filterTimer);filterTimer=null;}
- post("streamlit:setComponentValue",{value:{scope,selected_ids:[...selected],revision,
-  column_filters:normalizedFilters(columnFilters),filter_revision:filterRevision},dataType:"json"});
+ const value={scope,selected_ids:[...selected],revision,
+  column_filters:normalizedFilters(columnFilters),filter_revision:filterRevision,sort_by:sortBy,sort_direction:sortDirection};
+ if(pendingViewport!==null){value.viewport_offset=pendingViewport;value.viewport_sort_key=sortKey;}
+ post("streamlit:setComponentValue",{value,dataType:"json"});
 }
 function changeFilters(next,delay=0){
  columnFilters=normalizedFilters(next);
@@ -145,8 +150,9 @@ function updateFilterHeaders(){
   const key=button.dataset.key,active=Object.hasOwn(columnFilters,key);
   button.classList.toggle("active",active);
   button.setAttribute("aria-pressed",active?"true":"false");
-  button.querySelector(".filter-icon").textContent=active?"●":"▾";
-  button.title=HEAD[KEYS.indexOf(key)+2]+(active?" • filtered":"")+" — open column filter";
+  const sorted=sortable&&(SORT_FIELDS[key]===sortBy||(key==="breakeven"&&sortBy==="TARGET DISTANCE"));
+  button.querySelector(".filter-icon").textContent=(sorted?(sortDirection==="DESC"?"↓":"↑"):"")+(active?"●":sorted?"":"▾");
+  button.title=HEAD[KEYS.indexOf(key)+2]+(active?" • filtered":"")+(sorted?" • sorted "+sortDirection:"")+" — open column filter";
  }
 }
 function closePanel(){panel.hidden=true;openKey="";syncHeight();}
@@ -164,6 +170,15 @@ function renderPanel(){
   menuButton("CLEAR COLUMN",()=>{const next={...columnFilters};delete next[key];changeFilters(next);renderPanel();}),
   menuButton("CLEAR ALL",()=>{changeFilters({});renderPanel();})
  );panel.appendChild(actions);
+ if(sortable&&SORT_FIELDS[key]){
+  const sorting=document.createElement("div");sorting.className="filter-actions";
+  function chooseSort(field,direction){sortBy=field;sortDirection=direction;changeFilters(columnFilters);closePanel();}
+  sorting.append(menuButton("SORT ASC",()=>chooseSort(SORT_FIELDS[key],"ASC")),
+                 menuButton("SORT DESC",()=>chooseSort(SORT_FIELDS[key],"DESC")));
+  if(key==="breakeven"&&hasTarget)sorting.append(menuButton("NEAREST TARGET",()=>chooseSort("TARGET DISTANCE","ASC")));
+  if(key==="basis")sorting.append(menuButton("FILL + TARGET",()=>chooseSort("FILL + TARGET","ASC")));
+  panel.appendChild(sorting);
+ }
  if(NUMERIC.has(key)){
   const range=columnFilters[key]||{};
   for(const bound of ["min","max"]){
@@ -308,17 +323,27 @@ function makeRow(row,index){
 }
 function paint(force=false){
  const first=Math.max(0,Math.floor(scroll.scrollTop/ROW_HEIGHT)-5);
- const last=Math.min(rows.length,first+Math.ceil(scroll.clientHeight/ROW_HEIGHT)+12);
- if(!force&&first===start&&last===end)return;
- start=first;end=last;visible.style.transform="translateY("+(start*ROW_HEIGHT)+"px)";
+ const last=Math.min(totalRows,first+Math.ceil(scroll.clientHeight/ROW_HEIGHT)+12);
+ const covered=first>=rowOffset&&last<=rowOffset+rows.length;
+ scroll.setAttribute("aria-busy",covered?"false":"true");
+ if(viewportTimer!==null){clearTimeout(viewportTimer);viewportTimer=null;}
+ if(!covered&&totalRows){
+  const offset=Math.max(0,Math.min(Math.floor(first/100)*100,totalRows-200));
+  if(force||pendingViewport!==offset)viewportTimer=setTimeout(()=>{
+   viewportTimer=null;pendingViewport=offset;emitValue();
+  },100);
+ }
+ const renderFirst=Math.max(first,rowOffset),renderLast=Math.min(last,rowOffset+rows.length);
+ if(!force&&renderFirst===start&&renderLast===end)return;
+ start=renderFirst;end=renderLast;visible.style.transform="translateY("+(start*ROW_HEIGHT)+"px)";
  const fragment=document.createDocumentFragment();
- for(let i=first;i<last;i++)fragment.appendChild(makeRow(rows[i],i));
+ for(let i=renderFirst;i<renderLast;i++)fragment.appendChild(makeRow(rows[i-rowOffset],i));
  visible.replaceChildren(fragment);
 }
 scroll.addEventListener("scroll",()=>paint(),{passive:true});
 visible.addEventListener("click",event=>{
  const button=event.target.closest("button.select");if(!button)return;
- const row=rows[Number(button.dataset.index)];if(!row||typeof row.id!=="string")return;
+ const row=rows[Number(button.dataset.index)-rowOffset];if(!row||typeof row.id!=="string")return;
  if(selected.has(row.id))selected.delete(row.id);else selected.add(row.id);
  button.setAttribute("aria-pressed",selected.has(row.id)?"true":"false");
  pendingSelection=new Set(selected);
@@ -331,8 +356,16 @@ window.addEventListener("message",event=>{
  const newScope=String(args.scope||""),newSort=String(args.sort_key||"");
  const needsReset=newScope!==scope||newSort!==sortKey,scopeChanged=newScope!==scope;
  scope=newScope;sortKey=newSort;rows=Array.isArray(args.rows)?args.rows:[];
+ totalRows=Number.isInteger(args.total_rows)&&args.total_rows>=0?args.total_rows:rows.length;
+ rowOffset=Number.isInteger(args.row_offset)&&args.row_offset>=0?args.row_offset:0;
+ if(needsReset){
+  if(viewportTimer!==null){clearTimeout(viewportTimer);viewportTimer=null;}
+  pendingViewport=null;
+ }else if(pendingViewport===rowOffset)pendingViewport=null;
  const priorFilters=columnFilters,priorChoices=filterChoices;
  const serverFilters=normalizedFilters(args.column_filters);
+ sortable=Boolean(args.sortable);hasTarget=Boolean(args.has_target);
+ if(scopeChanged||!pendingFilters){sortBy=String(args.sort_by||"FILL + TARGET");sortDirection=args.sort_direction==="DESC"?"DESC":"ASC";}
  filterChoices=normalizedChoices(args.filter_choices);
  const hasFilterAck=Number.isInteger(args.filter_ack_revision)&&args.filter_ack_revision>=0;
  const serverFilterRevision=hasFilterAck?args.filter_ack_revision:0;
@@ -374,9 +407,10 @@ window.addEventListener("message",event=>{
                     ||(!NUMERIC.has(openKey)&&JSON.stringify(priorChoices[openKey])
                        !==JSON.stringify(filterChoices[openKey]))))renderPanel();
  if(needsReset)scroll.scrollTop=0;
- scroll.style.height=Math.min(516,Math.max(52,rows.length*ROW_HEIGHT))+"px";
- space.style.height=(rows.length*ROW_HEIGHT)+"px";
- empty.style.display=rows.length?"none":"block";
+ scroll.style.height=Math.min(516,Math.max(52,totalRows*ROW_HEIGHT))+"px";
+ space.style.height=(totalRows*ROW_HEIGHT)+"px";
+ scroll.setAttribute("aria-label","Scrollable vertical option spreads; "+totalRows.toLocaleString()+" results");
+ empty.style.display=totalRows?"none":"block";
  start=-1;end=-1;paint(true);syncHeight();
 });
 new ResizeObserver(()=>syncHeight()).observe(document.getElementById("table"));
