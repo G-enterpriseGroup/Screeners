@@ -88,6 +88,7 @@ class VerticalResultStore:
         self._count = 0
         self._completed: dict[date, int] = {}
         self._annual: dict[int, dict[str, Any]] = {}
+        self._minimum_expiry: date | None = None
         self._indexes = {}
         self._choices_cache = None
         with self._connect() as db:
@@ -159,10 +160,41 @@ class VerticalResultStore:
         with self._lock:
             yield self
 
+    def prune_before(self, cutoff: date) -> int:
+        """Remove ineligible expirations from every retained-result access path."""
+        if type(cutoff) is not date:
+            raise ValueError("Invalid minimum expiration date.")
+        with self._lock:
+            if self._minimum_expiry is not None and cutoff <= self._minimum_expiry:
+                return 0
+            completed = {expiry: size for expiry, size in self._completed.items()
+                         if expiry >= cutoff}
+            annual = dict(self._annual)
+            with self._connect() as db:
+                removed = db.execute("DELETE FROM spreads WHERE expiry<?", [cutoff.isoformat()]).rowcount
+                if removed:
+                    annual = {}
+                    for year in sorted({expiry.year for expiry in completed}):
+                        row = db.execute(
+                            "SELECT * FROM spreads WHERE expiry>=? AND expiry<? ORDER BY "
+                            + _CANONICAL_ORDER + " LIMIT 1",
+                            [f"{year:04d}-01-01", f"{year + 1:04d}-01-01"],
+                        ).fetchone()
+                        if row is not None:
+                            annual[year] = self._decode(row)
+            self._count -= removed
+            self._completed = completed
+            self._annual = annual
+            self._minimum_expiry = cutoff
+            self._choices_cache = None
+            return removed
+
     def add_expiration(self, expiry: date, rows: list[dict[str, Any]], calculator: Callable,
                        progress: Callable[[int], None] | None = None) -> bool:
         """Commit a whole expiration atomically; never refetch or reprice old ones."""
         with self._lock:
+            if self._minimum_expiry is not None and expiry < self._minimum_expiry:
+                return False
             if self._completed.get(expiry) == len(rows):
                 return False
             annual = dict(self._annual)

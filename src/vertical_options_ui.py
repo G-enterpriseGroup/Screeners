@@ -32,7 +32,7 @@ import math
 from pathlib import Path
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import partial
 from typing import Any
 from urllib.parse import quote as url_quote
@@ -91,9 +91,17 @@ _VERTICAL_OPTIONS_CSS = """
     --vo-muted:#8f99a8;
     margin:0!important;
     padding:0!important;
+    gap:4px!important;
     font-family:"Courier New",monospace!important;
 }
 .st-key-vertical_options_workspace [data-testid="stVerticalBlock"]{gap:4px!important;}
+.st-key-vertical_options_workspace [data-testid="stCaptionContainer"],
+.st-key-vertical_options_workspace [data-testid="stCaptionContainer"] p{margin:0!important;padding:0!important;}
+.st-key-vertical_options_workspace [data-testid="stMarkdownContainer"]{margin:0!important;}
+.st-key-vertical_options_workspace [data-testid="stMarkdownContainer"] p{margin:0!important;}
+.st-key-vertical_options_workspace [data-testid="stHtml"]{margin:0!important;padding:0!important;}
+.st-key-vertical_options_workspace [data-testid="stRadio"]{margin:0!important;}
+
 .st-key-vertical_options_workspace [data-testid="stHorizontalBlock"]{gap:8px!important;}
 .st-key-vertical_options_workspace [data-testid="stColumn"]{min-width:0!important;}
 /* Keep the scan controls and source notice content-sized within this feature. */
@@ -293,6 +301,13 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace .st-key-vo_target_breakeven input,
 .st-key-vertical_options_workspace .st-key-vo_max_cost input,
 .st-key-vertical_options_workspace .st-key-vo_min_reward_risk input{height:36px!important;min-height:0!important;}
+.st-key-vertical_options_workspace :is(.st-key-vo_target_breakeven,.st-key-vo_max_cost) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
+    background:#444444!important;background-color:#444444!important;
+}
+.st-key-vertical_options_workspace :is(.st-key-vo_target_breakeven,.st-key-vo_max_cost) input::placeholder{
+    color:var(--vo-orange)!important;-webkit-text-fill-color:var(--vo-orange)!important;
+    font-weight:400!important;font-style:normal;opacity:1!important;
+}
 .st-key-vertical_options_workspace [data-testid="stFormSubmitButton"] button{
     height:38px!important;min-height:38px!important;box-sizing:border-box!important;
 }
@@ -331,12 +346,15 @@ _VERTICAL_OPTIONS_CSS = """
     visibility:visible;opacity:1;
 }
 .vo-grid{
-    display:grid;
-    grid-template-columns:repeat(6,minmax(0,1fr));
-    gap:8px;
-    margin:0 0 16px 0;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:stretch;
+    gap:4px;
+    margin:0;
 }
 .vo-card{
+    flex:0 0 auto;
+    width:max-content;
     display:flex;
     align-items:center;
     justify-content:space-between;
@@ -378,8 +396,6 @@ _VERTICAL_OPTIONS_CSS = """
     -webkit-text-fill-color:var(--vo-orange)!important;
     font:900 .68rem/1.25 "Courier New",monospace;
 }
-@media (max-width:1100px){.vo-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
-@media (max-width:760px){.vo-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
 
 /* Local financial-terminal controls; native inputs retain keyboard semantics. */
 .st-key-vertical_options_workspace label:has(input[role="switch"]){display:flex;align-items:center;gap:8px;min-height:32px;}
@@ -397,7 +413,7 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace button:focus-visible{outline:2px solid #fb8b1e!important;outline-offset:2px;}
 .st-key-vertical_options_workspace [data-testid="stNumberInput"] input{background:#050505!important;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;font:700 13px "Courier New",monospace!important;}
 .st-key-vertical_options_workspace [data-testid="stFormSubmitButton"] button{background:#fb8b1e!important;color:#000!important;border:1px solid #fb8b1e!important;border-radius:0!important;}
-.st-key-vertical_options_workspace .vo-help{position:relative;display:inline-block;margin:2px 0 4px;color:#fb8b1e;font:700 11px/1.4 "Courier New",monospace;}
+.st-key-vertical_options_workspace .vo-help{position:relative;display:inline-block;margin:0;color:#fb8b1e;font:700 11px/1.4 "Courier New",monospace;}
 .st-key-vertical_options_workspace .vo-help button{cursor:help;list-style:none;min-height:24px;display:flex;align-items:center;}
 .st-key-vertical_options_workspace .vo-help button{border:0;background:transparent;color:#fb8b1e;font:inherit;padding:0;}
 .st-key-vertical_options_workspace .vo-help button:focus-visible{outline:2px solid #fb8b1e;outline-offset:2px;}
@@ -421,6 +437,10 @@ def _money(value: Any) -> str:
 
 def _date_label(value: date) -> str:
     return value.strftime("%b-%d-%y")
+
+
+def _minimum_expiry_date() -> date:
+    return datetime.now(ZoneInfo("America/New_York")).date() + timedelta(days=7)
 
 
 def _expiry_time_label(expiry: date, today: date | None = None) -> str:
@@ -661,6 +681,8 @@ def _saved_drafts_csv(drafts: dict[str, dict[str, Any]]) -> str:
     writer.writeheader()
     for saved in drafts.values():
         row = saved["candidate"]
+        if row["expiry"] < _minimum_expiry_date():
+            continue
         quantity = int(saved.get("quantity", 1))
         writer.writerow({
             "Ticker": row["symbol"], "Side": row["call_put"],
@@ -699,7 +721,9 @@ def _save_checked_spreads(
 
 
 def _render_saved_spread_drafts() -> None:
-    drafts = st.session_state.get("vo_saved_spread_drafts") or {}
+    drafts = {identity: saved for identity, saved in
+              (st.session_state.get("vo_saved_spread_drafts") or {}).items()
+              if saved["candidate"]["expiry"] >= _minimum_expiry_date()}
     if not drafts:
         return
     with st.expander(f"TERMINAL SAVED SPREAD DRAFTS // {len(drafts)}", expanded=False):
@@ -837,8 +861,21 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
     cached = cache.get(cache_key)
     fresh_cached = (not refresh and isinstance(cached, dict)
                     and now - float(cached.get("loaded_at") or 0) < _SCAN_CACHE_SECONDS)
-    if fresh_cached and cached.get("scan_complete", True):
-        return cached
+    if fresh_cached:
+        cutoff = _minimum_expiry_date()
+        listed = list(cached["expirations"])
+        visited = int(cached.get("next_expiry_index", len(listed)))
+        cached["expirations"] = [expiry for expiry in listed if expiry >= cutoff]
+        cached["next_expiry_index"] = sum(expiry >= cutoff for expiry in listed[:visited])
+        cached["rows"] = [row for row in cached["rows"] if row["expiry"] >= cutoff]
+        cached["failed_expirations"] = [expiry for expiry in cached.get("failed_expirations", [])
+                                        if expiry >= cutoff]
+        cached["loaded_expirations"] = len({row["expiry"] for row in cached["rows"]})
+        if not cached["expirations"]:
+            raise ValueError(f"No listed option expirations at least 7 days away are available for {symbol}.")
+        cached["scan_complete"] = cached["next_expiry_index"] >= len(cached["expirations"])
+        if cached["scan_complete"]:
+            return cached
 
     market_client = options_market_client(client)
     if fresh_cached:
@@ -864,9 +901,9 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         name = str(quote.get("description") or company_name(symbol) or "").strip()
         record_lookup(symbol, name)
         expirations = [item for item in _expirations(market_client, symbol, touch_session)
-                       if item >= date.today()]
+                       if item >= _minimum_expiry_date()]
         if not expirations:
-            raise ValueError(f"No future listed option expirations are available for {symbol}.")
+            raise ValueError(f"No listed option expirations at least 7 days away are available for {symbol}.")
         rows, errors, failed_expirations, loaded, start_index = [], [], [], 0, 0
         tv_exchange = _tradingview_listing_exchange(symbol, quote_payload)
 
@@ -951,12 +988,14 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
     if not isinstance(store, VerticalResultStore):
         store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
                                     min_reward_risk=min_reward_risk)
+    store.prune_before(_minimum_expiry_date())
     policies[policy] = store
     while len(policies) > 2:
         policies.pop(next(iter(policies)))
     groups: dict[date, list[dict[str, Any]]] = {}
     for row in raw["rows"]:
-        groups.setdefault(row["expiry"], []).append(row)
+        if row["expiry"] >= _minimum_expiry_date():
+            groups.setdefault(row["expiry"], []).append(row)
     progress = st.progress(0.0, text="RANKING CALL + PUT SPREADS")
     started = time.monotonic()
     try:
@@ -1177,10 +1216,13 @@ def _qualified_spreads_csv(
         "Spread Bid", "Spread Mid", "Spread Ask", "Orderable",
         "Annual Best", "Underlying Last", "Target Breakeven ($)",
         "Max Cost Filter ($)", "Quote Source", "Quote Snapshot",
-        "Buy OSI", "Sell OSI", "OptionStrat URL",
+        "Buy OSI", "Sell OSI", "OptionStrat URL", "Highlight",
     ))
     snapshot = datetime.fromtimestamp(loaded_at).astimezone().isoformat(timespec="seconds")
+    cutoff = _minimum_expiry_date()
     for row in rows:
+        if row["expiry"] < cutoff:
+            continue
         writer.writerow((
             row["symbol"], row["call_put"], row["expiry"].isoformat(),
             row["buy_strike"], row["sell_strike"], row["width"],
@@ -1193,7 +1235,7 @@ def _qualified_spreads_csv(
             row["spot_last"], target if target is not None else "",
             max_cost if max_cost is not None else "",
             source, snapshot, row.get("buy_osi", ""), row.get("sell_osi", ""),
-            _optionstrat_url(row),
+            _optionstrat_url(row), "GREEN" if row["call_put"] == "CALL" else "RED",
         ))
     return output.getvalue()
 
@@ -1213,7 +1255,7 @@ def _qualified_spreads_xlsx(
         "Spread Bid", "Spread Mid", "Spread Ask", "Orderable",
         "Annual Best", "Underlying Last", "Target Breakeven ($)",
         "Max Cost Filter ($)", "Quote Source", "Quote Snapshot",
-        "Buy OSI", "Sell OSI", "OptionStrat URL",
+        "Buy OSI", "Sell OSI", "OptionStrat URL", "Highlight",
     )
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {
@@ -1256,7 +1298,10 @@ def _qualified_spreads_xlsx(
     sheet = new_sheet()
     data_rows = 0
     try:
+        cutoff = _minimum_expiry_date()
         for row in rows:
+            if row["expiry"] < cutoff:
+                continue
             if data_rows == max_data_rows:
                 sheet.autofilter(0, 0, data_rows, len(headers) - 1)
                 sheet = new_sheet()
@@ -1274,7 +1319,7 @@ def _qualified_spreads_xlsx(
                 row["spot_last"], target if target is not None else "",
                 max_cost if max_cost is not None else "",
                 source, snapshot, row.get("buy_osi", ""), row.get("sell_osi", ""),
-                _optionstrat_url(row),
+                _optionstrat_url(row), "GREEN" if row["call_put"] == "CALL" else "RED",
             )
             style = row_formats[(row["call_put"], annual)]
             for column, value in enumerate(values):
@@ -1302,6 +1347,7 @@ def _qualified_store_csv(store: VerticalResultStore, *, source: str, loaded_at: 
                          max_distance=None, column_filters=None, year=None) -> str:
     """Generate the full CSV on click, off the UI thread, from one revision."""
     with store.snapshot():
+        store.prune_before(_minimum_expiry_date())
         annual_ids = (store.annual_ids if max_distance is None and not column_filters and year is None
                       else {row["id"] for row in store.best_by_year(
                           max_distance=max_distance, column_filters=column_filters, year=year
@@ -1319,6 +1365,7 @@ def _qualified_store_xlsx(store: VerticalResultStore, *, source: str, loaded_at:
                           max_distance=None, column_filters=None, year=None) -> bytes:
     """Export all matching stored rows with CALL/PUT color and black text."""
     with store.snapshot():
+        store.prune_before(_minimum_expiry_date())
         annual_ids = (store.annual_ids if max_distance is None and not column_filters and year is None
                       else {row["id"] for row in store.best_by_year(
                           max_distance=max_distance, column_filters=column_filters, year=year
@@ -1522,14 +1569,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
     if hydrate_gex_snapshots(vault_key):
         persist_gex_snapshots(vault_key)
     with st.container(key="vertical_options_workspace"):
-        st.markdown(_VERTICAL_OPTIONS_CSS, unsafe_allow_html=True)
-        for switch in ("vo_smart_fill", "vo_be_filter_enabled", "vo_auto_finish"):
+        st.html(_VERTICAL_OPTIONS_CSS)
+        for switch in ("vo_smart_fill", "vo_auto_finish"):
             install_native_switch_theme(switch)
         _render_saved_spread_drafts()
-        st.markdown(
+        st.html(
             '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
-            '<span class="muted">ENTER TICKER // BREAKEVEN AND COST OPTIONAL // PRESS ENTER TO SCAN</span></div>',
-            unsafe_allow_html=True,
+            '<span class="muted">ENTER TICKER // BREAKEVEN AND COST OPTIONAL // PRESS ENTER TO SCAN</span></div>'
         )
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
         if not broker_live:
@@ -1696,12 +1742,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             scan_fields = st.columns([1.0, 1.0, .8, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 breakeven_text = st.text_input(
-                    "Target Breakeven", key="vo_target_breakeven", placeholder=_NO_BREAKEVEN,
+                    "Target Breakeven", key="vo_target_breakeven", placeholder="Not provided",
                     help="Optional target. Blank or the default text scans every breakeven; filter the Breakeven column afterward.",
                 )
             with scan_fields[1]:
                 cost_text = st.text_input(
-                    "Max Cost", key="vo_max_cost", placeholder=_NO_COST_CEILING,
+                    "Max Cost", key="vo_max_cost", placeholder="Not provided",
                     help="Optional maximum one-spread debit in dollars. Blank or the default text means no cost ceiling.",
                 )
             with scan_fields[2]:
@@ -1890,7 +1936,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 return
             if result["source"] == "E*TRADE" and not broker_live:
                 st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
-            st.markdown(
+            result["candidates"].prune_before(_minimum_expiry_date())
+            result["annual_ids"] = result["candidates"].annual_ids
+            st.html(
                 _metric_markup([
                     ("UNDERLYING LAST", _money(result["spot"]), "green"),
                     ("LISTED YEARS", str(result["listed_years"]), "blue"),
@@ -1899,19 +1947,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     ("QUALIFIED PAIRS", f'{len(result["candidates"]):,}', "green"),
                     ("YEARS WITH RESULTS", str(len(result["annual_ids"])), "blue"),
                 ]),
-                unsafe_allow_html=True,
             )
-            st.markdown(
-                '<div class="vo-section">VERTICAL SPREADS // ALL YEARS</div>',
-                unsafe_allow_html=True,
-            )
+            st.html('<div class="vo-section">VERTICAL SPREADS // ALL YEARS</div>')
             stamp = datetime.fromtimestamp(result["loaded_at"], ZoneInfo("America/New_York"))
             min_reward_risk = result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
             st.caption((
                 f'{result["source"]} // {stamp:%b %d, %I:%M %p %Z} // '
                 f'RISK:REWARD ≥ 1:{min_reward_risk:g} // '
                 f'TARGET {_money(result["target"]) if result["target"] is not None else "ANY"} // '
-                f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "ANY"}'
+                f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "ANY"} // 7+ DAYS TO EXPIRY'
             ).replace("$", r"\$"))
             if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
                 st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
@@ -1948,31 +1992,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 filter_choices = candidates.column_filter_choices()
                 saved_ids = set(state["ids"])
                 by_id = candidates.get_many(saved_ids)
-                if result["target"] is None and st.session_state.get("vo_be_filter_enabled"):
-                    st.session_state["vo_be_filter_enabled"] = False
-                    _remember_presentation("vo_be_filter_enabled")
+                saved_ids = set(by_id)
+                state["ids"] = saved_ids
                 max_distance = None
-                if result["target"] is not None:
-                    be_cols = st.columns([1.1, 1, 3], gap="small", vertical_alignment="bottom")
-                    be_enabled = be_cols[0].toggle(
-                        "BREAKEVEN FILTER", key="vo_be_filter_enabled",
-                        on_change=_remember_presentation, args=("vo_be_filter_enabled",),
-                        help="ON: include every qualifying spread within the selected range of the scan target. "
-                             f"OFF: show all qualifying breakevens. Minimum risk:reward 1:{min_reward_risk:g} applies.",
-                    )
-                    be_percent = be_cols[1].number_input(
-                        "BE RANGE ± (%)", min_value=0.0, max_value=100.0, step=.5,
-                        key="vo_be_range_percent", disabled=not be_enabled,
-                        on_change=_remember_presentation, args=("vo_be_range_percent",),
-                    )
-                    max_distance = result["target"] * be_percent / 100 if be_enabled else None
-                    if be_enabled:
-                        with be_cols[2]:
-                            st.caption((
-                                f'BREAKEVEN {_money(result["target"] - max_distance)} TO '
-                                f'{_money(result["target"] + max_distance)} // '
-                                f'{candidates.count(max_distance=max_distance):,} OF {len(candidates):,} PAIRS'
-                            ).replace("$", r"\$"))
                 # Give each scan a fresh widget identity; the previous scan's
                 # frontend radio value must not override this scan's BEST default.
                 view_key = f"vo_results_view_{scope}"
@@ -1981,11 +2003,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "RESULTS", ("BEST PER YEAR", "ALL QUALIFIED"),
                     key=view_key, horizontal=True, label_visibility="collapsed",
                     on_change=_remember_results_view, args=(view_key,),
-                    help="BEST PER YEAR: every eligible result grouped and ranked within its calendar year, with the top pick highlighted. ALL QUALIFIED: the same complete set ranked across all years. Both views are paged without downloading chains again.",
+                    help="BEST PER YEAR: every eligible result grouped and ranked within its calendar year, with the top pick highlighted. ALL QUALIFIED: the same complete set ranked across all years. Both views use one scrollable table without downloading chains again.",
                 )
                 expiry_filter, side_filter = "ALL", "CALL + PUT"
-                sort_filter = "YEAR + FILL" if view == "BEST PER YEAR" else "FILL + TARGET"
-                sort_direction = "ASC"
+                sort_filter = "YEAR + FILL" if view == "BEST PER YEAR" else st.session_state["vo_all_pair_sort"]
+                sort_direction = "ASC" if view == "BEST PER YEAR" else st.session_state["vo_all_pair_direction"]
                 all_matching_count = candidates.count(
                     max_distance=max_distance, column_filters=column_filters,
                 )
@@ -2024,115 +2046,80 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 view_identity = (
                     f"{view}|{active_year}|{max_distance}|{repr(sorted(column_filters.items()))}"
                 )
-                # Keep the full result set in SQLite and send only one page to
-                # the scroller, including in the default year-grouped view.
-                pages = max(1, (matching_count + 199) // 200)
-                page_scope = hashlib.sha256(
-                    repr((scope, view, active_year, max_distance,
-                          sorted(column_filters.items()))).encode("utf-8")
-                ).hexdigest()[:12]
-                page_key = "vo_all_pair_page_" + page_scope
-                page = min(pages, max(1, int(st.session_state["_vo_presentation"].get(page_key, 1))))
-                if pages > 1:
-                    nav = st.columns([.7, .9, 1.8, .9, .7], gap="small", vertical_alignment="center")
-                    nav[0].button("« FIRST", key="vo_all_pair_first", disabled=page == 1,
-                                  on_click=_navigate_all_pairs, args=(page_key, pages, "first"))
-                    nav[1].button("← PREVIOUS", key="vo_all_pair_previous", disabled=page == 1,
-                                  on_click=_navigate_all_pairs, args=(page_key, pages, "previous"))
-                    nav[3].button("NEXT →", key="vo_all_pair_next", disabled=page == pages,
-                                  on_click=_navigate_all_pairs, args=(page_key, pages, "next"))
-                    nav[4].button("LAST »", key="vo_all_pair_last", disabled=page == pages,
-                                  on_click=_navigate_all_pairs, args=(page_key, pages, "last"))
-                    with nav[2]:
-                        st.caption(f"ROWS {(page - 1) * 200 + 1:,}–{min(page * 200, matching_count):,} OF {matching_count:,}")
-                st.session_state[page_key] = page
-                _remember_presentation(page_key)
+                view_identity += f"|{sort_filter}|{sort_direction}"
+                viewport = st.session_state.get("_vo_table_viewport") or {}
+                offset = (int(viewport["offset"]) if viewport.get("scope") == scope
+                          and viewport.get("sort_key") == view_identity else 0)
+                offset = min(max(0, offset), max(0, matching_count - 200))
                 displayed_candidates = candidates.page(
-                    offset=(page - 1) * 200, limit=200,
+                    offset=offset, limit=200,
                     sort_by=sort_filter, direction=sort_direction,
-                    max_distance=max_distance, column_filters=column_filters,
-                    year=active_year,
+                    max_distance=max_distance, column_filters=column_filters, year=active_year,
                 )
-                view_identity += f"|{page}"
-                exports = st.columns(4, gap="small")
-                exports[0].download_button(
-                    f'ALL CSV // {len(candidates):,}',
-                    data=partial(
-                        _qualified_store_csv, candidates, source=result["source"],
-                        loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
-                    ),
-                    file_name=f'{result["symbol"]}_vertical_all_qualified.csv',
-                    mime="text/csv", key="vo_export_all_qualified",
-                    on_click="ignore",
-                    help="CSV contains values only. Use Excel to keep the row colors.",
-                    use_container_width=True,
-                )
-                exports[1].download_button(
-                    f'ALL EXCEL // {len(candidates):,}',
-                    data=partial(
-                        _qualified_store_xlsx, candidates, source=result["source"],
-                        loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"], sort_by=sort_filter, direction=sort_direction,
-                    ),
-                    file_name=f'{result["symbol"]}_vertical_all_qualified.xlsx',
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="vo_export_all_qualified_excel", on_click="ignore",
-                    help="Excel keeps bright CALL/PUT row colors and black text; CSV is plain data.",
-                    use_container_width=True,
-                )
-                exports[2].download_button(
-                    f"FILTERED CSV // {matching_count:,}",
-                    data=partial(
-                        _qualified_store_csv, candidates, source=result["source"],
-                        loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
+                with st.container(width=440):
+                    exports = st.columns(2, gap="small")
+                    export_options = dict(
+                        source=result["source"], loaded_at=result["loaded_at"],
+                        target=result["target"], max_cost=result["max_cost"],
                         sort_by=sort_filter, direction=sort_direction,
-                        max_distance=max_distance, column_filters=column_filters,
-                        year=active_year,
-                    ),
-                    file_name=f'{result["symbol"]}_vertical_filtered.csv',
-                    mime="text/csv", key="vo_export_filtered_qualified",
-                    on_click="ignore",
-                    help="CSV contains values only. Use Excel to keep the row colors.",
-                    use_container_width=True,
-                )
-                exports[3].download_button(
-                    f"FILTERED EXCEL // {matching_count:,}",
-                    data=partial(
-                        _qualified_store_xlsx, candidates, source=result["source"],
-                        loaded_at=result["loaded_at"], target=result["target"],
-                        max_cost=result["max_cost"], expiry=expiry_filter, side=side_filter,
-                        sort_by=sort_filter, direction=sort_direction,
-                        max_distance=max_distance, column_filters=column_filters,
-                        year=active_year,
-                    ),
-                    file_name=f'{result["symbol"]}_vertical_filtered.xlsx',
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="vo_export_filtered_qualified_excel", on_click="ignore",
-                    help="Excel keeps bright CALL/PUT row colors and black text; CSV is plain data.",
-                    use_container_width=True,
-                )
-                if not displayed_candidates:
-                    st.info("No spreads match these filters. Clear a column filter or change the breakeven range.")
+                        max_distance=max_distance, column_filters=column_filters, year=active_year,
+                    )
+                    for column, label, exporter, extension, mime in (
+                        (exports[0], "CSV", _qualified_store_csv, "csv", "text/csv"),
+                        (exports[1], "EXCEL", _qualified_store_xlsx, "xlsx",
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    ):
+                        column.download_button(
+                            f"EXPORT {label} // {matching_count:,}",
+                            data=partial(exporter, candidates, **export_options),
+                            file_name=f'{result["symbol"]}_vertical_qualified.{extension}',
+                            mime=mime, key=f"vo_export_qualified_{'excel' if extension == 'xlsx' else 'csv'}",
+                            on_click="ignore", use_container_width=True,
+                        )
+                if not matching_count:
+                    st.info("No spreads match these filters. Clear a column filter.")
+                # The table has one continuous scroll range. Load only its
+                # requested viewport so large scans do not exhaust server memory.
                 displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
                              for row in displayed_candidates]
-                by_id.update({row["id"]: row for row in displayed_candidates})
                 selected_update = _SPREAD_SCROLL_COMPONENT(
                     scope=scope, sort_key=view_identity, rows=displayed,
+                    total_rows=matching_count, row_offset=offset,
                     selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
                     column_filters=column_filters, filter_choices=filter_choices,
+                    sort_by=sort_filter, sort_direction=sort_direction,
+                    sortable=view == "ALL QUALIFIED", has_target=result["target"] is not None,
                     filter_ack_revision=int(filter_state["revision"]),
                     key="vo_spread_scroll_" + scope, default=None,
                 )
                 if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
                     rerun_for_component = False
+                    requested_offset = selected_update.get("viewport_offset")
+                    if (selected_update.get("viewport_sort_key") == view_identity
+                            and type(requested_offset) is int
+                            and 0 <= requested_offset < matching_count):
+                        requested_offset = min(requested_offset, max(0, matching_count - 200))
+                        if requested_offset != offset:
+                            st.session_state["_vo_table_viewport"] = {
+                                "scope": scope, "sort_key": view_identity, "offset": requested_offset,
+                            }
+                            rerun_for_component = True
                     incoming_filters = selected_update.get("column_filters")
                     try:
                         incoming_filter_revision = int(selected_update.get("filter_revision", 0))
                     except (TypeError, ValueError, OverflowError):
                         incoming_filter_revision = 0
                     if incoming_filter_revision > int(filter_state["revision"]):
+                        incoming_sort = selected_update.get("sort_by")
+                        incoming_direction = selected_update.get("sort_direction")
+                        if (incoming_sort in _QUALIFIED_SORT_FIELDS
+                                and incoming_direction in {"ASC", "DESC"}):
+                            for sort_key, value in (("vo_all_pair_sort", incoming_sort),
+                                                    ("vo_all_pair_direction", incoming_direction)):
+                                if st.session_state[sort_key] != value:
+                                    st.session_state[sort_key] = value
+                                    _remember_presentation(sort_key)
+                                    rerun_for_component = True
                         if isinstance(incoming_filters, dict):
                             try:
                                 candidates._where(column_filters=incoming_filters)
@@ -2164,19 +2151,20 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         st.rerun()
                 checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
                 st.caption(
-                    f'{len(displayed):,} ON THIS PAGE // {matching_count:,} MATCHING OF '
+                    f'{matching_count:,} DISPLAYED // {matching_count:,} MATCHING OF '
                     f'{len(candidates):,} QUALIFIED PAIRS '
                     f'FROM {result["ranked_expirations"]} COMPLETE CHAINS // {len(checked_ids)} CHECKED'
                 )
                 _scanner_help("RESULTS, RANGE & LINKS", (
                     "Each column filter applies to all stored scan results, including exports. "
-                    "The BE range applies when a target was entered. Filtering, sorting and "
-                    "paging reuse stored results without downloading chains. BEST PER YEAR "
+                    "Column menus filter and sort the retained universe. Filtering, sorting and "
+                    "scrolling reuse stored results without downloading chains. BEST PER YEAR "
                     "shows every match grouped and ranked within its year; its year buttons "
                     "show all matches for the selected year. ALL QUALIFIED ranks the same matches "
                     "across all years. The top pick in each year is ranked inside the active filters. "
                     "Green = CALL; red = PUT. Black text appears on both colors; "
                     "annual top picks are bold with a left marker. "
+                    "Excel keeps these fills. CSV records GREEN/RED in Highlight; CSV cannot store formatting. "
                     "COST is maximum loss per spread before fees. LAST* marks an unreliable quote "
                     "and cannot be ordered. OS opens the exact OptionStrat payoff; TV opens BUY "
                     "minus SELL option premiums. Links never send orders; chart coverage varies."
@@ -2263,6 +2251,9 @@ def _vertical_preview_error(exc: Exception) -> str:
 def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                            result: dict[str, Any], broker_live: bool) -> None:
     """Keep the existing reviewed, explicit multi-account order path optional."""
+    if candidate["expiry"] < _minimum_expiry_date():
+        st.warning("EXPIRATION EXCLUDED // Only options at least 7 days from today are available.")
+        return
     if not broker_live or result["source"] != "E*TRADE":
         st.info("Reconnect E*TRADE and run a fresh E*TRADE scan before reviewing a live order.")
         return
