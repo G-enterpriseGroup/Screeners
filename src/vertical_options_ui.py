@@ -658,6 +658,221 @@ def _expirations(client, symbol: str, touch_session) -> list[date]:
     return sorted(set(out))
 
 
+def _portfolio_verticals(positions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Infer only unambiguous standard verticals from raw broker positions.
+
+    Portfolio positions do not identify the original multi-leg trade. Never
+    arbitrarily match a group with several possible long/short strike pairs.
+    """
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    blocked_groups = set()
+    unmatched = []
+
+    def number(value):
+        try:
+            result = float(value)
+            return result if math.isfinite(result) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        product = position.get("Product") or {}
+        if not isinstance(product, dict) or str(product.get("securityType", "")).upper() != "OPTN":
+            continue
+        quantity = number(position.get("quantity"))
+        if quantity == 0:
+            continue
+        leg = {"symbol": str(product.get("symbol") or "").strip().upper(),
+               "call_put": str(product.get("callPut") or "").upper(),
+               "side": str(position.get("positionType") or "").upper(),
+               "strike": number(product.get("strikePrice")), "expiry": None,
+               "quantity": abs(quantity) if quantity is not None else None,
+               "osi": str(position.get("osiKey") or "").strip().upper()}
+        try:
+            leg["expiry"] = date(int(product["expiryYear"]), int(product["expiryMonth"]), int(product["expiryDay"]))
+            if (not re.fullmatch(r"[A-Z][A-Z0-9.]*", leg["symbol"])
+                    or leg["call_put"] not in {"CALL", "PUT"}
+                    or leg["side"] not in {"LONG", "SHORT"}
+                    or quantity is None or not quantity.is_integer()
+                    or (leg["side"] == "LONG" and quantity < 0)
+                    or leg["strike"] is None or leg["strike"] <= 0):
+                raise ValueError("Incomplete option identity or quantity")
+            complete = position.get("Complete") or {}
+            if not isinstance(complete, dict):
+                raise ValueError("Contract details unavailable")
+            multiplier = number(complete.get("optionMultiplier", position.get("optionMultiplier")))
+            adjusted = str(complete.get("optionsAdjustedFlag", "false")).lower()
+            if multiplier != 100 or adjusted not in {"false", "0", "n", "no"}:
+                raise ValueError("Adjusted or unverified contract multiplier")
+            root = leg["symbol"]
+            if leg["osi"]:
+                identity = re.fullmatch(r"([A-Z][A-Z0-9.]*?)-{0,5}(\d{6})([CP])(\d{8})", leg["osi"].replace(" ", ""))
+                if (not identity or identity.group(2) != leg["expiry"].strftime("%y%m%d")
+                        or identity.group(3) != leg["call_put"][0]
+                        or abs(int(identity.group(4)) / 1000 - leg["strike"]) >= .0001):
+                    raise ValueError("Contract identity does not match broker option fields")
+                root = identity.group(1)
+            if root[-1:].isdigit():
+                raise ValueError("Adjusted option root requires deliverable review")
+            cost = number(position.get("totalCost"))
+            leg["cost"] = (abs(cost) / (abs(quantity) * 100) if cost is not None
+                           else number(position.get("pricePaid")))
+            if leg["cost"] is not None:
+                leg["cost"] = abs(leg["cost"])
+            gain = number(position.get("totalGain"))
+            leg["pnl_per_contract"] = gain / abs(quantity) if gain is not None else None
+            key = (leg["symbol"], leg["expiry"], leg["call_put"], root)
+            groups.setdefault(key, []).append(leg)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            blocked_groups.add((leg["symbol"], leg["expiry"], leg["call_put"]))
+            unmatched.append(leg | {"reason": str(exc)})
+
+    spreads = []
+    for legs in groups.values():
+        if (legs[0]["symbol"], legs[0]["expiry"], legs[0]["call_put"]) in blocked_groups:
+            unmatched.extend(leg | {"reason": "Incomplete related option legs — review pairing"} for leg in legs)
+            continue
+        longs = [leg for leg in legs if leg["side"] == "LONG"]
+        shorts = [leg for leg in legs if leg["side"] == "SHORT"]
+        if len(longs) != 1 or len(shorts) != 1 or longs[0]["strike"] == shorts[0]["strike"]:
+            reason = "Multiple possible pairings — review legs" if len(legs) > 2 else "No matching opposite leg"
+            unmatched.extend(leg | {"reason": reason} for leg in legs)
+            continue
+        buy, sell = longs[0], shorts[0]
+        quantity = int(min(buy["quantity"], sell["quantity"]))
+        width = abs(buy["strike"] - sell["strike"])
+        debit = ((buy["strike"] < sell["strike"]) == (buy["call_put"] == "CALL"))
+        strategy = ({("CALL", True): "Bull call debit", ("PUT", True): "Bear put debit",
+                     ("CALL", False): "Bear call credit", ("PUT", False): "Bull put credit"}
+                    [(buy["call_put"], debit)])
+        entry = buy["cost"] - sell["cost"] if buy["cost"] is not None and sell["cost"] is not None else None
+        valid_cost = entry is not None and (0 <= entry <= width if debit else -width <= entry <= 0)
+        breakeven = max_gain = max_loss = None
+        if valid_cost:
+            premium = abs(entry)
+            breakeven = ((buy["strike"] + premium if buy["call_put"] == "CALL" else buy["strike"] - premium)
+                         if debit else (sell["strike"] + premium if buy["call_put"] == "CALL" else sell["strike"] - premium))
+            max_gain = (width - premium if debit else premium) * 100 * quantity
+            max_loss = (premium if debit else width - premium) * 100 * quantity
+        pnl = (quantity * (buy["pnl_per_contract"] + sell["pnl_per_contract"])
+               if buy["pnl_per_contract"] is not None and sell["pnl_per_contract"] is not None else None)
+        spreads.append({"symbol": buy["symbol"], "expiry": buy["expiry"], "call_put": buy["call_put"],
+                        "buy_strike": buy["strike"], "sell_strike": sell["strike"],
+                        "buy_osi": buy["osi"], "sell_osi": sell["osi"], "quantity": quantity,
+                        "strategy": strategy, "entry": entry, "breakeven": breakeven,
+                        "max_gain": max_gain, "max_loss": max_loss, "pnl": pnl})
+        for leg in legs:
+            if leg["quantity"] > quantity:
+                unmatched.append(leg | {"quantity": leg["quantity"] - quantity, "reason": "Unpaired residual contracts"})
+    return sorted(spreads, key=lambda row: (row["symbol"], row["expiry"], row["call_put"], row["buy_strike"])), unmatched
+
+
+def _load_portfolio_verticals(client, touch_session, accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read each account independently through the existing portfolio cache."""
+    result = []
+    for account in accounts:
+        snapshot = {"account": _account_label(account), "spreads": [], "unmatched": [], "error": "", "cached": False, "age": None}
+        try:
+            if client is None:
+                raise ValueError("Connect E*TRADE to load portfolio positions.")
+            positions = client.get_portfolio(_account_key(account))
+            event = st.session_state.get("_etrade_cache_last_event") or {}
+            snapshot["cached"] = bool(getattr(client, "is_offline", False)
+                                      or (event.get("resource") == "portfolio" and event.get("stale")))
+            if callable(getattr(client, "cache_age", None)):
+                snapshot["age"] = client.cache_age("portfolio", _account_key(account))
+            touch_session()
+            if not isinstance(positions, list):
+                raise ValueError("Portfolio response unavailable.")
+            snapshot["spreads"], snapshot["unmatched"] = _portfolio_verticals(positions)
+        except Exception:
+            snapshot["error"] = "Portfolio unavailable. Reconnect E*TRADE and reopen the dashboard."
+        result.append(snapshot)
+    return result
+
+
+@st.dialog("PORTFOLIO VERTICALS", width="large")
+def _render_portfolio_verticals(client, touch_session) -> None:
+    with st.container(key="vo_portfolio_dashboard"):
+        st.html("""<style>
+        .st-key-vo_portfolio_dashboard{--vo-orange:#fb8b1e;--vo-green:#4af6c3;--vo-red:#ff433d;--vo-blue:#0068ff;}
+        .st-key-vo_portfolio_dashboard [data-testid="stVerticalBlock"]{gap:4px!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stCaptionContainer"],
+        .st-key-vo_portfolio_dashboard [data-testid="stMarkdownContainer"]{margin:0!important;padding:0!important;}
+        [role="dialog"]:has(.st-key-vo_portfolio_dashboard) h2,
+        [role="dialog"]:has(.st-key-vo_portfolio_dashboard) h2 *{color:#000!important;-webkit-text-fill-color:#000!important;}
+        .st-key-vo_portfolio_dashboard [data-tag],
+        .st-key-vo_portfolio_dashboard [data-tag] *{color:#000!important;-webkit-text-fill-color:#000!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stCaptionContainer"] p{color:#8f99a8!important;-webkit-text-fill-color:#8f99a8!important;margin:0!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a{background:#050505!important;border:1px solid #fb8b1e!important;min-height:32px!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a *{color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;}
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"],
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"] *{color:#f2f2f2!important;-webkit-text-fill-color:#f2f2f2!important;}
+        </style>""")
+        _render_portfolio_verticals_content(client, touch_session)
+
+
+def _render_portfolio_verticals_content(client, touch_session) -> None:
+    accounts = [account for account in (st.session_state.get("etrade_accounts") or [])
+                if isinstance(account, dict) and _account_key(account)]
+    if not accounts and client is not None:
+        try:
+            accounts = [account for account in client.list_accounts() if isinstance(account, dict) and _account_key(account)]
+            touch_session()
+        except Exception:
+            pass
+    if not accounts:
+        st.info("Connect E*TRADE to view your portfolio's vertical options.")
+        return
+    labels = {_account_key(account): _account_label(account) for account in accounts}
+    selected = st.multiselect("PORTFOLIO ACCOUNTS", list(labels), default=list(labels),
+                              format_func=labels.get, key="vo_portfolio_accounts")
+    snapshots = _load_portfolio_verticals(client, touch_session,
+                                         [account for account in accounts if _account_key(account) in selected])
+    st.caption("Held positions only. Pairing is inferred within each account; ambiguous legs appear below. "
+               "Breakeven and maximum gain/loss use average entry cost at expiration, before additional fees, with both legs intact.")
+    for snapshot in snapshots:
+        age = snapshot["age"]
+        stamp = f" // SNAPSHOT {age:.0f}s AGO" if isinstance(age, (int, float)) and math.isfinite(age) else ""
+        st.markdown("**" + snapshot["account"] + (" // CACHED" if snapshot["cached"] else "") + stamp + "**")
+        if snapshot["error"]:
+            st.warning(snapshot["error"])
+            continue
+        spreads = snapshot["spreads"]
+        if not spreads:
+            st.info("No unambiguous standard vertical spreads in this account.")
+        for spread in spreads:
+            with st.container(border=True):
+                st.html('<div class="vo-summary">' + html.escape(
+                    f'{spread["symbol"]} // {spread["strategy"]} // {spread["quantity"]} spread(s) // {_date_label(spread["expiry"])}') + '</div>')
+                st.caption(f'LONG {spread["buy_strike"]:g} {spread["call_put"]} / SHORT {spread["sell_strike"]:g} {spread["call_put"]}'
+                           f' // ENTRY {_money(abs(spread["entry"]) if spread["entry"] is not None else None)} '
+                           f'{("DEBIT" if spread["entry"] >= 0 else "CREDIT") if spread["entry"] is not None else "BASIS UNAVAILABLE"} / SHARE')
+                st.html(_metric_markup([
+                    ("BREAKEVEN", _money(spread["breakeven"]), "orange"),
+                    ("OPEN P/L", _money(spread["pnl"]), "red" if spread["pnl"] is not None and spread["pnl"] < 0 else "green"),
+                    ("MAX GAIN", _money(spread["max_gain"]), "green"),
+                    ("MAX LOSS", _money(spread["max_loss"]), "red"),
+                ]))
+                if spread["breakeven"] is None:
+                    st.caption("Entry basis is missing or outside standard opening-price bounds. Expiration payoff unavailable.")
+                links = st.columns(2)
+                links[0].link_button("OPTIONSTRAT", _optionstrat_url(spread), use_container_width=True)
+                tv_url = _tradingview_spread_url(spread)
+                links[1].link_button("TRADINGVIEW", tv_url or "https://www.tradingview.com/chart/",
+                                     disabled=not tv_url, use_container_width=True)
+        if snapshot["unmatched"]:
+            with st.expander(f'UNPAIRED / REVIEW LEGS // {len(snapshot["unmatched"])}'):
+                st.dataframe([{"Ticker": leg["symbol"], "Type": leg["call_put"], "Side": leg["side"],
+                               "Expiry": leg["expiry"], "Strike": leg["strike"], "Qty": leg["quantity"],
+                               "Reason": leg["reason"]} for leg in snapshot["unmatched"]],
+                              hide_index=True, use_container_width=True)
+    st.caption("Open P/L is broker-reported unrealized gain/loss for matched quantities; max gain/loss are totals for those quantities. "
+               "OptionStrat may use current quotes. TradingView charts long minus short option premiums per share; coverage and delay vary.")
+
+
 def _chain(client, symbol: str, expiry: date, touch_session) -> list[dict[str, Any]]:
     payload = client.get_option_chain(
         symbol,
@@ -1080,7 +1295,7 @@ def _continue_vertical_scan(result: dict[str, Any], client, touch_session) -> di
     }
 
 def _optionstrat_url(candidate: dict[str, Any]) -> str:
-    """Open the exact two-leg debit spread in OptionStrat's strategy builder."""
+    """Open the exact long/short vertical in OptionStrat's strategy builder."""
     symbol = str(candidate["symbol"]).strip().upper()
     expiry = candidate["expiry"].strftime("%y%m%d")
     def leg(strike: float, side: str, osi: str, short: bool = False) -> str:
@@ -1099,11 +1314,11 @@ def _optionstrat_url(candidate: dict[str, Any]) -> str:
                 root = match.group(1).rstrip("-") or symbol
         return ("-" if short else "") + f".{root}{expiry}{side}{strike_text}"
     if candidate["call_put"] == "CALL":
-        strategy = "bull-call-spread"
+        strategy = "bull-call-spread" if candidate["buy_strike"] < candidate["sell_strike"] else "bear-call-spread"
         legs = (leg(candidate["buy_strike"], "C", candidate.get("buy_osi", "")) + ","
                 + leg(candidate["sell_strike"], "C", candidate.get("sell_osi", ""), True))
     else:
-        strategy = "bear-put-spread"
+        strategy = "bear-put-spread" if candidate["buy_strike"] > candidate["sell_strike"] else "bull-put-spread"
         legs = (leg(candidate["sell_strike"], "P", candidate.get("sell_osi", ""), True) + ","
                 + leg(candidate["buy_strike"], "P", candidate.get("buy_osi", "")))
     return f"https://optionstrat.com/build/{strategy}/{url_quote(symbol, safe='')}/{url_quote(legs, safe='.,-')}"
@@ -1615,10 +1830,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         for switch in ("vo_smart_fill", "vo_auto_finish"):
             install_native_switch_theme(switch)
         _render_saved_spread_drafts()
-        st.html(
-            '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
-            '<span class="muted">ENTER TICKER // BREAKEVEN AND COST OPTIONAL // PRESS ENTER TO SCAN</span></div>'
-        )
+        note_col, portfolio_col = st.columns([4, 1.4], gap="small", vertical_alignment="center")
+        with note_col:
+            st.html(
+                '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
+                '<span class="muted">ENTER TICKER // BREAKEVEN AND COST OPTIONAL // PRESS ENTER TO SCAN</span></div>'
+            )
+        with portfolio_col:
+            if st.button("PORTFOLIO VERTICALS", key="vo_portfolio_open", use_container_width=True):
+                _render_portfolio_verticals(client, touch_session)
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
         if not broker_live:
             st.warning(

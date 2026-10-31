@@ -2466,5 +2466,322 @@ else:
         self.assertEqual(request["Order"], preview["PreviewOrderRequest"]["Order"])
 
 
+class PortfolioVerticalsTests(unittest.TestCase):
+    @staticmethod
+    def _position(strike, side, *, call_put="CALL", quantity=2, premium=1,
+                  gain=0, symbol="SPY", expiry=date(2027, 1, 15), root=None):
+        root = root or symbol
+        return {
+            "Product": {"symbol": symbol, "securityType": "OPTN", "callPut": call_put,
+                        "expiryYear": expiry.year, "expiryMonth": expiry.month,
+                        "expiryDay": expiry.day, "strikePrice": strike},
+            "osiKey": f"{root:<6}{expiry:%y%m%d}{call_put[0]}{round(strike * 1000):08d}",
+            "positionType": side, "quantity": quantity, "pricePaid": premium,
+            "totalCost": abs(quantity) * premium * 100 * (-1 if side == "SHORT" else 1),
+            "totalGain": gain, "marketValue": 99999,
+            "Complete": {"optionMultiplier": 100, "optionsAdjustedFlag": False},
+        }
+
+    def test_four_vertical_strategies_use_cost_basis_and_quantity(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        for call_put, buy, sell, buy_premium, sell_premium, strategy, entry, be, gain, loss in (
+            ("CALL", 100, 105, 3, 1, "Bull call debit", 2, 102, 600, 400),
+            ("PUT", 105, 100, 3, 1, "Bear put debit", 2, 103, 600, 400),
+            ("CALL", 105, 100, 1, 3, "Bear call credit", -2, 102, 400, 600),
+            ("PUT", 100, 105, 1, 3, "Bull put credit", -2, 103, 400, 600),
+        ):
+            with self.subTest(strategy=strategy):
+                positions = [self._position(buy, "LONG", call_put=call_put,
+                                            premium=buy_premium, gain=80),
+                             self._position(sell, "SHORT", call_put=call_put,
+                                            premium=sell_premium, gain=-30)]
+                spreads, unmatched = _portfolio_verticals(positions)
+                self.assertEqual(unmatched, [])
+                self.assertEqual(len(spreads), 1)
+                spread = spreads[0]
+                self.assertEqual(spread["symbol"], "SPY")
+                self.assertEqual(spread["expiry"], date(2027, 1, 15))
+                self.assertEqual(spread["call_put"], call_put)
+                self.assertEqual(spread["buy_strike"], buy)
+                self.assertEqual(spread["sell_strike"], sell)
+                self.assertEqual(spread["quantity"], 2)
+                self.assertEqual(spread["strategy"], strategy)
+                for field, expected in (("entry", entry), ("breakeven", be),
+                                        ("max_gain", gain), ("max_loss", loss), ("pnl", 50)):
+                    self.assertAlmostEqual(spread[field], expected)
+
+    def test_unequal_quantities_prorate_pnl_and_keep_residual_leg(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        spreads, unmatched = _portfolio_verticals([
+            self._position(100, "LONG", quantity=3, premium=3, gain=90),
+            self._position(105, "SHORT", quantity=2, premium=1, gain=-20),
+        ])
+        self.assertEqual(len(spreads), 1)
+        self.assertEqual(spreads[0]["quantity"], 2)
+        self.assertEqual(spreads[0]["entry"], 2)
+        self.assertEqual(spreads[0]["pnl"], 40)
+        self.assertEqual(spreads[0]["max_gain"], 600)
+        self.assertEqual(spreads[0]["max_loss"], 400)
+        self.assertEqual(len(unmatched), 1)
+        self.assertEqual(unmatched[0]["quantity"], 1)
+
+    def test_signed_short_quantity_is_not_double_negated(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        spreads, unmatched = _portfolio_verticals([
+            self._position(100, "LONG", premium=3, gain=60),
+            self._position(105, "SHORT", quantity=-2, premium=1, gain=-10),
+        ])
+        self.assertEqual(unmatched, [])
+        self.assertEqual(spreads[0]["quantity"], 2)
+        self.assertEqual(spreads[0]["entry"], 2)
+        self.assertEqual(spreads[0]["pnl"], 50)
+
+    def test_pairing_never_crosses_symbol_expiry_type_or_option_root(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        long = self._position(100, "LONG", premium=3, symbol="SPX", root="SPXW")
+        for change in ({"symbol": "SPY"}, {"expiry": date(2027, 2, 19)},
+                       {"call_put": "PUT"}, {"root": "SPX"}):
+            with self.subTest(change=change):
+                short = self._position(105, "SHORT", **({"symbol": "SPX", "root": "SPXW"} | change))
+                spreads, unmatched = _portfolio_verticals([long, short])
+                self.assertEqual(spreads, [])
+                self.assertEqual(len(unmatched), 2)
+
+    def test_ambiguous_same_group_is_unpaired_instead_of_inventing_spreads(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        spreads, unmatched = _portfolio_verticals([
+            self._position(100, "LONG", premium=3),
+            self._position(105, "SHORT"),
+            self._position(110, "SHORT", premium=.5),
+        ])
+        self.assertEqual(spreads, [])
+        self.assertEqual(len(unmatched), 3)
+
+    def test_same_strike_and_same_direction_are_not_verticals(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        for strike, side in ((100, "SHORT"), (105, "LONG")):
+            with self.subTest(strike=strike, side=side):
+                spreads, unmatched = _portfolio_verticals([
+                    self._position(100, "LONG", premium=3), self._position(strike, side)])
+                self.assertEqual(spreads, [])
+                self.assertEqual(len(unmatched), 2)
+
+    def test_incomplete_related_leg_prevents_false_unambiguous_pairing(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        incomplete = self._position(110, "SHORT", premium=.5)
+        incomplete["Complete"].pop("optionMultiplier")
+        spreads, unmatched = _portfolio_verticals([
+            self._position(100, "LONG", premium=3), self._position(105, "SHORT"), incomplete])
+        self.assertEqual(spreads, [])
+        self.assertEqual(len(unmatched), 3)
+
+    def test_adjusted_unknown_multiplier_and_malformed_contracts_remain_unpaired(self):
+        from copy import deepcopy
+        from src.vertical_options_ui import _portfolio_verticals
+        base = self._position(100, "LONG", premium=3)
+        for field, value in (("quantity", .5), ("quantity", "invalid"),
+                             ("positionType", "UNKNOWN"), ("osiKey", "malformed"),
+                             ("strikePrice", float("nan")), ("expiryMonth", 13),
+                             ("optionMultiplier", 10), ("optionMultiplier", None),
+                             ("optionsAdjustedFlag", True), ("Complete", ["malformed"])):
+            with self.subTest(field=field, value=value):
+                malformed = deepcopy(base)
+                target = (malformed["Product"] if field in {"strikePrice", "expiryMonth"}
+                          else malformed["Complete"] if field in {
+                              "optionMultiplier", "optionsAdjustedFlag"} else malformed)
+                if value is None:
+                    target.pop(field)
+                else:
+                    target[field] = value
+                spreads, unmatched = _portfolio_verticals([
+                    malformed, self._position(105, "SHORT")])
+                self.assertEqual(spreads, [])
+                self.assertEqual(len(unmatched), 2)
+
+    def test_nonoptions_and_zero_positions_are_ignored(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        stock = self._position(100, "LONG")
+        stock["Product"]["securityType"] = "EQ"
+        self.assertEqual(_portfolio_verticals([
+            stock, self._position(105, "SHORT", quantity=0), None, {}]), ([], []))
+
+    def test_cost_basis_prefers_total_cost_then_falls_back_to_price_paid(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        long = self._position(100, "LONG", premium=3)
+        short = self._position(105, "SHORT", premium=1)
+        long["pricePaid"], short["pricePaid"] = 99, 88
+        spreads, _ = _portfolio_verticals([long, short])
+        self.assertEqual(spreads[0]["entry"], 2)
+        long.pop("totalCost")
+        short.pop("totalCost")
+        long["pricePaid"], short["pricePaid"] = 3, -1
+        spreads, _ = _portfolio_verticals([long, short])
+        self.assertEqual(spreads[0]["entry"], 2)
+
+    def test_missing_cost_preserves_pnl_without_using_last_or_market_value(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        for invalid in (None, float("nan"), float("inf"), "invalid"):
+            with self.subTest(invalid=invalid):
+                long = self._position(100, "LONG", premium=3, gain=80)
+                long["totalCost"] = long["pricePaid"] = invalid
+                long["lastTrade"] = long["lastPrice"] = 3
+                spreads, unmatched = _portfolio_verticals([
+                    long, self._position(105, "SHORT", gain=-30)])
+                self.assertEqual(unmatched, [])
+                self.assertEqual(spreads[0]["pnl"], 50)
+                for field in ("entry", "breakeven", "max_gain", "max_loss"):
+                    self.assertIsNone(spreads[0][field])
+
+    def test_missing_pnl_does_not_invent_zero_or_replace_broker_gain(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        for invalid in (None, float("nan"), float("inf"), "invalid"):
+            with self.subTest(invalid=invalid):
+                long = self._position(100, "LONG", premium=3)
+                long["totalGain"] = invalid
+                spreads, unmatched = _portfolio_verticals([
+                    long, self._position(105, "SHORT", gain=30)])
+                self.assertEqual(unmatched, [])
+                self.assertIsNone(spreads[0]["pnl"])
+                self.assertEqual(spreads[0]["entry"], 2)
+                self.assertEqual(spreads[0]["max_loss"], 400)
+
+    def test_zero_premiums_are_valid_but_impossible_costs_have_no_payoff(self):
+        from src.vertical_options_ui import _portfolio_verticals
+        spreads, _ = _portfolio_verticals([
+            self._position(100, "LONG", premium=0), self._position(105, "SHORT", premium=0)])
+        self.assertEqual(spreads[0]["entry"], 0)
+        self.assertEqual(spreads[0]["breakeven"], 100)
+        self.assertEqual(spreads[0]["max_gain"], 1000)
+        self.assertEqual(spreads[0]["max_loss"], 0)
+        for buy, sell, buy_premium, sell_premium in ((100, 105, 7, 1), (100, 105, 1, 3),
+                                                     (105, 100, 1, 7), (105, 100, 3, 1)):
+            with self.subTest(buy=buy, sell=sell, premiums=(buy_premium, sell_premium)):
+                spreads, unmatched = _portfolio_verticals([
+                    self._position(buy, "LONG", premium=buy_premium),
+                    self._position(sell, "SHORT", premium=sell_premium)])
+                self.assertEqual(unmatched, [])
+                for field in ("breakeven", "max_gain", "max_loss"):
+                    self.assertIsNone(spreads[0][field])
+
+    def test_normalization_preserves_broker_positions(self):
+        from copy import deepcopy
+        from src.vertical_options_ui import _portfolio_verticals
+        positions = [self._position(100, "LONG", quantity=3, premium=3, gain=90),
+                     self._position(105, "SHORT", quantity=-2, gain=-20)]
+        before = deepcopy(positions)
+        _portfolio_verticals(positions)
+        self.assertEqual(positions, before)
+
+    def test_credit_optionstrat_links_keep_long_short_legs_and_weekly_roots(self):
+        from src.vertical_options_ui import _optionstrat_url
+        base = {"symbol": "SPX", "expiry": date(2027, 1, 15)}
+        call = _optionstrat_url(base | {"call_put": "CALL", "buy_strike": 6005,
+            "sell_strike": 6000, "buy_osi": "SPXW  270115C06005000",
+            "sell_osi": "SPXW  270115C06000000"})
+        put = _optionstrat_url(base | {"call_put": "PUT", "buy_strike": 6000,
+            "sell_strike": 6005, "buy_osi": "SPXW  270115P06000000",
+            "sell_osi": "SPXW  270115P06005000"})
+        self.assertTrue(call.startswith("https://optionstrat.com/build/bear-call-spread/SPX/"))
+        self.assertEqual(set(call.rsplit("/", 1)[1].split(",")),
+                         {".SPXW270115C6005", "-.SPXW270115C6000"})
+        self.assertTrue(put.startswith("https://optionstrat.com/build/bull-put-spread/SPX/"))
+        self.assertEqual(set(put.rsplit("/", 1)[1].split(",")),
+                         {".SPXW270115P6000", "-.SPXW270115P6005"})
+
+    def test_portfolio_loader_keeps_accounts_separate_and_preserves_trade_state(self):
+        from copy import deepcopy
+        from unittest.mock import MagicMock, call, patch
+        import src.vertical_options_ui as vo
+        accounts = [{"accountIdKey": "portfolio-a", "accountId": "12345474", "accountDesc": "Trading"},
+                    {"accountIdKey": "portfolio-b", "accountId": "87651234", "accountDesc": "IRA"}]
+        state = {"vo_accounts": ["portfolio-a"], "vo_scan_result": {"scope": "existing"},
+                 "vo_limit_price": 1.25, "vo_selected_ids": ["checked-spread"],
+                 "vo_review": {"fingerprint": "reviewed", "preview_ids": [321]},
+                 "vo_confirm_live": True}
+        before = deepcopy(state)
+        client = MagicMock(is_offline=False)
+        client.get_portfolio.side_effect = [[self._position(100, "LONG", premium=3)],
+                                            [self._position(105, "SHORT")]]
+        client.cache_age.side_effect = [7, 9]
+        touch = MagicMock()
+        with patch.object(vo.st, "session_state", state):
+            snapshots = vo._load_portfolio_verticals(client, touch, accounts)
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual([row["account"] for row in snapshots], ["Trading // x5474", "IRA // x1234"])
+        self.assertEqual([row["spreads"] for row in snapshots], [[], []])
+        self.assertEqual([len(row["unmatched"]) for row in snapshots], [1, 1])
+        self.assertEqual([row["age"] for row in snapshots], [7, 9])
+        self.assertTrue(all(not row["error"] for row in snapshots))
+        self.assertEqual(client.method_calls, [call.get_portfolio("portfolio-a"),
+            call.cache_age("portfolio", "portfolio-a"), call.get_portfolio("portfolio-b"),
+            call.cache_age("portfolio", "portfolio-b")])
+        self.assertEqual(touch.call_count, 2)
+        self.assertEqual(state, before)
+
+    def test_portfolio_loader_uses_each_accounts_own_cost_and_pnl(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        accounts = [{"accountIdKey": "portfolio-a"}, {"accountIdKey": "portfolio-b"}]
+        client = MagicMock(is_offline=False)
+        client.get_portfolio.side_effect = [
+            [self._position(100, "LONG", quantity=1, premium=3, gain=20),
+             self._position(105, "SHORT", quantity=1, premium=1, gain=-5)],
+            [self._position(100, "LONG", quantity=3, premium=4, gain=-90),
+             self._position(105, "SHORT", quantity=3, premium=1, gain=30)],
+        ]
+        with patch.object(vo.st, "session_state", {}):
+            snapshots = vo._load_portfolio_verticals(client, MagicMock(), accounts)
+        self.assertEqual([row["spreads"][0]["quantity"] for row in snapshots], [1, 3])
+        self.assertEqual([row["spreads"][0]["entry"] for row in snapshots], [2, 3])
+        self.assertEqual([row["spreads"][0]["pnl"] for row in snapshots], [15, -60])
+        self.assertEqual([row["spreads"][0]["max_loss"] for row in snapshots], [200, 900])
+
+    def test_portfolio_loader_cache_flags_are_portfolio_specific(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        accounts = [{"accountIdKey": "portfolio-a"}]
+        for offline, resource, stale, expected in (
+            (False, "portfolio", False, False), (False, "portfolio", True, True),
+            (True, "portfolio", False, True), (False, "balance", True, False),
+        ):
+            with self.subTest(offline=offline, resource=resource, stale=stale):
+                client = MagicMock(is_offline=offline)
+                client.get_portfolio.return_value = []
+                client.cache_age.return_value = 30
+                state = {"_etrade_cache_last_event": {"resource": resource, "stale": stale}}
+                with patch.object(vo.st, "session_state", state):
+                    snapshot = vo._load_portfolio_verticals(client, MagicMock(), accounts)[0]
+                self.assertEqual(snapshot["cached"], expected)
+                self.assertEqual(snapshot["age"], 30)
+                self.assertFalse(snapshot["error"])
+
+    def test_portfolio_loader_empty_is_distinct_from_missing_or_failed_response(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        accounts = [{"accountIdKey": "portfolio-a"}, {"accountIdKey": "portfolio-b"}]
+        for response in ([], None, {}, RuntimeError("portfolio unavailable")):
+            with self.subTest(response=response):
+                client = MagicMock(is_offline=False)
+                client.get_portfolio.side_effect = [response, [
+                    self._position(100, "LONG", premium=3), self._position(105, "SHORT")]]
+                with patch.object(vo.st, "session_state", {}):
+                    snapshots = vo._load_portfolio_verticals(client, MagicMock(), accounts)
+                self.assertEqual(bool(snapshots[0]["error"]), response != [])
+                self.assertEqual(snapshots[0]["spreads"], [])
+                self.assertEqual(snapshots[0]["unmatched"], [])
+                self.assertFalse(snapshots[1]["error"])
+                self.assertEqual(len(snapshots[1]["spreads"]), 1)
+
+    def test_portfolio_loader_disconnected_does_not_claim_an_empty_portfolio(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        touch = MagicMock()
+        with patch.object(vo.st, "session_state", {}):
+            snapshots = vo._load_portfolio_verticals(None, touch, [{"accountIdKey": "portfolio-a"}])
+        self.assertTrue(snapshots[0]["error"])
+        self.assertEqual(snapshots[0]["spreads"], [])
+        touch.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
