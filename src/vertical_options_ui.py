@@ -901,9 +901,10 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
                                      disabled=not tv_url, use_container_width=True)
         if snapshot["unmatched"]:
             with st.expander(f'UNPAIRED / REVIEW LEGS // {len(snapshot["unmatched"])}'):
-                st.dataframe([{"Ticker": leg["symbol"], "Type": leg["call_put"], "Side": leg["side"],
+                import pandas as pd
+                st.dataframe(pd.DataFrame([{"Ticker": leg["symbol"], "Type": leg["call_put"], "Side": leg["side"],
                                "Expiry": leg["expiry"], "Strike": leg["strike"], "Qty": leg["quantity"],
-                               "Reason": leg["reason"]} for leg in snapshot["unmatched"]],
+                               "Reason": leg["reason"]} for leg in snapshot["unmatched"]]).style.set_properties(**{"color": "#fb8b1e"}),
                               hide_index=True, use_container_width=True)
     st.caption("Open P/L is broker-reported unrealized gain/loss for matched quantities; max gain/loss are totals for those quantities. "
                "OptionStrat may use current quotes. TradingView charts long minus short option premiums per share; coverage and delay vary.")
