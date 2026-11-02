@@ -809,6 +809,10 @@ def _dismiss_portfolio_verticals() -> None:
     st.session_state.pop("_vo_portfolio_dialog_open", None)
 
 
+def _remember_portfolio_accounts() -> None:
+    st.session_state["_vo_portfolio_account_selection"] = list(st.session_state.get("vo_portfolio_accounts") or [])
+
+
 @st.dialog("PORTFOLIO VERTICALS", width="large", on_dismiss=_dismiss_portfolio_verticals)
 def _render_portfolio_verticals(client, touch_session) -> None:
     with st.container(key="vo_portfolio_dashboard"):
@@ -863,8 +867,16 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
         st.info("Connect E*TRADE to view your portfolio's vertical options.")
         return
     labels = {_account_key(account): _account_label(account) for account in accounts}
-    selected = st.multiselect("PORTFOLIO ACCOUNTS", list(labels), default=list(labels),
-                              format_func=labels.get, key="vo_portfolio_accounts")
+    if "_vo_portfolio_account_selection" not in st.session_state:
+        defaults = [_account_key(account) for account in accounts
+                    if "".join(ch for ch in str(account.get("accountId") or "") if ch.isdigit()).endswith(_DEFAULT_ACCOUNT_SUFFIX)]
+        st.session_state["_vo_portfolio_account_selection"] = defaults[:1] or list(labels)[:1]
+    selected = [key for key in st.session_state["_vo_portfolio_account_selection"] if key in labels]
+    st.session_state["_vo_portfolio_account_selection"] = selected
+    st.session_state["vo_portfolio_accounts"] = selected
+    selected = st.multiselect("PORTFOLIO ACCOUNTS", list(labels),
+                              format_func=labels.get, key="vo_portfolio_accounts",
+                              placeholder="Add or remove accounts", on_change=_remember_portfolio_accounts)
     snapshots = _load_portfolio_verticals(client, touch_session,
                                          [account for account in accounts if _account_key(account) in selected])
     st.caption("Held positions only. Pairing is inferred within each account; ambiguous legs appear below. "
@@ -886,19 +898,19 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
                 st.caption(f'LONG {spread["buy_strike"]:g} {spread["call_put"]} / SHORT {spread["sell_strike"]:g} {spread["call_put"]}'
                            f' // ENTRY {_money(abs(spread["entry"]) if spread["entry"] is not None else None)} '
                            f'{("DEBIT" if spread["entry"] >= 0 else "CREDIT") if spread["entry"] is not None else "BASIS UNAVAILABLE"} / SHARE')
-                st.html(_metric_markup([
-                    ("BREAKEVEN", _money(spread["breakeven"]), "orange"),
-                    ("OPEN P/L", _money(spread["pnl"]), "red" if spread["pnl"] is not None and spread["pnl"] < 0 else "green"),
-                    ("MAX GAIN", _money(spread["max_gain"]), "green"),
-                    ("MAX LOSS", _money(spread["max_loss"]), "red"),
-                ]))
+                with st.container(horizontal=True, vertical_alignment="center", gap="xsmall"):
+                    st.html(_metric_markup([
+                        ("BREAKEVEN", _money(spread["breakeven"]), "orange"),
+                        ("OPEN P/L", _money(spread["pnl"]), "red" if spread["pnl"] is not None and spread["pnl"] < 0 else "green"),
+                        ("MAX GAIN", _money(spread["max_gain"]), "green"),
+                        ("MAX LOSS", _money(spread["max_loss"]), "red"),
+                    ]), width="content")
+                    st.link_button("OPTIONSTRAT", _optionstrat_url(spread), width="content")
+                    tv_url = _tradingview_spread_url(spread)
+                    st.link_button("TRADINGVIEW", tv_url or "https://www.tradingview.com/chart/",
+                                   disabled=not tv_url, width="content")
                 if spread["breakeven"] is None:
                     st.caption("Entry basis is missing or outside standard opening-price bounds. Expiration payoff unavailable.")
-                links = st.columns(2)
-                links[0].link_button("OPTIONSTRAT", _optionstrat_url(spread), use_container_width=True)
-                tv_url = _tradingview_spread_url(spread)
-                links[1].link_button("TRADINGVIEW", tv_url or "https://www.tradingview.com/chart/",
-                                     disabled=not tv_url, use_container_width=True)
         if snapshot["unmatched"]:
             with st.expander(f'UNPAIRED / REVIEW LEGS // {len(snapshot["unmatched"])}'):
                 import pandas as pd
