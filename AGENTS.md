@@ -175,6 +175,10 @@ Do not make a UI element taller or wider than necessary.
 
 This rule does NOT authorize unsolicited UI changes.
 
+### Account selectors for new work
+
+For new account selectors, default to Raj's account ending in `5474` when it is available. Use an account dropdown that lets the user add or remove accounts, and retain the user's explicit selection, including an empty selection, across reruns and feature visits. Keep account preferences local to the owning feature. This rule applies to the Portfolio Verticals popup and future account-selector work; it does not authorize retroactive changes to existing tabs' account controls.
+
 ## 9. DIFF AUDIT — EVERY CHANGED LINE MUST BE JUSTIFIED
 
 Before committing, inspect the complete diff.

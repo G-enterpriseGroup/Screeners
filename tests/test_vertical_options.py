@@ -2469,7 +2469,7 @@ else:
 class PortfolioVerticalsTests(unittest.TestCase):
     def test_popup_survives_full_reruns_and_native_dismiss_stays_closed(self):
         from streamlit.testing.v1 import AppTest
-        app = AppTest.from_string("""
+        source = """
 import streamlit as st
 from unittest.mock import patch
 import src.vertical_options_ui as vo
@@ -2489,8 +2489,9 @@ class FixtureBroker:
         raise AssertionError("Unexpected broker method: " + name)
 
 st.session_state.setdefault("etrade_accounts", [
-    {"accountIdKey": "fixture-a", "accountDesc": "Fixture A"},
-    {"accountIdKey": "fixture-b", "accountDesc": "Fixture B"}])
+    {"accountIdKey": "fixture-b", "accountId": "87651234", "accountDesc": "Other"},
+    {"accountIdKey": "fixture-a", "accountId": "12345474", "accountDesc": "Raj"}])
+st.session_state.setdefault("risk_sizing_account", 0)
 st.session_state.setdefault("_vo_workspace_ready", "default")
 st.session_state.setdefault("_vo_pricing_mode_hydrated", True)
 st.session_state.setdefault("_vo_pricing_mode_preference", "NORMAL")
@@ -2500,15 +2501,21 @@ st.session_state.setdefault("vo_live_confirm", True)
 # AppTest has no browser components; hydrate only those read-only preferences.
 with (patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
       patch.object(vo, "hydrate_gex_snapshots", return_value=False)):
-    vo.render_vertical_options(FixtureBroker(), lambda: None)
-""", default_timeout=10).run()
+    if not st.session_state.get("fixture_hide_feature"):
+        vo.render_vertical_options(FixtureBroker(), lambda: None)
+"""
+        app = AppTest.from_string(source, default_timeout=10).run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.get("dialog")), 0)
         app.button(key="vo_portfolio_open").click().run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.get("dialog")), 1)
-        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value,
-                         ["fixture-a", "fixture-b"])
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, ["fixture-a"])
+        self.assertEqual([read for read in app.session_state["fixture_reads"] if read[0] == "portfolio"],
+                         [("portfolio", "fixture-a")])
+        app.multiselect(key="vo_portfolio_accounts").set_value(["fixture-a", "fixture-b"]).run()
+        self.assertCountEqual(app.multiselect(key="vo_portfolio_accounts").value,
+                              ["fixture-a", "fixture-b"])
         app.multiselect(key="vo_portfolio_accounts").set_value(["fixture-b"]).run()
         app.run()  # Reproduce a full app rerun while the popup remains open.
         self.assertFalse(app.exception)
@@ -2531,11 +2538,61 @@ with (patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
         self.assertEqual(len(app.get("dialog")), 0)
         self.assertEqual([read for read in app.session_state["fixture_reads"] if read[0] == "portfolio"],
                          [read for read in reads_after_dismiss if read[0] == "portfolio"])
+        app.button(key="vo_portfolio_open").click().run()
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, ["fixture-b"])
+        app.multiselect(key="vo_portfolio_accounts").set_value([]).run()
+        reads_after_clear = list(app.session_state["fixture_reads"])
+        app.run()
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, [])
+        self.assertEqual([read for read in app.session_state["fixture_reads"] if read[0] == "portfolio"],
+                         [read for read in reads_after_clear if read[0] == "portfolio"])
+        widget_states = app._tree.get_widget_states()
+        widget_states.widgets.add(id=app.get("dialog")[0].proto.dialog.id, trigger_value=True)
+        app._run(widget_states)
+        app.run()
+        self.assertEqual(len(app.get("dialog")), 0)
+        app.button(key="vo_portfolio_open").click().run()
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, [])
+
+        # Leaving this tab removes the widget; the user's empty selection survives.
+        app.session_state["fixture_hide_feature"] = True
+        app.run()
+        self.assertNotIn("vo_portfolio_accounts", app.session_state)
+        app.session_state["fixture_hide_feature"] = False
+        app.run()
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, [])
+        app.multiselect(key="vo_portfolio_accounts").set_value(["fixture-b"]).run()
+        app.session_state["fixture_hide_feature"] = True
+        app.run()
+        self.assertNotIn("vo_portfolio_accounts", app.session_state)
+        app.session_state["fixture_hide_feature"] = False
+        app.run()
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, ["fixture-b"])
+
+        # A removed account cannot stay selected or cause a portfolio read.
+        app.session_state["etrade_accounts"] = [app.session_state["etrade_accounts"][1]]
+        reads_before_removal = list(app.session_state["fixture_reads"])
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, [])
+        self.assertEqual([read for read in app.session_state["fixture_reads"] if read[0] == "portfolio"],
+                         [read for read in reads_before_removal if read[0] == "portfolio"])
         self.assertTrue(all(read[0] in {"balance", "portfolio"}
                             for read in app.session_state["fixture_reads"]))
         self.assertEqual(app.session_state["vo_scan_result"], {"symbol": "EXISTING", "scope": "retained"})
         self.assertEqual(app.session_state["vo_review_bundle"], {"fingerprint": "reviewed"})
         self.assertTrue(app.session_state["vo_live_confirm"])
+
+        # A fresh session without Raj uses its first valid account, independently of Risk.
+        fallback = AppTest.from_string(source, default_timeout=10)
+        fallback.session_state["etrade_accounts"] = [None, {},
+            {"accountIdKey": "fixture-c", "accountId": "91234444", "accountDesc": "First"},
+            {"accountIdKey": "fixture-b", "accountId": "87651234", "accountDesc": "Other"}]
+        fallback.session_state["risk_sizing_account"] = 3
+        fallback.run()
+        fallback.button(key="vo_portfolio_open").click().run()
+        self.assertFalse(fallback.exception)
+        self.assertEqual(fallback.multiselect(key="vo_portfolio_accounts").value, ["fixture-c"])
 
     @staticmethod
     def _position(strike, side, *, call_put="CALL", quantity=2, premium=1,
