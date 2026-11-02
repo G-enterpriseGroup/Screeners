@@ -2467,6 +2467,76 @@ else:
 
 
 class PortfolioVerticalsTests(unittest.TestCase):
+    def test_popup_survives_full_reruns_and_native_dismiss_stays_closed(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_string("""
+import streamlit as st
+from unittest.mock import patch
+import src.vertical_options_ui as vo
+
+class FixtureBroker:
+    is_offline = False
+    def get_balance(self, key):
+        st.session_state.setdefault("fixture_reads", []).append(("balance", key))
+        return {"Computed": {"cashAvailableForInvestment": 100}}
+    def get_portfolio(self, key):
+        st.session_state.setdefault("fixture_reads", []).append(("portfolio", key))
+        return []
+    def cache_age(self, *args):
+        return 5
+    def __getattr__(self, name):
+        st.session_state.setdefault("fixture_reads", []).append(("unexpected", name))
+        raise AssertionError("Unexpected broker method: " + name)
+
+st.session_state.setdefault("etrade_accounts", [
+    {"accountIdKey": "fixture-a", "accountDesc": "Fixture A"},
+    {"accountIdKey": "fixture-b", "accountDesc": "Fixture B"}])
+st.session_state.setdefault("_vo_workspace_ready", "default")
+st.session_state.setdefault("_vo_pricing_mode_hydrated", True)
+st.session_state.setdefault("_vo_pricing_mode_preference", "NORMAL")
+st.session_state.setdefault("vo_scan_result", {"symbol": "EXISTING", "scope": "retained"})
+st.session_state.setdefault("vo_review_bundle", {"fingerprint": "reviewed"})
+st.session_state.setdefault("vo_live_confirm", True)
+# AppTest has no browser components; hydrate only those read-only preferences.
+with (patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
+      patch.object(vo, "hydrate_gex_snapshots", return_value=False)):
+    vo.render_vertical_options(FixtureBroker(), lambda: None)
+""", default_timeout=10).run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("dialog")), 0)
+        app.button(key="vo_portfolio_open").click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("dialog")), 1)
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value,
+                         ["fixture-a", "fixture-b"])
+        app.multiselect(key="vo_portfolio_accounts").set_value(["fixture-b"]).run()
+        app.run()  # Reproduce a full app rerun while the popup remains open.
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("dialog")), 1)
+        self.assertEqual(app.multiselect(key="vo_portfolio_accounts").value, ["fixture-b"])
+        self.assertTrue(app.session_state["_vo_portfolio_dialog_open"])
+
+        # AppTest has no native dialog-close helper; send its actual dismiss event.
+        dialog_id = app.get("dialog")[0].proto.dialog.id
+        self.assertTrue(dialog_id)
+        widget_states = app._tree.get_widget_states()
+        widget_states.widgets.add(id=dialog_id, trigger_value=True)
+        app._run(widget_states)
+        self.assertFalse(app.exception)
+        self.assertNotIn("_vo_portfolio_dialog_open", app.session_state)
+        self.assertEqual(len(app.get("dialog")), 0)
+        reads_after_dismiss = list(app.session_state["fixture_reads"])
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.get("dialog")), 0)
+        self.assertEqual([read for read in app.session_state["fixture_reads"] if read[0] == "portfolio"],
+                         [read for read in reads_after_dismiss if read[0] == "portfolio"])
+        self.assertTrue(all(read[0] in {"balance", "portfolio"}
+                            for read in app.session_state["fixture_reads"]))
+        self.assertEqual(app.session_state["vo_scan_result"], {"symbol": "EXISTING", "scope": "retained"})
+        self.assertEqual(app.session_state["vo_review_bundle"], {"fingerprint": "reviewed"})
+        self.assertTrue(app.session_state["vo_live_confirm"])
+
     @staticmethod
     def _position(strike, side, *, call_put="CALL", quantity=2, premium=1,
                   gain=0, symbol="SPY", expiry=date(2027, 1, 15), root=None):

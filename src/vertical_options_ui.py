@@ -232,6 +232,14 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace [data-testid="stButton"] button:hover:not(:disabled){
     background:#171007!important;
 }
+.st-key-vertical_options_workspace .st-key-vo_portfolio_open button{
+    box-shadow:none!important;transform:none!important;transition:none!important;
+}
+.st-key-vertical_options_workspace .st-key-vo_portfolio_open button *{font:inherit!important;}
+.st-key-vertical_options_workspace .st-key-vo_portfolio_open button:hover,
+.st-key-vertical_options_workspace .st-key-vo_portfolio_open button:active{
+    border-color:var(--vo-orange)!important;box-shadow:none!important;transform:none!important;
+}
 .st-key-vertical_options_workspace .st-key-vo_send button,
 .st-key-vertical_options_workspace .st-key-vo_preview button{
     background:var(--vo-orange)!important;
@@ -793,23 +801,51 @@ def _load_portfolio_verticals(client, touch_session, accounts: list[dict[str, An
     return result
 
 
-@st.dialog("PORTFOLIO VERTICALS", width="large")
+def _open_portfolio_verticals() -> None:
+    st.session_state["_vo_portfolio_dialog_open"] = True
+
+
+def _dismiss_portfolio_verticals() -> None:
+    st.session_state.pop("_vo_portfolio_dialog_open", None)
+
+
+@st.dialog("PORTFOLIO VERTICALS", width="large", on_dismiss=_dismiss_portfolio_verticals)
 def _render_portfolio_verticals(client, touch_session) -> None:
     with st.container(key="vo_portfolio_dashboard"):
         st.html("""<style>
-        .st-key-vo_portfolio_dashboard{--vo-orange:#fb8b1e;--vo-green:#4af6c3;--vo-red:#ff433d;--vo-blue:#0068ff;}
+        .st-key-vo_portfolio_dashboard{--vo-orange:#fb8b1e;--vo-green:#4af6c3;--vo-red:#ff433d;--vo-blue:#0068ff;--vo-border:#5d3605;--vo-muted:#8f99a8;margin:0!important;padding:0!important;gap:4px!important;font-family:"Courier New",monospace!important;}
         .st-key-vo_portfolio_dashboard [data-testid="stVerticalBlock"]{gap:4px!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stHorizontalBlock"]{gap:8px!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stColumn"]{min-width:0!important;}
         .st-key-vo_portfolio_dashboard [data-testid="stCaptionContainer"],
         .st-key-vo_portfolio_dashboard [data-testid="stMarkdownContainer"]{margin:0!important;padding:0!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stCaptionContainer"] *,
+        .st-key-vo_portfolio_dashboard [data-testid="stMarkdownContainer"] *{font-family:"Courier New",monospace!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stWidgetLabel"],
+        .st-key-vo_portfolio_dashboard [data-testid="stWidgetLabel"] *{color:var(--vo-orange)!important;-webkit-text-fill-color:var(--vo-orange)!important;font-family:"Courier New",monospace!important;font-size:.66rem!important;font-weight:900!important;text-transform:uppercase!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stMultiSelect"] [role="group"],
+        .st-key-vo_portfolio_dashboard [data-testid="stMultiSelect"] [data-baseweb="select"]>div{min-height:38px!important;height:auto!important;border:1px solid var(--vo-orange)!important;border-radius:0!important;background:#444444!important;box-shadow:none!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stMultiSelect"] [role="group"]>div:first-child{padding-top:3px!important;}
         [role="dialog"]:has(.st-key-vo_portfolio_dashboard) h2,
         [role="dialog"]:has(.st-key-vo_portfolio_dashboard) h2 *{color:#000!important;-webkit-text-fill-color:#000!important;}
+        .st-key-vo_portfolio_dashboard [data-tag]{background:var(--vo-orange)!important;}
         .st-key-vo_portfolio_dashboard [data-tag],
         .st-key-vo_portfolio_dashboard [data-tag] *{color:#000!important;-webkit-text-fill-color:#000!important;}
+        .st-key-vo_portfolio_dashboard [data-tag] svg{fill:#000!important;stroke:#000!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stCaptionContainer"]{opacity:1!important;}
         .st-key-vo_portfolio_dashboard [data-testid="stCaptionContainer"] p{color:#8f99a8!important;-webkit-text-fill-color:#8f99a8!important;margin:0!important;}
-        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a{background:#050505!important;border:1px solid #fb8b1e!important;min-height:32px!important;}
-        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a *{color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a{background:#050505!important;color:var(--vo-orange)!important;-webkit-text-fill-color:var(--vo-orange)!important;border:1px solid var(--vo-orange)!important;border-radius:0!important;min-height:38px!important;height:38px!important;box-shadow:none!important;transform:none!important;transition:none!important;font:900 .70rem/1.6 "Courier New",monospace!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a *{color:var(--vo-orange)!important;-webkit-text-fill-color:var(--vo-orange)!important;font:inherit!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a:hover,
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a:active{background:#171007!important;border-color:var(--vo-orange)!important;box-shadow:none!important;transform:none!important;}
+        .st-key-vo_portfolio_dashboard [data-testid="stLinkButton"] a:focus-visible{outline:2px solid var(--vo-orange)!important;outline-offset:2px!important;}
+        .st-key-vo_portfolio_dashboard [class*="st-key-vo_portfolio_spread_"]{padding:6px 8px!important;}
         [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"],
-        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"] *{color:#f2f2f2!important;-webkit-text-fill-color:#f2f2f2!important;}
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"] *{background:#050505!important;color:#f2f2f2!important;-webkit-text-fill-color:#f2f2f2!important;font-family:"Courier New",monospace!important;}
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"]:is(:hover,:focus,[data-hovered],[data-focused]),
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"]:is(:hover,:focus,[data-hovered],[data-focused]) *{background:#171007!important;color:#ffad52!important;-webkit-text-fill-color:#ffad52!important;}
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"][aria-selected="true"],
+        [data-testid="stMultiSelectDropdown"] [role="listbox"][aria-label="PORTFOLIO ACCOUNTS"] [role="option"][aria-selected="true"] *{background:#fb8b1e!important;color:#000!important;-webkit-text-fill-color:#000!important;}
         </style>""")
         _render_portfolio_verticals_content(client, touch_session)
 
@@ -833,7 +869,7 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
                                          [account for account in accounts if _account_key(account) in selected])
     st.caption("Held positions only. Pairing is inferred within each account; ambiguous legs appear below. "
                "Breakeven and maximum gain/loss use average entry cost at expiration, before additional fees, with both legs intact.")
-    for snapshot in snapshots:
+    for account_index, snapshot in enumerate(snapshots):
         age = snapshot["age"]
         stamp = f" // SNAPSHOT {age:.0f}s AGO" if isinstance(age, (int, float)) and math.isfinite(age) else ""
         st.markdown("**" + snapshot["account"] + (" // CACHED" if snapshot["cached"] else "") + stamp + "**")
@@ -843,8 +879,8 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
         spreads = snapshot["spreads"]
         if not spreads:
             st.info("No unambiguous standard vertical spreads in this account.")
-        for spread in spreads:
-            with st.container(border=True):
+        for spread_index, spread in enumerate(spreads):
+            with st.container(border=True, key=f"vo_portfolio_spread_{account_index}_{spread_index}"):
                 st.html('<div class="vo-summary">' + html.escape(
                     f'{spread["symbol"]} // {spread["strategy"]} // {spread["quantity"]} spread(s) // {_date_label(spread["expiry"])}') + '</div>')
                 st.caption(f'LONG {spread["buy_strike"]:g} {spread["call_put"]} / SHORT {spread["sell_strike"]:g} {spread["call_put"]}'
@@ -1837,7 +1873,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 '<span class="muted">ENTER TICKER // BREAKEVEN AND COST OPTIONAL // PRESS ENTER TO SCAN</span></div>'
             )
         with portfolio_col:
-            if st.button("PORTFOLIO VERTICALS", key="vo_portfolio_open", use_container_width=True):
+            st.button("PORTFOLIO VERTICALS", key="vo_portfolio_open", use_container_width=True,
+                      on_click=_open_portfolio_verticals)
+            if st.session_state.get("_vo_portfolio_dialog_open"):
                 _render_portfolio_verticals(client, touch_session)
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
         if not broker_live:
