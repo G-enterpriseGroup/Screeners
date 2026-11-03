@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import html
+import math
 import uuid
 
 import pandas as pd
@@ -24,9 +26,140 @@ def _timestamp(value: str | None) -> str:
         return "Unknown"
 
 
+def _account_label(account: dict, preferences: dict) -> str:
+    nickname = str(preferences.get(account.get("account_id"), {}).get("nickname") or "").strip()
+    if nickname:
+        return nickname
+    return str(account.get("name") or "Account") + (" • " + str(account["mask"]) if account.get("mask") else "")
+
+
+def _save_account_details(store, account_id: str, nickname: str, classification: str | None = None) -> None:
+    nickname = " ".join(str(nickname).split())
+    if len(nickname) > 60 or (classification is not None and classification not in CLASSES):
+        raise NetworthError("Use a nickname of 60 characters or fewer and a valid classification.")
+
+    def save(latest):
+        if account_id not in latest.get("accounts", {}):
+            raise NetworthError("This account is no longer linked. Reload accounts and try again.")
+        preferences = latest.setdefault("preferences", {}).setdefault(account_id, {})
+        if nickname:
+            preferences["nickname"] = nickname
+        else:
+            preferences.pop("nickname", None)
+        if classification is not None:
+            preferences["classification"] = classification
+
+    store.update_state(save)
+
+
+def _statement_rows(accounts: list[dict], preferences: dict, currency: str) -> list[dict]:
+    normalized = []
+    for row in accounts:
+        if row.get("currency") != currency:
+            continue
+        try:
+            value = float(row["current"]) if not isinstance(row.get("current"), bool) else None
+        except (TypeError, ValueError, KeyError):
+            value = None
+        normalized.append({**row, "current": value if value is not None and math.isfinite(value) else None})
+    accounts = normalized
+    included = [row for row in accounts if row.get("classification") in ("Asset", "Liability", "Equity")]
+    totals = next((row for row in balance_sheet(included) if row["currency"] == currency), {})
+    groups = {kind: [row for row in included if row["classification"] == kind]
+              for kind in ("Asset", "Liability", "Equity")}
+    assets = totals.get("assets")
+    liabilities = totals.get("liabilities")
+    if currency == "UNKNOWN" or any(row.get("current") is None for row in groups["Asset"]):
+        assets = None
+    if currency == "UNKNOWN" or any(row.get("current") is None for row in groups["Liability"]):
+        liabilities = None
+    equity = assets - liabilities if assets is not None and liabilities is not None else None
+    rows = []
+
+    def add(label, amount=None, kind="account", **extra):
+        share = amount / assets * 100 if amount is not None and assets else None
+        rows.append({"label": label, "amount": amount, "share": share, "kind": kind, **extra})
+
+    def account(row, liability=False):
+        amount = row.get("current") if currency != "UNKNOWN" else None
+        if liability and amount is not None:
+            amount = -amount
+        add(_account_label(row, preferences), amount, account_id=row["account_id"],
+            classification=row["classification"], status="Stale" if row.get("stale") else "")
+
+    add("Assets:", kind="section")
+    for row in groups["Asset"]:
+        account(row)
+    add("Total Assets:", assets, "total")
+    add("Liabilities:", kind="section")
+    for row in groups["Liability"]:
+        account(row, liability=True)
+    add("Total Liabilities:", liabilities, "total")
+    if groups["Equity"]:
+        add("Equity:", kind="section")
+        for row in groups["Equity"]:
+            account(row)
+        allocated = totals.get("equity", 0) if all(row.get("current") is not None for row in groups["Equity"]) else None
+        add("Unallocated equity", equity - allocated if equity is not None and allocated is not None else None)
+        add("Total Equity:", equity, "equity")
+    else:
+        add("Equity:", equity, "equity")
+    add("Total Liabilities & Equity:", liabilities + equity if liabilities is not None and equity is not None else None,
+        "grand_total")
+    return rows
+
+
+def _statement_html(rows: list[dict], currency: str) -> str:
+    def money(value):
+        if value is None:
+            return "—"
+        prefix = "$" if currency == "USD" else ""
+        return ("-" if value < 0 else "") + prefix + f"{abs(value):,.2f}"
+
+    body = []
+    for row in rows:
+        label = html.escape(str(row["label"]))
+        if row.get("status"):
+            label += ' <span title="Previous balance; refresh failed">*</span>'
+        kind = row["kind"]
+        if kind == "section":
+            body.append('<tr class="nw-section"><th colspan="3">' + label + '</th></tr>')
+        else:
+            share = "—" if row["share"] is None else f'{row["share"]:,.2f}%'
+            body.append('<tr class="nw-' + kind + '"><td>' + label + '</td><td>'
+                        + money(row["amount"]) + '</td><td>' + share + '</td></tr>')
+    return '''<style>
+.networth-statement{width:100%;border-collapse:collapse;color:#fb8b1e;font-family:"Courier New",monospace;font-size:16px;line-height:1.25}
+.networth-statement th,.networth-statement td{padding:5px 8px;text-align:left}
+.networth-statement td:first-child{overflow-wrap:anywhere}
+.networth-statement thead th{font-size:12px;font-weight:700;border-bottom:1px solid #b87621}
+.networth-statement td:nth-child(2),.networth-statement td:nth-child(3),.networth-statement thead th:nth-child(2),.networth-statement thead th:nth-child(3){text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.networth-statement .nw-section th{padding-top:12px;font-weight:900}
+.networth-statement .nw-total td,.networth-statement .nw-equity td{border-top:1px solid #b87621;font-weight:900}
+.networth-statement .nw-equity td{padding-top:9px;padding-bottom:9px}
+.networth-statement .nw-grand_total td{border-top:2px solid #fb8b1e;border-bottom:2px solid #fb8b1e;font-weight:900}
+@media(max-width:600px){.networth-statement{font-size:13px}.networth-statement th,.networth-statement td{padding:5px 3px}}
+</style><table class="networth-statement" aria-label="Networth balance sheet"><thead><tr><th>Account</th><th>Balance (''' + html.escape(currency) + ''')</th><th>% of Assets</th></tr></thead><tbody>''' + "".join(body) + '</tbody></table>'
+
+
+def _render_statement(accounts: list[dict], preferences: dict, *, key: str) -> None:
+    currencies = sorted({str(row.get("currency") or "UNKNOWN") for row in accounts}) or ["USD"]
+    currency = st.selectbox("Currency", currencies, key=key + "_currency") if len(currencies) > 1 else currencies[0]
+    st.html(_statement_html(_statement_rows(accounts, preferences, currency), currency))
+    omitted = [row for row in accounts if row.get("classification") == "Unclassified"]
+    incomplete = [row for row in accounts if row.get("classification") not in ("Excluded", "Unclassified")
+                  and (row.get("current") is None or row.get("currency") == "UNKNOWN")]
+    if omitted or incomplete:
+        st.warning("This statement is partial. Review unclassified accounts or unavailable balances in Accounts & connections.")
+    if any(row.get("stale") for row in accounts):
+        st.caption("* Previous saved balance; the latest refresh failed for this institution.")
+    if any(row.get("classification") == "Equity" for row in accounts):
+        st.caption("Equity = Assets − Liabilities. Named equity accounts are allocations within equity; the remainder is unallocated.")
+
+
 def _setup() -> None:
     st.info("Networth needs its Plaid production credentials and encrypted private storage before accounts can be linked.")
-    st.caption("Add the dedicated [networth] settings to Streamlit Secrets, then configure the matching GitHub Actions secrets for browser-independent syncs. See src/NETWORTH_SETUP.md in the repository.")
+    st.caption("Streamlit: Manage app → Settings → Secrets. Add the [networth] section below and keep your existing secrets. For scheduled pulls, add matching values in GitHub → Screeners → Settings → Secrets and variables → Actions.")
     with st.expander("Networth configuration"):
         st.code('''[networth]
 plaid_client_id = "YOUR_CLIENT_ID"
@@ -39,6 +172,7 @@ repository = "G-enterpriseGroup/Portfolio"
 branch = "networth-data"
 ledger_id = "raj-terminal"''', language="toml")
         st.caption("Keep keys in secret settings. Use the same encryption key and ledger in Streamlit and Actions.")
+        st.caption("GitHub repository secrets: NETWORTH_PLAID_CLIENT_ID, NETWORTH_PLAID_SECRET, NETWORTH_GITHUB_TOKEN, NETWORTH_ENCRYPTION_KEY. Full instructions: src/NETWORTH_SETUP.md.")
 
 
 def _start_link(store, client, item_id: str = "", products=None) -> None:
@@ -152,7 +286,8 @@ def _classification_editor(store, state: dict) -> None:
         return
     display = pd.DataFrame([{
         "Account ID": row["account_id"], "Institution": row.get("item_label", ""),
-        "Account": row.get("name", "Account") + (" • " + row["mask"] if row.get("mask") else ""),
+        "Account": _account_label(row, state.get("preferences", {})),
+        "Original account": row.get("name", "Account"),
         "Type": row.get("subtype") or row.get("type"), "Classification": row["classification"],
         "Balance": row.get("current"), "Currency": row.get("currency", "Unknown"),
         "Captured": _timestamp(row.get("as_of")),
@@ -189,6 +324,19 @@ def _classification_editor(store, state: dict) -> None:
         def save_selection(latest):
             latest["selected_accounts"] = list(selected)
         store.update_state(save_selection)
+    if len(selected) == 1:
+        account_id = selected[0]
+        nickname = state.get("preferences", {}).get(account_id, {}).get("nickname", "")
+        with st.form("networth_nickname_form_" + account_id, border=False):
+            nickname_col, nickname_save = st.columns([2, 1], vertical_alignment="bottom")
+            value = nickname_col.text_input("Account nickname", value=nickname, max_chars=60,
+                                             key="networth_nickname_" + account_id,
+                                             placeholder=str(display.loc[account_id, "Original account"]))
+            if nickname_save.form_submit_button("SAVE NICKNAME", width="stretch"):
+                _save_account_details(store, account_id, value)
+                st.rerun()
+    else:
+        st.caption("Select one account to edit its nickname.")
     class_col, save_col = st.columns([2, 1], vertical_alignment="bottom")
     classification = class_col.selectbox("Classification", list(CLASSES), key="networth_apply_classification")
     if save_col.button("SAVE CLASSIFICATIONS", disabled=not selected, width="stretch"):
@@ -200,27 +348,7 @@ def _classification_editor(store, state: dict) -> None:
         st.rerun()
 
 
-def _totals(rows: list[dict]) -> None:
-    totals = balance_sheet(rows)
-    if not totals:
-        return
-    st.dataframe(pd.DataFrame(totals).rename(columns={
-        "currency": "Currency", "assets": "Assets", "liabilities": "Liabilities",
-        "equity": "Classified Equity", "net_worth": "Net Worth",
-        "reconciliation": "Reconciliation", "missing": "Omitted",
-    }), hide_index=True, width="stretch",
-                 column_order=["Currency", "Assets", "Liabilities", "Classified Equity", "Net Worth", "Reconciliation", "Omitted"],
-                 column_config={name: st.column_config.NumberColumn(format="%.2f")
-                                for name in ("Assets", "Liabilities", "Classified Equity", "Net Worth", "Reconciliation")})
-    if any(row.get("missing") for row in totals):
-        st.warning("Totals omit unavailable balances, unknown currencies, or unclassified accounts.")
-    if any(row.get("classification") == "Unclassified" for row in rows):
-        st.warning("Unclassified accounts are omitted from totals. Choose a classification above.")
-    st.caption("Reconciliation = Assets − Liabilities − Classified Equity.")
-
-
 def _daily_sheet(store, state: dict) -> None:
-    st.markdown("**DAILY BALANCE SHEET**")
     today = datetime.now(TIMEZONE).date()
     selected = st.date_input("Balance sheet date", today, max_value=today, key="networth_sheet_date")
     day = store.read_day(selected.isoformat())
@@ -236,17 +364,16 @@ def _daily_sheet(store, state: dict) -> None:
     )
     capture = captures[capture_id]
     rows = capture.get("accounts", [])
-    _totals(rows)
+    _render_statement(rows, state.get("preferences", {}), key="networth_history")
     if not capture.get("complete"):
         st.warning("This capture is incomplete. Previous balances may be present; check account timestamps.")
     frame = pd.DataFrame([{
-        "Account": row.get("name"), "Last 4": row.get("mask"),
+        "Account": _account_label(row, state.get("preferences", {})), "Last 4": row.get("mask"),
         "Classification": row.get("classification"), "Balance": row.get("current"),
         "Currency": row.get("currency"), "Captured": _timestamp(row.get("as_of")),
         "Bank updated": _timestamp(row.get("balance_updated_at")) if row.get("balance_updated_at") else "Not provided",
         "Status": "Stale" if row.get("stale") else ("Unavailable" if row.get("current") is None else "Available"),
     } for row in rows])
-    st.dataframe(frame, hide_index=True, width="stretch")
     st.download_button("DOWNLOAD BALANCE SHEET CSV", frame.to_csv(index=False).encode(),
                        file_name="networth-" + selected.isoformat() + ".csv", mime="text/csv")
     st.caption("Daily view defaults to the latest saved capture. Each snapshot keeps the classification used when it was captured; current edits apply to subsequent captures. Currencies are reported separately.")
@@ -282,49 +409,55 @@ def _connections(store, client, state: dict) -> None:
 
 
 def render_networth() -> None:
-    st.caption("Scheduled pulls: 9:00 AM · 12:00 PM · 5:00 PM · 10:00 PM — America/Indiana/Indianapolis. Actual capture times are recorded; institutions may provide delayed balances.")
+    st.caption("SYNC SCHEDULE // 9 AM · NOON · 5 PM · 10 PM // America/Indiana/Indianapolis")
     try:
         plaid_config = PlaidConfig.from_runtime()
         store_config = StoreConfig.from_runtime()
         if plaid_config is None or store_config is None:
-            _setup()
+            _render_statement([], {}, key="networth_current")
+            with st.expander("Connect Plaid"):
+                _setup()
             return
         client = PlaidClient(plaid_config)
         store = GitHubNetworthStore(store_config)
         state = store.read_state()
         if state.get("plaid_environment") and state["plaid_environment"] != plaid_config.environment:
             raise NetworthError("Plaid environment differs from the saved ledger. Restore the original environment or use a separate ledger_id.")
-        st.caption("PLAID " + plaid_config.environment.upper() + " // Last pull: " + _timestamp(state.get("last_sync")))
-        if state.get("last_scheduled_at"):
-            st.caption("Last verified scheduled capture: " + _timestamp(state["last_scheduled_at"]))
-        else:
-            st.info("Scheduled syncing is not yet verified. Configure the matching Actions secrets and verify the first scheduled worker run.")
-        connection_types = {
-            "Bank / credit accounts": ("transactions",),
-            "Investment accounts": ("investments",),
-            "Loans / liabilities": ("liabilities",),
-            "Configured Plaid products": plaid_config.products,
-        }
-        connection_type = st.selectbox("Connection type", list(connection_types), key="networth_connection_type",
-                                       help="Choose a product enabled for your Plaid production application and supported by the institution.")
-        link_col, sync_col, reload_col = st.columns(3)
-        if link_col.button("LINK ACCOUNTS WITH PLAID", width="stretch"):
-            _start_link(store, client, products=connection_types[connection_type])
-            st.rerun()
-        if sync_col.button("SYNC BALANCES NOW", disabled=not state.get("items"), width="stretch"):
+        status_col, sync_col = st.columns([3, 1], vertical_alignment="bottom")
+        status_col.caption("PLAID " + plaid_config.environment.upper() + " // Last pull: " + _timestamp(state.get("last_sync")))
+        if sync_col.button("SYNC NOW", disabled=not state.get("items"), width="stretch"):
             with st.spinner("Pulling linked account balances…"):
                 sync_networth(store, client)
-            st.rerun()
-        if reload_col.button("RELOAD SAVED BALANCES", width="stretch"):
             st.rerun()
         if state.get("pending_links"):
             _pending_links(store, client)
         for error in state.get("last_errors", {}).values():
             st.warning("Balance refresh: " + str(error))
-        _classification_editor(store, state)
-        _totals(account_rows(state))
-        _daily_sheet(store, state)
-        _connections(store, client, state)
+        _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
+        with st.expander("Accounts & connections"):
+            st.caption("Connected accounts and nicknames are saved securely and restored across app restarts. All linked accounts sync, including accounts you exclude from the statement.")
+            connection_types = {
+                "Bank / credit accounts": ("transactions",),
+                "Investment accounts": ("investments",),
+                "Loans / liabilities": ("liabilities",),
+                "Configured Plaid products": plaid_config.products,
+            }
+            connection_type = st.selectbox("Connection type", list(connection_types), key="networth_connection_type",
+                                           help="Choose a product enabled for your Plaid production application and supported by the institution.")
+            link_col, reload_col = st.columns(2)
+            if link_col.button("LINK ACCOUNTS WITH PLAID", width="stretch"):
+                _start_link(store, client, products=connection_types[connection_type])
+                st.rerun()
+            if reload_col.button("RELOAD SAVED BALANCES", width="stretch"):
+                st.rerun()
+            _classification_editor(store, state)
+            _connections(store, client, state)
+            if state.get("last_scheduled_at"):
+                st.caption("Last verified scheduled capture: " + _timestamp(state["last_scheduled_at"]))
+            else:
+                st.info("Scheduled syncing is not yet verified. Configure matching GitHub Actions secrets and verify the first scheduled run.")
+        with st.expander("Daily history & CSV"):
+            _daily_sheet(store, state)
     except NetworthError as exc:
         st.error(str(exc))
     except Exception:
