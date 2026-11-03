@@ -1794,8 +1794,10 @@ def _select_results_year(year_key: str, year: int | None) -> None:
 
 
 def _default_column_filters(expirations: list[str], target_text: str = "") -> dict[str, Any]:
-    """Default the view to the latest two available expiration dates overall."""
-    filters: dict[str, Any] = {"expiry": sorted(set(expirations))[-2:]}
+    """Default the view to every expiration in the latest two available years."""
+    available = sorted(set(expirations))
+    years = set(sorted({expiry[:4] for expiry in available})[-2:])
+    filters: dict[str, Any] = {"expiry": [expiry for expiry in available if expiry[:4] in years]}
     if str(target_text or "").strip().casefold() not in {"", _NO_BREAKEVEN}:
         filters["breakeven"] = {"target": _entered_price(target_text, "target breakeven")}
     return filters
@@ -2487,8 +2489,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 _scanner_help("RESULTS, RANGE & LINKS", (
                     "Each column filter applies to all stored scan results, including exports. "
                     "Column menus filter and sort the retained universe. Filtering, sorting and "
-                    "target edits never download chains. New scans initially show the latest two "
-                    "available expiration dates overall; clear EXP / YEAR to see all dates. The "
+                    "target edits never download chains. New scans initially show all expiration "
+                    "dates in the latest two available years; clear EXP / YEAR to see all years. The "
                     "BREAKEVEN target ranks proximity; MIN / MAX explicitly limit values. "
                     "Scrolling reuses stored results. BEST PER YEAR "
                     "shows every match grouped and ranked within its year; its year buttons "

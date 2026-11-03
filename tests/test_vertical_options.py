@@ -942,12 +942,12 @@ else:
                             for row in exported))
         self.assertTrue(all(row["Target Breakeven ($)"] == "" for row in exported))
 
-    def test_column_filter_defaults_keep_latest_two_expirations_overall_and_optional_target(self):
+    def test_column_filter_defaults_keep_latest_two_expiration_years_and_optional_target(self):
         from src.vertical_options_ui import _default_column_filters, _NO_BREAKEVEN
         expirations = ["2028-01-21", "2027-01-15", "2026-12-18", "2026-06-19",
-                       "2027-12-17", "2026-11-20", "2027-06-18", "2026-12-18"]
+                       "2027-12-17", "2026-11-20", "2027-06-18", "2026-12-18", "2027-06-18"]
         original = list(expirations)
-        latest = ["2027-12-17", "2028-01-21"]
+        latest = ["2027-01-15", "2027-06-18", "2027-12-17", "2028-01-21"]
         for absent in ("", None, "  ", _NO_BREAKEVEN.upper()):
             self.assertEqual(_default_column_filters(expirations, absent), {"expiry": latest})
             self.assertEqual(_default_column_filters([], absent), {"expiry": []})
@@ -956,7 +956,7 @@ else:
         self.assertEqual(_default_column_filters(["2028-01-21"], "103"),
                          {"expiry": ["2028-01-21"], "breakeven": {"target": 103}})
         self.assertEqual(_default_column_filters(["2027-12-17", "2027-01-15", "2027-06-18"]),
-                         {"expiry": ["2027-06-18", "2027-12-17"]})
+                         {"expiry": ["2027-01-15", "2027-06-18", "2027-12-17"]})
         self.assertEqual(expirations, original)
         for invalid in ("0", "-1", "inf", "nan", "bad"):
             with self.subTest(target=invalid), self.assertRaises(ValueError):

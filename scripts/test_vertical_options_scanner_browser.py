@@ -237,7 +237,13 @@ def in_grid(driver: webdriver.Chrome, callback):
         while True:
             WebDriverWait(driver, max(1, deadline - time.monotonic())).until(enter)
             try:
-                return callback()
+                result = callback()
+                if result == {"grid_mount_pending": True}:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError("Vertical Options grid DOM did not finish mounting")
+                    time.sleep(.1)
+                    continue
+                return result
             except StaleElementReferenceException:
                 # A Streamlit fragment rerun may replace the iframe between
                 # lookup and click; re-enter the current component once mounted.
@@ -290,6 +296,8 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
     return in_grid(driver, lambda: driver.execute_script(
         """
         const scroll=document.getElementById('scroll');
+        const head=document.getElementById('head');
+        if(!scroll||!head)return {grid_mount_pending:true};
         const rows=[...document.querySelectorAll('.row')];
         return {
           rows:rows.map(row=>({
@@ -324,7 +332,7 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
           rowFontSize:rows[0] ? getComputedStyle(rows[0]).fontSize : null,
           horizontalOverflow:scroll.scrollWidth>scroll.clientWidth||
             document.documentElement.scrollWidth>document.documentElement.clientWidth,
-          header:document.getElementById('head').textContent,
+          header:head.textContent,
         };
         """
     ))
@@ -336,6 +344,7 @@ def grid_page_rows(driver: webdriver.Chrome) -> dict:
         """
         const scroll=document.getElementById('scroll');
         const space=document.getElementById('space');
+        if(!scroll||!space)return {grid_mount_pending:true};
         const seen=new Map();
         const capture=()=>{
           for(const row of document.querySelectorAll('.row')){
@@ -1719,25 +1728,26 @@ def test() -> None:
             assert not any(e["event"] == "place" for e in events(event_path))
             print("Minimum 7-day expiry boundary and actual green/red export fills PASS", flush=True)
 
-            # Latest-two overall is a view default, never a chain-data
-            # cutoff. Clearing EXP / YEAR must expose all retained expirations.
+            # All expirations in the latest two available years are a view default.
+            # Clearing EXP / YEAR must expose all retained expirations.
             before_multi = len([e for e in events(event_path) if e["event"] == "chain"])
             ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MULTIEXP", Keys.TAB)
             form = wait.until(ready_scanner_form)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            default_multi = wait.until(lambda _: grouped_page_if_ready(driver, 40, per_year=40))
-            assert "40 MATCHING OF 180 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            default_multi = wait.until(lambda _: grouped_page_if_ready(driver, 120, per_year=60))
+            assert "120 MATCHING OF 180 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
             assert {datetime.strptime(row["values"][2], "%b-%d-%y").month
-                    for row in default_multi["rows"]} == {6, 12}, default_multi
+                    for row in default_multi["rows"]} == {3, 6, 12}, default_multi
             multi_calls = [e for e in events(event_path) if e["event"] == "chain"][before_multi:]
             assert len(multi_calls) == 9 and {item["month"] for item in multi_calls} == {3, 6, 12}, multi_calls
-            latest_year = max(item["year"] for item in multi_calls)
+            latest_years = set(sorted({item["year"] for item in multi_calls})[-2:])
+            latest_expiries = {date(item["year"], item["month"], item["day"])
+                              for item in multi_calls if item["year"] in latest_years}
             assert {datetime.strptime(row["values"][2], "%b-%d-%y").date()
-                    for row in default_multi["rows"]} == {
-                date(latest_year, 6, 20), date(latest_year, 12, 20)
-            }, default_multi
+                    for row in default_multi["rows"]} == latest_expiries, default_multi
+            assert len(latest_expiries) == 6, latest_expiries
             assert_row_colors(default_multi)
             grid_menu_action(driver, "expiry", "CLEAR COLUMN")
             all_expiries = wait.until(lambda _: grouped_page_if_ready(driver, 180, per_year=60))
@@ -1758,16 +1768,18 @@ def test() -> None:
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            reset_multi = wait.until(lambda _: grouped_page_if_ready(driver, 40, per_year=40))
+            reset_multi = wait.until(lambda _: grouped_page_if_ready(driver, 120, per_year=60))
             assert {row["values"][1] for row in reset_multi["rows"]} == {"C", "P"}, reset_multi
             assert {datetime.strptime(row["values"][2], "%b-%d-%y").month
-                    for row in reset_multi["rows"]} == {6, 12}, reset_multi
+                    for row in reset_multi["rows"]} == {3, 6, 12}, reset_multi
             assert {datetime.strptime(row["values"][2], "%b-%d-%y").year
-                    for row in reset_multi["rows"]} == {latest_year}, reset_multi
+                    for row in reset_multi["rows"]} == latest_years, reset_multi
+            assert {datetime.strptime(row["values"][2], "%b-%d-%y").date()
+                    for row in reset_multi["rows"]} == latest_expiries, reset_multi
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 18
             assert not any(e["event"] == "place" for e in events(event_path))
-            print("Latest-two-overall default, complete retained universe, refresh and single-click rescan PASS", flush=True)
+            print("Latest-two-years default, complete retained universe, refresh and single-click rescan PASS", flush=True)
 
             # A user-edited threshold must reach the actual candidate scan,
             # while the next scan still opens on BEST PER YEAR. This fixture
