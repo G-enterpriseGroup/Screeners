@@ -942,6 +942,260 @@ else:
                             for row in exported))
         self.assertTrue(all(row["Target Breakeven ($)"] == "" for row in exported))
 
+    def test_column_filter_defaults_keep_latest_two_expirations_overall_and_optional_target(self):
+        from src.vertical_options_ui import _default_column_filters, _NO_BREAKEVEN
+        expirations = ["2028-01-21", "2027-01-15", "2026-12-18", "2026-06-19",
+                       "2027-12-17", "2026-11-20", "2027-06-18", "2026-12-18"]
+        original = list(expirations)
+        latest = ["2027-12-17", "2028-01-21"]
+        for absent in ("", None, "  ", _NO_BREAKEVEN.upper()):
+            self.assertEqual(_default_column_filters(expirations, absent), {"expiry": latest})
+            self.assertEqual(_default_column_filters([], absent), {"expiry": []})
+        self.assertEqual(_default_column_filters(expirations, "$1,234.50"),
+                         {"expiry": latest, "breakeven": {"target": 1234.5}})
+        self.assertEqual(_default_column_filters(["2028-01-21"], "103"),
+                         {"expiry": ["2028-01-21"], "breakeven": {"target": 103}})
+        self.assertEqual(_default_column_filters(["2027-12-17", "2027-01-15", "2027-06-18"]),
+                         {"expiry": ["2027-06-18", "2027-12-17"]})
+        self.assertEqual(expirations, original)
+        for invalid in ("0", "-1", "inf", "nan", "bad"):
+            with self.subTest(target=invalid), self.assertRaises(ValueError):
+                _default_column_filters(expirations, invalid)
+
+    def test_renderer_column_filters_refresh_pricing_and_memory_in_one_update(self):
+        from uuid import uuid4
+        from streamlit.testing.v1 import AppTest
+
+        source = '''
+from datetime import date
+import time
+import streamlit as st
+from unittest.mock import patch
+import src.vertical_options_ui as vo
+
+vault = "FIXTURE_VAULT"
+class FixtureBroker:
+    is_offline = False
+    def get_balance(self, key):
+        st.session_state.setdefault("fixture_reads", []).append(("balance", key))
+        return {"Computed": {"cashAvailableForInvestment": 1000}}
+    def cache_age(self, *args):
+        return 0
+    def __getattr__(self, name):
+        st.session_state.setdefault("fixture_reads", []).append(("unexpected", name))
+        raise AssertionError("Unexpected broker method: " + name)
+
+def snapshot(scan_id):
+    expiries = [date(year, 1, 15) for year in range(2026 + scan_id, 2029 + scan_id)]
+    rows = []
+    for expiry in expiries:
+        for side in ("CALL", "PUT"):
+            for strike in range(5):
+                price = 2 - .2 * strike if side == "CALL" else .3 + .2 * strike
+                rows.append({"expiry": expiry, "call_put": side, "strike": 100 + strike,
+                             "last": price, "bid": price - .01, "ask": price + .01,
+                             "osi": f"QQQ{expiry:%y%m%d}{side[0]}{(100 + strike) * 1000:08d}"})
+    return {"scan_id": scan_id, "loaded_at": time.time(), "symbol": "QQQ",
+            "source": "E*TRADE", "spot": 110, "name": "Fixture QQQ",
+            "expirations": expiries, "loaded_expirations": len(expiries), "rows": rows,
+            "errors": [], "failed_expirations": [], "next_expiry_index": len(expiries),
+            "scan_complete": True, "result_stores": {}}
+
+def component(**args):
+    st.session_state["fixture_component_args"] = args
+    update = st.session_state.pop("fixture_component_update", None)
+    if update is not None:
+        st.session_state["fixture_consumed_updates"] = st.session_state.get("fixture_consumed_updates", 0) + 1
+    return update
+
+def refresh(client, symbol, touch, *, refresh=False):
+    st.session_state.setdefault("fixture_scan_calls", []).append((symbol, refresh))
+    raw = snapshot(st.session_state["vo_scan_result"]["raw_scan_id"] + 1
+                   if "vo_scan_result" in st.session_state else 2)
+    st.session_state["_vo_chain_cache"] = {"E*TRADE:QQQ": raw}
+    return raw
+
+restoring = st.session_state.get("fixture_restore_only", False)
+st.session_state.setdefault("etrade_accounts", [
+    {"accountIdKey": "fixture-a", "accountId": "12345474", "accountDesc": "Raj"}])
+st.session_state.setdefault("_vo_workspace_ready", vault)
+st.session_state.setdefault("_vo_pricing_mode_hydrated", True)
+st.session_state.setdefault("_vo_pricing_mode_preference", "SMART FILL" if restoring else "NORMAL")
+if not restoring and "vo_scan_result" not in st.session_state and not st.session_state.get("_vo_scan_pending"):
+    raw = snapshot(1)
+    store, annual, _, _ = vo._rank_cached_vertical_chains(raw, None, None, "NORMAL")
+    st.session_state["_vo_chain_cache"] = {"E*TRADE:QQQ": raw}
+    st.session_state["vo_symbol_value"] = "QQQ"
+    st.session_state["vo_scan_result"] = {
+        "symbol": "QQQ", "source": "E*TRADE", "spot": 110, "target": None,
+        "max_cost": None, "min_reward_risk": 2, "pricing_mode": "NORMAL",
+        "raw_scan_id": 1, "scope": "initial-scope", "loaded_at": raw["loaded_at"],
+        "candidates": store, "annual_ids": annual, "listed_years": 3,
+        "loaded_expirations": 3, "listed_expirations": 3, "contract_count": len(raw["rows"]),
+        "ranked_expirations": 3, "scan_complete": True, "errors": []}
+with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
+      patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
+      patch.object(vo, "hydrate_gex_snapshots", return_value=False),
+      patch.object(vo, "_cboe_wall_markup", return_value="<span></span>"),
+      patch.object(vo, "_ticker_quote_preview", return_value={"last": 110, "name": "Fixture QQQ"}),
+      patch.object(vo, "_scan_all_years", side_effect=refresh)):
+    vo.render_vertical_options(FixtureBroker(), lambda: None, vault_key=vault)
+'''.replace("FIXTURE_VAULT", "filter-renderer-" + uuid4().hex)
+        app = AppTest.from_string(source, default_timeout=15).run()
+        self.assertFalse(app.exception)
+        self.assertEqual([field.label for field in app.text_input],
+                         ["Ticker", "Max Cost", "MIN RISK:REWARD 1:"])
+        args = app.session_state["fixture_component_args"]
+        self.assertEqual(args["column_filters"], {"expiry": ["2028-01-15", "2029-01-15"]})
+        self.assertEqual(args["total_rows"], 40)
+        self.assertEqual(len(app.session_state["vo_scan_result"]["candidates"]), 60)
+
+        filters = {"expiry": ["2028-01-15", "2029-01-15"], "side": ["CALL"],
+                   "breakeven": {"target": 101.5, "min": 100, "max": 102}}
+        app.session_state["fixture_component_update"] = {
+            "scope": args["scope"], "column_filters": filters, "filter_revision": 1,
+            "selected_ids": [], "revision": 0, "sort_by": "FILL + TARGET", "sort_direction": "ASC"}
+        app.run()
+        self.assertFalse(app.exception)
+        args = app.session_state["fixture_component_args"]
+        self.assertEqual(args["column_filters"], filters)
+        self.assertEqual(args["filter_ack_revision"], 1)
+        self.assertEqual(app.session_state["fixture_consumed_updates"], 1)
+        self.assertGreater(args["total_rows"], 0)
+        self.assertLess(args["total_rows"], 40)
+        self.assertEqual(app.session_state["vo_target_breakeven"], "101.5")
+        self.assertEqual(app.session_state["_vo_manual_targets"]["QQQ"], "101.5")
+        original_scope = args["scope"]
+
+        app.toggle(key="vo_smart_fill").set_value(True).run()
+        self.assertFalse(app.exception)
+        args = app.session_state["fixture_component_args"]
+        self.assertNotEqual(args["scope"], original_scope)
+        self.assertEqual(app.session_state["vo_scan_result"]["raw_scan_id"], 1)
+        self.assertEqual(app.session_state["vo_scan_result"]["pricing_mode"], "SMART FILL")
+        self.assertEqual(args["column_filters"], filters)
+        self.assertEqual(args["filter_ack_revision"], 0)
+        self.assertNotIn("fixture_scan_calls", app.session_state)
+
+        next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+        self.assertFalse(app.exception)
+        args = app.session_state["fixture_component_args"]
+        fresh_filters = {"expiry": ["2029-01-15", "2030-01-15"],
+                         "breakeven": {"target": 101.5}}
+        self.assertEqual(app.session_state["vo_scan_result"]["raw_scan_id"], 2)
+        self.assertEqual(args["column_filters"], fresh_filters)
+        self.assertEqual(app.session_state["fixture_scan_calls"], [("QQQ", True)])
+        restored = AppTest.from_string(source, default_timeout=15)
+        restored.session_state["fixture_restore_only"] = True
+        restored.run()
+        self.assertFalse(restored.exception)
+        self.assertEqual(restored.session_state["fixture_component_args"]["column_filters"], fresh_filters)
+        self.assertEqual(restored.session_state["vo_target_breakeven"], "101.5")
+
+        app.session_state["fixture_component_update"] = {
+            "scope": args["scope"], "column_filters": {"expiry": []}, "filter_revision": 1,
+            "selected_ids": [], "revision": 0}
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state["fixture_component_args"]["total_rows"], 0)
+        self.assertEqual(app.session_state["vo_target_breakeven"], "")
+        restored_empty = AppTest.from_string(source, default_timeout=15)
+        restored_empty.session_state["fixture_restore_only"] = True
+        restored_empty.run()
+        self.assertFalse(restored_empty.exception)
+        self.assertEqual(restored_empty.session_state["fixture_component_args"]["column_filters"], {"expiry": []})
+        self.assertEqual(restored_empty.session_state["fixture_component_args"]["total_rows"], 0)
+        self.assertEqual(restored_empty.session_state["_vo_manual_targets"].get("QQQ", ""), "")
+        for session in (app, restored, restored_empty):
+            self.assertTrue(all(read[0] == "balance" for read in session.session_state["fixture_reads"]))
+
+    def test_breakeven_menu_target_ranks_complete_store_without_mutating_scan(self):
+        import csv
+        import io
+        from src.vertical_options_store import VerticalResultStore, _rank
+        from src.vertical_options_ui import _qualified_store_csv, _sort_qualified_spreads
+
+        expiries = (date(2027, 1, 15), date(2028, 1, 21))
+        rows = [self._row(expiry, side, 100 + strike,
+                          30 - .3 * strike if side == "CALL" else 5 + .3 * strike)
+                for expiry in expiries for side in ("CALL", "PUT")
+                for strike in range(22)]
+        store = VerticalResultStore("QQQ", 110, 110, None, "NORMAL")
+        for expiry in expiries:
+            store.add_expiration(expiry, [row for row in rows if row["expiry"] == expiry],
+                                 scan_vertical_candidates)
+        retained = list(store.iter_ranked())
+        original_annual = store.annual_ids
+        with store._connect() as db:
+            original_distances = db.execute("SELECT id, distance FROM spreads ORDER BY id").fetchall()
+        for target in (103.0, 118.5, None, 110.0):
+            filters = {"breakeven": {"target": target}}
+            self.assertEqual(store.effective_target(filters), target)
+            self.assertEqual(store.count(column_filters=filters), len(retained))
+            self.assertEqual(store.counts_by_year(column_filters=filters),
+                             {year: sum(row["year"] == year for row in retained)
+                              for year in (2027, 2028)})
+            for sort_by in ("FILL + TARGET", "TARGET DISTANCE"):
+                for direction in ("ASC", "DESC"):
+                    ordered = _sort_qualified_spreads(retained, sort_by, direction, target)
+                    self.assertEqual(list(store.iter_rows(sort_by=sort_by, direction=direction,
+                                                         column_filters=filters)), ordered)
+                    self.assertEqual(store.page(sort_by=sort_by, direction=direction,
+                                                column_filters=filters, offset=800), ordered[800:1000])
+            yearly = sorted(retained, key=lambda row: (row["year"], _rank(row, target)))
+            self.assertEqual(list(store.iter_rows(sort_by="YEAR + FILL", column_filters=filters)), yearly)
+            winners = {year: min((row for row in retained if row["year"] == year),
+                                 key=lambda row: _rank(row, target))
+                       for year in (2027, 2028)}
+            self.assertEqual({row["year"]: row for row in store.best_by_year(column_filters=filters)},
+                             winners)
+            exported = list(csv.DictReader(io.StringIO(_qualified_store_csv(
+                store, source="E*TRADE", loaded_at=1000, target=target, max_cost=None,
+                column_filters=filters, sort_by="YEAR + FILL",
+            ))))
+            self.assertEqual([float(row["Breakeven ($)"]) for row in exported],
+                             [row["breakeven"] for row in yearly])
+            self.assertEqual(sum(row["Annual Best"] == "YES" for row in exported), 2)
+            self.assertEqual(store.target, 110)
+            self.assertEqual(store.annual_ids, original_annual)
+        self.assertEqual(len(store), len(retained))
+        self.assertEqual(list(store.iter_ranked()), retained)
+        with store._connect() as db:
+            self.assertEqual(db.execute("SELECT id, distance FROM spreads ORDER BY id").fetchall(),
+                             original_distances)
+
+        indexed = dict(store._indexes)
+        for target in (104, 105, 106):
+            store.page(column_filters={"breakeven": {"target": target}}, sort_by="YEAR + FILL")
+        self.assertEqual(store._indexes, indexed)
+        filters = {"breakeven": {"target": 118.5, "min": 110, "max": 120}, "side": ["CALL"]}
+        matching = [row for row in retained if 110 <= row["breakeven"] <= 120
+                    and row["call_put"] == "CALL"]
+        self.assertEqual(store.count(column_filters=filters), len(matching))
+        within_range = [row for row in matching if abs(row["breakeven"] - 118.5) <= 1 + 1e-8]
+        self.assertEqual(store.count(column_filters=filters, max_distance=1), len(within_range))
+
+    def test_breakeven_menu_target_validation_and_explicit_clear(self):
+        from src.vertical_options_store import VerticalResultStore
+        store = VerticalResultStore("QQQ", 110, 110, None, "NORMAL")
+        self.assertEqual(store.effective_target(), 110)
+        self.assertEqual(store.effective_target({"breakeven": {"min": 100}}), 110)
+        self.assertIsNone(store.effective_target({"breakeven": {"target": None}}))
+        self.assertIsNone(store.effective_target({"breakeven": {"target": ""}}))
+        self.assertEqual(store.effective_target({"breakeven": {"target": "105.5"}}), 105.5)
+        for invalid in (0, -1, True, float("nan"), float("inf"), "bad", {},
+                        "100); DROP TABLE spreads;--"):
+            filters = {"breakeven": {"target": invalid}}
+            with self.subTest(target=invalid):
+                for query in (store.count, store.page, store.best_by_year):
+                    with self.assertRaisesRegex(ValueError, "Invalid breakeven target"):
+                        query(column_filters=filters)
+                with self.assertRaisesRegex(ValueError, "Invalid breakeven target"):
+                    list(store.iter_rows(column_filters=filters))
+        with self.assertRaisesRegex(ValueError, "Invalid numeric column filter"):
+            store.count(column_filters={"cost": {"target": 100}})
+        self.assertEqual(store.count(), 0)
+
     def test_disk_store_rolls_back_failed_expiration_and_cleans_up(self):
         import gc
         import weakref

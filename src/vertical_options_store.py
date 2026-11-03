@@ -141,6 +141,8 @@ class VerticalResultStore:
         if max_distance is None and not column_filters and year is None:
             return self.annual_rows
         where, args = self._where(max_distance=max_distance, column_filters=column_filters, year=year)
+        target = self.effective_target(column_filters)
+        order = _CANONICAL_ORDER.replace("distance", self._distance_expression(column_filters))
         year_clause = " AND " if where else " WHERE "
         result = []
         with self._connect() as db:
@@ -148,11 +150,11 @@ class VerticalResultStore:
                 if year is not None and row_year != year:
                     continue
                 row = db.execute("SELECT * FROM spreads" + where
-                    + year_clause + "expiry>=? AND expiry<? ORDER BY " + _CANONICAL_ORDER + " LIMIT 1",
+                    + year_clause + "expiry>=? AND expiry<? ORDER BY " + order + " LIMIT 1",
                     args + [f"{row_year:04d}-01-01", f"{row_year + 1:04d}-01-01"]).fetchone()
                 if row is not None:
                     result.append(self._decode(row))
-        return sorted(result, key=lambda row: _rank(row, self.target))
+        return sorted(result, key=lambda row: _rank(row, target))
 
     @contextmanager
     def snapshot(self):
@@ -240,9 +242,33 @@ class VerticalResultStore:
     # ==============================
     # WHOLE-SCAN FILTERS AND PAGES
     # ==============================
+    def effective_target(self, column_filters=None) -> float | None:
+        """Resolve a display-only target without mutating the retained scan."""
+        breakeven = column_filters.get("breakeven") if isinstance(column_filters, dict) else None
+        if not isinstance(breakeven, dict) or "target" not in breakeven:
+            return self.target
+        value = breakeven["target"]
+        if value is None or value == "":
+            return None
+        try:
+            target = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid breakeven target.") from exc
+        if isinstance(value, bool) or not math.isfinite(target) or target <= 0:
+            raise ValueError("Invalid breakeven target.")
+        return target
+
+    def _distance_expression(self, column_filters=None) -> str:
+        target = self.effective_target(column_filters)
+        if target == self.target:
+            return "distance"
+        # Only a validated finite float is interpolated into the SQL expression.
+        return "0.0" if target is None else f"abs(breakeven - {target!r})"
+
     def _where(self, expiry="ALL", side="CALL + PUT", max_distance=None, column_filters=None,
                year=None):
         clauses, args = [], []
+        target = self.effective_target(column_filters)
         if year is not None:
             if type(year) is not int or not 1 <= year <= 9998:
                 raise ValueError("Invalid result year.")
@@ -261,15 +287,16 @@ class VerticalResultStore:
         if max_distance is not None:
             if not math.isfinite(max_distance) or max_distance < 0:
                 raise ValueError("Invalid breakeven distance filter.")
-            if self.target is not None:
-                clauses.append("distance<=?")
+            if target is not None:
+                clauses.append(self._distance_expression(column_filters) + "<=?")
                 args.append(max_distance + 1e-8)
         if column_filters:
             if not isinstance(column_filters, dict):
                 raise ValueError("Invalid column filters.")
             for field, selected in column_filters.items():
                 if field in _NUMERIC_FILTERS:
-                    if not isinstance(selected, dict) or set(selected) - {"min", "max"}:
+                    allowed = {"min", "max", "target"} if field == "breakeven" else {"min", "max"}
+                    if not isinstance(selected, dict) or set(selected) - allowed:
                         raise ValueError("Invalid numeric column filter.")
                     bounds = {}
                     for limit in ("min", "max"):
@@ -338,24 +365,29 @@ class VerticalResultStore:
                 }
         return self._choices_cache
 
-    @staticmethod
-    def _order(sort_by, direction):
+    def _order(self, sort_by, direction, column_filters=None):
         if sort_by not in _SORTS or direction not in {"ASC", "DESC"}:
             raise ValueError("Invalid qualified-spread sorting controls.")
+        distance = self._distance_expression(column_filters)
         terms = []
         for column, reverse in _SORTS[sort_by]:
+            if column == "distance":
+                column = distance
             if column in {"buy_last", "sell_last"}:
                 terms.append(f"({column} IS NULL) {direction}")
             terms.append(f"{column} {'DESC' if reverse != (direction == 'DESC') else 'ASC'}")
         # Match the existing stable identity tie-break, including DESC ties.
         return ", ".join(terms + ["id ASC"])
 
-    def _ensure_index(self, sort_by, direction):
+    def _ensure_index(self, sort_by, direction, column_filters=None):
+        order = self._order(sort_by, direction, column_filters)
+        if (self.effective_target(column_filters) != self.target
+                and any(column == "distance" for column, _ in _SORTS[sort_by])):
+            return  # Display targets share the retained rows without per-target indexes.
         if sort_by == "TARGET DISTANCE" and direction == "ASC":
             return  # Covered by the permanent distance index; do not duplicate it.
         key = (sort_by, direction)
         if key not in self._indexes:
-            order = self._order(sort_by, direction)
             with self._lock, self._connect() as db:
                 name = f"sort_{list(_SORTS).index(sort_by)}_{direction}"
                 db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON spreads ({order})")
@@ -383,12 +415,12 @@ class VerticalResultStore:
              column_filters=None, year=None) -> list[dict[str, Any]]:
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("Invalid spread page.")
-        self._ensure_index(sort_by, direction)
+        self._ensure_index(sort_by, direction, column_filters)
         where, args = self._where(expiry, side, max_distance, column_filters, year)
         # Locate page IDs through the index before reading their detail payloads.
         sql = ("SELECT * FROM spreads WHERE rowid IN (SELECT rowid FROM spreads" + where
-               + " ORDER BY " + self._order(sort_by, direction) + " LIMIT ? OFFSET ?) ORDER BY "
-               + self._order(sort_by, direction))
+               + " ORDER BY " + self._order(sort_by, direction, column_filters) + " LIMIT ? OFFSET ?) ORDER BY "
+               + self._order(sort_by, direction, column_filters))
         with self._connect() as db:
             return [self._decode(row) for row in db.execute(sql, args + [limit, offset])]
 
@@ -407,9 +439,9 @@ class VerticalResultStore:
     def iter_rows(self, *, expiry="ALL", side="CALL + PUT", sort_by="FILL + TARGET",
                   direction="ASC", max_distance=None, column_filters=None, year=None):
         """Stream the entire filtered universe, never just the displayed page."""
-        self._ensure_index(sort_by, direction)
+        self._ensure_index(sort_by, direction, column_filters)
         where, args = self._where(expiry, side, max_distance, column_filters, year)
-        yield from self._iterate(where, args, self._order(sort_by, direction))
+        yield from self._iterate(where, args, self._order(sort_by, direction, column_filters))
 
     def iter_ranked(self):
         yield from self._iterate("", [], _CANONICAL_ORDER)
