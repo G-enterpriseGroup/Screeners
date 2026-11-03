@@ -1,0 +1,38 @@
+name: Networth scheduled balances
+
+on:
+  schedule:
+    - cron: '0 9,12,17,22 * * *'
+      timezone: 'America/Indiana/Indianapolis'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: networth-balances
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NETWORTH_TRIGGER: ${{ github.event_name }}
+      NETWORTH_PLAID_CLIENT_ID: ${{ secrets.NETWORTH_PLAID_CLIENT_ID }}
+      NETWORTH_PLAID_SECRET: ${{ secrets.NETWORTH_PLAID_SECRET }}
+      NETWORTH_PLAID_ENVIRONMENT: ${{ vars.NETWORTH_PLAID_ENVIRONMENT || 'production' }}
+      NETWORTH_GITHUB_TOKEN: ${{ secrets.NETWORTH_GITHUB_TOKEN }}
+      NETWORTH_ENCRYPTION_KEY: ${{ secrets.NETWORTH_ENCRYPTION_KEY }}
+      NETWORTH_REPOSITORY: ${{ vars.NETWORTH_REPOSITORY || 'G-enterpriseGroup/Portfolio' }}
+      NETWORTH_BRANCH: ${{ vars.NETWORTH_BRANCH || 'networth-data' }}
+      NETWORTH_LEDGER_ID: ${{ vars.NETWORTH_LEDGER_ID || 'raj-terminal' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install worker dependencies
+        run: python -m pip install 'requests>=2.32,<3' 'cryptography>=43,<47'
+      - name: Capture linked-account balances
+        run: python scripts/sync_networth.py

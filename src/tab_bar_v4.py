@@ -45,6 +45,7 @@ DISABLED_TAB_ROUTES = {"OPTION BOOK", "ORDERS", "MUNI SCREENERS", "BULL DEBIT SP
 
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
+    "NETWORTH",
     "PERFORMANCE",
     "ACQUISITION",
     "RISK SIZING",
@@ -167,6 +168,8 @@ def _clean_order(order: Iterable[str] | None) -> list[str]:
     # An explicitly reordered Acquisition tab keeps the user's chosen position.
     if "ACQUISITION" not in out and "PERFORMANCE" in out:
         out.insert(out.index("PERFORMANCE") + 1, "ACQUISITION")
+    if "NETWORTH" not in out and "HOLDINGS" in out:
+        out.insert(out.index("HOLDINGS") + 1, "NETWORTH")
     for item in DEFAULT_TAB_ORDER:
         if item not in out:
             out.append(item)
