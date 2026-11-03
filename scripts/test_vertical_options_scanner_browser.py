@@ -304,7 +304,21 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             index:Number(row.dataset.index),
             annual:row.classList.contains('annual'),
             values:[...row.querySelectorAll('.cell')].map(cell=>
-                cell.classList.contains('expiry') ? cell.firstChild.textContent : cell.textContent),
+                cell.classList.contains('expiry') ? cell.firstChild.textContent :
+                cell.classList.contains('cost') ? cell.querySelector('.debit-value')?.textContent :
+                cell.textContent).concat(row.querySelector('.fill-detail')?.textContent),
+            cellCount:row.children.length,
+            debitValue:row.querySelector('.debit-value')?.textContent,
+            fillDetail:row.querySelector('.fill-detail')?.textContent,
+            fillFits:(()=>{
+                const cell=row.querySelector('.cost'),value=cell?.querySelector('.debit-value'),
+                      detail=cell?.querySelector('.fill-detail');
+                if(!value||!detail||row.querySelectorAll('.fill-detail').length!==1)return false;
+                const c=cell.getBoundingClientRect(),v=value.getBoundingClientRect(),d=detail.getBoundingClientRect();
+                return getComputedStyle(value).fontSize==='16px' && getComputedStyle(detail).fontSize==='8px' &&
+                    v.top>=c.top && d.top>=v.bottom && d.bottom<=c.bottom &&
+                    detail.scrollWidth<=cell.clientWidth && row.getBoundingClientRect().height===43;
+            })(),
             expiryDetail:row.querySelector('.expiry-detail')?.textContent,
             expiryFits:(()=>{
                 const cell=row.querySelector('.expiry'), detail=cell?.querySelector('small');
@@ -333,6 +347,7 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
           horizontalOverflow:scroll.scrollWidth>scroll.clientWidth||
             document.documentElement.scrollWidth>document.documentElement.clientWidth,
           header:head.textContent,
+          headers:[...head.children].map(cell=>cell.querySelector('.filter-name')?.textContent||cell.textContent),
         };
         """
     ))
@@ -352,7 +367,9 @@ def grid_page_rows(driver: webdriver.Chrome) -> dict:
               index:Number(row.dataset.index),
               annual:row.classList.contains('annual'),
               values:[...row.querySelectorAll('.cell')].map(cell=>
-                cell.classList.contains('expiry') ? cell.firstChild.textContent : cell.textContent),
+                cell.classList.contains('expiry') ? cell.firstChild.textContent :
+                cell.classList.contains('cost') ? cell.querySelector('.debit-value')?.textContent :
+                cell.textContent).concat(row.querySelector('.fill-detail')?.textContent),
               background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
               foreground:getComputedStyle(row.querySelector('.cell')).color,
               selectBackground:getComputedStyle(row.querySelector('.select')).backgroundColor,
@@ -407,6 +424,17 @@ def assert_row_colors(page: dict) -> None:
         assert row["linkColors"] and all(color == "rgb(0, 0, 0)" for color in row["linkColors"]), row
         assert row["costColor"] == "rgb(255, 48, 48)" and row["costBackground"] == "rgb(0, 0, 0)", row
         assert ("rgb(255, 255, 255)" in row["annualBorder"]) == row["annual"], row
+
+
+def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
+    """One visible Debit column retains numeric cost and its tiny pricing basis."""
+    assert len(snapshot["headers"]) == 13 and snapshot["headers"][9] == "Debit", snapshot
+    assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
+    for row in snapshot["rows"]:
+        assert row["cellCount"] == 13 and len(row["values"]) == 12, row
+        assert row["debitValue"] == row["values"][7] and row["debitValue"].startswith("$"), row
+        assert row["fillDetail"] == row["values"][-1] == expected_fill, row
+        assert row["fillFits"], row
 
 
 def grouped_page_if_ready(driver: webdriver.Chrome, total: int,
@@ -630,7 +658,15 @@ def assert_liquid_cash_display(driver) -> None:
 def grid_menu_action(driver, key: str, action: str) -> None:
     def enter():
         panel = driver.find_element(By.ID, "filter-panel")
-        button = driver.find_element(By.CSS_SELECTOR, f'.filter-button[data-key="{key}"]')
+        header_key = "cost" if key == "basis" else key
+        button = driver.find_element(By.CSS_SELECTOR, f'.filter-button[data-key="{header_key}"]')
+        if key == "basis":
+            if not panel.is_displayed() or panel.find_element(By.CSS_SELECTOR, ".filter-title").text != "FILTER FILL":
+                if not panel.is_displayed() or panel.find_element(By.CSS_SELECTOR, ".filter-title").text != "FILTER Debit":
+                    button.click()
+                panel.find_element(By.XPATH, './/button[normalize-space(.)="FILL FILTER / SORT"]').click()
+            panel.find_element(By.XPATH, f'.//button[normalize-space(.)="{action}"]').click()
+            return
         if (not panel.is_displayed() or panel.find_element(By.CSS_SELECTOR, ".filter-title").text !=
                 "FILTER " + button.find_element(By.CSS_SELECTOR, ".filter-name").text):
             button.click()
@@ -1173,6 +1209,10 @@ def test() -> None:
             assert all(97 <= float(row["Breakeven ($)"]) <= 103 for row in tighter)
             grid_menu_action(driver, "breakeven", "CLEAR ALL")
             wait.until(lambda _: "60 DISPLAYED // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
+            for action, arrow in (("SORT ASC", "↑"), ("SORT DESC", "↓")):
+                grid_menu_action(driver, "basis", action)
+                wait.until(lambda _, arrow=arrow: in_grid(driver, lambda:
+                    driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="cost"] .filter-icon').text == arrow))
             grid_menu_action(driver, "basis", "FILL + TARGET")
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             leave_button = driver.find_element(By.XPATH, '//button[contains(., "LEAVE SCANNER")]')
@@ -1195,7 +1235,9 @@ def test() -> None:
                 assert row["expiryFits"], row
             for width in (1100, 1440):
                 driver.set_window_size(width, 900)
-                assert all(row["expiryFits"] for row in grid_snapshot(driver)["rows"])
+                resized = grid_snapshot(driver)
+                assert all(row["expiryFits"] for row in resized["rows"])
+                assert_merged_debit(resized, "ASK")
             print("Vertical Options tiny expiry detail PASS (calendar days + years, 43px rows)", flush=True)
             assert len(best_page["rows"]) == 60, best_page
             assert any(not row["annual"] for row in best["rows"]), best
@@ -1207,12 +1249,23 @@ def test() -> None:
             ), best
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
-            assert "RISK:REWARD" in best["header"] and "FILL" in best["header"], best
+            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"], best
             assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
             assert best["height"] == 516, best
             for row in best["rows"]:
                 assert_exact_tradingview_formula(row)
+
+            chain_reads = sum(event["event"] == "chain" for event in events(event_path))
+            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            smart = wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
+                all(row["fillDetail"] == "SMART" for row in snapshot["rows"]) else False))
+            assert_merged_debit(smart, "SMART")
+            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
+                all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
+            assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
+            print("Merged Debit / tiny ASK and SMART basis PASS (13 columns, 43px rows, no chain reload)", flush=True)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
