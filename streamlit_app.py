@@ -102,6 +102,7 @@ from src.holdings_snapshot_mode import build_manual_holdings_renderer
 from src.lock_screen_v2 import render_seamless_lock_screen
 from src.option_book_ui import render_option_book
 from src.performance_ui import render_performance
+from src.networth_ui import render_networth
 from src.acquisition_ui import render_acquisition, maybe_auto_sync_acquisition_accounts
 from src.protective_puts_ui import render_protective_puts
 from src.rebalance_portfolio_ui import render_rebalance_portfolio
@@ -541,6 +542,10 @@ _TERMINAL_PAGE_HEADER_CSS = """
 """
 
 _TERMINAL_PAGE_HEADERS = {
+    "NETWORTH": (
+        "NETWORTH",
+        "PLAID-LINKED ACCOUNTS // DAILY BALANCE SHEET // ASSETS + LIABILITIES + EQUITY",
+    ),
     "HOLDINGS": (
         "E*TRADE HOLDINGS",
         "BROKERAGE POSITIONS // MANUAL SNAPSHOT // E*TRADE ACCOUNT",
@@ -745,6 +750,9 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
 
     if active_tab == "HOLDINGS":
         _render_without_legacy_page_header("HOLDINGS", render_etrade_holdings)
+
+    elif active_tab == "NETWORTH":
+        render_networth()
 
     elif active_tab == "PERFORMANCE":
         render_performance(

@@ -173,6 +173,10 @@
         const performanceIndex = out.indexOf("PERFORMANCE");
         if (performanceIndex !== -1) out.splice(performanceIndex + 1, 0, "ACQUISITION");
       }
+      if (allowed.includes("NETWORTH") && !out.includes("NETWORTH")) {
+        const holdingsIndex = out.indexOf("HOLDINGS");
+        if (holdingsIndex !== -1) out.splice(holdingsIndex + 1, 0, "NETWORTH");
+      }
       allowed.forEach((item) => { if (!out.includes(item)) out.push(item); });
       return out;
     }

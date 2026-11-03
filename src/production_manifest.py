@@ -18,6 +18,11 @@ from __future__ import annotations
 
 
 FEATURE_ROUTES = {
+    "networth": {
+        "entry": "src/networth_ui.py",
+        "owner": "src/networth_ui.py",
+        "support": ["src/networth.py", "src/networth_store.py", "scripts/sync_networth.py"],
+    },
     "risk_sizing": {
         "entry": "src/risk_sizing_ui_v7.py",
         "owner": "src/risk_sizing_ui_v10.py",

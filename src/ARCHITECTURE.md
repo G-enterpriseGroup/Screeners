@@ -60,6 +60,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | Commit-triggered fresh-process reboot | `src/reboot_guard.py` | `streamlit_app.py` invokes the guard before app routing | Feature renderers |
 | Holdings presentation | `src/holdings_snapshot_mode.py` | `src/stockanalysis_portfolio_v5.py` | Risk/GEX/OAuth files |
 | E*TRADE Performance | `src/performance_ui.py` | `src/etrade_client.py` read-only transaction/portfolio/balance transport | Risk/GEX/OAuth/order files |
+| Networth | `src/networth_ui.py` | `src/networth.py` Plaid/balance-sheet service, `src/networth_store.py` encrypted private storage, `scripts/sync_networth.py` scheduled worker | E*TRADE, Risk/GEX/Holdings, terminal authentication/session files, shared theme |
 | Acquisition (open shares FIFO/Pine) | `src/acquisition_ui.py` | Existing `src/etrade_client.py` transactions/portfolio and Performance read-only normalization | Risk Sizing, Performance UI, OAuth, shared broker transport, GEX |
 | Top navigation | `src/tab_bar_v4.py` | `src/components/terminal_tabs_v3/` | Feature content renderers |
 | Rebalance Portfolio | `src/rebalance_portfolio_ui.py` | `src/risk_sizing_ui.py`, `src/risk_sizing_ui_v2.py`, `src/risk_sizing.py` for shared read-only Risk book normalization/classification/intent memory | `streamlit_app.py`, Risk live-order workflow, OAuth/session UI, Holdings/GEX/Performance |
@@ -217,6 +218,17 @@ Production path:
 - E*TRADE transaction history is a rolling API window. Never label unavailable pre-window history as complete ITD; show the earliest loaded transaction and keep ALL-TIME explicitly coverage-aware until older history is seeded.
 - The 30-second live fragment refreshes current portfolio/balance data only while Performance is active. Historical transactions are session-cached until the user selects REFRESH PERFORMANCE.
 - Do not change Risk Sizing, GEX, Holdings, OAuth, or shared theme files for Performance-only work.
+
+## Networth edit map
+
+Production path: `streamlit_app.py` → `src/networth_ui.py` → `src/networth.py` + `src/networth_store.py`.
+
+- Networth owns Plaid Hosted Link, account classifications, daily balance sheets, and its dedicated `[networth]` secrets. Keep E*TRADE connections and session persistence separate.
+- Classifications are Asset, Liability, Equity, Excluded, or Unclassified. Net worth is Assets minus Liabilities; classified Equity is separate, with reconciliation Assets minus Liabilities minus Equity. Preserve signed credit balances, unknown balances and separate currencies; never sum currencies without exchange rates.
+- Store access tokens and account data only in authenticated ciphertext in a verified private repository, on the dedicated `networth-data` branch. State and daily captures use separate encrypted documents. Restore before writes; preserve concurrent classifications with SHA compare-and-swap. Failed refreshes retain prior balances with visible errors and timestamps.
+- `.github/workflows/networth-sync.yml` invokes `scripts/sync_networth.py` at 09:00, 12:00, 17:00 and 22:00 in `America/Indiana/Indianapolis`, independently of an open browser. GitHub schedules can be delayed or skipped; actual capture times must remain visible. Never fabricate missed historical balances or advertise unconfigured scheduling as active.
+- Shared shell edits register only the NETWORTH key, header, dispatch and saved-order migration. Do not change navigation appearance, global styling, broker logic or unrelated feature files.
+- Activation and matching Streamlit/Actions configuration are documented in `src/NETWORTH_SETUP.md`.
 
 ## Acquisition edit map
 

@@ -72,6 +72,11 @@ jobs:
       - name: Test Performance analytics and read-only boundary
         run: python scripts/test_performance_ui.py
 
+      - name: Test Networth Plaid flow, balance sheets and encrypted persistence
+        run: |
+          python -m py_compile src/networth_ui.py src/networth.py src/networth_store.py scripts/sync_networth.py
+          python -m unittest tests.test_networth tests.test_networth_store tests.test_networth_ui
+
       - name: Test Acquisition FIFO and incremental cache
         run: |
           python -m py_compile src/acquisition_ui.py src/acquisition_history_github.py src/acquisition_private_blotter.py tests/test_acquisition.py tests/test_acquisition_github_archive.py tests/test_acquisition_private_blotter.py streamlit_app.py src/tab_bar_v4.py
