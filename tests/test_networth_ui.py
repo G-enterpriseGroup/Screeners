@@ -2,12 +2,13 @@
 
 from copy import deepcopy
 from pathlib import Path
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from html.parser import HTMLParser
 from io import StringIO
 import re
 import shutil
 import subprocess
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -186,6 +187,38 @@ class NetworthUITests(unittest.TestCase):
             sync.assert_not_called()
         self.assertEqual(self.store.days, before_history)
 
+    def test_legacy_string_preferences_render_and_edit_only_the_selected_account(self):
+        self.store.state["items"]["i"] = {"label": "Synthetic Bank", "access_token": "PRIVATE"}
+        self.store.state["accounts"] = {
+            "a": {**statement_account("a", "Synthetic Checking", 1200, "Asset", mask="5474"),
+                  "item_id": "i", "type": "depository", "subtype": "checking"},
+            "b": {**statement_account("b", "Synthetic Card", 100, "Liability", mask="7777"),
+                  "item_id": "i", "type": "credit", "subtype": "credit card"},
+        }
+        self.store.state["preferences"] = {"a": "Equity", "b": "Liability"}
+        app = AppTest.from_string("from src.networth_ui import render_networth\nrender_networth()")
+        with patch("src.networth_ui.PlaidConfig.from_runtime", return_value=self.plaid.config), patch(
+            "src.networth_ui.StoreConfig.from_runtime", return_value=object()
+        ), patch("src.networth_ui.GitHubNetworthStore", return_value=self.store):
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertEqual(app.text_input(key="networth_nickname_a").value, "")
+            app.text_input(key="networth_nickname_a").input("Household Cash")
+            next(button for button in app.button if button.label == "SAVE NICKNAME").click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertEqual(self.store.state["preferences"]["a"], {"classification": "Equity", "nickname": "Household Cash"})
+            self.assertEqual(self.store.state["preferences"]["b"], "Liability")
+            app.multiselect[0].set_value(["b"]).run()
+            self.assertFalse(app.error)
+            app.selectbox(key="networth_apply_classification").select("Asset")
+            next(button for button in app.button if button.label == "SAVE CLASSIFICATIONS").click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertEqual(self.store.state["preferences"]["b"], {"classification": "Asset"})
+            self.assertEqual(self.store.state["preferences"]["a"], {"classification": "Equity", "nickname": "Household Cash"})
+
     def test_saved_tab_order_migration_preserves_explicit_order(self):
         self.assertEqual(_clean_order(["HOLDINGS", "PERFORMANCE"])[:2], ["HOLDINGS", "NETWORTH"])
         self.assertEqual(_clean_order(["NETWORTH", "GEX", "HOLDINGS"])[:3], ["NETWORTH", "GEX", "HOLDINGS"])
@@ -231,6 +264,19 @@ class NetworthStatementTests(unittest.TestCase):
         self.assertIn("Synthetic Checking", fallback)
         self.assertIn("5474", fallback)
         self.assertEqual(account["name"], "Synthetic Checking")
+
+    def test_legacy_string_preferences_keep_bank_labels_and_classification_math(self):
+        account = statement_account("legacy", "Synthetic Legacy", 200, "Asset", mask="7777")
+        for classification in ("Equity", "Liability"):
+            with self.subTest(classification=classification):
+                preferences = {"legacy": classification}
+                state = {"accounts": {"legacy": account}, "preferences": preferences}
+                rows = networth_ui._statement_rows(networth_ui.account_rows(state), preferences, "USD")
+                detail = next(row for row in rows if row.get("account_id") == "legacy")
+                self.assertEqual(detail["label"], "Synthetic Legacy • 7777")
+                self.assertEqual(detail["classification"], classification)
+                self.assertEqual(detail["amount"], -200 if classification == "Liability" else 200)
+                self.assertEqual(self.row(rows, "Total Assets:")["amount"], 0)
 
     def test_statement_balances_negative_liability_rows_and_asset_percentages(self):
         rows = networth_ui._statement_rows(self.accounts, {"cash": {"nickname": "Household Cash"}}, "USD")
@@ -398,6 +444,15 @@ class NetworthAccountDetailsTests(unittest.TestCase):
         self.assertEqual(self.store.state["preferences"]["cash"]["classification"], "Equity")
         self.assertEqual(self.store.state["preferences"]["cash"]["nickname"], "Household Cash")
 
+    def test_legacy_string_nickname_save_preserves_class_and_normalizes_only_edited_account(self):
+        self.store.state["preferences"] = {"cash": "Equity", "card": "Liability"}
+        networth_ui._save_account_details(self.store, "cash", "Household Cash")
+        self.assertEqual(self.store.state["preferences"]["cash"], {"classification": "Equity", "nickname": "Household Cash"})
+        self.assertEqual(self.store.state["preferences"]["card"], "Liability")
+        networth_ui._save_account_details(self.store, "cash", "", "Asset")
+        self.assertEqual(self.store.state["preferences"]["cash"], {"classification": "Asset"})
+        self.assertEqual(self.store.state["preferences"]["card"], "Liability")
+
     def test_blank_nickname_removes_override_and_restores_original_label(self):
         networth_ui._save_account_details(self.store, "cash", "  ", "Asset")
         self.assertNotIn("nickname", self.store.state["preferences"]["cash"])
@@ -432,6 +487,159 @@ class NetworthAccountDetailsTests(unittest.TestCase):
         self.assertEqual(store.state["preferences"]["cash"]["new_field"], "concurrent")
         self.assertEqual(store.state["preferences"]["card"]["nickname"], "Concurrent Card")
         self.assertEqual(store.state["preferences"]["cash"]["nickname"], "Household Cash")
+
+
+class NetworthResilienceTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Store()
+        self.store.state["items"]["i"] = {
+            "label": "Synthetic Bank", "access_token": "PRIVATE_ACCESS_TOKEN",
+            "last_sync": "2026-11-03T16:00:00Z",
+        }
+        self.store.state["accounts"]["a"] = {
+            **statement_account("a", "Synthetic Checking", 1200, "Asset", mask="5474"),
+            "item_id": "i", "type": "depository", "subtype": "checking",
+            "as_of": "2026-11-03T16:00:00Z",
+        }
+        self.store.state["preferences"]["a"] = {"nickname": "Household Cash", "classification": "Asset"}
+        self.store.state["last_sync"] = "2026-11-03T17:00:00Z"
+        self.storage_config = SimpleNamespace(repository="Synthetic/Portfolio", branch="networth-data")
+        self.plaid_config = PlaidConfig("FAKE_ID", "FAKE_SECRET")
+
+    @contextmanager
+    def configured(self):
+        app = AppTest.from_string("from src.networth_ui import render_networth\nrender_networth()")
+        with patch("src.networth_ui.PlaidConfig.from_runtime", side_effect=lambda: self.plaid_config), patch(
+            "src.networth_ui.StoreConfig.from_runtime", side_effect=lambda: self.storage_config
+        ), patch("src.networth_ui.GitHubNetworthStore", return_value=self.store):
+            yield app
+
+    def test_manual_storage_or_transport_failure_keeps_loaded_statement(self):
+        for failure in (NetworthError("ARCHIVE_UNAVAILABLE"), NetworthError("PLAID_CONNECTION_FAILED"),
+                        NetworthError("NETWORTH_SYNC_LEASE_LOST"), RuntimeError("PRIVATE_FAILURE_DETAIL")):
+            with self.subTest(failure=type(failure).__name__), self.configured() as app, patch(
+                "src.networth_ui.sync_networth", side_effect=failure
+            ), patch("src.networth_ui._render_statement", wraps=networth_ui._render_statement) as statement:
+                app.run()
+                statement.reset_mock()
+                next(button for button in app.button if button.label == "SYNC NOW").click().run()
+                self.assertFalse(app.exception)
+                self.assertFalse(app.error)
+                self.assertTrue(any("saved balances" in message.value for message in app.warning))
+                self.assertEqual(statement.call_args.args[0][0]["current"], 1200)
+                self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
+                self.assertNotIn("PRIVATE_FAILURE_DETAIL", " ".join(message.value for message in app.warning))
+
+    def test_busy_sync_informs_user_and_preserves_statement(self):
+        with self.configured() as app, patch("src.networth_ui.sync_networth",
+                side_effect=NetworthError("NETWORTH_SYNC_IN_PROGRESS")), patch(
+            "src.networth_ui._render_statement", wraps=networth_ui._render_statement
+        ) as statement:
+            app.run()
+            statement.reset_mock()
+            next(button for button in app.button if button.label == "SYNC NOW").click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertTrue(any("already running" in message.value for message in app.info))
+            self.assertEqual(statement.call_args.args[0][0]["account_id"], "a")
+
+    def test_verified_session_snapshot_has_no_tokens_and_is_read_only_on_storage_outage(self):
+        self.store.state["pending_links"]["link"] = {"link_token": "PRIVATE_LINK_TOKEN", "hosted_link_url": "PRIVATE_URL"}
+        with self.configured() as app, patch("src.networth_ui._pending_links"), patch(
+            "src.networth_ui.sync_networth"
+        ) as sync:
+            app.run()
+            self.assertFalse(app.exception)
+            cache = app.session_state["_networth_verified_balances"]
+            self.assertNotIn("PRIVATE_ACCESS_TOKEN", repr(cache))
+            self.assertNotIn("PRIVATE_LINK_TOKEN", repr(cache))
+            self.assertNotIn("PRIVATE_URL", repr(cache))
+            self.assertNotIn("pending_links", next(iter(cache.values())))
+            before = deepcopy(self.store.state)
+            with patch.object(self.store, "read_state", side_effect=NetworthError("STORAGE_UNAVAILABLE")), patch.object(
+                self.store, "update_state", wraps=self.store.update_state
+            ) as write, patch.object(self.store, "read_day", wraps=self.store.read_day) as history, patch(
+                "src.networth_ui._render_statement", wraps=networth_ui._render_statement
+            ) as statement:
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertFalse(app.error)
+                self.assertTrue(any("read-only" in message.value for message in app.warning))
+                self.assertEqual(statement.call_args.args[0][0]["current"], 1200)
+                self.assertEqual(statement.call_args.args[1]["a"]["nickname"], "Household Cash")
+                self.assertFalse(app.button)
+                write.assert_not_called()
+                history.assert_not_called()
+                sync.assert_not_called()
+            self.assertEqual(self.store.state, before)
+
+    def test_storage_outage_cannot_reuse_cache_from_another_source_or_environment(self):
+        for changed in ("repository", "branch", "scope", "environment"):
+            with self.subTest(changed=changed):
+                self.setUp()
+                with self.configured() as app:
+                    app.run()
+                    self.assertFalse(app.exception)
+                    if changed == "environment":
+                        self.plaid_config = PlaidConfig("FAKE_ID", "FAKE_SECRET", "sandbox")
+                    elif changed == "scope":
+                        self.store.scope = "another-ledger"
+                    else:
+                        setattr(self.storage_config, changed, "another-source")
+                    with patch.object(self.store, "read_state", side_effect=NetworthError("STORAGE_UNAVAILABLE")), patch(
+                        "src.networth_ui._render_statement", wraps=networth_ui._render_statement
+                    ) as statement, patch.object(self.store, "update_state", wraps=self.store.update_state) as write:
+                        app.run()
+                        self.assertFalse(app.exception)
+                        self.assertTrue(app.error)
+                        statement.assert_not_called()
+                        write.assert_not_called()
+
+    def test_no_verified_cache_means_storage_failure_cannot_invent_a_statement(self):
+        with self.configured() as app, patch.object(self.store, "read_state", side_effect=NetworthError("STORAGE_UNAVAILABLE")), patch(
+            "src.networth_ui._render_statement", wraps=networth_ui._render_statement
+        ) as statement, patch.object(self.store, "update_state", wraps=self.store.update_state) as write:
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertTrue(app.error)
+            statement.assert_not_called()
+            write.assert_not_called()
+
+    def test_readonly_cache_retains_legacy_string_classification_and_statement_math(self):
+        for classification in ("Equity", "Liability"):
+            with self.subTest(classification=classification), self.configured() as app:
+                self.store.state["preferences"]["a"] = classification
+                snapshot = networth_ui._readonly_snapshot(self.store.state)
+                self.assertEqual(snapshot["preferences"]["a"], {"classification": classification})
+                key = (self.storage_config.repository, self.storage_config.branch,
+                       self.store.scope, self.plaid_config.environment)
+                app.session_state["_networth_verified_balances"] = {key: snapshot}
+                with patch.object(self.store, "read_state", side_effect=NetworthError("STORAGE_UNAVAILABLE")), patch(
+                    "src.networth_ui._render_statement", wraps=networth_ui._render_statement
+                ) as statement:
+                    app.run()
+                    self.assertFalse(app.exception)
+                    self.assertFalse(app.error)
+                    rows, preferences = statement.call_args.args[:2]
+                    self.assertEqual(rows[0]["classification"], classification)
+                    presentation = networth_ui._statement_rows(rows, preferences, "USD")
+                    total_assets = next(row["amount"] for row in presentation if row["label"] == "Total Assets:")
+                    self.assertEqual(total_assets, 0)
+                    detail = next(row for row in presentation if row.get("account_id") == "a")
+                    self.assertEqual(detail["amount"], -1200 if classification == "Liability" else 1200)
+                    self.assertTrue(any("read-only" in message.value for message in app.warning))
+
+    def test_failed_attempt_header_keeps_latest_account_update_distinct(self):
+        self.store.state["last_errors"] = {"i": "PLAID_INTERNAL_SERVER_ERROR"}
+        self.store.state["items"]["i"]["error"] = "PLAID_INTERNAL_SERVER_ERROR"
+        with self.configured() as app:
+            app.run()
+            self.assertFalse(app.exception)
+            captions = [message.value for message in app.caption]
+            self.assertTrue(any("Last attempt:" in value for value in captions))
+            self.assertFalse(any("Last pull:" in value for value in captions))
+            self.assertTrue(any("Most recent account balance update:" in value and "some accounts may be older" in value for value in captions))
+        self.assertEqual(networth_ui._latest_account_update(self.store.state), "2026-11-03T16:00:00Z")
 
 
 class NetworthWorkerTests(unittest.TestCase):

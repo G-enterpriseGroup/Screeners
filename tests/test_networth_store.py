@@ -22,8 +22,9 @@ def blob_sha(raw):
 
 
 class Response:
-    def __init__(self, status, value):
+    def __init__(self, status, value, headers=None):
         self.status_code = status
+        self.headers = requests.structures.CaseInsensitiveDict(headers or {})
         self.raw = json.dumps(value).encode()
         self.closed = False
 
@@ -107,6 +108,22 @@ class NetworthStoreTests(unittest.TestCase):
         self.request_patch = patch("src.networth_store.requests.request", side_effect=self.github.request)
         self.request_patch.start()
         self.addCleanup(self.request_patch.stop)
+        sleep_patch = patch("src.networth_store.time.sleep")
+        self.sleep = sleep_patch.start()
+        self.addCleanup(sleep_patch.stop)
+
+    def queued_requests(self, *events):
+        pending = list(events)
+
+        def request(method, url, **kwargs):
+            if not pending:
+                return self.github.request(method, url, **kwargs)
+            event = pending.pop(0)
+            if isinstance(event, Exception):
+                raise event
+            return event
+
+        return request
 
     def state_path(self, store=None):
         return "networth/" + (store or self.store).scope + "/state.enc"
@@ -292,7 +309,7 @@ class NetworthStoreTests(unittest.TestCase):
             self.store.read_day("2026-11-03")
         self.github.denied_file = None
         self.github.disappear_on_missing = True
-        with self.assertRaisesRegex(NetworthError, "access denied"):
+        with self.assertRaisesRegex(NetworthError, "temporarily unavailable.*HTTP 404"):
             self.store.update_state(lambda state: state["preferences"].update({"A": "Equity"}))
         self.assertEqual(self.github.puts, 0)
 
@@ -314,6 +331,37 @@ class NetworthStoreTests(unittest.TestCase):
         self.github.bad_readback = False
         self.assertEqual(self.store.read_state()["preferences"], {"A": "Assets"})
 
+    def test_new_commit_content_transient_not_found_recovers_without_another_write(self):
+        invisible = 2
+        def request(method, url, **kwargs):
+            nonlocal invisible
+            ref = (kwargs.get("params") or {}).get("ref")
+            if method == "GET" and "/contents/" in url and ref in self.github.commits and invisible:
+                invisible -= 1
+                return Response(404, {})
+            return self.github.request(method, url, **kwargs)
+
+        with patch("src.networth_store.requests.request", side_effect=request):
+            state = self.store.update_state(lambda state: state["preferences"].update({"A": "Equity"}))
+        self.assertEqual(state["preferences"], {"A": "Equity"})
+        self.assertEqual(self.github.puts, 1)
+        self.assertEqual(self.sleep.call_count, 2)
+
+    def test_persistent_new_commit_content_not_found_never_reports_saved(self):
+        def request(method, url, **kwargs):
+            ref = (kwargs.get("params") or {}).get("ref")
+            if method == "GET" and "/contents/" in url and ref in self.github.commits:
+                return Response(404, {})
+            return self.github.request(method, url, **kwargs)
+
+        with patch("src.networth_store.requests.request", side_effect=request) as calls:
+            with self.assertRaisesRegex(NetworthError, "temporarily unavailable.*HTTP 404"):
+                self.store.update_state(lambda state: state["preferences"].update({"A": "Equity"}))
+        self.assertEqual(sum((call.kwargs.get("params") or {}).get("ref") in self.github.commits
+                             for call in calls.call_args_list), 3)
+        self.assertEqual(self.github.puts, 1)
+        self.assertEqual(self.store.read_state()["preferences"], {"A": "Equity"})
+
     def test_invalid_dates_capture_and_nonfinite_values_fail_before_write(self):
         for day in ("2026-11-3", "2026-02-30", "../main", "20261103", None):
             with self.subTest(day=day), self.assertRaises(NetworthError):
@@ -333,6 +381,193 @@ class NetworthStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(NetworthError, "too large"):
             self.store.update_state(lambda state: state.update({"oversize": "x" * (512 * 1024)}))
         self.assertEqual(self.github.puts, 0)
+
+    def test_get_network_failures_retry_with_bounded_backoff_and_restore(self):
+        self.store.update_state(lambda state: state["accounts"].update({"ACCOUNT": {"balance": 12}}))
+        with patch("src.networth_store.requests.request", side_effect=self.queued_requests(
+            requests.ConnectionError("PRIVATE_FAKE_TOKEN"), requests.Timeout("ACCOUNT"),
+        )) as request:
+            self.assertEqual(self.store.read_state()["accounts"], {"ACCOUNT": {"balance": 12}})
+        self.assertEqual(sum(call.args[1].endswith("/Portfolio") for call in request.call_args_list), 3)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [0.5, 1.0])
+        self.assertEqual(self.github.puts, 1)
+
+    def test_exhausted_network_reads_stop_after_three_attempts_without_leaking(self):
+        with patch("src.networth_store.requests.request", side_effect=requests.ConnectionError("PRIVATE_FAKE_TOKEN ACCOUNT_5474")) as request:
+            with self.assertRaisesRegex(NetworthError, "temporarily unavailable") as caught:
+                self.store.read_state()
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(self.sleep.call_count, 2)
+        self.assertNotIn("PRIVATE_FAKE_TOKEN", str(caught.exception))
+        self.assertNotIn("ACCOUNT_5474", str(caught.exception))
+        self.assertEqual(self.github.puts, 0)
+
+    def test_get_server_failures_and_short_rate_limit_honor_delay_then_recover(self):
+        transient = [Response(503, {}), Response(429, {}, {"Retry-After": "1.5"})]
+        with patch("src.networth_store.requests.request", side_effect=self.queued_requests(*transient)):
+            self.assertEqual(self.store.read_state()["accounts"], {})
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [0.5, 1.5])
+        self.assertTrue(all(response.closed for response in transient))
+
+    def test_server_read_failures_stop_after_three_attempts_with_status(self):
+        with patch("src.networth_store.requests.request", return_value=Response(503, {})) as request:
+            with self.assertRaisesRegex(NetworthError, "temporarily unavailable.*HTTP 503"):
+                self.store.read_state()
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(self.sleep.call_count, 2)
+        self.assertEqual(self.github.puts, 0)
+
+    def test_truncated_stream_closes_failed_response_and_retries_the_same_read(self):
+        self.store.update_state(lambda state: state["accounts"].update({"ACCOUNT": {"balance": 12}}))
+        response = Response(200, {})
+        def chunks(chunk_size):
+            yield b"{"
+            raise requests.exceptions.ChunkedEncodingError("PRIVATE_FAKE_TOKEN")
+        response.iter_content = chunks
+        failed = False
+        def request(method, url, **kwargs):
+            nonlocal failed
+            if "/contents/" in url and not failed:
+                failed = True
+                return response
+            return self.github.request(method, url, **kwargs)
+
+        with patch("src.networth_store.requests.request", side_effect=request):
+            self.assertEqual(self.store.read_state()["accounts"], {"ACCOUNT": {"balance": 12}})
+        self.assertTrue(response.closed)
+        self.sleep.assert_called_once_with(0.5)
+        self.assertEqual(self.github.puts, 1)
+
+    def test_primary_rate_limit_reset_is_honored_when_within_short_wait_budget(self):
+        response = Response(403, {}, {"retry-after": "0.5", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "101"})
+        with patch("src.networth_store.time.time", return_value=100), patch(
+            "src.networth_store.requests.request", side_effect=self.queued_requests(response),
+        ):
+            self.assertEqual(self.store.read_state()["accounts"], {})
+        self.sleep.assert_called_once_with(1.0)
+
+    def test_long_missing_or_invalid_rate_guidance_never_retries_early(self):
+        cases = [
+            Response(429, {}, {"Retry-After": "120"}),
+            Response(503, {}, {"Retry-After": "5"}),
+            Response(429, {}),
+            Response(429, {}, {"Retry-After": "invalid"}),
+            Response(429, {}, {"Retry-After": "nan"}),
+            Response(403, {}, {"Retry-After": "1", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "160"}),
+            Response(403, {}, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "nan"}),
+        ]
+        for response in cases:
+            with self.subTest(status=response.status_code, headers=dict(response.headers)), patch(
+                "src.networth_store.time.time", return_value=100,
+            ), patch("src.networth_store.requests.request", return_value=response) as request:
+                with self.assertRaisesRegex(NetworthError, "Retry later"):
+                    self.store.read_state()
+                self.assertEqual(request.call_count, 1)
+                self.assertTrue(response.closed)
+        self.sleep.assert_not_called()
+
+    def test_permission_and_metadata_not_found_fail_without_retry(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status), patch(
+                "src.networth_store.requests.request", return_value=Response(status, {}),
+            ) as request:
+                with self.assertRaisesRegex(NetworthError, "access denied"):
+                    self.store.read_state()
+                self.assertEqual(request.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_corrupt_json_response_is_not_retried(self):
+        response = Response(200, {})
+        response.raw = b"corrupt response"
+        with patch("src.networth_store.requests.request", return_value=response) as request:
+            with self.assertRaisesRegex(NetworthError, "response invalid"):
+                self.store.read_state()
+        self.assertEqual(request.call_count, 1)
+        self.sleep.assert_not_called()
+        self.assertTrue(response.closed)
+
+    def test_mutations_are_never_blindly_retried_on_network_or_server_failure(self):
+        for method in ("POST", "PUT"):
+            for event in (requests.Timeout("PRIVATE_FAKE_TOKEN"), Response(503, {}), Response(429, {}, {"Retry-After": "1"})):
+                with self.subTest(method=method, failure=type(event).__name__), patch(
+                    "src.networth_store.requests.request", side_effect=self.queued_requests(event),
+                ) as request:
+                    with self.assertRaises(NetworthError):
+                        self.store._request(method, "/git/refs", payload={})
+                    self.assertEqual(request.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_ambiguous_saved_write_is_not_repeated_and_next_attempt_restores_it(self):
+        def request(method, url, **kwargs):
+            result = self.github.request(method, url, **kwargs)
+            if method == "PUT":
+                raise requests.Timeout("PRIVATE_FAKE_TOKEN")
+            return result
+        def update(state):
+            state["preferences"]["ACCOUNT"] = {"classification": "Equity"}
+
+        with patch("src.networth_store.requests.request", side_effect=request):
+            with self.assertRaisesRegex(NetworthError, "unavailable"):
+                self.store.update_state(update)
+        self.assertEqual(self.github.puts, 1)
+        self.sleep.assert_not_called()
+        self.assertEqual(self.store.update_state(update)["preferences"]["ACCOUNT"], {"classification": "Equity"})
+        self.assertEqual(self.github.puts, 1)
+
+    def test_created_branch_transient_not_found_recovers_without_second_post(self):
+        invisible = 0
+        def request(method, url, **kwargs):
+            nonlocal invisible
+            if method == "POST":
+                result = self.github.request(method, url, **kwargs)
+                invisible = 2
+                return result
+            if "/git/ref/heads/networth-data" in url and invisible:
+                invisible -= 1
+                return Response(404, {})
+            return self.github.request(method, url, **kwargs)
+
+        with patch("src.networth_store.requests.request", side_effect=request):
+            self.assertEqual(self.store.read_state()["accounts"], {})
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.github.calls), 1)
+        self.assertEqual(self.sleep.call_count, 2)
+        self.assertEqual(self.github.puts, 0)
+
+    def test_persistently_unverifiable_created_branch_is_not_an_empty_ledger(self):
+        created = False
+        def request(method, url, **kwargs):
+            nonlocal created
+            if created and "/git/ref/heads/networth-data" in url:
+                return Response(404, {})
+            result = self.github.request(method, url, **kwargs)
+            if method == "POST":
+                created = True
+            return result
+
+        with patch("src.networth_store.requests.request", side_effect=request) as calls:
+            with self.assertRaisesRegex(NetworthError, "temporarily unavailable"):
+                self.store.update_state(lambda state: state["accounts"].update({"NEW": {}}))
+        self.assertEqual(sum("/git/ref/heads/networth-data" in call.args[1] for call in calls.call_args_list), 4)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.github.calls), 1)
+        self.assertEqual(self.github.puts, 0)
+        self.assertFalse(any("/contents/" in call.args[1] for call in calls.call_args_list))
+
+    def test_missing_document_rechecks_previously_verified_ref_with_bounded_retry(self):
+        self.github.files["networth-data"] = {}
+        ref_calls = 0
+        def request(method, url, **kwargs):
+            nonlocal ref_calls
+            if "/git/ref/heads/networth-data" in url:
+                ref_calls += 1
+                if ref_calls in (2, 3):
+                    return Response(404, {})
+            return self.github.request(method, url, **kwargs)
+
+        with patch("src.networth_store.requests.request", side_effect=request):
+            self.assertEqual(self.store.read_state()["accounts"], {})
+        self.assertEqual(ref_calls, 4)
+        self.assertEqual(self.sleep.call_count, 2)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.github.calls))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import html
 import math
@@ -26,8 +28,40 @@ def _timestamp(value: str | None) -> str:
         return "Unknown"
 
 
+def _readonly_snapshot(state: dict) -> dict:
+    account_fields = ("account_id", "item_id", "name", "mask", "type", "subtype", "current", "currency",
+                      "as_of", "balance_updated_at", "persistent_account_id")
+    item_fields = ("label", "error", "last_sync", "last_attempt", "linked_at", "institution_id")
+    return {
+        "accounts": {key: {field: deepcopy(value[field]) for field in account_fields if field in value}
+                     for key, value in state.get("accounts", {}).items()},
+        "items": {key: {field: deepcopy(value[field]) for field in item_fields if field in value}
+                  for key, value in state.get("items", {}).items()},
+        "preferences": {key: ({field: deepcopy(value[field]) for field in ("nickname", "classification") if field in value}
+                              if isinstance(value, Mapping) else {"classification": value})
+                        for key, value in state.get("preferences", {}).items()
+                        if isinstance(value, Mapping) or (isinstance(value, str) and value in CLASSES)},
+        "last_sync": state.get("last_sync"), "last_errors": deepcopy(state.get("last_errors", {})),
+        "plaid_environment": state.get("plaid_environment"),
+    }
+
+
+def _latest_account_update(state: dict) -> str | None:
+    values = []
+    for item in state.get("items", {}).values():
+        value = item.get("last_sync")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                values.append((parsed, value))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return max(values, default=(None, None))[1]
+
+
 def _account_label(account: dict, preferences: dict) -> str:
-    nickname = str(preferences.get(account.get("account_id"), {}).get("nickname") or "").strip()
+    preference = preferences.get(account.get("account_id"), {})
+    nickname = str(preference.get("nickname") or "").strip() if isinstance(preference, Mapping) else ""
     if nickname:
         return nickname
     return str(account.get("name") or "Account") + (" • " + str(account["mask"]) if account.get("mask") else "")
@@ -41,7 +75,12 @@ def _save_account_details(store, account_id: str, nickname: str, classification:
     def save(latest):
         if account_id not in latest.get("accounts", {}):
             raise NetworthError("This account is no longer linked. Reload accounts and try again.")
-        preferences = latest.setdefault("preferences", {}).setdefault(account_id, {})
+        all_preferences = latest.setdefault("preferences", {})
+        previous = all_preferences.get(account_id)
+        preferences = dict(previous) if isinstance(previous, Mapping) else (
+            {"classification": previous} if previous in CLASSES else {}
+        )
+        all_preferences[account_id] = preferences
         if nickname:
             preferences["nickname"] = nickname
         else:
@@ -326,7 +365,8 @@ def _classification_editor(store, state: dict) -> None:
         store.update_state(save_selection)
     if len(selected) == 1:
         account_id = selected[0]
-        nickname = state.get("preferences", {}).get(account_id, {}).get("nickname", "")
+        preference = state.get("preferences", {}).get(account_id, {})
+        nickname = preference.get("nickname", "") if isinstance(preference, Mapping) else ""
         with st.form("networth_nickname_form_" + account_id, border=False):
             nickname_col, nickname_save = st.columns([2, 1], vertical_alignment="bottom")
             value = nickname_col.text_input("Account nickname", value=nickname, max_chars=60,
@@ -343,7 +383,11 @@ def _classification_editor(store, state: dict) -> None:
         def save(latest):
             for account_id in selected:
                 if account_id in latest.get("accounts", {}):
-                    latest.setdefault("preferences", {}).setdefault(account_id, {})["classification"] = classification
+                    preferences = latest.setdefault("preferences", {})
+                    previous = preferences.get(account_id, {})
+                    preferences[account_id] = {
+                        **(previous if isinstance(previous, Mapping) else {}), "classification": classification,
+                    }
         store.update_state(save)
         st.rerun()
 
@@ -420,19 +464,49 @@ def render_networth() -> None:
             return
         client = PlaidClient(plaid_config)
         store = GitHubNetworthStore(store_config)
-        state = store.read_state()
+        cache = st.session_state.setdefault("_networth_verified_balances", {})
+        cache_key = (getattr(store_config, "repository", ""), getattr(store_config, "branch", ""),
+                     store.scope, plaid_config.environment)
+        readonly = False
+        try:
+            state = store.read_state()
+        except Exception:
+            if cache_key not in cache:
+                raise
+            state = deepcopy(cache[cache_key])
+            readonly = True
         if state.get("plaid_environment") and state["plaid_environment"] != plaid_config.environment:
             raise NetworthError("Plaid environment differs from the saved ledger. Restore the original environment or use a separate ledger_id.")
+        if readonly:
+            st.warning("Saved storage is unavailable. Showing the last verified balances from this browser session in read-only mode; reload when storage recovers.")
+            st.caption("Last saved attempt: " + _timestamp(state.get("last_sync")) + " // Most recent account balance update: " + _timestamp(_latest_account_update(state)))
+            _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
+            return
+        cache[cache_key] = _readonly_snapshot(state)
         status_col, sync_col = st.columns([3, 1], vertical_alignment="bottom")
-        status_col.caption("PLAID " + plaid_config.environment.upper() + " // Last pull: " + _timestamp(state.get("last_sync")))
+        status_col.caption("PLAID " + plaid_config.environment.upper() + " // Last attempt: " + _timestamp(state.get("last_sync")))
         if sync_col.button("SYNC NOW", disabled=not state.get("items"), width="stretch"):
-            with st.spinner("Pulling linked account balances…"):
-                sync_networth(store, client)
-            st.rerun()
+            try:
+                with st.spinner("Pulling linked account balances…"):
+                    updated = sync_networth(store, client)
+                cache[cache_key] = _readonly_snapshot(updated)
+            except NetworthError as exc:
+                if str(exc) == "NETWORTH_SYNC_IN_PROGRESS":
+                    st.info("A balance sync is already running. Your saved balances remain visible; reload shortly.")
+                elif str(exc) in ("NETWORTH_SYNC_LEASE_EXPIRED", "NETWORTH_SYNC_LEASE_LOST"):
+                    st.warning("This sync ended before it could save. Your saved balances remain visible; reload and retry shortly.")
+                else:
+                    st.warning("Balance sync could not finish. Showing the last saved balances. " + str(exc))
+            except Exception:
+                st.warning("Balance sync could not finish. Showing the last saved balances; retry shortly.")
+            else:
+                st.rerun()
         if state.get("pending_links"):
             _pending_links(store, client)
         for error in state.get("last_errors", {}).values():
             st.warning("Balance refresh: " + str(error))
+        if state.get("last_errors") or state.get("last_capture_complete") is False:
+            status_col.caption("Most recent account balance update: " + _timestamp(_latest_account_update(state)) + "; some accounts may be older.")
         _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
         with st.expander("Accounts & connections"):
             st.caption("Connected accounts and nicknames are saved securely and restored across app restarts. All linked accounts sync, including accounts you exclude from the statement.")

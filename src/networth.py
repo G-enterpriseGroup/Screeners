@@ -20,6 +20,7 @@ from src.networth_store import NetworthError
 TIMEZONE = ZoneInfo("America/Indiana/Indianapolis")
 CLASSES = ("Asset", "Liability", "Equity", "Excluded", "Unclassified")
 SYNC_HOURS = (9, 12, 17, 22)
+_SYNC_LEASE_TTL = timedelta(minutes=15)
 _PRODUCTS = {"transactions", "investments", "liabilities", "auth", "identity", "assets"}
 
 
@@ -297,26 +298,85 @@ def scheduled_slot(now=None):
     return local.replace(hour=due[-1], minute=0, second=0, microsecond=0).isoformat() if due else None
 
 
+def _sync_time():
+    # A snapshot's requested time must never backdate the cross-process lease.
+    return datetime.now(timezone.utc)
+
+
+def _require_sync_lease(state, owner):
+    lease = state.get("sync_lease") or {}
+    if lease.get("owner") != owner:
+        raise NetworthError("NETWORTH_SYNC_LEASE_LOST")
+    if not _newer(lease.get("expires_at"), _sync_time()):
+        raise NetworthError("NETWORTH_SYNC_LEASE_EXPIRED")
+
+
 def sync_networth(store, client, now=None, scheduled_slot=None):
-    """Read all linked Items, archive the observation, then CAS its checkpoint."""
+    """Claim paid balance reads across workers; archive before checkpointing."""
     now = _now(now)
-    captured_at = _iso(now)
-    date = now.astimezone(TIMEZONE).date().isoformat()
     initial = store.read_state()
     environment = getattr(getattr(client, "config", None), "environment", None)
     if environment and initial.get("plaid_environment") not in (None, "", environment):
         raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
     if scheduled_slot and scheduled_slot in initial.get("completed_slots", {}):
         return initial
+    slot_time = None
     if scheduled_slot:
         try:
             slot_time = datetime.fromisoformat(scheduled_slot)
             local_slot = _now(slot_time).astimezone(TIMEZONE)
-            if (local_slot.date().isoformat() != date or local_slot.hour not in SYNC_HOURS
+            if (local_slot.date() != now.astimezone(TIMEZONE).date() or local_slot.hour not in SYNC_HOURS
                     or any((local_slot.minute, local_slot.second, local_slot.microsecond)) or slot_time > now):
                 raise ValueError
         except (ValueError, TypeError, NetworthError):
             raise NetworthError("NETWORTH_SCHEDULE_SLOT_INVALID") from None
+
+    owner = uuid.uuid4().hex
+    claimed = False
+    finished = False
+
+    def claim(latest):
+        nonlocal claimed
+        if environment and latest.get("plaid_environment") not in (None, "", environment):
+            raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
+        if not latest.get("items") or (scheduled_slot and scheduled_slot in latest.get("completed_slots", {})):
+            return latest
+        lease = latest.get("sync_lease") or {}
+        clock = _sync_time()
+        if _newer(lease.get("expires_at"), clock):
+            raise NetworthError("NETWORTH_SYNC_IN_PROGRESS")
+        if all(_newer(item.get("last_sync"), now) for item in latest["items"].values()):
+            return latest
+        latest["sync_lease"] = {"owner": owner, "expires_at": _iso(clock + _SYNC_LEASE_TTL)}
+        claimed = True
+        return latest
+
+    def release(latest):
+        if (latest.get("sync_lease") or {}).get("owner") == owner:
+            latest.pop("sync_lease", None)
+
+    try:
+        initial = store.update_state(claim)
+        if (initial.get("sync_lease") or {}).get("owner") != owner:
+            finished = True
+            return initial
+        result = _sync_networth_owned(store, client, now, scheduled_slot, slot_time, initial, owner, environment)
+        finished = True
+        return result
+    finally:
+        if claimed and not finished:
+            try:
+                store.update_state(release)
+            except Exception:
+                # Preserve the original error; an unreachable store cannot make
+                # this bounded lease permanent or release a successor's claim.
+                pass
+
+
+def _sync_networth_owned(store, client, now, scheduled_slot, slot_time, initial, owner, environment):
+    captured_at = _iso(now)
+    date = now.astimezone(TIMEZONE).date().isoformat()
+    if scheduled_slot:
         day = store.read_day(date) or {}
         captures = day.get("captures", {})
         recoverable = [(capture_id, capture) for capture_id, capture in captures.items()
@@ -326,12 +386,14 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
             capture_id, capture = max(recoverable, key=lambda pair: pair[1]["captured_at"])
 
             def recover(latest):
+                _require_sync_lease(latest, owner)
                 if environment and latest.get("plaid_environment") not in (None, "", environment):
                     raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
                 if set(latest.get("items", {})) != set(initial.get("items", {})) or any(
                     latest["items"][key].get("access_token") != item.get("access_token")
                     for key, item in initial.get("items", {}).items()
                 ):
+                    latest.pop("sync_lease", None)
                     return latest
                 if not _newer(latest.get("last_sync"), datetime.fromisoformat(capture["captured_at"].replace("Z", "+00:00"))):
                     latest["accounts"] = {key: row for key, row in latest.get("accounts", {}).items()
@@ -349,11 +411,13 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
                 if not _newer(latest.get("last_scheduled_at"), slot_time):
                     latest["last_scheduled_slot"] = scheduled_slot
                     latest["last_scheduled_at"] = capture["captured_at"]
+                latest.pop("sync_lease", None)
                 return latest
 
             return store.update_state(recover)
     fetched = {}
     for item_id, item in initial.get("items", {}).items():
+        _require_sync_lease(initial, owner)
         try:
             fetched[item_id] = {"accounts": normalize_accounts(client.balances(item["access_token"], now=now), item_id, now)}
         except NetworthError as exc:
@@ -364,13 +428,11 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
             fetched[item_id] = {"error": "PLAID_SYNC_FAILED"}
 
     def apply(latest):
+        _require_sync_lease(latest, owner)
         if environment and latest.get("plaid_environment") not in (None, "", environment):
             raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
         if scheduled_slot and scheduled_slot in latest.get("completed_slots", {}):
-            return latest
-        # A later complete batch already observed all Items. Do not let a slow
-        # older request roll balances backwards or create a backdated capture.
-        if _newer(latest.get("last_sync"), now):
+            latest.pop("sync_lease", None)
             return latest
         errors = {}
         for item_id, item in latest.get("items", {}).items():
@@ -379,17 +441,24 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
                 errors[item_id] = "ITEM_NOT_SYNCED"
                 item["error"] = "ITEM_NOT_SYNCED"
                 continue
-            if _newer(item.get("last_sync"), now) or _newer(item.get("last_attempt"), now):
+            if _newer(item.get("last_sync"), now):
                 if item.get("error"):
                     errors[item_id] = item["error"]
                 continue
             observed = fetched[item_id]
-            item["last_attempt"] = captured_at
+            newer_attempt = _newer(item.get("last_attempt"), now)
+            if not newer_attempt:
+                item["last_attempt"] = captured_at
             if observed.get("error"):
-                errors[item_id] = observed["error"]
-                item["error"] = observed["error"]
+                if not newer_attempt:
+                    item["error"] = observed["error"]
+                if item.get("error"):
+                    errors[item_id] = item["error"]
                 continue
-            item["error"] = None
+            if not newer_attempt:
+                item["error"] = None
+            if item.get("error"):
+                errors[item_id] = item["error"]
             item["last_sync"] = captured_at
             # Only a valid nonempty response can retire missing current rows.
             previous = latest.setdefault("accounts", {})
@@ -407,13 +476,17 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
         capture = {"captured_at": captured_at, "scheduled_slot": scheduled_slot,
                    "accounts": rows, "totals": totals, "errors": errors, "complete": complete}
         store.save_capture(date, capture_id, capture)
-        latest.update({"last_capture_at": captured_at, "last_capture_date": date,
-                       "last_capture_id": capture_id, "last_capture_complete": complete,
-                       "last_sync": captured_at, "last_errors": errors})
+        _require_sync_lease(latest, owner)
+        if not _newer(latest.get("last_sync"), now):
+            latest.update({"last_capture_at": captured_at, "last_capture_date": date,
+                           "last_capture_id": capture_id, "last_capture_complete": complete,
+                           "last_sync": captured_at})
+        latest["last_errors"] = errors
         if scheduled_slot and complete:
             latest.setdefault("completed_slots", {})[scheduled_slot] = captured_at
             latest["last_scheduled_slot"] = scheduled_slot
             latest["last_scheduled_at"] = captured_at
+        latest.pop("sync_lease", None)
         return latest
 
     return store.update_state(apply)
