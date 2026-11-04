@@ -75,7 +75,7 @@ jobs:
       - name: Test Networth Plaid flow, balance sheets and encrypted persistence
         run: |
           python -m py_compile src/networth_ui.py src/networth.py src/networth_store.py scripts/sync_networth.py
-          python -m unittest tests.test_networth tests.test_networth_store tests.test_networth_ui
+          python -m unittest tests.test_networth tests.test_networth_store tests.test_networth_ui tests.test_networth_buckets
 
       - name: Test Acquisition FIFO and incremental cache
         run: |

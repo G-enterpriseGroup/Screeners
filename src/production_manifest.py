@@ -21,7 +21,7 @@ FEATURE_ROUTES = {
     "networth": {
         "entry": "src/networth_ui.py",
         "owner": "src/networth_ui.py",
-        "support": ["src/networth.py", "src/networth_store.py", "scripts/sync_networth.py"],
+        "support": ["src/networth.py", "src/networth_store.py", "scripts/sync_networth.py", "src/components/networth_buckets_v1/index.html"],
     },
     "risk_sizing": {
         "entry": "src/risk_sizing_ui_v7.py",

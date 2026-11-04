@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    html,body{margin:0;padding:0;background:#000;color:#fb8b1e;font-family:"Courier New",monospace;overflow-x:hidden}
+    *{box-sizing:border-box}
+    #networth-buckets{width:100%;padding:0 0 2px}
+    #instructions,#save-status{margin:0 0 6px;font-size:11px;line-height:1.35;overflow-wrap:anywhere}
+    #save-status:empty{display:none}
+    #save-status[data-kind="error"]{color:#ff9090}
+    #bucket-board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:start}
+    .bucket{min-width:0;border:1px solid #b87621;background:#000;padding:6px}
+    .bucket h3{display:flex;justify-content:space-between;gap:4px;margin:0 0 6px;font-size:12px;line-height:1.2}
+    .bucket-count{font-weight:400}
+    .bucket-list{display:flex;flex-direction:column;gap:4px;min-height:30px}
+    .empty{margin:0;font-size:11px;line-height:1.3;color:#b87621}
+    .account-card,.move-here{font:700 12px/1.3 "Courier New",monospace;color:#fb8b1e;background:#000;border:1px solid #b87621;border-radius:0}
+    .account-card{display:flex;flex-direction:column;gap:3px;width:100%;padding:6px;text-align:left;cursor:grab;overflow-wrap:anywhere;touch-action:pan-y}
+    .account-label{font-weight:900}
+    .account-balance{font-weight:400;font-variant-numeric:tabular-nums}
+    .account-stale{font-size:10px;font-weight:400}
+    .account-card.selected{outline:2px solid #fb8b1e;outline-offset:-2px;background:#211305}
+    .account-card.dragging{opacity:.6}
+    .account-card:disabled{cursor:wait}
+    .account-card:focus-visible,.move-here:focus-visible{outline:2px solid #fff;outline-offset:2px}
+    .bucket.drop-active{border-color:#fb8b1e;outline:1px solid #fb8b1e}
+    .move-here{width:100%;margin-top:6px;padding:4px;cursor:pointer}
+    .move-here:disabled{opacity:.45;cursor:default}
+    #unclassified-bucket{margin-top:8px}
+    #unclassified-bucket .bucket-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}
+    [hidden]{display:none!important}
+    @media(max-width:700px){#bucket-board,#unclassified-bucket .bucket-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <main id="networth-buckets" aria-label="Classify linked accounts">
+    <p id="instructions">Drag an account, or select it and choose Move here. Excluded accounts stay linked and synced.</p>
+    <p id="save-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <div id="bucket-board"></div>
+  </main>
+  <script>
+  (() => {
+    "use strict";
+    const CLASSES = ["Asset", "Liability", "Equity", "Excluded", "Unclassified"];
+    const TARGETS = ["Asset", "Liability", "Equity", "Excluded"];
+    const TITLES = {Asset:"Assets", Liability:"Liabilities", Equity:"Equity", Excluded:"Excluded", Unclassified:"Unclassified"};
+    const root = document.getElementById("networth-buckets");
+    const board = document.getElementById("bucket-board");
+    const status = document.getElementById("save-status");
+    const buckets = new Map();
+    const cards = new Map();
+    let accounts = new Map();
+    let viewId = "";
+    let revision = "";
+    let signature = "";
+    let selectedId = null;
+    let draggingId = null;
+    let pending = null;
+    let queuedHeight = false;
+    let lastHeight = -1;
+
+    function post(type, data) {
+      window.parent.postMessage(Object.assign({isStreamlitMessage:true, type:type}, data), "*");
+    }
+
+    function resize() {
+      if (queuedHeight) return;
+      queuedHeight = true;
+      window.requestAnimationFrame(() => {
+        queuedHeight = false;
+        const measured = Math.max(1, Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height)));
+        if (measured !== lastHeight) {
+          lastHeight = measured;
+          post("streamlit:setFrameHeight", {height:measured});
+        }
+      });
+    }
+
+    function message(text, error=false) {
+      status.textContent = String(text || "");
+      status.dataset.kind = error ? "error" : "status";
+      status.setAttribute("role", error ? "alert" : "status");
+      resize();
+    }
+
+    function newId() {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+      if (!window.crypto || typeof window.crypto.getRandomValues !== "function") return null;
+      const bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+      return hex.slice(0,8) + "-" + hex.slice(8,12) + "-" + hex.slice(12,16) + "-" + hex.slice(16,20) + "-" + hex.slice(20);
+    }
+
+    function clearDrag() {
+      draggingId = null;
+      cards.forEach(card => card.element.classList.remove("dragging"));
+      buckets.forEach(bucket => bucket.element.classList.remove("drop-active"));
+    }
+
+    function canMove(accountId, target) {
+      const account = accounts.get(accountId);
+      return !pending && !!viewId && !!revision && !!account && CLASSES.includes(target) && account.classification !== target;
+    }
+
+    function interactionState() {
+      root.setAttribute("aria-busy", pending ? "true" : "false");
+      cards.forEach((card, accountId) => {
+        card.element.disabled = !!pending;
+        card.element.draggable = !pending && !!viewId && !!revision;
+        card.element.classList.toggle("selected", selectedId === accountId);
+        card.element.setAttribute("aria-pressed", selectedId === accountId ? "true" : "false");
+      });
+      buckets.forEach((bucket, target) => {
+        if (!bucket.move) return;
+        bucket.move.disabled = !canMove(selectedId, target);
+        const selected = accounts.get(selectedId);
+        bucket.move.setAttribute("aria-label", selected ? "Move " + selected.label + " to " + TITLES[target] : "Select an account to move to " + TITLES[target]);
+      });
+    }
+
+    function select(accountId) {
+      if (pending || !accounts.has(accountId)) return;
+      selectedId = selectedId === accountId ? null : accountId;
+      interactionState();
+      message(selectedId ? "Selected " + accounts.get(selectedId).label + ". Choose Move here in a different category." : "");
+    }
+
+    function move(accountId, target) {
+      if (!canMove(accountId, target)) return;
+      const eventId = newId();
+      if (!eventId) {
+        message("This browser could not prepare a save. Reload and try again.", true);
+        return;
+      }
+      const account = accounts.get(accountId);
+      pending = {action:"classify", account_id:accountId, target_class:target, base_class:account.classification,
+                 event_id:eventId, view_id:viewId, revision:revision};
+      clearDrag();
+      interactionState();
+      message("Saving " + account.label + " to " + TITLES[target] + "…");
+      post("streamlit:setComponentValue", {value:Object.assign({}, pending), dataType:"json"});
+    }
+
+    function makeBucket(target, sourceOnly=false) {
+      const element = document.createElement("section");
+      element.className = "bucket";
+      element.dataset.className = target;
+      const title = document.createElement("h3");
+      title.id = "bucket-title-" + target.toLowerCase();
+      const label = document.createElement("span");
+      label.textContent = TITLES[target];
+      const count = document.createElement("span");
+      count.className = "bucket-count";
+      title.appendChild(label);
+      title.appendChild(count);
+      element.setAttribute("aria-labelledby", title.id);
+      const list = document.createElement("div");
+      list.className = "bucket-list";
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No accounts";
+      element.appendChild(title);
+      element.appendChild(list);
+      element.appendChild(empty);
+      let button = null;
+      if (!sourceOnly) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "move-here";
+        button.textContent = "Move here";
+        button.disabled = true;
+        button.addEventListener("click", () => move(selectedId, target));
+        element.appendChild(button);
+        element.addEventListener("dragover", event => {
+          if (!canMove(draggingId, target)) return;
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+          element.classList.add("drop-active");
+        });
+        element.addEventListener("dragleave", event => {
+          if (!element.contains(event.relatedTarget)) element.classList.remove("drop-active");
+        });
+        element.addEventListener("drop", event => {
+          event.preventDefault();
+          const accountId = draggingId;
+          clearDrag();
+          move(accountId, target);
+        });
+      }
+      const bucket = {element:element, list:list, count:count, empty:empty, move:button};
+      buckets.set(target, bucket);
+      return element;
+    }
+
+    function makeCard(accountId) {
+      const element = document.createElement("button");
+      element.type = "button";
+      element.className = "account-card";
+      element.dataset.accountId = accountId;
+      const label = document.createElement("span");
+      label.className = "account-label";
+      const balance = document.createElement("span");
+      balance.className = "account-balance";
+      const stale = document.createElement("span");
+      stale.className = "account-stale";
+      element.appendChild(label);
+      element.appendChild(balance);
+      element.appendChild(stale);
+      element.addEventListener("click", () => select(accountId));
+      element.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          select(accountId);
+        }
+      });
+      element.addEventListener("dragstart", event => {
+        if (pending || !viewId || !revision || !accounts.has(accountId)) {
+          event.preventDefault();
+          return;
+        }
+        draggingId = accountId;
+        selectedId = accountId;
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", accountId);
+        }
+        element.classList.add("dragging");
+        interactionState();
+      });
+      element.addEventListener("dragend", clearDrag);
+      const card = {element:element, label:label, balance:balance, stale:stale};
+      cards.set(accountId, card);
+      return card;
+    }
+
+    function amount(account) {
+      if (account.balance === null) return "Unavailable · " + account.currency;
+      return account.balance.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) + " · " + account.currency;
+    }
+
+    function reconcile() {
+      cards.forEach((card, accountId) => {
+        if (!accounts.has(accountId)) {
+          card.element.remove();
+          cards.delete(accountId);
+        }
+      });
+      const grouped = new Map(CLASSES.map(target => [target, []]));
+      accounts.forEach(account => {
+        const card = cards.get(account.account_id) || makeCard(account.account_id);
+        if (card.label.textContent !== account.label) card.label.textContent = account.label;
+        const balance = amount(account);
+        if (card.balance.textContent !== balance) card.balance.textContent = balance;
+        const stale = account.stale ? "Previous balance · refresh failed" : "";
+        if (card.stale.textContent !== stale) card.stale.textContent = stale;
+        card.stale.hidden = !account.stale;
+        card.element.setAttribute("aria-label", account.label + ", " + balance + ", " + TITLES[account.classification] + (account.stale ? ", previous saved balance" : ""));
+        grouped.get(account.classification).push(card.element);
+      });
+      grouped.forEach((elements, target) => {
+        const bucket = buckets.get(target);
+        elements.forEach((element, index) => {
+          if (bucket.list.children[index] !== element) bucket.list.insertBefore(element, bucket.list.children[index] || null);
+        });
+        bucket.count.textContent = String(elements.length);
+        bucket.empty.hidden = elements.length > 0;
+        if (target === "Unclassified") bucket.element.hidden = elements.length === 0;
+      });
+    }
+
+    function normalize(raw) {
+      const clean = new Map();
+      if (!Array.isArray(raw)) return clean;
+      raw.forEach(row => {
+        if (!row || typeof row.account_id !== "string" || !row.account_id || clean.has(row.account_id)) return;
+        clean.set(row.account_id, {account_id:row.account_id, label:String(row.label || "Account"),
+          balance:typeof row.balance === "number" && Number.isFinite(row.balance) ? row.balance : null,
+          currency:String(row.currency || "UNKNOWN"), classification:CLASSES.includes(row.classification) ? row.classification : "Unclassified",
+          stale:!!row.stale});
+      });
+      return clean;
+    }
+
+    function render(args) {
+      const nextView = typeof args.view_id === "string" ? args.view_id : "";
+      const next = normalize(args.accounts);
+      const nextSignature = JSON.stringify([nextView, Array.from(next.values())]);
+      if (viewId !== nextView) {
+        pending = null;
+        selectedId = null;
+        clearDrag();
+        message("");
+      }
+      viewId = nextView;
+      revision = typeof args.revision === "string" ? args.revision : "";
+      if (pending) {
+        const ack = args.ack;
+        const saved = next.get(pending.account_id);
+        if (ack && ack.event_id === pending.event_id) {
+          message(ack.message || (ack.ok ? "Saved." : "Move was not saved. Try again."), !ack.ok);
+          if (ack.ok) selectedId = null;
+          pending = null;
+        } else if (saved && saved.classification === pending.target_class) {
+          message("Saved.");
+          pending = null;
+          selectedId = null;
+        } else if (!saved) {
+          message("This account is no longer available. The move was not saved.", true);
+          pending = null;
+          selectedId = null;
+        }
+      }
+      if (signature !== nextSignature) {
+        clearDrag();
+        accounts = next;
+        signature = nextSignature;
+        if (!accounts.has(selectedId)) selectedId = null;
+        reconcile();
+      }
+      interactionState();
+      resize();
+    }
+
+    TARGETS.forEach(target => board.appendChild(makeBucket(target)));
+    const unclassified = makeBucket("Unclassified", true);
+    unclassified.id = "unclassified-bucket";
+    unclassified.hidden = true;
+    root.appendChild(unclassified);
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !pending) {
+        clearDrag();
+        selectedId = null;
+        interactionState();
+        message("");
+      }
+    });
+    window.addEventListener("message", event => {
+      if (event.source !== window.parent || !event.data || event.data.type !== "streamlit:render") return;
+      render(event.data.args || {});
+    });
+    window.addEventListener("resize", resize);
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(root);
+    post("streamlit:componentReady", {apiVersion:1});
+    resize();
+  })();
+  </script>
+</body>
+</html>
