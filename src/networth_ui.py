@@ -5,18 +5,140 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import html
+import json
 import math
+from pathlib import Path
 import uuid
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.networth import (
     CLASSES, TIMEZONE, PlaidClient, PlaidConfig, account_rows, balance_sheet,
     sync_networth,
 )
 from src.networth_store import GitHubNetworthStore, NetworthError, StoreConfig
+
+
+_networth_buckets = components.declare_component(
+    "networth_account_buckets_v1",
+    path=str(Path(__file__).parent / "components" / "networth_buckets_v1"),
+)
+
+
+def _remember_verified(cache_key, state: dict) -> None:
+    if cache_key is not None:
+        st.session_state.setdefault("_networth_verified_balances", {})[cache_key] = _readonly_snapshot(state)
+
+
+def _bucket_revision(rows: list[dict]) -> str:
+    identities = sorted((row["account_id"], row["classification"]) for row in rows)
+    return hashlib.sha256(json.dumps(identities, separators=(",", ":")).encode()).hexdigest()
+
+
+def _save_bucket_move(store, event: dict, *, view_id: str, revision: str, cache_key=None) -> dict:
+    fields = {"action", "account_id", "target_class", "base_class", "event_id", "view_id", "revision"}
+    if not isinstance(event, dict) or set(event) != fields or any(not isinstance(value, str) for value in event.values()):
+        raise NetworthError("Invalid account move. Reload and try again.")
+    try:
+        valid_id = str(uuid.UUID(event["event_id"])) == event["event_id"]
+    except (ValueError, AttributeError):
+        valid_id = False
+    if (not valid_id or event["action"] != "classify" or event["view_id"] != view_id
+            or event["revision"] != revision or event["target_class"] not in CLASSES
+            or event["base_class"] not in CLASSES):
+        raise NetworthError("This account view changed. Reload and try the move again.")
+
+    def save(latest):
+        row = next((row for row in account_rows(latest) if row["account_id"] == event["account_id"]), None)
+        if row is None:
+            raise NetworthError("This account is no longer linked. Reload accounts and try again.")
+        if row["classification"] == event["target_class"]:
+            return
+        if row["classification"] != event["base_class"]:
+            raise NetworthError("This account was changed in another window. Reload and try again.")
+        preferences = latest.setdefault("preferences", {})
+        previous = preferences.get(event["account_id"], {})
+        preferences[event["account_id"]] = {
+            **(previous if isinstance(previous, Mapping) else {}), "classification": event["target_class"],
+        }
+
+    updated = store.update_state(save)
+    _remember_verified(cache_key, updated)
+    return updated
+
+
+def _bucket_editor(store, state: dict, *, cache_key=None) -> None:
+    rows = account_rows(state)
+    if not rows:
+        return
+    views = st.session_state.setdefault("_networth_bucket_views", {})
+    view = views.setdefault(cache_key or store.scope, {"view_id": uuid.uuid4().hex, "seen": {}, "ack": None})
+    revision = _bucket_revision(rows)
+    event = _networth_buckets(
+        accounts=[{"account_id": row["account_id"], "label": _account_label(row, state.get("preferences", {})),
+                   "balance": row.get("current"), "currency": row.get("currency"),
+                   "classification": row["classification"], "stale": bool(row.get("stale"))} for row in rows],
+        view_id=view["view_id"], revision=revision, ack=view["ack"], default=None,
+        key="networth_account_buckets",
+    )
+    if not isinstance(event, dict):
+        return
+    event_id = event.get("event_id")
+    if not isinstance(event_id, str) or len(event_id) > 64 or event_id in view["seen"]:
+        return
+    try:
+        _save_bucket_move(store, event, view_id=view["view_id"], revision=revision, cache_key=cache_key)
+    except NetworthError as exc:
+        ack = {"event_id": event_id, "ok": False, "message": str(exc)}
+    except Exception:
+        ack = {"event_id": event_id, "ok": False, "message": "Could not verify the save. Reload saved balances and try again."}
+    else:
+        ack = {"event_id": event_id, "ok": True, "message": "Saved"}
+    view["ack"] = ack
+    view["seen"][event_id] = True
+    while len(view["seen"]) > 64:
+        view["seen"].pop(next(iter(view["seen"])))
+    st.rerun()
+
+
+def _balance_status(accounts: list[dict], currency: str) -> dict:
+    rows = [row for row in accounts if (row.get("currency") or "UNKNOWN") == currency
+            and row.get("classification") != "Excluded"]
+    result = {"state": "incomplete", "gap": None, "stale": any(row.get("stale") for row in rows)}
+    if not rows or currency == "UNKNOWN":
+        return result
+    values = {kind: [] for kind in ("Asset", "Liability", "Equity")}
+    for row in rows:
+        value = row.get("current")
+        if row.get("classification") not in values or isinstance(value, bool):
+            return result
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return result
+        if not math.isfinite(value):
+            return result
+        values[row["classification"]].append(value)
+    if not values["Equity"]:
+        return {**result, "state": "calculated"}
+    gap = round(math.fsum(values["Asset"]) - math.fsum(values["Liability"]) - math.fsum(values["Equity"]), 2)
+    return {**result, "state": "balanced" if gap == 0 else "unbalanced", "gap": gap}
+
+
+def _balance_status_html(accounts: list[dict], currency: str) -> str:
+    status = _balance_status(accounts, currency)
+    labels = {"balanced": "✓ BALANCED", "calculated": "EQUITY CALCULATED", "incomplete": "CHECK INCOMPLETE"}
+    if status["state"] == "unbalanced":
+        label = "OUT OF BALANCE · " + html.escape(currency) + f' {status["gap"]:+,.2f} equity allocation gap'
+    else:
+        label = labels[status["state"]]
+    note = " · saved balances" if status["stale"] else ""
+    title = "Assets = Liabilities + Equity. Checks classified equity before the automatic unallocated remainder."
+    return '<div class="nw-balance-check nw-check-' + status["state"] + '" role="status" title="' + title + '"><span class="nw-check-dot" aria-hidden="true"></span>' + label + ' · A = L + E' + note + '</div>'
 
 
 def _timestamp(value: str | None) -> str:
@@ -67,7 +189,7 @@ def _account_label(account: dict, preferences: dict) -> str:
     return str(account.get("name") or "Account") + (" • " + str(account["mask"]) if account.get("mask") else "")
 
 
-def _save_account_details(store, account_id: str, nickname: str, classification: str | None = None) -> None:
+def _save_account_details(store, account_id: str, nickname: str, classification: str | None = None, *, cache_key=None) -> None:
     nickname = " ".join(str(nickname).split())
     if len(nickname) > 60 or (classification is not None and classification not in CLASSES):
         raise NetworthError("Use a nickname of 60 characters or fewer and a valid classification.")
@@ -88,7 +210,8 @@ def _save_account_details(store, account_id: str, nickname: str, classification:
         if classification is not None:
             preferences["classification"] = classification
 
-    store.update_state(save)
+    updated = store.update_state(save)
+    _remember_verified(cache_key, updated)
 
 
 def _statement_rows(accounts: list[dict], preferences: dict, currency: str) -> list[dict]:
@@ -184,6 +307,7 @@ def _statement_html(rows: list[dict], currency: str) -> str:
 def _render_statement(accounts: list[dict], preferences: dict, *, key: str) -> None:
     currencies = sorted({str(row.get("currency") or "UNKNOWN") for row in accounts}) or ["USD"]
     currency = st.selectbox("Currency", currencies, key=key + "_currency") if len(currencies) > 1 else currencies[0]
+    st.html(_balance_status_html(accounts, currency))
     st.html(_statement_html(_statement_rows(accounts, preferences, currency), currency))
     omitted = [row for row in accounts if row.get("classification") == "Unclassified"]
     incomplete = [row for row in accounts if row.get("classification") not in ("Excluded", "Unclassified")
@@ -298,27 +422,31 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
 @st.fragment(run_every="5s")
 def _pending_links(store, client) -> None:
     state = store.read_state()
-    for link_id, pending in state.get("pending_links", {}).items():
+    pending_links = state.get("pending_links", {})
+    if pending_links:
+        st.caption("Finish Plaid in its window. Connection status checks automatically.")
+    for index, (link_id, pending) in enumerate(pending_links.items(), 1):
         expiration = pending.get("expiration")
         expired = expiration and datetime.fromisoformat(expiration.replace("Z", "+00:00")) < datetime.now(timezone.utc)
+        status, open_link, dismiss_link = st.columns([3, 2, 1], gap="small", vertical_alignment="center")
         try:
             if _complete_link(store, client, link_id, pending):
                 st.rerun()
         except NetworthError as exc:
-            st.warning(str(exc))
+            status.caption(str(exc))
         if expired:
-            st.warning("This Plaid link expired. Dismiss it and start a new connection.")
+            status.caption("Connection " + str(index) + " · Expired; start a new link.")
         else:
-            st.link_button("OPEN PLAID TO CONNECT" if not pending.get("item_id") else "OPEN PLAID TO RECONNECT", pending["hosted_link_url"])
-            st.caption("Complete Plaid in the new window. This tab checks for completion every 5 seconds.")
-        if st.button("DISMISS LINK", key="networth_dismiss_" + link_id):
+            status.caption("Connection " + str(index) + " · Waiting for Plaid")
+            open_link.link_button("OPEN PLAID" if not pending.get("item_id") else "RECONNECT", pending["hosted_link_url"])
+        if dismiss_link.button("DISMISS", key="networth_dismiss_" + link_id):
             def dismiss(latest):
                 latest.setdefault("pending_links", {}).pop(link_id, None)
             store.update_state(dismiss)
             st.rerun()
 
 
-def _classification_editor(store, state: dict) -> None:
+def _classification_editor(store, state: dict, *, cache_key=None) -> None:
     rows = account_rows(state)
     if not rows:
         st.info("Link an institution to pull its accounts and start the balance sheet.")
@@ -333,12 +461,9 @@ def _classification_editor(store, state: dict) -> None:
         "Bank updated": _timestamp(row.get("balance_updated_at")) if row.get("balance_updated_at") else "Not provided",
         "Status": "Refresh failed; prior balance" if row.get("stale") else ("Balance unavailable" if row.get("current") is None else "Available"),
     } for row in rows]).set_index("Account ID")
-    st.caption("Classify each account. Equity is shown separately; Net Worth = Assets − Liabilities. Excluded accounts do not enter totals.")
+    st.caption("Select accounts to rename or batch-classify. Excluded accounts stay linked and sync, but do not enter totals.")
     if any(row.get("possible_duplicate") for row in rows):
         st.warning("Possible duplicate accounts were linked. Review them before including them in totals; new suspected duplicates start Unclassified.")
-    st.dataframe(display, hide_index=True, width="stretch",
-                 column_order=["Account", "Classification", "Balance", "Currency", "Status", "Captured"],
-                 column_config={"Balance": st.column_config.NumberColumn(format="%.2f")})
     options = list(display.index)
     default = [row["account_id"] for row in rows if str(row.get("mask") or "").endswith("5474")] or options[:1]
     saved = [key for key in state.get("selected_accounts", default) if key in options]
@@ -362,7 +487,7 @@ def _classification_editor(store, state: dict) -> None:
     if "selected_accounts" not in state or selected != state["selected_accounts"]:
         def save_selection(latest):
             latest["selected_accounts"] = list(selected)
-        store.update_state(save_selection)
+        _remember_verified(cache_key, store.update_state(save_selection))
     if len(selected) == 1:
         account_id = selected[0]
         preference = state.get("preferences", {}).get(account_id, {})
@@ -373,7 +498,7 @@ def _classification_editor(store, state: dict) -> None:
                                              key="networth_nickname_" + account_id,
                                              placeholder=str(display.loc[account_id, "Original account"]))
             if nickname_save.form_submit_button("SAVE NICKNAME", width="stretch"):
-                _save_account_details(store, account_id, value)
+                _save_account_details(store, account_id, value, cache_key=cache_key)
                 st.rerun()
     else:
         st.caption("Select one account to edit its nickname.")
@@ -388,20 +513,21 @@ def _classification_editor(store, state: dict) -> None:
                     preferences[account_id] = {
                         **(previous if isinstance(previous, Mapping) else {}), "classification": classification,
                     }
-        store.update_state(save)
+        _remember_verified(cache_key, store.update_state(save))
         st.rerun()
 
 
 def _daily_sheet(store, state: dict) -> None:
     today = datetime.now(TIMEZONE).date()
-    selected = st.date_input("Balance sheet date", today, max_value=today, key="networth_sheet_date")
+    date_col, capture_col, csv_col = st.columns([1, 2, 1], gap="small", vertical_alignment="bottom")
+    selected = date_col.date_input("Balance sheet date", today, max_value=today, key="networth_sheet_date")
     day = store.read_day(selected.isoformat())
     captures = (day or {}).get("captures", {})
     if not captures:
         st.info("No saved balance sheet for this date. Historical balances begin with the first successful pull.")
         return
     ordered = sorted(captures, key=lambda key: captures[key].get("captured_at", ""), reverse=True)
-    capture_id = st.selectbox(
+    capture_id = capture_col.selectbox(
         "Saved capture", ordered,
         format_func=lambda key: _timestamp(captures[key].get("captured_at")) + (" • Scheduled" if captures[key].get("scheduled_slot") else " • Manual"),
         key="networth_capture_" + selected.isoformat(),
@@ -418,7 +544,7 @@ def _daily_sheet(store, state: dict) -> None:
         "Bank updated": _timestamp(row.get("balance_updated_at")) if row.get("balance_updated_at") else "Not provided",
         "Status": "Stale" if row.get("stale") else ("Unavailable" if row.get("current") is None else "Available"),
     } for row in rows])
-    st.download_button("DOWNLOAD BALANCE SHEET CSV", frame.to_csv(index=False).encode(),
+    csv_col.download_button("DOWNLOAD CSV", frame.to_csv(index=False).encode(),
                        file_name="networth-" + selected.isoformat() + ".csv", mime="text/csv")
     st.caption("Daily view defaults to the latest saved capture. Each snapshot keeps the classification used when it was captured; current edits apply to subsequent captures. Currencies are reported separately.")
 
@@ -452,8 +578,7 @@ def _connections(store, client, state: dict) -> None:
                 st.rerun()
 
 
-def render_networth() -> None:
-    st.caption("SYNC SCHEDULE // 9 AM · NOON · 5 PM · 10 PM // America/Indiana/Indianapolis")
+def _render_networth_content() -> None:
     try:
         plaid_config = PlaidConfig.from_runtime()
         store_config = StoreConfig.from_runtime()
@@ -483,9 +608,12 @@ def render_networth() -> None:
             _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
             return
         cache[cache_key] = _readonly_snapshot(state)
-        status_col, sync_col = st.columns([3, 1], vertical_alignment="bottom")
+        status_col, sync_col, reload_col = st.columns([6, 1, 1], gap="small", vertical_alignment="center")
         status_col.caption("PLAID " + plaid_config.environment.upper() + " // Last attempt: " + _timestamp(state.get("last_sync")))
-        if sync_col.button("SYNC NOW", disabled=not state.get("items"), width="stretch"):
+        status_col.caption("Schedule: 9 AM · noon · 5 PM · 10 PM · Indianapolis")
+        if reload_col.button("RELOAD", key="networth_reload", help="Reload saved settings and balances without another Plaid pull"):
+            st.rerun()
+        if sync_col.button("SYNC NOW", disabled=not state.get("items")):
             try:
                 with st.spinner("Pulling linked account balances…"):
                     updated = sync_networth(store, client)
@@ -501,30 +629,31 @@ def render_networth() -> None:
                 st.warning("Balance sync could not finish. Showing the last saved balances; retry shortly.")
             else:
                 st.rerun()
-        if state.get("pending_links"):
-            _pending_links(store, client)
         for error in state.get("last_errors", {}).values():
             st.warning("Balance refresh: " + str(error))
         if state.get("last_errors") or state.get("last_capture_complete") is False:
             status_col.caption("Most recent account balance update: " + _timestamp(_latest_account_update(state)) + "; some accounts may be older.")
         _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
+        _bucket_editor(store, state, cache_key=cache_key)
         with st.expander("Accounts & connections"):
-            st.caption("Connected accounts and nicknames are saved securely and restored across app restarts. All linked accounts sync, including accounts you exclude from the statement.")
+            st.caption("Account settings are saved automatically after verified changes. All linked accounts sync, including excluded accounts.")
             connection_types = {
                 "Bank / credit accounts": ("transactions",),
                 "Investment accounts": ("investments",),
                 "Loans / liabilities": ("liabilities",),
                 "Configured Plaid products": plaid_config.products,
             }
-            connection_type = st.selectbox("Connection type", list(connection_types), key="networth_connection_type",
+            type_col, link_col, reload_col = st.columns([2, 1, 1], gap="small", vertical_alignment="bottom")
+            connection_type = type_col.selectbox("Connection type", list(connection_types), key="networth_connection_type",
                                            help="Choose a product enabled for your Plaid production application and supported by the institution.")
-            link_col, reload_col = st.columns(2)
-            if link_col.button("LINK ACCOUNTS WITH PLAID", width="stretch"):
+            if link_col.button("CONNECT PLAID"):
                 _start_link(store, client, products=connection_types[connection_type])
                 st.rerun()
-            if reload_col.button("RELOAD SAVED BALANCES", width="stretch"):
+            if reload_col.button("RELOAD BALANCES"):
                 st.rerun()
-            _classification_editor(store, state)
+            if state.get("pending_links"):
+                _pending_links(store, client)
+            _classification_editor(store, state, cache_key=cache_key)
             _connections(store, client, state)
             if state.get("last_scheduled_at"):
                 st.caption("Last verified scheduled capture: " + _timestamp(state["last_scheduled_at"]))
@@ -536,3 +665,34 @@ def render_networth() -> None:
         st.error(str(exc))
     except Exception:
         st.error("Networth could not load. Check the dedicated Plaid/storage configuration and retry.")
+
+
+def render_networth() -> None:
+    with st.container(key="networth_workspace", gap="small"):
+        st.html('''<style>
+.st-key-networth_workspace [data-testid="stVerticalBlock"]{gap:4px!important}
+.st-key-networth_workspace [data-testid="stCaptionContainer"]{margin:0!important}
+.st-key-networth_workspace [data-testid="stCaptionContainer"] p{font-size:12px!important;line-height:1.25!important;margin:0!important}
+.st-key-networth_workspace [data-testid="stButton"] button,
+.st-key-networth_workspace [data-testid="stFormSubmitButton"] button,
+.st-key-networth_workspace [data-testid="stDownloadButton"] button,
+.st-key-networth_workspace [data-testid="stLinkButton"] a{min-height:30px!important;height:30px!important;padding:0 9px!important;white-space:nowrap!important}
+.st-key-networth_workspace [data-testid="stButton"] button p,
+.st-key-networth_workspace [data-testid="stFormSubmitButton"] button p,
+.st-key-networth_workspace [data-testid="stDownloadButton"] button p,
+.st-key-networth_workspace [data-testid="stLinkButton"] a p{font-size:12px!important;line-height:1!important}
+.st-key-networth_workspace [data-testid="stExpander"] summary{min-height:30px!important;padding:4px 8px!important}
+.st-key-networth_workspace [data-testid="stExpander"] summary p{font-size:13px!important}
+.st-key-networth_workspace .networth-statement{font-size:14px}
+.st-key-networth_workspace .networth-statement th,.st-key-networth_workspace .networth-statement td{padding:3px 7px}
+.st-key-networth_workspace .networth-statement .nw-section th{padding-top:7px}
+.st-key-networth_workspace .networth-statement .nw-equity td{padding-top:5px;padding-bottom:5px}
+.nw-balance-check{display:flex;align-items:center;gap:6px;font:11px/1.3 "Courier New",monospace;color:#b87621;padding:2px 0}
+.nw-check-balanced{color:#49c587}.nw-check-unbalanced{color:#ff4848;font-weight:700}
+.nw-check-dot{height:6px;width:6px;border-radius:50%;background:currentColor;flex:none}
+.nw-check-unbalanced .nw-check-dot{animation:nw-check-pulse .9s ease-in-out 3}
+@keyframes nw-check-pulse{50%{opacity:.25;box-shadow:0 0 5px #ff3030}}
+@media(prefers-reduced-motion:reduce){.nw-check-unbalanced .nw-check-dot{animation:none}}
+@media(max-width:600px){.st-key-networth_workspace .networth-statement{font-size:12px}.st-key-networth_workspace .networth-statement th,.st-key-networth_workspace .networth-statement td{padding:3px}}
+</style>''')
+        _render_networth_content()

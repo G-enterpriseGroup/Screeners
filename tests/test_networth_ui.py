@@ -130,6 +130,7 @@ class NetworthUITests(unittest.TestCase):
             app.run()
             self.assertFalse(app.exception)
             self.assertFalse(app.error)
+            self.assertFalse(app.dataframe)
             self.assertEqual(app.multiselect[0].value, ["a"])
             app.selectbox(key="networth_apply_classification").select("Equity")
             next(button for button in app.button if button.label == "SAVE CLASSIFICATIONS").click().run()
@@ -488,6 +489,303 @@ class NetworthAccountDetailsTests(unittest.TestCase):
         self.assertEqual(store.state["preferences"]["card"]["nickname"], "Concurrent Card")
         self.assertEqual(store.state["preferences"]["cash"]["nickname"], "Household Cash")
 
+    def test_verified_native_nickname_save_refreshes_readonly_cache(self):
+        self.store.state["items"]["bank"] = {"access_token": "PRIVATE_ACCESS_TOKEN"}
+        cache_key = ("Synthetic/Portfolio", "networth-data", self.store.scope, "production")
+        session = {"_networth_verified_balances": {cache_key: networth_ui._readonly_snapshot(self.store.state)}}
+        with patch("src.networth_ui.st.session_state", session):
+            networth_ui._save_account_details(self.store, "cash", "New Household Name", cache_key=cache_key)
+        cached = session["_networth_verified_balances"][cache_key]
+        self.assertEqual(cached["preferences"]["cash"], {
+            "nickname": "New Household Name", "classification": "Asset"})
+        self.assertEqual(cached, networth_ui._readonly_snapshot(self.store.state))
+        self.assertNotIn("PRIVATE_ACCESS_TOKEN", repr(cached))
+
+
+class NetworthBalanceStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.accounts = [
+            statement_account("cash", "Synthetic Cash", 100, "Asset"),
+            statement_account("card", "Synthetic Card", 20, "Liability"),
+            statement_account("capital", "Synthetic Capital", 80, "Equity"),
+        ]
+
+    def test_independent_equity_reconciles_but_generated_remainder_cannot_hide_gap(self):
+        before = deepcopy(self.accounts)
+        status = networth_ui._balance_status(self.accounts, "USD")
+        self.assertEqual(status, {"state": "balanced", "gap": 0, "stale": False})
+        self.accounts[2]["current"] = 75
+        status = networth_ui._balance_status(self.accounts, "USD")
+        self.assertEqual(status, {"state": "unbalanced", "gap": 5, "stale": False})
+        statement = networth_ui._statement_rows(self.accounts, {}, "USD")
+        self.assertEqual(next(row["amount"] for row in statement if row["label"] == "Unallocated equity"), 5)
+        self.assertEqual(next(row["amount"] for row in statement if row["label"] == "Total Liabilities & Equity:"), 100)
+        self.accounts[2]["current"] = 80
+        self.assertEqual(self.accounts, before)
+
+    def test_no_independent_equity_is_calculated_instead_of_falsely_verified(self):
+        self.assertEqual(networth_ui._balance_status(self.accounts[:2], "USD"),
+                         {"state": "calculated", "gap": None, "stale": False})
+        self.assertNotEqual(networth_ui._balance_status([], "USD")["state"], "balanced")
+
+    def test_native_currencies_never_offset_each_others_gap_or_staleness(self):
+        self.accounts[2]["current"] = 75
+        self.accounts.extend([
+            {**statement_account("foreign", "Synthetic CAD Cash", 1000, "Asset", "CAD"), "stale": True},
+            statement_account("foreign-equity", "Synthetic CAD Equity", 1000, "Equity", "CAD"),
+        ])
+        self.assertEqual(networth_ui._balance_status(self.accounts, "USD"),
+                         {"state": "unbalanced", "gap": 5, "stale": False})
+        self.assertEqual(networth_ui._balance_status(self.accounts, "CAD"),
+                         {"state": "balanced", "gap": 0, "stale": True})
+
+    def test_signed_credit_and_negative_equity_preserve_accounting_equation(self):
+        self.accounts[1]["current"] = -25
+        self.accounts[2]["current"] = 125
+        self.assertEqual(networth_ui._balance_status(self.accounts, "USD")["state"], "balanced")
+        self.accounts[0]["current"] = 0
+        self.accounts[1]["current"] = 25
+        self.accounts[2]["current"] = -25
+        self.assertEqual(networth_ui._balance_status(self.accounts, "USD")["state"], "balanced")
+
+    def test_cent_rounding_avoids_float_noise_without_hiding_a_real_cent(self):
+        accounts = [statement_account("one", "Synthetic One", .1, "Asset"),
+                    statement_account("two", "Synthetic Two", .2, "Asset"),
+                    statement_account("equity", "Synthetic Equity", .3, "Equity")]
+        self.assertEqual(networth_ui._balance_status(accounts, "USD")["state"], "balanced")
+        self.accounts[2]["current"] = 79.996
+        self.assertEqual(networth_ui._balance_status(self.accounts, "USD")["gap"], 0)
+        self.accounts[2]["current"] = 79.994
+        self.assertEqual(networth_ui._balance_status(self.accounts, "USD"),
+                         {"state": "unbalanced", "gap": .01, "stale": False})
+
+    def test_missing_invalid_and_unclassified_inputs_are_incomplete(self):
+        for index in range(3):
+            for value in (None, float("nan"), float("inf"), "invalid", True):
+                with self.subTest(index=index, value=value):
+                    accounts = deepcopy(self.accounts)
+                    accounts[index]["current"] = value
+                    status = networth_ui._balance_status(accounts, "USD")
+                    self.assertEqual(status["state"], "incomplete")
+                    self.assertIsNone(status["gap"])
+        unclassified = self.accounts + [statement_account("unknown", "Synthetic Unknown", 5, "Unclassified")]
+        self.assertEqual(networth_ui._balance_status(unclassified, "USD")["state"], "incomplete")
+        unknown_currency = [statement_account("unknown", "Synthetic Unknown Currency", 5, "Asset", "UNKNOWN")]
+        self.assertEqual(networth_ui._balance_status(unknown_currency, "UNKNOWN")["state"], "incomplete")
+
+    def test_excluded_accounts_do_not_change_balance_or_freshness(self):
+        accounts = self.accounts + [{**statement_account("excluded", "Synthetic Excluded", None, "Excluded"),
+                                    "stale": True}]
+        self.assertEqual(networth_ui._balance_status(accounts, "USD"),
+                         {"state": "balanced", "gap": 0, "stale": False})
+        accounts[0]["stale"] = True
+        self.assertEqual(networth_ui._balance_status(accounts, "USD"),
+                         {"state": "balanced", "gap": 0, "stale": True})
+
+
+class NetworthBucketMoveTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Store()
+        self.store.state["items"]["bank"] = {"label": "Synthetic Bank", "access_token": "PRIVATE_ACCESS_TOKEN"}
+        self.store.state["accounts"] = {
+            "cash": {**statement_account("cash", "Synthetic Cash", 100, "Asset"),
+                     "item_id": "bank", "type": "depository"},
+            "card": {**statement_account("card", "Synthetic Card", 20, "Liability"),
+                     "item_id": "bank", "type": "credit"},
+        }
+        self.store.state["preferences"] = {
+            "cash": {"classification": "Asset", "nickname": "Household Cash", "custom": "preserved"},
+            "card": {"classification": "Liability", "nickname": "Card Name"},
+        }
+        self.store.state["selected_accounts"] = ["card"]
+        self.store.days["2026-11-03"] = {"captures": {"original": {"accounts": deepcopy(
+            networth_ui.account_rows(self.store.state))}}}
+        self.view_id = "synthetic-current-view"
+
+    def event(self, **changes):
+        revision = networth_ui._bucket_revision(networth_ui.account_rows(self.store.state))
+        return {"action": "classify", "account_id": "cash", "target_class": "Equity", "base_class": "Asset",
+                "event_id": "11111111-1111-4111-8111-111111111111", "view_id": self.view_id,
+                "revision": revision, **changes}
+
+    def move(self, event, **kwargs):
+        return networth_ui._save_bucket_move(self.store, event, view_id=self.view_id,
+                                            revision=self.event()["revision"], **kwargs)
+
+    def test_revision_tracks_only_account_identity_and_effective_classification(self):
+        rows = networth_ui.account_rows(self.store.state)
+        before = deepcopy(rows)
+        revision = networth_ui._bucket_revision(rows)
+        self.assertTrue(isinstance(revision, str) and revision)
+        self.assertEqual(networth_ui._bucket_revision(list(reversed(rows))), revision)
+        changed = deepcopy(rows)
+        changed[0].update(name="Another Name", current=900, as_of="2099-01-01T00:00:00Z", stale=True)
+        self.assertEqual(networth_ui._bucket_revision(changed), revision)
+        changed[0]["classification"] = "Equity"
+        self.assertNotEqual(networth_ui._bucket_revision(changed), revision)
+        changed = deepcopy(rows)
+        changed[0]["account_id"] = "another-account"
+        self.assertNotEqual(networth_ui._bucket_revision(changed), revision)
+        self.assertEqual(rows, before)
+
+    def test_drop_changes_only_one_classification_and_replaying_it_is_idempotent(self):
+        before_accounts = deepcopy(self.store.state["accounts"])
+        before_history = deepcopy(self.store.days)
+        event = self.event()
+        with patch("src.networth_ui.sync_networth") as sync, patch.object(networth_ui.PlaidClient, "balances") as balances:
+            result = self.move(event)
+            self.assertEqual(result, self.store.state)
+            self.assertEqual(result["preferences"]["cash"], {
+                "classification": "Equity", "nickname": "Household Cash", "custom": "preserved"})
+            first = deepcopy(self.store.state)
+            replay = networth_ui._save_bucket_move(self.store, event, view_id=self.view_id, revision=event["revision"])
+            self.assertEqual(replay, first)
+            sync.assert_not_called()
+            balances.assert_not_called()
+        self.assertEqual(self.store.state["accounts"], before_accounts)
+        self.assertEqual(self.store.state["preferences"]["card"]["nickname"], "Card Name")
+        self.assertEqual(self.store.state["selected_accounts"], ["card"])
+        self.assertEqual(self.store.days, before_history)
+
+    def test_invalid_shapes_missing_or_extra_fields_never_change_preferences(self):
+        event = self.event()
+        invalid = [None, [], "classify", True, {**event, "balance": 0}, {**event, "nickname": "Injected"}]
+        invalid.extend({key: value for key, value in event.items() if key != missing} for missing in event)
+        before = self.store.read_state()
+        for candidate in invalid:
+            with self.subTest(candidate=candidate), self.assertRaises(NetworthError):
+                self.move(candidate)
+            self.assertEqual(self.store.state, before)
+
+    def test_invalid_action_account_class_view_revision_or_uuid_is_rejected(self):
+        invalid = [
+            {"action": "sync"}, {"action": ["classify"]}, {"account_id": "missing"},
+            {"account_id": ""}, {"account_id": ["cash"]}, {"target_class": "Invalid"},
+            {"target_class": None}, {"base_class": "Invalid"}, {"base_class": None},
+            {"view_id": "historical-view"}, {"view_id": None},
+            {"revision": "stale-revision"}, {"revision": None}, {"revision": False},
+            {"event_id": "invalid"}, {"event_id": None}, {"event_id": "1" * 32},
+            {"event_id": " 11111111-1111-4111-8111-111111111111 "},
+            {"event_id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"},
+        ]
+        before = self.store.read_state()
+        for changes in invalid:
+            with self.subTest(changes=changes), self.assertRaises(NetworthError):
+                self.move(self.event(**changes))
+            self.assertEqual(self.store.state, before)
+
+    def test_stale_account_classification_and_removed_accounts_are_not_overwritten(self):
+        event = self.event()
+        self.store.state["preferences"]["cash"]["classification"] = "Liability"
+        before = self.store.read_state()
+        with self.assertRaises(NetworthError):
+            networth_ui._save_bucket_move(self.store, event, view_id=self.view_id, revision=event["revision"])
+        self.assertEqual(self.store.state, before)
+        self.store.state["accounts"].pop("cash")
+        before = self.store.read_state()
+        with self.assertRaises(NetworthError):
+            networth_ui._save_bucket_move(self.store, event, view_id=self.view_id, revision=event["revision"])
+        self.assertEqual(self.store.state, before)
+
+    def test_cas_retry_keeps_new_balances_nicknames_and_unrelated_preferences(self):
+        event = self.event()
+
+        def retry(callback):
+            callback(deepcopy(self.store.state))
+            self.store.state["accounts"]["cash"]["current"] = 600
+            self.store.state["preferences"]["cash"]["nickname"] = "Latest Household Name"
+            self.store.state["preferences"]["cash"]["new_field"] = "concurrent"
+            self.store.state["preferences"]["card"]["nickname"] = "Latest Card Name"
+            latest = self.store.read_state()
+            replacement = callback(latest)
+            self.store.state = latest if replacement is None else replacement
+            return self.store.read_state()
+
+        with patch.object(self.store, "update_state", side_effect=retry):
+            result = self.move(event)
+        self.assertEqual(result["accounts"]["cash"]["current"], 600)
+        self.assertEqual(result["preferences"]["cash"], {
+            "classification": "Equity", "nickname": "Latest Household Name",
+            "custom": "preserved", "new_field": "concurrent"})
+        self.assertEqual(result["preferences"]["card"]["nickname"], "Latest Card Name")
+
+    def test_legacy_preference_and_default_classification_can_be_moved(self):
+        for preference in ("Asset", None):
+            with self.subTest(preference=preference):
+                self.setUp()
+                if preference is None:
+                    self.store.state["preferences"].pop("cash")
+                else:
+                    self.store.state["preferences"]["cash"] = preference
+                self.store.state["preferences"]["card"] = "Liability"
+                result = self.move(self.event())
+                self.assertEqual(result["preferences"]["cash"], {"classification": "Equity"})
+                self.assertEqual(result["preferences"]["card"], "Liability")
+
+    def test_verified_save_refreshes_sanitized_session_cache_but_failure_does_not(self):
+        cache_key = ("Synthetic/Portfolio", "networth-data", self.store.scope, "production")
+        session = {"_networth_verified_balances": {cache_key: networth_ui._readonly_snapshot(self.store.state)}}
+        before_cache = deepcopy(session)
+        self.store.fail_next_save = True
+        with patch("src.networth_ui.st.session_state", session):
+            with self.assertRaises(NetworthError):
+                self.move(self.event(), cache_key=cache_key)
+            self.assertEqual(session, before_cache)
+            result = self.move(self.event(), cache_key=cache_key)
+        cached = session["_networth_verified_balances"][cache_key]
+        self.assertEqual(cached["preferences"]["cash"]["classification"], "Equity")
+        self.assertEqual(cached, networth_ui._readonly_snapshot(result))
+        self.assertNotIn("PRIVATE_ACCESS_TOKEN", repr(cached))
+
+    def test_component_repeated_event_is_saved_once_and_acknowledged_after_success(self):
+        session = {}
+        cache_key = ("Synthetic/Portfolio", "networth-data", self.store.scope, "production")
+        events = []
+
+        def component(**props):
+            if not events:
+                events.append(self.event(view_id=props["view_id"], revision=props["revision"]))
+            return events[0]
+
+        with patch("src.networth_ui.st.session_state", session), patch("src.networth_ui.st.rerun"), patch(
+            "src.networth_ui._networth_buckets", side_effect=component
+        ) as board, patch.object(self.store, "update_state", wraps=self.store.update_state) as write, patch(
+            "src.networth_ui.sync_networth"
+        ) as sync:
+            networth_ui._bucket_editor(self.store, self.store.read_state(), cache_key=cache_key)
+            self.assertEqual(write.call_count, 1)
+            self.assertEqual(self.store.state["preferences"]["cash"]["classification"], "Equity")
+            networth_ui._bucket_editor(self.store, self.store.read_state(), cache_key=cache_key)
+            self.assertEqual(write.call_count, 1)
+            sync.assert_not_called()
+        acknowledged = board.call_args.kwargs["ack"]
+        self.assertEqual(acknowledged["event_id"], events[0]["event_id"])
+        self.assertTrue(acknowledged["ok"])
+        self.assertEqual(session["_networth_verified_balances"][cache_key]["preferences"]["cash"]["classification"], "Equity")
+        self.assertNotIn("PRIVATE_ACCESS_TOKEN", repr(board.call_args.kwargs))
+
+    def test_component_failed_save_keeps_cache_and_returns_failure_acknowledgment(self):
+        cache_key = ("Synthetic/Portfolio", "networth-data", self.store.scope, "production")
+        session = {"_networth_verified_balances": {cache_key: networth_ui._readonly_snapshot(self.store.state)}}
+        before = deepcopy(session["_networth_verified_balances"])
+        events = []
+
+        def component(**props):
+            if not events:
+                events.append(self.event(view_id=props["view_id"], revision=props["revision"]))
+            return events[0]
+
+        self.store.fail_next_save = True
+        with patch("src.networth_ui.st.session_state", session), patch("src.networth_ui.st.rerun"), patch(
+            "src.networth_ui._networth_buckets", side_effect=component
+        ) as board, patch.object(self.store, "update_state", wraps=self.store.update_state) as write:
+            networth_ui._bucket_editor(self.store, self.store.read_state(), cache_key=cache_key)
+            networth_ui._bucket_editor(self.store, self.store.read_state(), cache_key=cache_key)
+            self.assertEqual(write.call_count, 1)
+        self.assertFalse(board.call_args.kwargs["ack"]["ok"])
+        self.assertEqual(self.store.state["preferences"]["cash"]["classification"], "Asset")
+        self.assertEqual(session["_networth_verified_balances"], before)
+
 
 class NetworthResilienceTests(unittest.TestCase):
     def setUp(self):
@@ -543,6 +841,34 @@ class NetworthResilienceTests(unittest.TestCase):
             self.assertTrue(any("already running" in message.value for message in app.info))
             self.assertEqual(statement.call_args.args[0][0]["account_id"], "a")
 
+    def test_component_props_are_sanitized_and_history_has_no_second_editable_board(self):
+        self.store.state["pending_links"]["link"] = {"link_token": "PRIVATE_LINK_TOKEN", "hosted_link_url": "PRIVATE_URL"}
+        day = networth_ui.datetime.now(networth_ui.TIMEZONE).date().isoformat()
+        self.store.days[day] = {"captures": {"saved": {
+            "captured_at": day + "T10:00:00Z", "complete": True,
+            "accounts": deepcopy(networth_ui.account_rows(self.store.state)),
+        }}}
+        with self.configured() as app, patch("src.networth_ui._pending_links"), patch(
+            "src.networth_ui._networth_buckets", return_value=None
+        ) as board, patch("src.networth_ui.sync_networth") as sync:
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertFalse(app.dataframe)
+            self.assertEqual(board.call_count, 1)
+            props = board.call_args.kwargs
+            self.assertEqual(props["key"], "networth_account_buckets")
+            self.assertIsNone(props["default"])
+            self.assertTrue(props["view_id"])
+            self.assertEqual(props["revision"], networth_ui._bucket_revision(networth_ui.account_rows(self.store.state)))
+            self.assertEqual(set(props["accounts"][0]), {
+                "account_id", "label", "balance", "currency", "classification", "stale"})
+            self.assertEqual(props["accounts"][0]["label"], "Household Cash")
+            self.assertTrue(any(expander.label == "Daily history & CSV" for expander in app.expander))
+            for secret in ("PRIVATE_ACCESS_TOKEN", "PRIVATE_LINK_TOKEN", "PRIVATE_URL"):
+                self.assertNotIn(secret, repr(props))
+            sync.assert_not_called()
+
     def test_verified_session_snapshot_has_no_tokens_and_is_read_only_on_storage_outage(self):
         self.store.state["pending_links"]["link"] = {"link_token": "PRIVATE_LINK_TOKEN", "hosted_link_url": "PRIVATE_URL"}
         with self.configured() as app, patch("src.networth_ui._pending_links"), patch(
@@ -560,7 +886,7 @@ class NetworthResilienceTests(unittest.TestCase):
                 self.store, "update_state", wraps=self.store.update_state
             ) as write, patch.object(self.store, "read_day", wraps=self.store.read_day) as history, patch(
                 "src.networth_ui._render_statement", wraps=networth_ui._render_statement
-            ) as statement:
+            ) as statement, patch("src.networth_ui._networth_buckets") as board:
                 app.run()
                 self.assertFalse(app.exception)
                 self.assertFalse(app.error)
@@ -571,6 +897,7 @@ class NetworthResilienceTests(unittest.TestCase):
                 write.assert_not_called()
                 history.assert_not_called()
                 sync.assert_not_called()
+                board.assert_not_called()
             self.assertEqual(self.store.state, before)
 
     def test_storage_outage_cannot_reuse_cache_from_another_source_or_environment(self):
