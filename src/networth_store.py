@@ -12,6 +12,7 @@ import hmac
 import json
 import os
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -27,10 +28,45 @@ class _Conflict(Exception):
     pass
 
 
+class _RetryRead(Exception):
+    def __init__(self, delay: float | None = None, status: int | None = None):
+        self.delay = delay
+        self.status = status
+
+
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+\Z")
 _MAX_DOCUMENT_BYTES = 512 * 1024
 _MAX_HTTP_BYTES = 2 * 1024 * 1024
+_READ_RETRY_DELAYS = (0.5, 1.0)
+_MAX_RETRY_WAIT = 2.0
+
+
+def _retry_transient_read(response) -> None:
+    headers = response.headers
+    retry_after = headers.get("Retry-After")
+    remaining = headers.get("X-RateLimit-Remaining")
+    rate_limited = response.status_code == 429 or (
+        response.status_code == 403 and (retry_after is not None or remaining == "0")
+    )
+    if not rate_limited and not 500 <= response.status_code <= 599:
+        return None
+    delay = None
+    try:
+        if retry_after is not None:
+            delay = float(retry_after)
+        if remaining == "0":
+            reset = float(headers["X-RateLimit-Reset"])
+            if not reset >= 0:
+                raise ValueError
+            reset_delay = max(0.0, reset - time.time())
+            delay = max(delay or 0.0, reset_delay)
+    except (ValueError, TypeError, KeyError):
+        raise NetworthError("Networth GitHub retry guidance unavailable; existing data was preserved. Retry later.") from None
+    if (rate_limited and delay is None) or (delay is not None and not 0 <= delay <= _MAX_RETRY_WAIT):
+        # Never shorten GitHub's required wait merely to fit a browser request.
+        raise NetworthError("Networth GitHub requires a longer wait; existing data was preserved. Retry later.")
+    raise _RetryRead(delay, response.status_code)
 
 
 def _valid_branch(value: str) -> bool:
@@ -127,7 +163,21 @@ class GitHubNetworthStore:
         self._base = "https://api.github.com/repos/" + config.repository
 
     def _request(self, method: str, suffix: str = "", *, params=None, payload=None,
-                 missing_ok: bool = False, conflict_ok: bool = False) -> dict | None:
+                 missing_ok: bool = False, conflict_ok: bool = False,
+                 retry_missing: bool = False) -> dict | None:
+        for attempt in range(len(_READ_RETRY_DELAYS) + 1):
+            try:
+                return self._request_once(method, suffix, params=params, payload=payload,
+                                          missing_ok=missing_ok, conflict_ok=conflict_ok,
+                                          retry_missing=retry_missing)
+            except _RetryRead as exc:
+                if attempt == len(_READ_RETRY_DELAYS):
+                    status = " (HTTP " + str(exc.status) + ")" if exc.status is not None else ""
+                    raise NetworthError("Networth GitHub temporarily unavailable" + status + "; existing data was preserved. Retry later.") from None
+                time.sleep(exc.delay if exc.delay is not None else _READ_RETRY_DELAYS[attempt])
+
+    def _request_once(self, method: str, suffix: str, *, params, payload,
+                      missing_ok: bool, conflict_ok: bool, retry_missing: bool) -> dict | None:
         try:
             response = requests.request(
                 method, self._base + suffix,
@@ -138,6 +188,10 @@ class GitHubNetworthStore:
             )
             try:
                 status = response.status_code
+                if method == "GET":
+                    _retry_transient_read(response)
+                    if status == 404 and retry_missing:
+                        raise _RetryRead(status=status)
                 if status == 404 and missing_ok:
                     return None
                 if status in (409, 422) and conflict_ok:
@@ -160,13 +214,18 @@ class GitHubNetworthStore:
                 return result
             finally:
                 response.close()
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError):
+            if method == "GET":
+                raise _RetryRead() from None
+            raise NetworthError("Networth GitHub unavailable; existing data was preserved. Retry later.") from None
         except requests.RequestException:
             raise NetworthError("Networth GitHub unavailable; existing data was preserved. Retry later.") from None
         except (ValueError, UnicodeError):
             raise NetworthError("Networth GitHub response invalid; existing data was preserved.") from None
 
-    def _ref(self, branch: str, *, missing_ok: bool = False) -> dict | None:
-        result = self._request("GET", "/git/ref/heads/" + quote(branch, safe="/"), missing_ok=missing_ok)
+    def _ref(self, branch: str, *, missing_ok: bool = False, retry_missing: bool = False) -> dict | None:
+        result = self._request("GET", "/git/ref/heads/" + quote(branch, safe="/"),
+                               missing_ok=missing_ok, retry_missing=retry_missing)
         if result is not None:
             obj = result.get("object")
             if (result.get("ref") != "refs/heads/" + branch or not isinstance(obj, dict)
@@ -193,7 +252,7 @@ class GitHubNetworthStore:
             }, conflict_ok=True)
         except _Conflict:
             pass  # A competing initializer must still pass the exact reference check.
-        self._ref(self.config.branch)
+        self._ref(self.config.branch, retry_missing=True)
 
     def _path(self, document: str) -> str:
         return "networth/" + self.scope + "/" + document
@@ -201,9 +260,10 @@ class GitHubNetworthStore:
     def _read_document(self, document: str, *, ref: str | None = None) -> tuple[dict | None, str | None, bytes | None]:
         path = self._path(document)
         result = self._request("GET", "/contents/" + quote(path, safe="/"),
-                               params={"ref": ref or self.config.branch}, missing_ok=ref is None)
+                               params={"ref": ref or self.config.branch}, missing_ok=ref is None,
+                               retry_missing=ref is not None)
         if result is None:
-            self._ref(self.config.branch)
+            self._ref(self.config.branch, retry_missing=True)
             return None, None, None
         sha = result.get("sha")
         if (result.get("type") != "file" or result.get("encoding") != "base64"

@@ -2,7 +2,8 @@ name: Networth scheduled balances
 
 on:
   schedule:
-    - cron: '0 9,12,17,22 * * *'
+    # Later attempts recover missed/failed runs; completed slots skip Plaid.
+    - cron: '0,10,20 9,12,17,22 * * *'
       timezone: 'America/Indiana/Indianapolis'
   workflow_dispatch:
 

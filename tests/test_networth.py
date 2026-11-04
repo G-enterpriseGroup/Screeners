@@ -40,13 +40,13 @@ class MemoryStore:
         return deepcopy(self.state)
 
     def update_state(self, callback):
-        if self.before_update:
+        if self.before_update and self.state.get("sync_lease"):
             hook, self.before_update = self.before_update, None
             hook(self.state)
         current = deepcopy(self.state)
         result = callback(current)
         self.events.append("state")
-        if self.fail_checkpoint:
+        if self.fail_checkpoint and current.get("last_capture_at"):
             raise NetworthError("CHECKPOINT_UNAVAILABLE")
         self.state = deepcopy(result if result is not None else current)
         return deepcopy(self.state)
@@ -288,13 +288,18 @@ class BalanceTests(unittest.TestCase):
 
 
 class SyncTests(unittest.TestCase):
+    def setUp(self):
+        clock = patch("src.networth._sync_time", return_value=NOW)
+        self.clock = clock.start()
+        self.addCleanup(clock.stop)
+
     def test_success_captures_before_checkpoint_and_daily_history_is_immutable(self):
         store = linked_store()
         client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}})
         first = sync_networth(store, client, NOW)
         first_day = store.read_day("2026-11-03")
         first_capture = deepcopy(first_day["captures"][first["last_capture_id"]])
-        self.assertEqual(store.events, ["capture", "state"])
+        self.assertEqual(store.events, ["state", "capture", "state"])
         self.assertTrue(first_capture["complete"])
         self.assertNotIn("SENSITIVE_BANK_TOKEN", repr(first_capture))
         client.replies["SENSITIVE_BANK_TOKEN"] = {"accounts": [account(value=150)]}
@@ -384,6 +389,20 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(len(store.days["2026-11-03"]["captures"]), 1)
 
+    def test_winter_and_summer_fallback_attempts_share_one_successful_pull(self):
+        for month in (1, 7):
+            with self.subTest(month=month):
+                store = linked_store()
+                client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}})
+                slots = []
+                for minute in (0, 10, 20):
+                    stamp = datetime(2026, month, 15, 9, minute, tzinfo=TIMEZONE)
+                    slots.append(scheduled_slot(stamp))
+                    sync_networth(store, client, stamp, slots[-1])
+                self.assertEqual(len(set(slots)), 1)
+                self.assertEqual(client.calls, ["SENSITIVE_BANK_TOKEN"])
+                self.assertEqual(len(store.days[f"2026-{month:02d}-15"]["captures"]), 1)
+
     def test_successful_capture_recovers_failed_checkpoint_without_another_paid_pull(self):
         store = linked_store()
         store.state["accounts"]["closed"] = normalize_accounts({"accounts": [account("closed")]}, "bank", NOW)[0]
@@ -404,21 +423,206 @@ class SyncTests(unittest.TestCase):
         self.assertNotIn("closed", result["accounts"])
         self.assertEqual(result["preferences"]["cash"]["classification"], "Equity")
 
-    def test_older_sync_finishing_last_never_replaces_newer_balances_or_checkpoint(self):
+    def test_checkpoint_recovery_preserves_original_snapshot_after_reclassification(self):
+        store = linked_store()
+        store.state["preferences"]["cash"] = {"classification": "Excluded"}
+        store.fail_checkpoint = True
+        client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=None)]}})
+        slot = scheduled_slot(NOW)
+        with self.assertRaisesRegex(NetworthError, "CHECKPOINT_UNAVAILABLE"):
+            sync_networth(store, client, NOW, slot)
+        original = store.read_day("2026-11-03")
+        store.fail_checkpoint = False
+        store.state["preferences"]["cash"] = {"classification": "Asset"}
+        result = sync_networth(store, client, NOW + timedelta(minutes=1), slot)
+        self.assertEqual(client.calls, ["SENSITIVE_BANK_TOKEN"])
+        self.assertIn(slot, result["completed_slots"])
+        self.assertTrue(result["last_capture_complete"])
+        self.assertEqual(store.read_day("2026-11-03"), original)
+        saved = next(iter(original["captures"].values()))
+        self.assertEqual(saved["accounts"][0]["classification"], "Excluded")
+        self.assertEqual(account_rows(result)[0]["classification"], "Asset")
+        self.assertIsNone(account_rows(result)[0]["current"])
+
+    def test_overlap_is_rejected_before_a_second_paid_pull(self):
+        for first_slot, second_slot in ((None, None), (scheduled_slot(NOW), scheduled_slot(NOW)),
+                                       (scheduled_slot(NOW), None)):
+            with self.subTest(first_slot=first_slot, second_slot=second_slot):
+                store = linked_store()
+                contender = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=200)]}})
+                client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=100)]}})
+                original = client.balances
+
+                def overlap(token, now=None):
+                    with self.assertRaisesRegex(NetworthError, "^NETWORTH_SYNC_IN_PROGRESS$"):
+                        sync_networth(store, contender, NOW + timedelta(seconds=1), second_slot)
+                    return original(token, now)
+
+                client.balances = overlap
+                result = sync_networth(store, client, NOW, first_slot)
+                self.assertEqual(client.calls, ["SENSITIVE_BANK_TOKEN"])
+                self.assertEqual(contender.calls, [])
+                self.assertEqual(result["accounts"]["cash"]["current"], 100)
+                self.assertNotIn("sync_lease", result)
+                self.assertEqual(len(store.read_day("2026-11-03")["captures"]), 1)
+
+    def test_expired_owner_cannot_overwrite_a_successor_or_release_its_claim(self):
         store = linked_store()
         old_client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=100)]}})
         new_client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=200)]}})
         newer = {}
 
         def newer_finishes_first(state):
+            self.clock.return_value = NOW + timedelta(minutes=16)
             newer.update(sync_networth(store, new_client, NOW + timedelta(minutes=1)))
 
         store.before_update = newer_finishes_first
-        result = sync_networth(store, old_client, NOW)
-        self.assertEqual(result, newer)
-        self.assertEqual(result["accounts"]["cash"]["current"], 200)
-        self.assertEqual(result["last_capture_at"], "2026-11-03T17:01:00Z")
+        with self.assertRaisesRegex(NetworthError, "^NETWORTH_SYNC_LEASE_LOST$"):
+            sync_networth(store, old_client, NOW)
+        self.assertEqual(store.state, newer)
+        self.assertEqual(store.state["accounts"]["cash"]["current"], 200)
+        self.assertEqual(store.state["last_capture_at"], "2026-11-03T17:01:00Z")
         self.assertEqual(len(store.read_day("2026-11-03")["captures"]), 1)
+
+    def test_existing_newer_success_is_not_downloaded_or_replaced(self):
+        store = linked_store()
+        current = sync_networth(store, Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=200)]}}),
+                                NOW + timedelta(minutes=1))
+        old_client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=100)]}})
+        self.assertEqual(sync_networth(store, old_client, NOW), current)
+        self.assertEqual(old_client.calls, [])
+        self.assertEqual(len(store.read_day("2026-11-03")["captures"]), 1)
+
+    def test_older_success_repairs_balance_after_a_newer_failed_attempt(self):
+        store = linked_store()
+        sync_networth(store, Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=40)]}}),
+                      NOW - timedelta(minutes=1))
+        failed = sync_networth(store, Client({"SENSITIVE_BANK_TOKEN": NetworthError("PLAID_CONNECTION_FAILED")}),
+                              NOW + timedelta(minutes=1))
+        result = sync_networth(store, Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account(value=100)]}}), NOW)
+        self.assertEqual(result["accounts"]["cash"]["current"], 100)
+        self.assertEqual(result["items"]["bank"]["last_sync"], "2026-11-03T17:00:00Z")
+        self.assertEqual(result["items"]["bank"]["last_attempt"], "2026-11-03T17:01:00Z")
+        self.assertEqual(result["items"]["bank"]["error"], "PLAID_CONNECTION_FAILED")
+        self.assertTrue(account_rows(result)[0]["stale"])
+        self.assertEqual(result["last_sync"], failed["last_sync"])
+        self.assertEqual(result["last_capture_id"], failed["last_capture_id"])
+
+    def test_crashed_lease_expires_and_backdated_snapshot_uses_real_lease_clock(self):
+        store = linked_store()
+        store.state["sync_lease"] = {"owner": "crashed", "expires_at": "2026-11-03T16:59:59Z"}
+        self.clock.return_value = NOW + timedelta(days=1)
+        client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}})
+        original = client.balances
+
+        def inspect_lease(token, now=None):
+            expires = datetime.fromisoformat(store.state["sync_lease"]["expires_at"].replace("Z", "+00:00"))
+            self.assertEqual(expires, NOW + timedelta(days=1, minutes=15))
+            return original(token, now)
+
+        client.balances = inspect_lease
+        result = sync_networth(store, client, NOW)
+        self.assertNotIn("sync_lease", result)
+        self.assertEqual(client.calls, ["SENSITIVE_BANK_TOKEN"])
+
+    def test_lease_expiry_stops_remaining_paid_reads_and_releases_claim(self):
+        store = linked_store()
+        store.state["items"]["second"] = {"access_token": "SECOND"}
+        client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]},
+                         "SECOND": {"accounts": [account("second")]}})
+        original = client.balances
+
+        def expire(token, now=None):
+            result = original(token, now)
+            self.clock.return_value = NOW + timedelta(minutes=15)
+            return result
+
+        client.balances = expire
+        with self.assertRaisesRegex(NetworthError, "^NETWORTH_SYNC_LEASE_EXPIRED$"):
+            sync_networth(store, client, NOW)
+        self.assertEqual(client.calls, ["SENSITIVE_BANK_TOKEN"])
+        self.assertNotIn("sync_lease", store.state)
+        self.assertFalse(store.days)
+
+    def test_unverified_claim_write_never_performs_paid_reads_and_is_released(self):
+        store = linked_store()
+        original = store.update_state
+        first = True
+
+        def uncertain(callback):
+            nonlocal first
+            result = original(callback)
+            if first:
+                first = False
+                raise NetworthError("CLAIM_VERIFICATION_FAILED")
+            return result
+
+        client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}})
+        with patch.object(store, "update_state", side_effect=uncertain):
+            with self.assertRaisesRegex(NetworthError, "^CLAIM_VERIFICATION_FAILED$"):
+                sync_networth(store, client, NOW)
+        self.assertEqual(client.calls, [])
+        self.assertNotIn("sync_lease", store.state)
+
+    def test_expiry_during_archive_preserves_capture_for_checkpoint_recovery(self):
+        store = linked_store()
+        original = store.save_capture
+
+        def slow_archive(day, capture_id, capture):
+            original(day, capture_id, capture)
+            self.clock.return_value = NOW + timedelta(minutes=15)
+
+        client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}})
+        slot = scheduled_slot(NOW)
+        with patch.object(store, "save_capture", side_effect=slow_archive):
+            with self.assertRaisesRegex(NetworthError, "^NETWORTH_SYNC_LEASE_EXPIRED$"):
+                sync_networth(store, client, NOW, slot)
+        self.assertNotIn("sync_lease", store.state)
+        self.assertFalse(store.state.get("completed_slots"))
+        self.assertFalse(store.state["accounts"])
+        before = store.read_day("2026-11-03")
+        self.clock.return_value = NOW + timedelta(minutes=16)
+        result = sync_networth(store, client, NOW + timedelta(minutes=16), slot)
+        self.assertIn(slot, result["completed_slots"])
+        self.assertEqual(client.calls, ["SENSITIVE_BANK_TOKEN"])
+        self.assertEqual(before, store.read_day("2026-11-03"))
+
+    def test_release_error_preserves_archive_failure_and_claim_expires(self):
+        store = linked_store()
+        store.fail_capture = True
+        original = store.update_state
+
+        def release_fails(callback):
+            if callback.__name__ == "release":
+                raise NetworthError("RELEASE_UNAVAILABLE")
+            return original(callback)
+
+        with patch.object(store, "update_state", side_effect=release_fails):
+            with self.assertRaisesRegex(NetworthError, "^ARCHIVE_UNAVAILABLE$"):
+                sync_networth(store, Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}}), NOW)
+        self.assertIn("sync_lease", store.state)
+        store.fail_capture = False
+        self.clock.return_value = NOW + timedelta(minutes=16)
+        self.assertNotIn("sync_lease", sync_networth(store,
+            Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}}), NOW + timedelta(minutes=16)))
+
+    def test_owner_lost_during_claim_cas_retry_preserves_competing_lease(self):
+        store = linked_store()
+        original = store.update_state
+        competing = {"owner": "other-worker", "expires_at": "2026-11-03T17:15:00Z"}
+
+        def retry(callback):
+            if callback.__name__ == "claim":
+                callback(deepcopy(store.state))
+                store.state["sync_lease"] = deepcopy(competing)
+            return original(callback)
+
+        client = Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}})
+        with patch.object(store, "update_state", side_effect=retry):
+            with self.assertRaisesRegex(NetworthError, "^NETWORTH_SYNC_IN_PROGRESS$"):
+                sync_networth(store, client, NOW)
+        self.assertEqual(client.calls, [])
+        self.assertEqual(store.state["sync_lease"], competing)
 
     def test_unknown_currency_incomplete_and_unclassified_known_balance_is_data_complete(self):
         store = linked_store()
