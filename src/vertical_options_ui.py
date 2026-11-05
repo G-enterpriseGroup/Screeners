@@ -2343,8 +2343,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
                 legacy_be = column_filters.get("breakeven")
-                if isinstance(legacy_be, dict) and ({"min", "max"} & set(legacy_be)):
-                    # Migrate prior saved MIN/MAX editor state into the new target band.
+                if (isinstance(legacy_be, dict)
+                        and ({"min", "max"} & set(legacy_be)
+                             or ("target" in legacy_be and legacy_be["target"] not in (None, "")
+                                 and "percent" not in legacy_be))):
+                    # Migrate prior desktop MIN/MAX and target-only menus to ±5%.
+                    # The shared store still supports mobile legacy filters.
                     previous_target = legacy_be.get("target")
                     if previous_target not in (None, ""):
                         column_filters["breakeven"] = {
