@@ -88,7 +88,8 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 "use strict";
 const ROW_HEIGHT=43;
 const HEAD=["SELECT","OS / TV","TICKER","TYPE","EXP / YEAR","BUY STRIKE","SELL STRIKE","BUY LAST","SELL LAST","Debit","BREAKEVEN","RISK:REWARD","MAX PROFIT","FILL","FILL EST"];
-const KEYS=["ticker","side","expiry","buy","sell","buy_last","sell_last","cost","breakeven","ratio","profit","basis","fill_scale"];
+const KEYS=["ticker","side","expiry","buy","sell","buy_last","sell_last","cost","breakeven","ratio","profit","basis"];
+const FILTER_KEYS=[...KEYS,"fill_scale"]; // Display-only desktop column; preserve canonical data keys.
 const NUMERIC=new Set(["buy","sell","buy_last","sell_last","cost","breakeven","ratio","profit","fill_scale"]);
 const table=document.getElementById("table"),head=document.getElementById("head"),scroll=document.getElementById("scroll"),space=document.getElementById("space"),visible=document.getElementById("visible"),empty=document.getElementById("empty"),panel=document.getElementById("filter-panel");
 let scope="",sortKey="",rows=[],selected=new Set(),pendingSelection=null;
@@ -107,7 +108,7 @@ function syncHeight(){
 function normalizedFilters(raw){
  const clean={};
  if(!raw||typeof raw!=="object"||Array.isArray(raw))return clean;
- for(const key of KEYS){
+ for(const key of FILTER_KEYS){
   const value=raw[key];
   if(NUMERIC.has(key)){
    if(!value||typeof value!=="object"||Array.isArray(value))continue;
@@ -174,7 +175,7 @@ function updateFilterHeaders(){
   button.setAttribute("aria-pressed",active?"true":"false");
   const sorted=sortable&&(SORT_FIELDS[key]===sortBy||(key==="cost"&&sortBy==="FILL QUALITY")||(key==="breakeven"&&sortBy==="TARGET DISTANCE"));
   button.querySelector(".filter-icon").textContent=(sorted?(sortDirection==="DESC"?"↓":"↑"):"")+(active?"●":sorted?"":"▾");
-  button.title=HEAD[KEYS.indexOf(key)+2]+(active?" • filtered":"")+(sorted?" • sorted "+sortDirection:"")+" — open column filter";
+  button.title=(key==="fill_scale"?"FILL EST":HEAD[KEYS.indexOf(key)+2])+(active?" • filtered":"")+(sorted?" • sorted "+sortDirection:"")+" — open column filter";
  }
 }
 function closePanel(flush=true){
@@ -196,7 +197,7 @@ function menuButton(label,handler){
 }
 function renderPanel(){
  if(!openKey)return;
- const key=openKey,titleText=HEAD[KEYS.indexOf(key)+2];
+ const key=openKey,titleText=key==="fill_scale"?"FILL EST":HEAD[KEYS.indexOf(key)+2];
  panel.replaceChildren();
  const title=document.createElement("div");title.className="filter-title";title.textContent="FILTER "+titleText;panel.appendChild(title);
  const actions=document.createElement("div");actions.className="filter-actions";
@@ -310,12 +311,13 @@ function safeOptionStratUrl(raw){
  }catch{return "";}
 }
 for(let index=0;index<HEAD.length;index++){
- if(KEYS[index-2]==="basis")continue;
+ const headerKey=index===HEAD.length-1?"fill_scale":KEYS[index-2];
+ if(headerKey==="basis")continue;
  const title=HEAD[index],cell=document.createElement("span");cell.title=title;
  if(index<2)cell.textContent=title;
  else{
   const button=document.createElement("button");button.type="button";button.className="filter-button";
-  button.dataset.key=KEYS[index-2];button.setAttribute("aria-label","Filter "+title);
+  button.dataset.key=headerKey;button.setAttribute("aria-label","Filter "+title);
   const name=document.createElement("span");name.className="filter-name";name.textContent=title;
   const icon=document.createElement("span");icon.className="filter-icon";icon.textContent="▾";
   button.append(name,icon);cell.appendChild(button);
