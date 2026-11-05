@@ -459,5 +459,179 @@ class PhoneOrderTests(unittest.TestCase):
         self.assertEqual({key: self.state[key] for key in self.desktop_state}, self.desktop_state)
 
 
+class VerticalCostFilterTests(unittest.TestCase):
+    def test_phone_cost_default_uses_dollars_without_changing_expiry_or_target_defaults(self):
+        expiries = ["2027-01-15", "2028-01-21", "2029-01-19", "2028-06-16"]
+        expected = {"expiry": ["2028-01-21", "2028-06-16", "2029-01-19"]}
+        self.assertEqual(phone._default_column_filters(expiries), expected)
+        self.assertEqual(phone._default_column_filters(expiries, "103", 150),
+                         {**expected, "breakeven": {"target": 103}, "cost": {"max": 150}})
+        self.assertEqual(phone._default_column_filters(expiries, max_cost=None), expected)
+        for invalid in ("bad", "nan", "inf", "0", "-1"):
+            with self.subTest(top_cost=invalid), self.assertRaises(ValueError):
+                phone._entered_price(invalid, "maximum cost")
+
+    def test_both_renderers_seed_cost_and_preserve_filter_edits_across_scan_lifecycle(self):
+        from streamlit.testing.v1 import AppTest
+        for module, prefix, renderer in (("vertical_options_ui", "vo", "render_vertical_options"),
+                                          ("verti_phone_ui", "vp", "render_verti_phone")):
+            with self.subTest(module=module):
+                vault = "cost-filter-test-" + uuid4().hex
+                source = '''
+import time
+from datetime import date
+from unittest.mock import patch
+import streamlit as st
+import src.FEATURE_MODULE as feature
+vault = "FIXTURE_VAULT"
+class Broker:
+    is_offline = False
+    def get_balance(self, key):
+        return {"Computed":{"cashAvailableForInvestment":1000}}
+    def __getattr__(self, name):
+        raise AssertionError("Unexpected broker action: " + name)
+def snapshot(scan_id):
+    expiries = [date(date.today().year + offset + scan_id, 1, 15) for offset in range(3)]
+    rows = []
+    for expiry in expiries:
+        for strike, premium in ((100,3), (105,2), (110,1)):
+            rows.append({"expiry":expiry,"call_put":"CALL","strike":strike,
+                         "last":premium,"bid":premium-.05,"ask":premium+.05,
+                         "osi":f"QQQ-{expiry}-{strike}"})
+    return {"scan_id":scan_id,"loaded_at":time.time(),"symbol":"QQQ",
+            "source":"E*TRADE","spot":100,"name":"Synthetic QQQ",
+            "expirations":expiries,"loaded_expirations":len(expiries),"rows":rows,
+            "errors":[],"failed_expirations":[],"next_expiry_index":len(expiries),
+            "scan_complete":True,"result_stores":{}}
+def component(**args):
+    st.session_state["fixture_args"] = args
+    return st.session_state.pop("fixture_update", None)
+def scan(client, symbol, touch, *, refresh=False):
+    raw = st.session_state["_FEATURE_PREFIX_chain_cache"]["E*TRADE:QQQ"]
+    if st.session_state.pop("fixture_new_raw", False):
+        raw = snapshot(raw["scan_id"] + 1)
+        st.session_state["_FEATURE_PREFIX_chain_cache"] = {"E*TRADE:QQQ":raw}
+    st.session_state.setdefault("fixture_scan_calls", []).append((symbol, refresh, raw["scan_id"]))
+    return raw
+st.session_state.setdefault("etrade_accounts", [{"accountIdKey":"synthetic","accountId":"10005474"}])
+st.session_state.setdefault("_FEATURE_PREFIX_workspace_ready", vault)
+st.session_state.setdefault("_FEATURE_PREFIX_pricing_mode_hydrated", True)
+st.session_state.setdefault("_FEATURE_PREFIX_pricing_mode_preference", "NORMAL")
+if (not st.session_state.get("fixture_restore_only")
+        and "FEATURE_PREFIX_scan_result" not in st.session_state
+        and not st.session_state.get("_FEATURE_PREFIX_scan_pending")):
+    raw = snapshot(1)
+    store, annual, _, _ = feature._rank_cached_vertical_chains(raw, None, 150, "NORMAL")
+    st.session_state["_FEATURE_PREFIX_chain_cache"] = {"E*TRADE:QQQ":raw}
+    st.session_state["FEATURE_PREFIX_symbol_value"] = "QQQ"
+    st.session_state["FEATURE_PREFIX_max_cost"] = "150"
+    st.session_state["FEATURE_PREFIX_scan_result"] = {
+        "symbol":"QQQ","source":"E*TRADE","spot":100,"target":None,
+        "max_cost":150,"pricing_mode":"NORMAL","raw_scan_id":1,"scope":"initial",
+        "loaded_at":raw["loaded_at"],"candidates":store,"annual_ids":annual,
+        "listed_years":3,"loaded_expirations":3,"listed_expirations":3,
+        "contract_count":len(raw["rows"]),"ranked_expirations":3,"scan_complete":True,"errors":[]}
+with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
+      patch.object(feature, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
+      patch.object(feature, "hydrate_gex_snapshots", return_value=False),
+      patch.object(feature, "_cboe_wall_markup", return_value="<span></span>"),
+      patch.object(feature, "_ticker_quote_preview", return_value={"last":100,"name":"Synthetic QQQ"}),
+      patch.object(feature, "_scan_all_years", side_effect=scan)):
+    feature.FEATURE_RENDER(Broker(), lambda: None, vault_key=vault)
+'''.replace("FEATURE_MODULE", module).replace("FEATURE_PREFIX", prefix).replace("FEATURE_RENDER", renderer).replace("FIXTURE_VAULT", vault)
+                app = AppTest.from_string(source, default_timeout=15).run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"]["cost"], {"max": 150})
+                self.assertTrue(args["rows"])
+                result_key = prefix + "_scan_result"
+                filter_key = "_" + prefix + "_column_filters"
+                top_key = prefix + "_max_cost"
+                self.assertEqual(app.session_state[filter_key]["scan_max_cost"], 150)
+
+                edited = {**args["column_filters"], "side": ["CALL"],
+                          "breakeven": {"target": 103}, "cost": {"min": 75, "max": 125}}
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "column_filters": edited, "filter_revision": 1,
+                    "selected_ids": [], "revision": 0}
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], edited)
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], edited)
+                self.assertNotIn("fixture_scan_calls", app.session_state)
+
+                # An explicit changed scan cap replaces just MAX even when chains are reused.
+                app.text_input(key=top_key).set_value("120")
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                changed = {**edited, "cost": {"min": 75, "max": 120}}
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], changed)
+                self.assertEqual(app.session_state[result_key]["max_cost"], 120)
+                self.assertEqual(app.session_state[result_key]["raw_scan_id"], 1)
+                self.assertEqual(app.session_state["fixture_scan_calls"], [("QQQ", False, 1)])
+
+                app.text_input(key=top_key).set_value("")
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                without_max = {**edited, "cost": {"min": 75}}
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], without_max)
+                self.assertIsNone(app.session_state[result_key]["max_cost"])
+
+                args = app.session_state["fixture_args"]
+                cleared = {key: value for key, value in without_max.items() if key != "cost"}
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "column_filters": cleared, "filter_revision": 1,
+                    "selected_ids": [], "revision": 0}
+                app.run()
+                app.toggle(key=prefix + "_smart_fill").set_value(False).run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], cleared)
+                restored = AppTest.from_string(source, default_timeout=15)
+                restored.session_state["fixture_restore_only"] = True
+                restored.run()
+                self.assertFalse(restored.exception)
+                self.assertEqual(restored.session_state["fixture_args"]["column_filters"], cleared)
+
+                # Legacy recovered filters have no recorded scan cap and keep explicit edits.
+                legacy = dict(app.session_state[filter_key])
+                legacy.pop("scan_max_cost")
+                legacy["filters"] = {**cleared, "cost": {"min": 20, "max": 90}}
+                app.session_state[filter_key] = legacy
+                app.text_input(key=top_key).set_value("200")
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], legacy["filters"])
+                self.assertEqual(app.session_state[result_key]["max_cost"], 200)
+
+                # Clearing a column with a nonblank top cap must also remain cleared.
+                args = app.session_state["fixture_args"]
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "column_filters": cleared, "filter_revision": 1,
+                    "selected_ids": [], "revision": 0}
+                app.run()
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], cleared)
+                self.assertEqual(app.session_state[result_key]["max_cost"], 200)
+                restored_with_cap = AppTest.from_string(source, default_timeout=15)
+                restored_with_cap.session_state["fixture_restore_only"] = True
+                restored_with_cap.run()
+                self.assertFalse(restored_with_cap.exception)
+                self.assertEqual(restored_with_cap.session_state["fixture_args"]["column_filters"], cleared)
+
+                # Fresh market data gets fresh defaults from its successful scan cap.
+                app.session_state["fixture_new_raw"] = True
+                app.text_input(key=top_key).set_value("300")
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"]["cost"], {"max": 300})
+                self.assertNotIn("side", args["column_filters"])
+                self.assertEqual(app.session_state[result_key]["raw_scan_id"], 2)
+                self.assertEqual(app.session_state[filter_key]["scan_max_cost"], 300)
+
+
 if __name__ == "__main__":
     unittest.main()
