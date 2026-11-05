@@ -2336,6 +2336,18 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     st.session_state["_vo_column_filters"] = filter_state
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
+                legacy_be = column_filters.get("breakeven")
+                if isinstance(legacy_be, dict) and ({"min", "max"} & set(legacy_be)):
+                    # Migrate prior saved MIN/MAX editor state into the new target band.
+                    previous_target = legacy_be.get("target")
+                    if previous_target not in (None, ""):
+                        column_filters["breakeven"] = {
+                            "target": previous_target, "percent": 5.0,
+                        }
+                    else:
+                        column_filters.pop("breakeven", None)
+                    filter_state["filters"] = column_filters
+                    _remember_scan_snapshot()
                 cost_max = (column_filters.get("cost") or {}).get("max")
                 active_max_cost = None if cost_max in (None, "") else float(cost_max)
                 effective_target = (column_filters.get("breakeven") or {}).get("target")
