@@ -1498,6 +1498,12 @@ def _sort_qualified_spreads(
         key = lambda row: abs(row["breakeven"] - target) if target is not None else 0
     elif sort_by == "FILL QUALITY":
         key = lambda row: row["grade"]
+    elif sort_by == "TICKER":
+        # Every scanner snapshot has one symbol; use the stable spread ID.
+        return sorted(rows, key=lambda row: row["id"], reverse=direction == "DESC")
+    elif sort_by == "TYPE":
+        return sorted(sorted(rows, key=lambda row: row["id"]),
+                      key=lambda row: row["call_put"], reverse=direction == "DESC")
     elif sort_by == "FILL EST":
         # Match SQL's NULLS LAST in either direction.
         return sorted(
