@@ -38,7 +38,7 @@ _SORTS = {
     "BUY STRIKE": (("buy", False),), "SELL STRIKE": (("sell", False),),
     "BUY LAST": (("buy_last", False),), "SELL LAST": (("sell_last", False),),
     "SPREAD WIDTH": (("width", False),), "FILL QUALITY": (("grade", False),),
-    "FILL EST": (("fill_est", False),), "TICKER": (("substr(id, 1, instr(id, '|') - 1)", False),),
+    "FILL EST": (("fill_est", False),), "TICKER": (("id", False),),
     "TYPE": (("side", False),),
     "YEAR + FILL": (("substr(expiry, 1, 4)", False), ("grade", False),
                     ("distance", False), ("cost", False), ("ratio", True),
