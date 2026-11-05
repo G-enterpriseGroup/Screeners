@@ -1833,7 +1833,7 @@ def test() -> None:
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            target_multi = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=30))
+            target_multi = wait.until(lambda _: grouped_page_if_ready(driver, 66, per_year=33))
             assert all(101*.95-1e-8 <= float(row["values"][8].replace("$", "").replace(",", "")) <= 101*1.05+1e-8
                        for row in target_multi["rows"]), target_multi
             set_grid_tolerance(driver, 100)
