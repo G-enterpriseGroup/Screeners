@@ -1818,15 +1818,22 @@ def test() -> None:
             toggle_put_column_filter(driver)
             wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
             set_grid_target(driver, "101")
+            # A 100% tolerance keeps the whole fixture while testing target
+            # persistence; a new scan deliberately resets to default ±5%.
+            set_grid_tolerance(driver, 100)
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
-            # A browser refresh restores the edited view without downloading
-            # chains. The explicit scan button resets the expiry/side filters.
+            # A browser refresh restores edited filters without chain downloads.
+            # Explicit rescan resets expiry/side filters and seeds ±5% from target.
             driver.refresh()
             form = wait.until(ready_scanner_form)
             wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            target_multi = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=30))
+            assert all(101*.95-1e-8 <= float(row["values"][8].replace("$", "").replace(",", "")) <= 101*1.05+1e-8
+                       for row in target_multi["rows"]), target_multi
+            set_grid_tolerance(driver, 100)
             reset_multi = wait.until(lambda _: grouped_page_if_ready(driver, 120, per_year=60))
             assert {row["values"][1] for row in reset_multi["rows"]} == {"C", "P"}, reset_multi
             assert {datetime.strptime(row["values"][2], "%b-%d-%y").month
