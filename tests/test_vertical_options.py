@@ -952,9 +952,9 @@ else:
             self.assertEqual(_default_column_filters(expirations, absent), {"expiry": latest})
             self.assertEqual(_default_column_filters([], absent), {"expiry": []})
         self.assertEqual(_default_column_filters(expirations, "$1,234.50"),
-                         {"expiry": latest, "breakeven": {"target": 1234.5}})
+                         {"expiry": latest, "breakeven": {"target": 1234.5, "percent": 5.0}})
         self.assertEqual(_default_column_filters(["2028-01-21"], "103"),
-                         {"expiry": ["2028-01-21"], "breakeven": {"target": 103}})
+                         {"expiry": ["2028-01-21"], "breakeven": {"target": 103, "percent": 5.0}})
         self.assertEqual(_default_column_filters(["2027-12-17", "2027-01-15", "2027-06-18"]),
                          {"expiry": ["2027-01-15", "2027-06-18", "2027-12-17"]})
         self.assertEqual(expirations, original)
@@ -1051,7 +1051,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertEqual(len(app.session_state["vo_scan_result"]["candidates"]), 60)
 
         filters = {"expiry": ["2028-01-15", "2029-01-15"], "side": ["CALL"],
-                   "breakeven": {"target": 101.5, "min": 100, "max": 102}}
+                   "breakeven": {"target": 101.5, "percent": 1.0}}
         app.session_state["fixture_component_update"] = {
             "scope": args["scope"], "column_filters": filters, "filter_revision": 1,
             "selected_ids": [], "revision": 0, "sort_by": "FILL + TARGET", "sort_direction": "ASC"}
@@ -1081,7 +1081,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertFalse(app.exception)
         args = app.session_state["fixture_component_args"]
         fresh_filters = {"expiry": ["2029-01-15", "2030-01-15"],
-                         "breakeven": {"target": 101.5}}
+                         "breakeven": {"target": 101.5, "percent": 5.0}}
         self.assertEqual(app.session_state["vo_scan_result"]["raw_scan_id"], 2)
         self.assertEqual(args["column_filters"], fresh_filters)
         self.assertEqual(app.session_state["fixture_scan_calls"], [("QQQ", True)])
@@ -1129,7 +1129,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         with store._connect() as db:
             original_distances = db.execute("SELECT id, distance FROM spreads ORDER BY id").fetchall()
         for target in (103.0, 118.5, None, 110.0):
-            filters = {"breakeven": {"target": target}}
+            filters = {"breakeven": {"target": target, "percent": 100}}
             self.assertEqual(store.effective_target(filters), target)
             self.assertEqual(store.count(column_filters=filters), len(retained))
             self.assertEqual(store.counts_by_year(column_filters=filters),
@@ -1166,10 +1166,10 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
 
         indexed = dict(store._indexes)
         for target in (104, 105, 106):
-            store.page(column_filters={"breakeven": {"target": target}}, sort_by="YEAR + FILL")
+            store.page(column_filters={"breakeven": {"target": target, "percent": 100}}, sort_by="YEAR + FILL")
         self.assertEqual(store._indexes, indexed)
-        filters = {"breakeven": {"target": 118.5, "min": 110, "max": 120}, "side": ["CALL"]}
-        matching = [row for row in retained if 110 <= row["breakeven"] <= 120
+        filters = {"breakeven": {"target": 118.5, "percent": 5}, "side": ["CALL"]}
+        matching = [row for row in retained if abs(row["breakeven"] - 118.5) <= 118.5 * .05 + 1e-8
                     and row["call_put"] == "CALL"]
         self.assertEqual(store.count(column_filters=filters), len(matching))
         within_range = [row for row in matching if abs(row["breakeven"] - 118.5) <= 1 + 1e-8]
@@ -1195,6 +1195,41 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         with self.assertRaisesRegex(ValueError, "Invalid numeric column filter"):
             store.count(column_filters={"cost": {"target": 100}})
         self.assertEqual(store.count(), 0)
+
+    def test_breakeven_target_percentage_and_indicative_fill_score(self):
+        from src.vertical_options_store import VerticalResultStore, indicative_fill_score
+        expiry = date(2028, 1, 21)
+        contracts = [self._row(expiry, "CALL", 100 + i, 5 - i * .7,
+                               bid=4.99 - i * .7, ask=5.01 - i * .7)
+                     for i in range(6)]
+        store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+        store.add_expiration(expiry, contracts, scan_vertical_candidates)
+        original = list(store.iter_ranked())
+        self.assertTrue(original)
+        target = original[0]["breakeven"]
+        for percent in (0, 5, 20, 100):
+            eligible = [row for row in original if
+                        abs(row["breakeven"] - target) <= target * percent / 100 + 1e-8]
+            filters = {"breakeven": {"target": target, "percent": percent}}
+            self.assertEqual(store.count(column_filters=filters), len(eligible))
+            self.assertEqual({r["id"] for r in store.iter_rows(column_filters=filters)},
+                             {r["id"] for r in eligible})
+        self.assertEqual(len(store), len(original))
+        for invalid in (-1, 101, float("inf"), "oops", None, True):
+            with self.subTest(percent=invalid), self.assertRaises(ValueError):
+                store.count(column_filters={"breakeven": {"target": target, "percent": invalid}})
+        quote = {"spread_bid": 1, "spread_mid": 1.5, "spread_ask": 2,
+                 "debit": 1, "orderable": True}
+        self.assertEqual(indicative_fill_score(quote), 5)
+        quote["debit"] = 1.5
+        self.assertEqual(indicative_fill_score(quote), 50)
+        quote["debit"] = 2
+        self.assertEqual(indicative_fill_score(quote), 95)
+        quote["orderable"] = False
+        self.assertIsNone(indicative_fill_score(quote))
+        quote["orderable"] = True
+        quote["spread_ask"] = quote["spread_bid"]
+        self.assertIsNone(indicative_fill_score(quote))
 
     def test_disk_store_rolls_back_failed_expiration_and_cleans_up(self):
         import gc
