@@ -61,6 +61,7 @@ PRODUCTION_PYTHON_FILES = [
     SRC / "rebalance_portfolio_ui.py",
     SRC / "tab_bar_v4.py",
     SRC / "bull_debit_ui.py",
+    SRC / "verti_phone_ui.py",
 ]
 
 
@@ -78,6 +79,7 @@ REQUIRED_APP_IMPORTS = [
     "from src.risk_sizing_ui_v10 import maybe_auto_watch_risk_entries",
     "from src.schwab_risk_sizing_ui import render_schwab_risk_sizing",
     "from src.tab_bar_v4 import render_terminal_tab_bar",
+    "from src.verti_phone_ui import render_verti_phone",
 ]
 
 
@@ -232,6 +234,8 @@ def main() -> int:
             errors.append("APP ROUTE MISSING: PERFORMANCE dispatch")
         if 'elif active_tab == "PROTECTIVE PUTS":' not in app_text:
             errors.append("APP ROUTE MISSING: PROTECTIVE PUTS dispatch")
+        if 'elif active_tab == "VERTI PHONE":' not in app_text:
+            errors.append("APP ROUTE MISSING: VERTI PHONE dispatch")
         if 'elif active_tab == "REBALANCE PORTFOLIO":' not in app_text:
             errors.append("APP ROUTE MISSING: REBALANCE PORTFOLIO dispatch")
         if "maybe_auto_watch_risk_entries(_live_etrade_client())" not in app_text:
@@ -250,6 +254,8 @@ def main() -> int:
             errors.append("NAV ROUTE MISSING: PERFORMANCE tab")
         if '"PROTECTIVE PUTS"' not in nav_text:
             errors.append("NAV ROUTE MISSING: PROTECTIVE PUTS tab")
+        if '"VERTI PHONE"' not in nav_text:
+            errors.append("NAV ROUTE MISSING: VERTI PHONE tab")
 
     risk_route = SRC / "risk_sizing_ui_v7.py"
     if risk_route.exists():
@@ -297,7 +303,7 @@ def main() -> int:
         ):
             if required not in fallback_text:
                 errors.append("OPTIONS FALLBACK ROUTE MISSING: " + required)
-    for owner_name in ("vertical_options_ui.py", "option_book_ui.py", "bull_debit_ui.py", "gex_workspace_v2.py"):
+    for owner_name in ("vertical_options_ui.py", "verti_phone_ui.py", "option_book_ui.py", "bull_debit_ui.py", "gex_workspace_v2.py"):
         owner = SRC / owner_name
         if owner.exists() and "options_market_client" not in owner.read_text(encoding="utf-8"):
             errors.append(f"OPTIONS FALLBACK NOT WIRED: {owner_name}")
