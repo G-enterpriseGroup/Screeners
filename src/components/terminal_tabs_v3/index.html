@@ -177,6 +177,10 @@
         const holdingsIndex = out.indexOf("HOLDINGS");
         if (holdingsIndex !== -1) out.splice(holdingsIndex + 1, 0, "NETWORTH");
       }
+      if (allowed.includes("VERTI PHONE") && !out.includes("VERTI PHONE")) {
+        const verticalIndex = out.indexOf("VERTICAL OPTIONS");
+        if (verticalIndex !== -1) out.splice(verticalIndex + 1, 0, "VERTI PHONE");
+      }
       allowed.forEach((item) => { if (!out.includes(item)) out.push(item); });
       return out;
     }

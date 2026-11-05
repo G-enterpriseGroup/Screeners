@@ -64,6 +64,11 @@ jobs:
           python -m py_compile src/vertical_options.py src/vertical_options_ui.py streamlit_app.py src/tab_bar_v4.py
           python -m unittest tests.test_vertical_options
 
+      - name: Test Verti Phone isolation and mobile components
+        run: |
+          python -m py_compile src/verti_phone_ui.py tests/test_verti_phone.py
+          python -m unittest tests.test_verti_phone
+
       - name: Test historical heatmaps math and persistence state
         run: |
           python -m py_compile src/heatmaps_ui.py scripts/test_heatmaps.py

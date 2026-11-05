@@ -117,6 +117,7 @@ from src.session_persistence import (
 from src.tab_bar_v4 import render_terminal_tab_bar
 from src.theme import install_typing_caret_theme
 from src.vertical_options_ui import render_vertical_options
+from src.verti_phone_ui import render_verti_phone
 
 
 # Shared appearance is emitted after terminal_core has completed set_page_config
@@ -566,6 +567,10 @@ _TERMINAL_PAGE_HEADERS = {
         "VERTICAL OPTIONS",
         "E*TRADE LIVE VERTICALS // CALL + PUT DEBIT SPREADS // NET DEBIT LIMIT // MULTI-ACCOUNT REVIEW + EXPLICIT SEND",
     ),
+    "VERTI PHONE": (
+        "VERTI PHONE",
+        "PHONE VERTICALS // ALL YEARS // PORTFOLIO + SCANNER // REVIEW + EXPLICIT SEND",
+    ),
     "PROTECTIVE PUTS": (
         "PROTECTIVE PUTS",
         "E*TRADE PROTECTIVE PUT ANALYTICS // LIVE PUT CHAINS // ASK + LAST MAX-LOSS FLOOR // CSV EXPORT // READ-ONLY",
@@ -784,6 +789,9 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
 
     elif active_tab == "VERTICAL OPTIONS":
         render_vertical_options(_etrade_client(), _touch_etrade_session, vault_key=_trade_access_code_hash())
+
+    elif active_tab == "VERTI PHONE":
+        render_verti_phone(_etrade_client(), _touch_etrade_session, vault_key=_trade_access_code_hash())
 
     elif active_tab == "PROTECTIVE PUTS":
         render_protective_puts(_etrade_client(), _touch_etrade_session)

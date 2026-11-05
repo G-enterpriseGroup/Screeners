@@ -50,6 +50,7 @@ DEFAULT_TAB_ORDER = [
     "ACQUISITION",
     "RISK SIZING",
     "VERTICAL OPTIONS",
+    "VERTI PHONE",
     "PROTECTIVE PUTS",
     "SCHWAB RISK SIZING",
     "GEX",
@@ -170,6 +171,8 @@ def _clean_order(order: Iterable[str] | None) -> list[str]:
         out.insert(out.index("PERFORMANCE") + 1, "ACQUISITION")
     if "NETWORTH" not in out and "HOLDINGS" in out:
         out.insert(out.index("HOLDINGS") + 1, "NETWORTH")
+    if "VERTI PHONE" not in out and "VERTICAL OPTIONS" in out:
+        out.insert(out.index("VERTICAL OPTIONS") + 1, "VERTI PHONE")
     for item in DEFAULT_TAB_ORDER:
         if item not in out:
             out.append(item)

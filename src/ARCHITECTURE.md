@@ -48,6 +48,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
 | E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
 | Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, `src/yfinance_options.py` public chain fallback, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
+| Verti Phone independent mobile verticals | `src/verti_phone_ui.py` | `src/components/vp_spread_scroller_v1/index.html`, `src/components/vp_pricing_preference_v1/index.html`, unchanged canonical `src/vertical_options.py` math, `src/vertical_options_store.py` result storage, public fallback and E*TRADE transport | Original Vertical Options UI/components/state, Risk Sizing, OAuth, shared theme |
 | Protective Puts read-only analytics | `src/protective_puts_ui.py` | `src/protective_puts_portfolio_ui.py` portfolio proxy-put mode, `src/protective_puts.py` analytics/math, `src/protective_puts_sources.py` public fallback, read-only chain normalization from `src/option_book.py`, existing `src/etrade_client.py` quote/chain transport | Risk Sizing, Vertical Options ordering, OAuth, GEX, Holdings |
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
 | Risk sizing formulas only | `src/risk_sizing.py` | `src/trade_math.py` | UI files unless the UI needs to display a new result |
@@ -114,6 +115,17 @@ Production path:
 - Preserve fragment-scoped reruns for ticket edits; do not globally patch Streamlit or edit Risk Sizing to achieve live updates.
 - Reuse existing E*TRADE OAuth/session and `ETradeClient.preview_order/place_order` transport without changing OAuth UI.
 - Do not modify Option Book behavior; its existing UI remains disabled/preview-only unless separately requested.
+
+## Verti Phone edit map
+
+Production path:
+
+`streamlit_app.py` → `src/verti_phone_ui.py` → unchanged `src/vertical_options.py` + `src/vertical_options_store.py` + existing E*TRADE/public market-data transports.
+
+- VERTI PHONE is an independently owned copy of the complete Vertical Options workflow, with responsive presentation for iPhone 16 Pro Max. Phone UI changes belong only in `src/verti_phone_ui.py` and its `vp_spread_scroller_v1` / `vp_pricing_preference_v1` components.
+- Keep phone widget/session keys, browser preferences, scan recovery, selected spreads and order-review state separate from the original Vertical Options tab. Never modify the original UI/components to style the phone route.
+- Reuse the unchanged canonical pricing/payoff/payload math, complete indexed result-store implementation, read-only market-data helpers and existing E*TRADE order transport. Preserve complete scans/results/exports, seven-day expiry eligibility, editable minimum reward/risk, quote freshness and discrete requote → all-account preview → confirmation → SEND safeguards. Never restore an old live-order review or add automatic orders.
+- Navigation adds only the VERTI PHONE key, shared header/dispatch and missing-only saved-order migration immediately after VERTICAL OPTIONS. Preserve explicit user placement and shared navigation/theme appearance.
 
 ## Protective Puts edit map
 

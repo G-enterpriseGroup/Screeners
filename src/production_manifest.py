@@ -75,6 +75,19 @@ FEATURE_ROUTES = {
             "src/risk_sizing.py",
         ],
     },
+    "verti_phone": {
+        "entry": "src/verti_phone_ui.py",
+        "owner": "src/verti_phone_ui.py",
+        "support": [
+            "src/components/vp_spread_scroller_v1/index.html",
+            "src/components/vp_pricing_preference_v1/index.html",
+            "src/vertical_options.py",
+            "src/vertical_options_store.py",
+            "src/yfinance_options.py",
+            "src/option_book.py",
+            "src/etrade_client.py",
+        ],
+    },
     "option_book": {
         "entry": "src/option_book_ui.py",
         "owner": "src/option_book_ui.py",
