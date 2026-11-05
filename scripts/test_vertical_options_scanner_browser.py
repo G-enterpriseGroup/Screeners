@@ -1821,6 +1821,9 @@ def test() -> None:
             # A 100% tolerance keeps the whole fixture while testing target
             # persistence; a new scan deliberately resets to default ±5%.
             set_grid_tolerance(driver, 100)
+            # Await the committed filter acknowledgement before hard refresh;
+            # otherwise the pending frontend message may be dropped on unload.
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             # A browser refresh restores edited filters without chain downloads.
             # Explicit rescan resets expiry/side filters and seeds ±5% from target.
