@@ -955,6 +955,10 @@ else:
                          {"expiry": latest, "breakeven": {"target": 1234.5}})
         self.assertEqual(_default_column_filters(["2028-01-21"], "103"),
                          {"expiry": ["2028-01-21"], "breakeven": {"target": 103}})
+        self.assertEqual(_default_column_filters(expirations, "$1,234.50", 150),
+                         {"expiry": latest, "breakeven": {"target": 1234.5}, "cost": {"max": 150}})
+        self.assertEqual(_default_column_filters([], max_cost=150),
+                         {"expiry": [], "cost": {"max": 150}})
         self.assertEqual(_default_column_filters(["2027-12-17", "2027-01-15", "2027-06-18"]),
                          {"expiry": ["2027-01-15", "2027-06-18", "2027-12-17"]})
         self.assertEqual(expirations, original)

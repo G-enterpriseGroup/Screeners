@@ -821,7 +821,7 @@ def test() -> None:
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("placeholder") == "Not provided"
             optional_field_styles = driver.execute_script("""
-                return ['Max Cost'].map(label=>{
+                return ['Ticker','Max Cost'].map(label=>{
                     const input=document.querySelector('input[aria-label="'+label+'"]');
                     const text=getComputedStyle(input),placeholder=getComputedStyle(input,'::placeholder');
                     return {label,background:text.backgroundColor,fontSize:text.fontSize,
@@ -1551,6 +1551,13 @@ def test() -> None:
             cost_input.send_keys("150")
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "MAX COST $150.00" in driver.find_element(By.TAG_NAME, "body").text)
+            def entered_cost_in_column():
+                panel = driver.find_element(By.ID, "filter-panel")
+                if not panel.is_displayed():
+                    driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="cost"]').click()
+                return panel.find_element(By.CSS_SELECTOR, 'input[aria-label="Debit max"]').get_attribute("value") == "150"
+            wait.until(lambda _: in_grid(driver, entered_cost_in_column))
+            grid_menu_action(driver, "cost", "DONE")
             set_grid_target(driver, "103")
             manual_target = download_csv(driver, wait, downloads, "vo_export_qualified_csv",
                                          "MSFT_vertical_qualified.csv")

@@ -311,10 +311,10 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-verti_phone_workspace .st-key-vp_target_breakeven input,
 .st-key-verti_phone_workspace .st-key-vp_max_cost input,
 .st-key-verti_phone_workspace .st-key-vp_min_reward_risk input{height:36px!important;min-height:0!important;}
-.st-key-verti_phone_workspace :is(.st-key-vp_target_breakeven,.st-key-vp_max_cost) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
+.st-key-verti_phone_workspace :is(.st-key-vp_symbol_value,.st-key-vp_target_breakeven,.st-key-vp_max_cost) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
     background:#444444!important;background-color:#444444!important;
 }
-.st-key-verti_phone_workspace :is(.st-key-vp_target_breakeven,.st-key-vp_max_cost) input::placeholder{
+.st-key-verti_phone_workspace :is(.st-key-vp_symbol_value,.st-key-vp_target_breakeven,.st-key-vp_max_cost) input::placeholder{
     color:var(--vp-orange)!important;-webkit-text-fill-color:var(--vp-orange)!important;
     font-weight:400!important;font-style:normal;opacity:1!important;
 }
@@ -1821,13 +1821,16 @@ def _select_results_year(year_key: str, year: int | None) -> None:
     _remember_presentation(year_key)
 
 
-def _default_column_filters(expirations: list[str], target_text: str = "") -> dict[str, Any]:
+def _default_column_filters(expirations: list[str], target_text: str = "",
+                            max_cost: float | None = None) -> dict[str, Any]:
     """Default the view to every expiration in the latest two available years."""
     available = sorted(set(expirations))
     years = set(sorted({expiry[:4] for expiry in available})[-2:])
     filters: dict[str, Any] = {"expiry": [expiry for expiry in available if expiry[:4] in years]}
     if str(target_text or "").strip().casefold() not in {"", _NO_BREAKEVEN}:
         filters["breakeven"] = {"target": _entered_price(target_text, "target breakeven")}
+    if max_cost is not None:
+        filters["cost"] = {"max": max_cost}
     return filters
 
 
@@ -2070,7 +2073,7 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
         last_result = st.session_state.get("vp_scan_result") or {}
         # Ticker lives outside the submit form so its quote/name update on
         # Enter or blur. Cost retains Enter-to-scan form semantics.
-        fields = st.columns([1, 1.7], gap="small", vertical_alignment="bottom")
+        fields = st.columns(2, gap="small", vertical_alignment="bottom")
         with fields[0]:
             symbol_text = st.text_input(
                 "Ticker", key="vp_symbol_value", placeholder="SPY",
@@ -2323,11 +2326,24 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                 filter_choices = candidates.column_filter_choices()
                 filter_state = st.session_state.get("_vp_column_filters")
                 if not isinstance(filter_state, dict) or filter_state.get("scope") != scope:
-                    filters = (dict(filter_state["filters"]) if isinstance(filter_state, dict)
-                               and filter_state.get("raw_scan_id") == result.get("raw_scan_id")
+                    same_snapshot = (isinstance(filter_state, dict)
+                                     and filter_state.get("raw_scan_id") == result.get("raw_scan_id"))
+                    filters = (dict(filter_state["filters"]) if same_snapshot
                                else _default_column_filters(filter_choices["expiry"],
-                                   st.session_state.get("vp_target_breakeven", "")))
+                                   st.session_state.get("vp_target_breakeven", ""), result.get("max_cost")))
+                    if (same_snapshot and filter_state.get("scan_max_cost", result.get("max_cost"))
+                            != result.get("max_cost")):
+                        cost_filter = dict(filters.get("cost") or {})
+                        if result.get("max_cost") is None:
+                            cost_filter.pop("max", None)
+                        else:
+                            cost_filter["max"] = result["max_cost"]
+                        if cost_filter:
+                            filters["cost"] = cost_filter
+                        else:
+                            filters.pop("cost", None)
                     filter_state = {"scope": scope, "raw_scan_id": result.get("raw_scan_id"),
+                                    "scan_max_cost": result.get("max_cost"),
                                     "filters": filters, "revision": 0}
                     st.session_state["_vp_column_filters"] = filter_state
                     _remember_scan_snapshot()

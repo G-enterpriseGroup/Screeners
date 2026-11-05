@@ -310,10 +310,10 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace .st-key-vo_target_breakeven input,
 .st-key-vertical_options_workspace .st-key-vo_max_cost input,
 .st-key-vertical_options_workspace .st-key-vo_min_reward_risk input{height:36px!important;min-height:0!important;}
-.st-key-vertical_options_workspace :is(.st-key-vo_target_breakeven,.st-key-vo_max_cost) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
+.st-key-vertical_options_workspace :is(.st-key-vo_symbol_value,.st-key-vo_target_breakeven,.st-key-vo_max_cost) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
     background:#444444!important;background-color:#444444!important;
 }
-.st-key-vertical_options_workspace :is(.st-key-vo_target_breakeven,.st-key-vo_max_cost) input::placeholder{
+.st-key-vertical_options_workspace :is(.st-key-vo_symbol_value,.st-key-vo_target_breakeven,.st-key-vo_max_cost) input::placeholder{
     color:var(--vo-orange)!important;-webkit-text-fill-color:var(--vo-orange)!important;
     font-weight:400!important;font-style:normal;opacity:1!important;
 }
@@ -1793,13 +1793,16 @@ def _select_results_year(year_key: str, year: int | None) -> None:
     _remember_presentation(year_key)
 
 
-def _default_column_filters(expirations: list[str], target_text: str = "") -> dict[str, Any]:
+def _default_column_filters(expirations: list[str], target_text: str = "",
+                            max_cost: float | None = None) -> dict[str, Any]:
     """Default the view to every expiration in the latest two available years."""
     available = sorted(set(expirations))
     years = set(sorted({expiry[:4] for expiry in available})[-2:])
     filters: dict[str, Any] = {"expiry": [expiry for expiry in available if expiry[:4] in years]}
     if str(target_text or "").strip().casefold() not in {"", _NO_BREAKEVEN}:
         filters["breakeven"] = {"target": _entered_price(target_text, "target breakeven")}
+    if max_cost is not None:
+        filters["cost"] = {"max": max_cost}
     return filters
 
 
@@ -2299,11 +2302,24 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 filter_choices = candidates.column_filter_choices()
                 filter_state = st.session_state.get("_vo_column_filters")
                 if not isinstance(filter_state, dict) or filter_state.get("scope") != scope:
-                    filters = (dict(filter_state["filters"]) if isinstance(filter_state, dict)
-                               and filter_state.get("raw_scan_id") == result.get("raw_scan_id")
+                    same_snapshot = (isinstance(filter_state, dict)
+                                     and filter_state.get("raw_scan_id") == result.get("raw_scan_id"))
+                    filters = (dict(filter_state["filters"]) if same_snapshot
                                else _default_column_filters(filter_choices["expiry"],
-                                   st.session_state.get("vo_target_breakeven", "")))
+                                   st.session_state.get("vo_target_breakeven", ""), result.get("max_cost")))
+                    if (same_snapshot and filter_state.get("scan_max_cost", result.get("max_cost"))
+                            != result.get("max_cost")):
+                        cost_filter = dict(filters.get("cost") or {})
+                        if result.get("max_cost") is None:
+                            cost_filter.pop("max", None)
+                        else:
+                            cost_filter["max"] = result["max_cost"]
+                        if cost_filter:
+                            filters["cost"] = cost_filter
+                        else:
+                            filters.pop("cost", None)
                     filter_state = {"scope": scope, "raw_scan_id": result.get("raw_scan_id"),
+                                    "scan_max_cost": result.get("max_cost"),
                                     "filters": filters, "revision": 0}
                     st.session_state["_vo_column_filters"] = filter_state
                     _remember_scan_snapshot()
