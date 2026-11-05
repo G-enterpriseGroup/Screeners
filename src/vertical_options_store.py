@@ -327,11 +327,16 @@ class VerticalResultStore:
                 raise ValueError("Invalid column filters.")
             for field, selected in column_filters.items():
                 if field in _NUMERIC_FILTERS:
-                    allowed = {"target", "percent"} if field == "breakeven" else {"min", "max"}
+                    allowed = ({"target", "percent", "min", "max"} if field == "breakeven"
+                               else {"min", "max"})
                     if not isinstance(selected, dict) or set(selected) - allowed:
                         raise ValueError("Invalid numeric column filter.")
-                    if field == "breakeven":
-                        percent = selected.get("percent", 5.0)
+                    # Original desktop opt-in uses percent; the mobile scanner
+                    # still relies on its legacy target-only ranking and MIN/MAX.
+                    if field == "breakeven" and "percent" in selected:
+                        if "min" in selected or "max" in selected:
+                            raise ValueError("Cannot mix breakeven percent with legacy bounds.")
+                        percent = selected["percent"]
                         try:
                             percent = float(percent)
                         except (TypeError, ValueError, OverflowError) as exc:
