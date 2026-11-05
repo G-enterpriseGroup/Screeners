@@ -1206,6 +1206,14 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         original = list(store.iter_ranked())
         self.assertTrue(original)
         target = original[0]["breakeven"]
+        # Shared store must preserve Verti Phone's target-only and MIN/MAX rules.
+        self.assertEqual(store.count(column_filters={"breakeven": {"target": target}}),
+                         len(original))
+        legacy = {"breakeven": {"target": target,
+                                "min": target - .01, "max": target + .01}}
+        expected_legacy = sum(abs(row["breakeven"] - target) <= .01 + 1e-8
+                              for row in original)
+        self.assertEqual(store.count(column_filters=legacy), expected_legacy)
         for percent in (0, 5, 20, 100):
             eligible = [row for row in original if
                         abs(row["breakeven"] - target) <= target * percent / 100 + 1e-8]
