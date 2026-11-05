@@ -460,18 +460,16 @@ class PhoneOrderTests(unittest.TestCase):
 
 
 class VerticalCostFilterTests(unittest.TestCase):
-    def test_phone_cost_default_uses_dollars_without_changing_expiry_or_target_defaults(self):
+    def test_phone_defaults_have_no_cost_ceiling_and_preserve_expiry_and_target_defaults(self):
         expiries = ["2027-01-15", "2028-01-21", "2029-01-19", "2028-06-16"]
         expected = {"expiry": ["2028-01-21", "2028-06-16", "2029-01-19"]}
         self.assertEqual(phone._default_column_filters(expiries), expected)
-        self.assertEqual(phone._default_column_filters(expiries, "103", 150),
-                         {**expected, "breakeven": {"target": 103}, "cost": {"max": 150}})
-        self.assertEqual(phone._default_column_filters(expiries, max_cost=None), expected)
-        for invalid in ("bad", "nan", "inf", "0", "-1"):
-            with self.subTest(top_cost=invalid), self.assertRaises(ValueError):
-                phone._entered_price(invalid, "maximum cost")
+        self.assertEqual(phone._default_column_filters(expiries, "103"),
+                         {**expected, "breakeven": {"target": 103}})
 
-    def test_both_renderers_seed_cost_and_preserve_filter_edits_across_scan_lifecycle(self):
+    def test_both_renderers_use_only_column_max_over_the_complete_store(self):
+        import csv
+        import io
         from streamlit.testing.v1 import AppTest
         for module, prefix, renderer in (("vertical_options_ui", "vo", "render_vertical_options"),
                                           ("verti_phone_ui", "vp", "render_verti_phone")):
@@ -480,6 +478,7 @@ class VerticalCostFilterTests(unittest.TestCase):
                 source = '''
 import time
 from datetime import date
+from functools import partial as deferred
 from unittest.mock import patch
 import streamlit as st
 import src.FEATURE_MODULE as feature
@@ -513,21 +512,35 @@ def scan(client, symbol, touch, *, refresh=False):
         st.session_state["_FEATURE_PREFIX_chain_cache"] = {"E*TRADE:QQQ":raw}
     st.session_state.setdefault("fixture_scan_calls", []).append((symbol, refresh, raw["scan_id"]))
     return raw
+original_rank = feature._rank_cached_vertical_chains
+def rank(raw, target, max_cost, mode, minimum=2):
+    st.session_state.setdefault("fixture_rank_caps", []).append(max_cost)
+    return original_rank(raw, target, max_cost, mode, minimum)
+def exporter(function, *args, **kwargs):
+    if function is feature._qualified_store_csv:
+        st.session_state["fixture_csv"] = function(*args, **kwargs)
+        st.session_state["fixture_export_cap"] = kwargs["max_cost"]
+    return deferred(function, *args, **kwargs)
+def order(client, touch, candidate, result, broker_live):
+    st.session_state["fixture_order_cap"] = result["max_cost"]
+    st.session_state["fixture_order_is_scan"] = result is st.session_state["FEATURE_PREFIX_scan_result"]
 st.session_state.setdefault("etrade_accounts", [{"accountIdKey":"synthetic","accountId":"10005474"}])
 st.session_state.setdefault("_FEATURE_PREFIX_workspace_ready", vault)
 st.session_state.setdefault("_FEATURE_PREFIX_pricing_mode_hydrated", True)
 st.session_state.setdefault("_FEATURE_PREFIX_pricing_mode_preference", "NORMAL")
+st.session_state.setdefault("fixture_rank_caps", [])
 if (not st.session_state.get("fixture_restore_only")
         and "FEATURE_PREFIX_scan_result" not in st.session_state
         and not st.session_state.get("_FEATURE_PREFIX_scan_pending")):
     raw = snapshot(1)
-    store, annual, _, _ = feature._rank_cached_vertical_chains(raw, None, 150, "NORMAL")
+    store, annual, _, _ = feature._rank_cached_vertical_chains(raw, None, None, "NORMAL")
     st.session_state["_FEATURE_PREFIX_chain_cache"] = {"E*TRADE:QQQ":raw}
     st.session_state["FEATURE_PREFIX_symbol_value"] = "QQQ"
-    st.session_state["FEATURE_PREFIX_max_cost"] = "150"
+    # A retired top-field preference must never act as a hidden ranking cap.
+    st.session_state["_FEATURE_PREFIX_presentation"] = {"FEATURE_PREFIX_max_cost":"75"}
     st.session_state["FEATURE_PREFIX_scan_result"] = {
         "symbol":"QQQ","source":"E*TRADE","spot":100,"target":None,
-        "max_cost":150,"pricing_mode":"NORMAL","raw_scan_id":1,"scope":"initial",
+        "max_cost":None,"pricing_mode":"NORMAL","raw_scan_id":1,"scope":"initial",
         "loaded_at":raw["loaded_at"],"candidates":store,"annual_ids":annual,
         "listed_years":3,"loaded_expirations":3,"listed_expirations":3,
         "contract_count":len(raw["rows"]),"ranked_expirations":3,"scan_complete":True,"errors":[]}
@@ -536,101 +549,153 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
       patch.object(feature, "hydrate_gex_snapshots", return_value=False),
       patch.object(feature, "_cboe_wall_markup", return_value="<span></span>"),
       patch.object(feature, "_ticker_quote_preview", return_value={"last":100,"name":"Synthetic QQQ"}),
-      patch.object(feature, "_scan_all_years", side_effect=scan)):
+      patch.object(feature, "_scan_all_years", side_effect=scan),
+      patch.object(feature, "_rank_cached_vertical_chains", side_effect=rank),
+      patch.object(feature, "_render_selected_order", side_effect=order),
+      patch.object(feature, "partial", side_effect=exporter)):
     feature.FEATURE_RENDER(Broker(), lambda: None, vault_key=vault)
 '''.replace("FEATURE_MODULE", module).replace("FEATURE_PREFIX", prefix).replace("FEATURE_RENDER", renderer).replace("FIXTURE_VAULT", vault)
                 app = AppTest.from_string(source, default_timeout=15).run()
                 self.assertFalse(app.exception)
                 args = app.session_state["fixture_args"]
-                self.assertEqual(args["column_filters"]["cost"], {"max": 150})
-                self.assertTrue(args["rows"])
                 result_key = prefix + "_scan_result"
                 filter_key = "_" + prefix + "_column_filters"
-                top_key = prefix + "_max_cost"
-                self.assertEqual(app.session_state[filter_key]["scan_max_cost"], 150)
-
-                edited = {**args["column_filters"], "side": ["CALL"],
-                          "breakeven": {"target": 103}, "cost": {"min": 75, "max": 125}}
+                self.assertEqual([field.label for field in app.text_input],
+                                 ["Ticker", "MIN RISK:REWARD 1:"])
+                self.assertNotIn(prefix + "_max_cost", app.session_state)
+                self.assertNotIn("cost", args["column_filters"])
+                self.assertIsNone(app.session_state[result_key]["max_cost"])
+                self.assertNotIn("scan_max_cost", app.session_state[filter_key])
+                store = app.session_state[result_key]["candidates"]
+                self.assertEqual(len(store), 9)
+                self.assertTrue(any(row["cost"] > 150 for row in store.iter_rows()))
+                selected_id = next(row["id"] for row in store.iter_rows() if row["cost"] < 150)
                 app.session_state["fixture_update"] = {
-                    "scope": args["scope"], "column_filters": edited, "filter_revision": 1,
-                    "selected_ids": [], "revision": 0}
+                    "scope": args["scope"], "column_filters": args["column_filters"], "filter_revision": 0,
+                    "selected_ids": [selected_id], "revision": 1}
                 app.run()
                 self.assertFalse(app.exception)
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], edited)
+                self.assertIsNone(app.session_state["fixture_order_cap"])
+                self.assertFalse(app.session_state["fixture_order_is_scan"])
+                app.session_state[prefix + "_review_bundle"] = {"current": True}
+                app.session_state[prefix + "_live_confirm"] = True
+                edited = {**args["column_filters"], "side": ["CALL"],
+                          "breakeven": {"target": 103}, "cost": {"min": 75, "max": 150}}
+                rank_caps = list(app.session_state["fixture_rank_caps"])
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "column_filters": edited, "filter_revision": 1,
+                    "selected_ids": [selected_id], "revision": 1}
+                app.run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"], edited)
+                self.assertLess(args["total_rows"], 6)
+                self.assertEqual(len(store), 9)
+                self.assertEqual(app.session_state["fixture_rank_caps"], rank_caps)
+                self.assertNotIn("fixture_scan_calls", app.session_state)
+                self.assertEqual(app.session_state["fixture_order_cap"], 150)
+                self.assertFalse(app.session_state["fixture_order_is_scan"])
+                self.assertNotIn(prefix + "_review_bundle", app.session_state)
+                self.assertNotIn(prefix + "_live_confirm", app.session_state)
+                self.assertIsNone(app.session_state[result_key]["max_cost"])
+                exported = list(csv.DictReader(io.StringIO(app.session_state["fixture_csv"])))
+                self.assertEqual(len(exported), args["total_rows"])
+                self.assertTrue(all(float(row["Cost Per Contract ($)"]) <= 150 for row in exported))
+                self.assertTrue(all(float(row["Max Cost Filter ($)"]) == 150 for row in exported))
+                self.assertEqual(app.session_state["fixture_export_cap"], 150)
+                for revision, cap in enumerate((0, -1, 150), 2):
+                    args = app.session_state["fixture_args"]
+                    app.session_state["fixture_update"] = {
+                        "scope": args["scope"], "column_filters": {**edited, "cost": {"min": 75, "max": cap}},
+                        "filter_revision": revision, "selected_ids": [selected_id], "revision": 1}
+                    app.run()
+                    self.assertFalse(app.exception)
+                    self.assertEqual(app.session_state["fixture_order_cap"], cap)
+                    self.assertEqual(app.session_state["fixture_export_cap"], cap)
+                    self.assertIsNone(app.session_state[result_key]["max_cost"])
+                    if cap <= 0:
+                        self.assertEqual(app.session_state["fixture_args"]["total_rows"], 0)
                 app.toggle(key=prefix + "_smart_fill").set_value(True).run()
                 self.assertFalse(app.exception)
                 self.assertEqual(app.session_state["fixture_args"]["column_filters"], edited)
                 self.assertNotIn("fixture_scan_calls", app.session_state)
+                self.assertTrue(all(cap is None for cap in app.session_state["fixture_rank_caps"]))
 
-                # An explicit changed scan cap replaces just MAX even when chains are reused.
-                app.text_input(key=top_key).set_value("120")
-                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
-                self.assertFalse(app.exception)
-                changed = {**edited, "cost": {"min": 75, "max": 120}}
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], changed)
-                self.assertEqual(app.session_state[result_key]["max_cost"], 120)
-                self.assertEqual(app.session_state[result_key]["raw_scan_id"], 1)
-                self.assertEqual(app.session_state["fixture_scan_calls"], [("QQQ", False, 1)])
-
-                app.text_input(key=top_key).set_value("")
-                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
-                self.assertFalse(app.exception)
-                without_max = {**edited, "cost": {"min": 75}}
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], without_max)
-                self.assertIsNone(app.session_state[result_key]["max_cost"])
-
+                # Clearing MAX reveals the retained expensive pairs without downloading chains.
                 args = app.session_state["fixture_args"]
-                cleared = {key: value for key, value in without_max.items() if key != "cost"}
+                without_max = {**edited, "cost": {"min": 75}}
                 app.session_state["fixture_update"] = {
-                    "scope": args["scope"], "column_filters": cleared, "filter_revision": 1,
-                    "selected_ids": [], "revision": 0}
+                    "scope": args["scope"], "column_filters": without_max, "filter_revision": 1,
+                    "selected_ids": [selected_id], "revision": 1}
                 app.run()
+                self.assertIsNone(app.session_state["fixture_order_cap"])
                 app.toggle(key=prefix + "_smart_fill").set_value(False).run()
                 self.assertFalse(app.exception)
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], cleared)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"], without_max)
+                self.assertEqual(args["total_rows"], 6)
+                self.assertIsNone(app.session_state["fixture_export_cap"])
+                exported = list(csv.DictReader(io.StringIO(app.session_state["fixture_csv"])))
+                self.assertTrue(any(float(row["Cost Per Contract ($)"]) > 150 for row in exported))
+                self.assertTrue(all(row["Max Cost Filter ($)"] == "" for row in exported))
+                self.assertNotIn("fixture_scan_calls", app.session_state)
                 restored = AppTest.from_string(source, default_timeout=15)
                 restored.session_state["fixture_restore_only"] = True
                 restored.run()
                 self.assertFalse(restored.exception)
-                self.assertEqual(restored.session_state["fixture_args"]["column_filters"], cleared)
+                self.assertEqual(restored.session_state["fixture_args"]["column_filters"], without_max)
 
-                # Legacy recovered filters have no recorded scan cap and keep explicit edits.
-                legacy = dict(app.session_state[filter_key])
-                legacy.pop("scan_max_cost")
-                legacy["filters"] = {**cleared, "cost": {"min": 20, "max": 90}}
-                app.session_state[filter_key] = legacy
-                app.text_input(key=top_key).set_value("200")
-                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
-                self.assertFalse(app.exception)
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], legacy["filters"])
-                self.assertEqual(app.session_state[result_key]["max_cost"], 200)
-
-                # Clearing a column with a nonblank top cap must also remain cleared.
-                args = app.session_state["fixture_args"]
-                app.session_state["fixture_update"] = {
-                    "scope": args["scope"], "column_filters": cleared, "filter_revision": 1,
-                    "selected_ids": [], "revision": 0}
-                app.run()
-                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
-                self.assertFalse(app.exception)
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], cleared)
-                self.assertEqual(app.session_state[result_key]["max_cost"], 200)
-                restored_with_cap = AppTest.from_string(source, default_timeout=15)
-                restored_with_cap.session_state["fixture_restore_only"] = True
-                restored_with_cap.run()
-                self.assertFalse(restored_with_cap.exception)
-                self.assertEqual(restored_with_cap.session_state["fixture_args"]["column_filters"], cleared)
-
-                # Fresh market data gets fresh defaults from its successful scan cap.
+                # A user-triggered scan remains uncapped, with fresh display defaults.
                 app.session_state["fixture_new_raw"] = True
-                app.text_input(key=top_key).set_value("300")
                 next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
                 self.assertFalse(app.exception)
                 args = app.session_state["fixture_args"]
-                self.assertEqual(args["column_filters"]["cost"], {"max": 300})
+                self.assertNotIn("cost", args["column_filters"])
                 self.assertNotIn("side", args["column_filters"])
                 self.assertEqual(app.session_state[result_key]["raw_scan_id"], 2)
-                self.assertEqual(app.session_state[filter_key]["scan_max_cost"], 300)
+                self.assertIsNone(app.session_state[result_key]["max_cost"])
+                self.assertTrue(all(cap is None for cap in app.session_state["fixture_rank_caps"]))
+
+                # Capped legacy snapshots require an explicit rescan and cannot resume or trade.
+                legacy = dict(app.session_state[result_key])
+                legacy.update(max_cost=150, scan_complete=False)
+                app.session_state[result_key] = legacy
+                app.session_state[prefix + "_review_bundle"] = {"legacy": True}
+                app.session_state[prefix + "_live_confirm"] = True
+                app.session_state["_" + prefix + "_order_candidate"] = "legacy"
+                del app.session_state["fixture_args"]
+                scans_before = list(app.session_state["fixture_scan_calls"])
+                ranks_before = list(app.session_state["fixture_rank_caps"])
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertTrue(any("SCAN ALL YEARS" in message.value for message in app.info))
+                self.assertNotIn("fixture_args", app.session_state)
+                self.assertNotIn(prefix + "_review_bundle", app.session_state)
+                self.assertNotIn(prefix + "_live_confirm", app.session_state)
+                self.assertNotIn("_" + prefix + "_order_candidate", app.session_state)
+                self.assertEqual(app.session_state["fixture_scan_calls"], scans_before)
+                self.assertEqual(app.session_state["fixture_rank_caps"], ranks_before)
+                self.assertFalse(any(button.label.startswith("CONTINUE ALL YEARS") for button in app.button))
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                self.assertIsNone(app.session_state[result_key]["max_cost"])
+                self.assertIn("fixture_args", app.session_state)
+                self.assertEqual(len(app.session_state["fixture_scan_calls"]), len(scans_before) + 1)
+
+    def test_effective_column_max_changes_invalidate_review_identity_in_both_owners(self):
+        candidate, _ = quoted_spread()
+        kwargs = dict(symbol=candidate["symbol"], call_put=candidate["call_put"],
+                      expiry=candidate["expiry"], buy_strike=candidate["buy_strike"],
+                      sell_strike=candidate["sell_strike"], quantity=1, limit_price=candidate["debit"],
+                      min_reward_risk=2, order_term="GOOD_FOR_DAY", account_keys=["synthetic"])
+        for owner in (desktop, phone):
+            with self.subTest(owner=owner.__name__):
+                reviewed = owner._review_fingerprint(**kwargs, max_cost=150)
+                bundle = {"fingerprint": reviewed, "previewed_at": time.time()}
+                self.assertTrue(owner._reviews_are_fresh(bundle, reviewed))
+                for changed in (None, 0, 200):
+                    self.assertFalse(owner._reviews_are_fresh(
+                        bundle, owner._review_fingerprint(**kwargs, max_cost=changed)))
 
 
 if __name__ == "__main__":

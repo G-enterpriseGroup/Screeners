@@ -289,7 +289,6 @@ _VERTICAL_OPTIONS_CSS = """
    st.form's real stForm wrapper owns padding; its key is not a CSS class. */
 .st-key-verti_phone_workspace .st-key-vp_symbol_value [data-testid="stWidgetLabel"],
 .st-key-verti_phone_workspace .st-key-vp_target_breakeven [data-testid="stWidgetLabel"],
-.st-key-verti_phone_workspace .st-key-vp_max_cost [data-testid="stWidgetLabel"],
 .st-key-verti_phone_workspace .st-key-vp_min_reward_risk [data-testid="stWidgetLabel"],
 .st-key-verti_phone_workspace .vp-company-label{
     display:flex!important;align-items:center!important;
@@ -298,23 +297,20 @@ _VERTICAL_OPTIONS_CSS = """
 }
 .st-key-verti_phone_workspace .st-key-vp_symbol_value [data-testid="stWidgetLabel"] p,
 .st-key-verti_phone_workspace .st-key-vp_target_breakeven [data-testid="stWidgetLabel"] p,
-.st-key-verti_phone_workspace .st-key-vp_max_cost [data-testid="stWidgetLabel"] p,
 .st-key-verti_phone_workspace .st-key-vp_min_reward_risk [data-testid="stWidgetLabel"] p{margin:0!important;}
 /* Set the visible React Aria border box to the terminal's 38px control height. */
 .st-key-verti_phone_workspace .st-key-vp_symbol_value [data-testid="stTextInputRootElement"],
 .st-key-verti_phone_workspace .st-key-vp_target_breakeven [data-testid="stTextInputRootElement"],
-.st-key-verti_phone_workspace .st-key-vp_max_cost [data-testid="stTextInputRootElement"],
 .st-key-verti_phone_workspace .st-key-vp_min_reward_risk [data-testid="stTextInputRootElement"]{
     height:38px!important;min-height:38px!important;box-sizing:border-box!important;
 }
 .st-key-verti_phone_workspace .st-key-vp_symbol_value input,
 .st-key-verti_phone_workspace .st-key-vp_target_breakeven input,
-.st-key-verti_phone_workspace .st-key-vp_max_cost input,
 .st-key-verti_phone_workspace .st-key-vp_min_reward_risk input{height:36px!important;min-height:0!important;}
-.st-key-verti_phone_workspace :is(.st-key-vp_symbol_value,.st-key-vp_target_breakeven,.st-key-vp_max_cost) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
+.st-key-verti_phone_workspace :is(.st-key-vp_symbol_value,.st-key-vp_target_breakeven) :is(input,[data-testid="stTextInputRootElement"],[data-baseweb="input"],[data-baseweb="base-input"]){
     background:#444444!important;background-color:#444444!important;
 }
-.st-key-verti_phone_workspace :is(.st-key-vp_symbol_value,.st-key-vp_target_breakeven,.st-key-vp_max_cost) input::placeholder{
+.st-key-verti_phone_workspace :is(.st-key-vp_symbol_value,.st-key-vp_target_breakeven) input::placeholder{
     color:var(--vp-orange)!important;-webkit-text-fill-color:var(--vp-orange)!important;
     font-weight:400!important;font-style:normal;opacity:1!important;
 }
@@ -437,7 +433,6 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-verti_phone_workspace [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;}
 .st-key-verti_phone_workspace [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]{width:0!important;min-width:0!important;flex-basis:0!important;}
 .st-key-verti_phone_workspace [data-testid="stButton"] button,
-.st-key-verti_phone_workspace [data-testid="stFormSubmitButton"] button,
 .st-key-verti_phone_workspace [data-testid="stDownloadButton"] button{min-height:44px!important;height:auto!important;white-space:normal!important;font-size:12px!important;}
 .st-key-verti_phone_workspace [data-testid="stWidgetLabel"],
 .st-key-verti_phone_workspace [data-testid="stWidgetLabel"] *,
@@ -975,6 +970,7 @@ def _review_fingerprint(
     min_reward_risk: float,
     order_term: str,
     account_keys: list[str],
+    max_cost: float | None = None,
 ) -> tuple[Any, ...]:
     return (
         symbol,
@@ -987,6 +983,7 @@ def _review_fingerprint(
         round(float(min_reward_risk), 6),
         order_term,
         tuple(sorted(account_keys)),
+        None if max_cost is None else round(float(max_cost), 6),
     )
 
 
@@ -1743,7 +1740,7 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
 
 _PRESENTATION_DEFAULTS = {
     "vp_symbol_value": "", "vp_target_breakeven": "",
-    "vp_max_cost": "", "vp_min_reward_risk": "2",
+    "vp_min_reward_risk": "2",
     "vp_results_view": "BEST PER YEAR", "vp_be_filter_enabled": False,
     "vp_be_range_percent": 5.0, "vp_all_pair_sort": "FILL + TARGET",
     "vp_all_pair_direction": "ASC", "vp_all_pair_expiry": "ALL",
@@ -1790,7 +1787,7 @@ def _remember_presentation(key: str) -> None:
 
 
 def _remember_scan_inputs() -> None:
-    for key in ("vp_symbol_value", "vp_target_breakeven", "vp_max_cost", "vp_min_reward_risk"):
+    for key in ("vp_symbol_value", "vp_target_breakeven", "vp_min_reward_risk"):
         _remember_presentation(key)
 
 
@@ -1821,28 +1818,26 @@ def _select_results_year(year_key: str, year: int | None) -> None:
     _remember_presentation(year_key)
 
 
-def _default_column_filters(expirations: list[str], target_text: str = "",
-                            max_cost: float | None = None) -> dict[str, Any]:
+def _default_column_filters(expirations: list[str], target_text: str = "") -> dict[str, Any]:
     """Default the view to every expiration in the latest two available years."""
     available = sorted(set(expirations))
     years = set(sorted({expiry[:4] for expiry in available})[-2:])
     filters: dict[str, Any] = {"expiry": [expiry for expiry in available if expiry[:4] in years]}
     if str(target_text or "").strip().casefold() not in {"", _NO_BREAKEVEN}:
         filters["breakeven"] = {"target": _entered_price(target_text, "target breakeven")}
-    if max_cost is not None:
-        filters["cost"] = {"max": max_cost}
     return filters
 
 
 def _restore_presentation() -> None:
     saved = dict(st.session_state.get("_vp_presentation") or {})
+    saved.pop("vp_max_cost", None)
+    st.session_state.pop("vp_max_cost", None)
     if not st.session_state.get("_vp_best_default_initialized"):
         saved["vp_results_view"] = "BEST PER YEAR"
         st.session_state["_vp_best_default_initialized"] = True
     for key, default in _PRESENTATION_DEFAULTS.items():
         saved.setdefault(key, st.session_state.get(key, default))
-        if ((key == "vp_target_breakeven" and str(saved[key]).casefold() == _NO_BREAKEVEN)
-                or (key == "vp_max_cost" and str(saved[key]).casefold() == _NO_COST_CEILING)):
+        if key == "vp_target_breakeven" and str(saved[key]).casefold() == _NO_BREAKEVEN:
             saved[key] = ""
         # A returning frontend may send widget defaults before registration.
         # Callbacks save user changes first; the durable state owns hydration.
@@ -1924,7 +1919,7 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
         with note_col:
             st.html(
                 '<div class="vp-note">VERTI PHONE // ALL YEARS // '
-                '<span class="muted">COST OPTIONAL // FILTER RESULTS BELOW</span></div>'
+                '<span class="muted">DEBIT MIN / MAX IN COLUMN FILTER</span></div>'
             )
         with portfolio_col:
             st.button("PORTFOLIO VERTICALS", key="vp_portfolio_open", use_container_width=True,
@@ -2072,7 +2067,7 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
 
         last_result = st.session_state.get("vp_scan_result") or {}
         # Ticker lives outside the submit form so its quote/name update on
-        # Enter or blur. Cost retains Enter-to-scan form semantics.
+        # Enter or blur. The ratio form retains Enter-to-scan semantics.
         fields = st.columns(2, gap="small", vertical_alignment="bottom")
         with fields[0]:
             symbol_text = st.text_input(
@@ -2094,20 +2089,16 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
         with st.form("vp_scan_form", clear_on_submit=False, border=False):
             scan_fields = st.columns(2, gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
-                cost_text = st.text_input(
-                    "Max Cost", key="vp_max_cost", placeholder="Not provided",
-                    help="Optional maximum one-spread debit in dollars. Blank or the default text means no cost ceiling.",
-                )
-            with scan_fields[1]:
                 ratio_text = st.text_input(
                     "MIN RISK:REWARD 1:", key="vp_min_reward_risk", placeholder="2",
                     help="Minimum reward for each $1 risked. Standard is 1:2; enter 2, 1:2, or another positive value.",
                 )
-            scan_clicked = st.form_submit_button(
-                "SCAN ALL YEARS", type="primary", use_container_width=True,
-                on_click=_remember_scan_inputs,
-            )
-        for form_key in ("vp_symbol_value", "vp_target_breakeven", "vp_max_cost", "vp_min_reward_risk"):
+            with scan_fields[1]:
+                scan_clicked = st.form_submit_button(
+                    "SCAN ALL YEARS", type="primary", use_container_width=True,
+                    on_click=_remember_scan_inputs,
+                )
+        for form_key in ("vp_symbol_value", "vp_target_breakeven", "vp_min_reward_risk"):
             _remember_presentation(form_key)
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
@@ -2128,6 +2119,7 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
             _remember_presentation("vp_auto_finish")
         resume_clicked = False
         if (not scan_clicked and last_result.get("symbol") == symbol
+                and last_result.get("max_cost") is None
                 and not last_result.get("scan_complete", True)
                 and not last_result.get("failed_expirations")):
             auto_finish = st.toggle("AUTO FINISH SCAN", key="vp_auto_finish",
@@ -2153,16 +2145,13 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
             try:
                 if not symbol:
                     raise ValueError("Enter a ticker to scan.")
-                entered_cost = str(cost_text or "").strip()
+                max_cost = None
                 if resume_clicked:
                     target = last_result["target"]
-                    max_cost = last_result["max_cost"]
                     min_reward_risk = last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
                 else:
                     # Target ranking is now a column-menu query over retained results.
                     target = None
-                    max_cost = (None if entered_cost.casefold() in {"", _NO_COST_CEILING}
-                                else _entered_price(entered_cost, "maximum cost"))
                     min_reward_risk = _entered_reward_risk(ratio_text)
                 repeat_scan = (
                     last_result.get("symbol") == symbol
@@ -2233,6 +2222,12 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                 return
             if result.get("symbol") != symbol:
                 return
+            if result.get("max_cost") is not None:
+                st.session_state.pop("vp_review_bundle", None)
+                st.session_state.pop("vp_live_confirm", None)
+                st.session_state.pop("_vp_order_candidate", None)
+                st.info("MAX COST MOVED TO DEBIT FILTER // Press SCAN ALL YEARS to rebuild the complete results, then set Debit → MAX.")
+                return
             if not isinstance(result.get("candidates"), VerticalResultStore):
                 st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
                 return
@@ -2294,27 +2289,27 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
             st.caption((
                 f'{result["source"]} // {stamp:%b %d, %I:%M %p %Z} // '
                 f'RISK:REWARD ≥ 1:{min_reward_risk:g} // '
-                f'MAX COST {_money(result["max_cost"]) if result["max_cost"] is not None else "ANY"} // 7+ DAYS TO EXPIRY'
+                "DEBIT MIN / MAX IN COLUMN FILTER // 7+ DAYS TO EXPIRY"
             ).replace("$", r"\$"))
             if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
                 st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
             _scanner_help("PRICING & RISK", (
                 "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
                 "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
-                f"SMART FILL suggests a MID-to-ASK limit, capped by the cost and 1:{min_reward_risk:g} requirement. "
+                f"SMART FILL suggests a MID-to-ASK limit under the 1:{min_reward_risk:g} requirement. "
+                "The Debit MAX filter also caps the reviewed order limit. "
                 "For one standard 100-share contract: max loss = debit × 100; max profit = "
                 f"(strike width − debit) × 100. Reward/risk must be at least {min_reward_risk:g}. "
                 "CALL breakeven = BUY strike + debit; PUT breakeven = BUY strike − debit. "
                 "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
                 "Snapshot age does not establish when an individual option last traded. "
                 "Quotes may be delayed; no reference price guarantees execution or a fill. "
-                'Set an optional ranking target or minimum/maximum in the BREAKEVEN column. Max cost: '
-                f'{_money(result["max_cost"]) if result["max_cost"] is not None else _NO_COST_CEILING}.'
+                "Set an optional ranking target or minimum/maximum in the BREAKEVEN column. "
+                "Set cost minimum/maximum in Debit; these filter all retained results."
             ))
             candidates = result["candidates"]
             if not candidates:
                 st.info(f"No call or put debit spreads met the 1:{min_reward_risk:g} ratio"
-                        + (" and maximum cost" if result["max_cost"] is not None else "")
                         + " at a qualifying quoted price across the loaded years.")
             else:
                 annual_ids = set(result["annual_ids"])
@@ -2330,24 +2325,14 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                                      and filter_state.get("raw_scan_id") == result.get("raw_scan_id"))
                     filters = (dict(filter_state["filters"]) if same_snapshot
                                else _default_column_filters(filter_choices["expiry"],
-                                   st.session_state.get("vp_target_breakeven", ""), result.get("max_cost")))
-                    if (same_snapshot and filter_state.get("scan_max_cost", result.get("max_cost"))
-                            != result.get("max_cost")):
-                        cost_filter = dict(filters.get("cost") or {})
-                        if result.get("max_cost") is None:
-                            cost_filter.pop("max", None)
-                        else:
-                            cost_filter["max"] = result["max_cost"]
-                        if cost_filter:
-                            filters["cost"] = cost_filter
-                        else:
-                            filters.pop("cost", None)
+                                   st.session_state.get("vp_target_breakeven", "")))
                     filter_state = {"scope": scope, "raw_scan_id": result.get("raw_scan_id"),
-                                    "scan_max_cost": result.get("max_cost"),
                                     "filters": filters, "revision": 0}
                     st.session_state["_vp_column_filters"] = filter_state
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
+                cost_max = (column_filters.get("cost") or {}).get("max")
+                active_max_cost = None if cost_max in (None, "") else float(cost_max)
                 effective_target = (column_filters.get("breakeven") or {}).get("target")
                 # Explicitly clear the legacy scan-time target in recovered snapshots.
                 query_filters = {**column_filters, "breakeven": {
@@ -2422,7 +2407,7 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     exports = st.columns(2, gap="small")
                     export_options = dict(
                         source=result["source"], loaded_at=result["loaded_at"],
-                        target=effective_target, max_cost=result["max_cost"],
+                        target=effective_target, max_cost=active_max_cost,
                         sort_by=sort_filter, direction=sort_direction,
                         max_distance=max_distance, column_filters=query_filters, year=active_year,
                     )
@@ -2488,6 +2473,11 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                             except ValueError:
                                 pass
                             else:
+                                incoming_max = (incoming_filters.get("cost") or {}).get("max")
+                                incoming_max = None if incoming_max in (None, "") else float(incoming_max)
+                                if incoming_max != active_max_cost:
+                                    st.session_state.pop("vp_review_bundle", None)
+                                    st.session_state.pop("vp_live_confirm", None)
                                 filter_state["filters"] = incoming_filters
                                 target_value = candidates.effective_target({"breakeven": {
                                     "target": (incoming_filters.get("breakeven") or {}).get("target")}})
@@ -2588,7 +2578,8 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                         'depend on TradingView contract coverage and your market-data access.'
                     )
                     with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
-                        _render_selected_order(client, touch_session, chosen, result, broker_live)
+                        _render_selected_order(client, touch_session, chosen,
+                                               {**result, "max_cost": active_max_cost}, broker_live)
                     if len(checked_rows) > 1:
                         st.caption(
                             "ALL CHECKED SPREADS CAN BE SAVED TOGETHER. E*TRADE PREVIEW AND "
@@ -2739,7 +2730,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         symbol=symbol, call_put=call_put, expiry=expiry,
         buy_strike=buy_strike, sell_strike=sell_strike, quantity=quantity,
         limit_price=limit_price, min_reward_risk=min_reward_risk,
-        order_term=order_term, account_keys=account_keys,
+        order_term=order_term, account_keys=account_keys, max_cost=result.get("max_cost"),
     )
     review_bundle = st.session_state.get("vp_review_bundle")
     if isinstance(review_bundle, dict) and review_bundle.get("fingerprint") != fingerprint:
@@ -2961,7 +2952,7 @@ def _render_verti_phone_bootstrap(vault_key: str) -> None:
 @st.fragment(run_every=1)
 def _render_vertical_scan_continuation(client, touch_session) -> None:
     result = st.session_state.get("vp_scan_result") or {}
-    if (not result or result.get("scan_complete", True)
+    if (not result or result.get("max_cost") is not None or result.get("scan_complete", True)
             or result.get("symbol") != str(st.session_state.get("vp_symbol_value") or "").strip().upper()
             or not st.session_state.get("vp_auto_finish", True)
             or result.get("stopped_on_errors")
@@ -2993,7 +2984,8 @@ def render_verti_phone(client, touch_session, *, vault_key: str = "default") -> 
         return
     _render_verti_phone_fragment(client, touch_session, vault_key)
     result = st.session_state.get("vp_scan_result") or {}
-    if (result.get("symbol") == str(st.session_state.get("vp_symbol_value") or "").strip().upper()
+    if (result.get("max_cost") is None
+            and result.get("symbol") == str(st.session_state.get("vp_symbol_value") or "").strip().upper()
             and not result.get("scan_complete", True) and st.session_state.get("vp_auto_finish", True)
             and not result.get("stopped_on_errors")
             and not st.session_state.get("_vp_auto_scan_error")):
