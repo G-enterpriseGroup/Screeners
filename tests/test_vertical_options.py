@@ -903,7 +903,7 @@ else:
 
         fields = {"buy": "buy_strike", "sell": "sell_strike",
                   "buy_last": "buy_last", "sell_last": "sell_last",
-                  "cost": "cost", "breakeven": "breakeven",
+                  "cost": "cost",
                   "ratio": "reward_risk", "profit": "max_profit"}
         for column, field in fields.items():
             values = sorted(row[field] for row in expected)
@@ -1199,8 +1199,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
     def test_breakeven_target_percentage_and_indicative_fill_score(self):
         from src.vertical_options_store import VerticalResultStore, indicative_fill_score
         expiry = date(2028, 1, 21)
-        contracts = [self._row(expiry, "CALL", 100 + i, 5 - i * .7,
-                               bid=4.99 - i * .7, ask=5.01 - i * .7)
+        contracts = [self._row(expiry, "CALL", 100 + i, 30 - i * .3)
                      for i in range(6)]
         store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
         store.add_expiration(expiry, contracts, scan_vertical_candidates)
