@@ -376,7 +376,7 @@ def grid_page_rows(driver: webdriver.Chrome) -> dict:
               selectForeground:getComputedStyle(row.querySelector('.select')).color,
               annualBorder:getComputedStyle(row.querySelector('.select')).boxShadow,
               linkColors:[...row.querySelectorAll('.open')].map(link=>getComputedStyle(link).color),
-              lastColor:getComputedStyle(row.querySelector('.cell:last-child')).color,
+              lastColor:getComputedStyle(row.querySelectorAll('.cell')[10]).color,
               costColor:getComputedStyle(row.querySelector('.cost')).color,
               costBackground:getComputedStyle(row.querySelector('.cost')).backgroundColor
             });
@@ -428,10 +428,10 @@ def assert_row_colors(page: dict) -> None:
 
 def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
     """One visible Debit column retains numeric cost and its tiny pricing basis."""
-    assert len(snapshot["headers"]) == 13 and snapshot["headers"][9] == "Debit", snapshot
+    assert len(snapshot["headers"]) == 14 and snapshot["headers"][9] == "Debit" and snapshot["headers"][-1] == "FILL EST", snapshot
     assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
     for row in snapshot["rows"]:
-        assert row["cellCount"] == 13 and len(row["values"]) == 12, row
+        assert row["cellCount"] == 14 and len(row["values"]) == 13, row
         assert row["debitValue"] == row["values"][7] and row["debitValue"].startswith("$"), row
         assert row["fillDetail"] == row["values"][-1] == expected_fill, row
         assert row["fillFits"], row
@@ -688,6 +688,22 @@ def set_grid_range(driver, key: str, label: str, low: float, high: float) -> Non
             }
         """, label, low, high)
     in_grid(driver, enter)
+
+
+def set_grid_tolerance(driver: webdriver.Chrome, percent: float) -> None:
+    """Set the target percent band without modifying the existing target."""
+    def enter() -> None:
+        panel = driver.find_element(By.ID, "filter-panel")
+        if not panel.is_displayed() or not panel.find_elements(
+                By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN percent"]'):
+            driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="breakeven"]').click()
+        driver.execute_script("""
+            const input=document.querySelector('input[aria-label="BREAKEVEN percent"]');
+            input.value=String(arguments[0]);
+            input.dispatchEvent(new Event('input',{bubbles:true}));
+        """, percent)
+    in_grid(driver, enter)
+    grid_menu_action(driver, "breakeven", "DONE")
 
 
 def set_grid_target(driver: webdriver.Chrome, value: str, *, dismiss: bool = True) -> None:
@@ -1142,12 +1158,13 @@ def test() -> None:
             wait.until(lambda _: driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected())
             assert grid_target(driver) == ""
             set_grid_target(driver, "100")
+            set_grid_tolerance(driver, 100)
             target_csv = download_csv(driver, wait, downloads, "vo_export_qualified_csv",
                                       "SPY_vertical_qualified.csv")
             assert len(target_csv) == 60 and all(
                 float(row["Target Breakeven ($)"]) == 100 for row in target_csv
             ), target_csv[:2]
-            # Editing the moved target ranks without imposing an implicit range.
+            # With a 100% band, the target ranks the complete fixture without excluding matches.
             # A server acknowledgement must preserve the focused numeric field.
             def rapid_target() -> None:
                 panel = driver.find_element(By.ID, "filter-panel")
@@ -1179,7 +1196,7 @@ def test() -> None:
             ), rapid_csv[:2]
             set_grid_target(driver, "100")
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
-            set_grid_range(driver, "breakeven", "BREAKEVEN", 95, 105)
+            set_grid_tolerance(driver, 5)
             nearby = wait.until(lambda _: (page["rows"] if 3 < (page := grid_page_rows(driver))["total"] < 60 else False))
             be_values = [float(row["values"][8].replace('$', '').replace(',', '')) for row in nearby]
             assert all(95 <= value <= 105 for value in be_values), be_values
@@ -1192,7 +1209,7 @@ def test() -> None:
             distances = [abs(float(row["Breakeven ($)"]) - 100) for row in download_csv(
                 driver, wait, downloads, "vo_export_qualified_csv", "SPY_vertical_qualified.csv")]
             assert distances == sorted(distances), distances
-            set_grid_range(driver, "breakeven", "BREAKEVEN", 97, 103)
+            set_grid_tolerance(driver, 3)
             tighter = download_csv(driver, wait, downloads, "vo_export_qualified_csv",
                                    "SPY_vertical_qualified.csv")
             assert 0 < len(tighter) < len(filtered_near)
@@ -1239,7 +1256,7 @@ def test() -> None:
             ), best
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
-            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"], best
+            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"] and "FILL EST" in best["headers"], best
             assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
             assert best["height"] == 516, best
@@ -1255,7 +1272,7 @@ def test() -> None:
             wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
                 all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
             assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
-            print("Merged Debit / tiny ASK and SMART basis PASS (13 columns, 43px rows, no chain reload)", flush=True)
+            print("Merged Debit / tiny ASK and SMART basis PASS (14 columns, 43px rows, no chain reload)", flush=True)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
@@ -1801,15 +1818,25 @@ def test() -> None:
             toggle_put_column_filter(driver)
             wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
             set_grid_target(driver, "101")
+            # A 100% tolerance keeps the whole fixture while testing target
+            # persistence; a new scan deliberately resets to default ±5%.
+            set_grid_tolerance(driver, 100)
+            # Await the committed filter acknowledgement before hard refresh;
+            # otherwise the pending frontend message may be dropped on unload.
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
-            # A browser refresh restores the edited view without downloading
-            # chains. The explicit scan button resets the expiry/side filters.
+            # A browser refresh restores edited filters without chain downloads.
+            # Explicit rescan resets expiry/side filters and seeds ±5% from target.
             driver.refresh()
             form = wait.until(ready_scanner_form)
             wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            target_multi = wait.until(lambda _: grouped_page_if_ready(driver, 66, per_year=33))
+            assert all(101*.95-1e-8 <= float(row["values"][8].replace("$", "").replace(",", "")) <= 101*1.05+1e-8
+                       for row in target_multi["rows"]), target_multi
+            set_grid_tolerance(driver, 100)
             reset_multi = wait.until(lambda _: grouped_page_if_ready(driver, 120, per_year=60))
             assert {row["values"][1] for row in reset_multi["rows"]} == {"C", "P"}, reset_multi
             assert {datetime.strptime(row["values"][2], "%b-%d-%y").month

@@ -581,6 +581,10 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 app.session_state[prefix + "_live_confirm"] = True
                 edited = {**args["column_filters"], "side": ["CALL"],
                           "breakeven": {"target": 103}, "cost": {"min": 75, "max": 150}}
+                # Desktop migrates target-only updates to its requested ±5% band;
+                # Verti Phone preserves its original target-only ranking contract.
+                expected_edited = ({**edited, "breakeven": {"target": 103, "percent": 5.0}}
+                                   if prefix == "vo" else edited)
                 rank_caps = list(app.session_state["fixture_rank_caps"])
                 app.session_state["fixture_update"] = {
                     "scope": args["scope"], "column_filters": edited, "filter_revision": 1,
@@ -588,7 +592,7 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 app.run()
                 self.assertFalse(app.exception)
                 args = app.session_state["fixture_args"]
-                self.assertEqual(args["column_filters"], edited)
+                self.assertEqual(args["column_filters"], expected_edited)
                 self.assertLess(args["total_rows"], 6)
                 self.assertEqual(len(store), 9)
                 self.assertEqual(app.session_state["fixture_rank_caps"], rank_caps)
@@ -617,13 +621,14 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                         self.assertEqual(app.session_state["fixture_args"]["total_rows"], 0)
                 app.toggle(key=prefix + "_smart_fill").set_value(True).run()
                 self.assertFalse(app.exception)
-                self.assertEqual(app.session_state["fixture_args"]["column_filters"], edited)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], expected_edited)
                 self.assertNotIn("fixture_scan_calls", app.session_state)
                 self.assertTrue(all(cap is None for cap in app.session_state["fixture_rank_caps"]))
 
                 # Clearing MAX reveals the retained expensive pairs without downloading chains.
                 args = app.session_state["fixture_args"]
                 without_max = {**edited, "cost": {"min": 75}}
+                expected_without_max = {**expected_edited, "cost": {"min": 75}}
                 app.session_state["fixture_update"] = {
                     "scope": args["scope"], "column_filters": without_max, "filter_revision": 1,
                     "selected_ids": [selected_id], "revision": 1}
@@ -632,7 +637,7 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 app.toggle(key=prefix + "_smart_fill").set_value(False).run()
                 self.assertFalse(app.exception)
                 args = app.session_state["fixture_args"]
-                self.assertEqual(args["column_filters"], without_max)
+                self.assertEqual(args["column_filters"], expected_without_max)
                 self.assertEqual(args["total_rows"], 6)
                 self.assertIsNone(app.session_state["fixture_export_cap"])
                 exported = list(csv.DictReader(io.StringIO(app.session_state["fixture_csv"])))
@@ -643,7 +648,7 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 restored.session_state["fixture_restore_only"] = True
                 restored.run()
                 self.assertFalse(restored.exception)
-                self.assertEqual(restored.session_state["fixture_args"]["column_filters"], without_max)
+                self.assertEqual(restored.session_state["fixture_args"]["column_filters"], expected_without_max)
 
                 # A user-triggered scan remains uncapped, with fresh display defaults.
                 app.session_state["fixture_new_raw"] = True
