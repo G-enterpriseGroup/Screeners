@@ -38,6 +38,8 @@ _SORTS = {
     "BUY STRIKE": (("buy", False),), "SELL STRIKE": (("sell", False),),
     "BUY LAST": (("buy_last", False),), "SELL LAST": (("sell_last", False),),
     "SPREAD WIDTH": (("width", False),), "FILL QUALITY": (("grade", False),),
+    "FILL EST": (("fill_est", False),), "TICKER": (("id", False),),
+    "TYPE": (("side", False),),
     "YEAR + FILL": (("substr(expiry, 1, 4)", False), ("grade", False),
                     ("distance", False), ("cost", False), ("ratio", True),
                     ("expiry", False), ("side", False), ("buy", False),
@@ -50,11 +52,41 @@ _DETAILS = (
 _NUMERIC_FILTERS = {
     "buy": "buy", "sell": "sell", "buy_last": "buy_last",
     "sell_last": "sell_last", "cost": "cost", "breakeven": "breakeven",
-    "ratio": "ratio", "profit": "profit",
+    "ratio": "ratio", "profit": "profit", "fill_scale": "fill_est",
 }
 _CHOICE_FILTERS = {
     "side": "side", "expiry": "expiry", "basis": "json_extract(details, '$[5]')",
 }
+
+# This is a quote-aggressiveness heuristic, NOT a calibrated fill probability.
+# Its 5..95 scale is monotonic from the executable spread BID to natural ASK.
+_FILL_EST_SQL = (
+    "CASE WHEN json_extract(details, '$[6]') = 1"
+    " AND json_extract(details, '$[7]') IS NOT NULL"
+    " AND json_extract(details, '$[9]') IS NOT NULL"
+    " AND CAST(json_extract(details, '$[9]') AS REAL)"
+    " > CAST(json_extract(details, '$[7]') AS REAL)"
+    " THEN 5.0 + 90.0 * min(1.0, max(0.0,"
+    " (cost / 100.0 - CAST(json_extract(details, '$[7]') AS REAL))"
+    " / (CAST(json_extract(details, '$[9]') AS REAL)"
+    " - CAST(json_extract(details, '$[7]') AS REAL))))"
+    " ELSE NULL END"
+)
+_NUMERIC_FILTERS["fill_scale"] = _FILL_EST_SQL
+
+
+def indicative_fill_score(row: dict[str, Any]) -> float | None:
+    """Uncalibrated limit aggressiveness score; unavailable for unquoted/unsafe spreads."""
+    if not row.get("orderable"):
+        return None
+    try:
+        bid, ask, debit = (float(row[field]) for field in
+                           ("spread_bid", "spread_ask", "debit"))
+    except (TypeError, ValueError, OverflowError, KeyError):
+        return None
+    if not all(math.isfinite(value) for value in (bid, ask, debit)) or ask <= bid:
+        return None
+    return 5.0 + 90.0 * min(1.0, max(0.0, (debit - bid) / (ask - bid)))
 
 
 # ==============================
@@ -295,9 +327,25 @@ class VerticalResultStore:
                 raise ValueError("Invalid column filters.")
             for field, selected in column_filters.items():
                 if field in _NUMERIC_FILTERS:
-                    allowed = {"min", "max", "target"} if field == "breakeven" else {"min", "max"}
+                    allowed = {"target", "percent"} if field == "breakeven" else {"min", "max"}
                     if not isinstance(selected, dict) or set(selected) - allowed:
                         raise ValueError("Invalid numeric column filter.")
+                    if field == "breakeven":
+                        percent = selected.get("percent", 5.0)
+                        try:
+                            percent = float(percent)
+                        except (TypeError, ValueError, OverflowError) as exc:
+                            raise ValueError("Invalid breakeven tolerance.") from exc
+                        if (isinstance(selected.get("percent"), bool) or
+                                not math.isfinite(percent) or not 0 <= percent <= 100):
+                            raise ValueError("Invalid breakeven tolerance (0–100%).")
+                        if target is not None:
+                            tolerance = target * percent / 100.0
+                            clauses.append("breakeven>=?")
+                            args.append(target - tolerance - 1e-8)
+                            clauses.append("breakeven<=?")
+                            args.append(target + tolerance + 1e-8)
+                        continue
                     bounds = {}
                     for limit in ("min", "max"):
                         value = selected.get(limit)
@@ -313,10 +361,10 @@ class VerticalResultStore:
                     if "min" in bounds and "max" in bounds and bounds["min"] > bounds["max"]:
                         clauses.append("1=0")
                     if "min" in bounds:
-                        clauses.append(f"{_NUMERIC_FILTERS[field]}>=?")
+                        clauses.append(f"{_NUMERIC_FILTERS[field] if field != 'fill_scale' else _FILL_EST_SQL}>=?")
                         args.append(bounds["min"] - 1e-8)
                     if "max" in bounds:
-                        clauses.append(f"{_NUMERIC_FILTERS[field]}<=?")
+                        clauses.append(f"{_NUMERIC_FILTERS[field] if field != 'fill_scale' else _FILL_EST_SQL}<=?")
                         args.append(bounds["max"] + 1e-8)
                 elif field == "ticker" or field in _CHOICE_FILTERS:
                     if not isinstance(selected, list) or len(selected) > 1000 or any(
@@ -373,6 +421,9 @@ class VerticalResultStore:
         for column, reverse in _SORTS[sort_by]:
             if column == "distance":
                 column = distance
+            if column == "fill_est":
+                column = _FILL_EST_SQL
+                terms.append(f"({column} IS NULL) ASC")
             if column in {"buy_last", "sell_last"}:
                 terms.append(f"({column} IS NULL) {direction}")
             terms.append(f"{column} {'DESC' if reverse != (direction == 'DESC') else 'ASC'}")
