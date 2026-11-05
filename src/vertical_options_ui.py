@@ -59,7 +59,7 @@ from src.vertical_options import (
     smart_fill_ladder,
     validate_vertical,
 )
-from src.vertical_options_store import VerticalResultStore
+from src.vertical_options_store import VerticalResultStore, indicative_fill_score
 from src.risk_sizing_ui_v9 import _select_true_cash
 
 
@@ -277,6 +277,12 @@ _VERTICAL_OPTIONS_CSS = """
     min-height:0!important;
     line-height:0!important;
     overflow:hidden!important;
+}
+/* Pricing mode: center the native track vertically between its two descriptions. */
+.st-key-vertical_options_workspace .vo-mode-guide{min-height:32px;}
+.st-key-vertical_options_workspace .st-key-vo_smart_fill{
+    display:flex!important;align-items:center!important;justify-content:center!important;
+    min-height:32px!important;margin:0!important;padding:0!important;
 }
 /* Same native switch as Risk Sizing; labels flank the unchanged track. */
 .st-key-vertical_options_workspace .st-key-vo_smart_fill label{
@@ -1449,6 +1455,11 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exc
         "optionstrat_url": _optionstrat_url(candidate),
         "tradingview_url": _tradingview_spread_url(candidate, exchange=tv_exchange),
         "expiry_detail": _expiry_time_label(candidate["expiry"]),
+        "fill_market": {
+            "bid": candidate.get("spread_bid"), "mid": candidate.get("spread_mid"),
+            "ask": candidate.get("spread_ask"), "debit": candidate.get("debit"),
+            "estimate": indicative_fill_score(candidate),
+        },
         "values": [
             candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
             f"{candidate['buy_strike']:g}", f"{candidate['sell_strike']:g}",
@@ -1468,6 +1479,7 @@ _QUALIFIED_SORT_FIELDS = (
     "FILL + TARGET", "R:R", "COST", "BREAKEVEN", "TARGET DISTANCE",
     "MAX PROFIT", "EXPIRATION", "BUY STRIKE", "SELL STRIKE",
     "BUY LAST", "SELL LAST", "SPREAD WIDTH", "FILL QUALITY",
+    "TICKER", "TYPE", "FILL EST",
 )
 
 
@@ -1486,6 +1498,16 @@ def _sort_qualified_spreads(
         key = lambda row: abs(row["breakeven"] - target) if target is not None else 0
     elif sort_by == "FILL QUALITY":
         key = lambda row: row["grade"]
+    elif sort_by == "FILL EST":
+        # Match SQL's NULLS LAST in either direction.
+        return sorted(
+            sorted(rows, key=lambda row: row["id"]),
+            key=lambda row: (
+                indicative_fill_score(row) is None,
+                -(indicative_fill_score(row) or 0) if direction == "DESC"
+                else (indicative_fill_score(row) or 0),
+            ),
+        )
     else:
         field = {
             "R:R": "reward_risk", "COST": "cost",
@@ -1493,6 +1515,7 @@ def _sort_qualified_spreads(
             "EXPIRATION": "expiry", "BUY STRIKE": "buy_strike",
             "SELL STRIKE": "sell_strike", "BUY LAST": "buy_last",
             "SELL LAST": "sell_last", "SPREAD WIDTH": "width",
+            "TICKER": "symbol", "TYPE": "call_put",
         }[sort_by]
         key = lambda row: (
             row.get(field) is None,
@@ -1716,7 +1739,8 @@ _PRESENTATION_DEFAULTS = {
     "vo_min_reward_risk": "2",
     "vo_results_view": "BEST PER YEAR", "vo_be_filter_enabled": False,
     "vo_be_range_percent": 5.0, "vo_all_pair_sort": "FILL + TARGET",
-    "vo_all_pair_direction": "ASC", "vo_all_pair_expiry": "ALL",
+    "vo_all_pair_direction": "ASC", "vo_best_pair_sort": "YEAR + FILL",
+    "vo_best_pair_direction": "ASC", "vo_all_pair_expiry": "ALL",
     "vo_all_pair_side": "CALL + PUT", "vo_auto_finish": True,
 }
 
@@ -1797,7 +1821,9 @@ def _default_column_filters(expirations: list[str], target_text: str = "") -> di
     years = set(sorted({expiry[:4] for expiry in available})[-2:])
     filters: dict[str, Any] = {"expiry": [expiry for expiry in available if expiry[:4] in years]}
     if str(target_text or "").strip().casefold() not in {"", _NO_BREAKEVEN}:
-        filters["breakeven"] = {"target": _entered_price(target_text, "target breakeven")}
+        filters["breakeven"] = {
+            "target": _entered_price(target_text, "target breakeven"), "percent": 5.0,
+        }
     return filters
 
 
@@ -1917,7 +1943,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
             mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(
-                [1.0, .4, 1.0, 2.0], gap="small", vertical_alignment="center"
+                [1.05, .50, 1.25, 1.85], gap="small", vertical_alignment="center"
             )
             with mode_guide_col:
                 st.html(
@@ -2280,7 +2306,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
                 "Snapshot age does not establish when an individual option last traded. "
                 "Quotes may be delayed; no reference price guarantees execution or a fill. "
-                "Set an optional ranking target or minimum/maximum in the BREAKEVEN column. "
+                "BREAKEVEN TARGET ±% filters prices around your target (default ±5%). "
+                "For example $250 ±5% selects $237.50–$262.50. "
+                "FILL EST is an uncalibrated quote-position indicator, not a historical fill probability; "
+                "bid≈5%, midpoint≈50%, ask≈95%, with no estimate for unquoted spreads. "
                 "Set cost minimum/maximum in Debit; these filter all retained results."
             ))
             candidates = result["candidates"]
@@ -2329,8 +2358,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     help="BEST PER YEAR: every eligible result grouped and ranked within its calendar year, with the top pick highlighted. ALL QUALIFIED: the same complete set ranked across all years. Both views use one scrollable table without downloading chains again.",
                 )
                 expiry_filter, side_filter = "ALL", "CALL + PUT"
-                sort_filter = "YEAR + FILL" if view == "BEST PER YEAR" else st.session_state["vo_all_pair_sort"]
-                sort_direction = "ASC" if view == "BEST PER YEAR" else st.session_state["vo_all_pair_direction"]
+                sort_filter = st.session_state[
+                    "vo_best_pair_sort" if view == "BEST PER YEAR" else "vo_all_pair_sort"
+                ]
+                sort_direction = st.session_state[
+                    "vo_best_pair_direction" if view == "BEST PER YEAR" else "vo_all_pair_direction"
+                ]
                 all_matching_count = candidates.count(
                     max_distance=max_distance, column_filters=query_filters,
                 )
@@ -2411,7 +2444,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
                     column_filters=column_filters, filter_choices=filter_choices,
                     sort_by=sort_filter, sort_direction=sort_direction,
-                    sortable=view == "ALL QUALIFIED", has_target=effective_target is not None,
+                    sortable=True, has_target=effective_target is not None,
                     filter_ack_revision=int(filter_state["revision"]),
                     key="vo_spread_scroll_" + scope, default=None,
                 )
@@ -2437,8 +2470,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         incoming_direction = selected_update.get("sort_direction")
                         if (incoming_sort in _QUALIFIED_SORT_FIELDS
                                 and incoming_direction in {"ASC", "DESC"}):
-                            for sort_key, value in (("vo_all_pair_sort", incoming_sort),
-                                                    ("vo_all_pair_direction", incoming_direction)):
+                            sort_prefix = "vo_best_pair" if view == "BEST PER YEAR" else "vo_all_pair"
+                            for sort_key, value in ((sort_prefix + "_sort", incoming_sort),
+                                                    (sort_prefix + "_direction", incoming_direction)):
                                 if st.session_state[sort_key] != value:
                                     st.session_state[sort_key] = value
                                     _remember_presentation(sort_key)
@@ -2497,9 +2531,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     "Column menus filter and sort the retained universe. Filtering, sorting and "
                     "target edits never download chains. New scans initially show all expiration "
                     "dates in the latest two available years; clear EXP / YEAR to see all years. The "
-                    "BREAKEVEN target ranks proximity; MIN / MAX explicitly limit values. "
+                    "BREAKEVEN TARGET ±% selects a price band (default ±5%); no separate MIN/MAX. "
                     "Scrolling reuses stored results. BEST PER YEAR "
-                    "shows every match grouped and ranked within its year; its year buttons "
+                    "defaults to matches grouped by year; column sorts can reorder the table; its year buttons "
                     "show all matches for the selected year. ALL QUALIFIED ranks the same matches "
                     "across all years. The top pick in each year is ranked inside the active filters. "
                     "C = CALL; P = PUT. Green = CALL; red = PUT. Cost / max loss is bright red; "
