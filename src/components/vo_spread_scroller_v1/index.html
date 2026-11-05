@@ -367,6 +367,32 @@ function makeRow(row,index){
   if(KEYS[i]==="basis")continue;
   const cell=document.createElement("span");cell.className="cell";
   cell.textContent=i===1&&values[i]==="CALL"?"C":i===1&&values[i]==="PUT"?"P":String(values[i]??"—");cell.title=HEAD[i+2]+": "+String(values[i]??"—");
+  if(i===12){
+   const market=row.fill_market||{},bid=Number(market.bid),ask=Number(market.ask);
+   const debit=Number(market.debit),estimate=Number(market.estimate);
+   const available=market.estimate!==null&&market.estimate!==undefined&&
+    market.bid!==null&&market.ask!==null&&Number.isFinite(bid)&&Number.isFinite(ask)&&
+    Number.isFinite(debit)&&Number.isFinite(estimate)&&ask>bid;
+   const ruler=document.createElement("div");ruler.className="fill-ruler";
+   const labels=document.createElement("div");labels.className="fill-labels";
+   for(const word of ["BID","MID","ASK"]){const tag=document.createElement("span");tag.textContent=word;labels.appendChild(tag);}
+   const track=document.createElement("div");track.className="fill-track";
+   const odds=document.createElement("small");odds.className="fill-estimate";
+   if(available){
+    const marker=document.createElement("i");marker.className="fill-marker";
+    marker.style.left=(100*Math.max(0,Math.min(1,(debit-bid)/(ask-bid))))+"%";
+    track.appendChild(marker);odds.textContent="EST ≈"+Math.round(estimate)+"%";
+    const mid=Number(market.mid);
+    cell.title="Spread BID $"+bid.toFixed(2)+" / MID "+(Number.isFinite(mid)?"$"+mid.toFixed(2):"—")+
+     " / ASK $"+ask.toFixed(2)+" / Debit $"+debit.toFixed(2)+
+     ". Indicative quote-position estimate, NOT a calibrated fill probability; orders and quotes may differ.";
+   }else{
+    odds.textContent="NO EST";odds.classList.add("unavailable");
+    cell.title="No valid quoted market / orderable price; fill probability unavailable.";
+   }
+   ruler.append(labels,track,odds);cell.classList.add("fill-scale");cell.replaceChildren(ruler);
+   line.appendChild(cell);continue;
+  }
   if(i===7){
    cell.classList.add("cost");
    const debit=document.createElement("span");debit.className="debit-value";debit.textContent=cell.textContent;
