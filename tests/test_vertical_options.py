@@ -173,7 +173,7 @@ class VerticalOptionsTests(unittest.TestCase):
         with patch.object(vo.st, "session_state", state):
             vo._restore_presentation()
             self.assertEqual(state["vo_target_breakeven"], "")
-            self.assertEqual(state["vo_max_cost"], "")
+            self.assertNotIn("vo_max_cost", state)
             state["vo_target_breakeven"] = "125.50"
             vo._remember_scan_inputs()
             vo._restore_presentation()
@@ -232,7 +232,7 @@ class VerticalOptionsTests(unittest.TestCase):
             self.assertFalse(state["vo_be_filter_enabled"])
             self.assertEqual(state["vo_be_range_percent"], 5)
             self.assertEqual(state["vo_target_breakeven"], "")
-            self.assertEqual(state["vo_max_cost"], "")
+            self.assertNotIn("vo_max_cost", state)
             self.assertEqual(state["vo_min_reward_risk"], "2")
             chosen = {"vo_results_view": "ALL QUALIFIED", "vo_be_filter_enabled": True,
                       "vo_be_range_percent": 0.0, "vo_all_pair_side": "PUT",
@@ -955,10 +955,6 @@ else:
                          {"expiry": latest, "breakeven": {"target": 1234.5}})
         self.assertEqual(_default_column_filters(["2028-01-21"], "103"),
                          {"expiry": ["2028-01-21"], "breakeven": {"target": 103}})
-        self.assertEqual(_default_column_filters(expirations, "$1,234.50", 150),
-                         {"expiry": latest, "breakeven": {"target": 1234.5}, "cost": {"max": 150}})
-        self.assertEqual(_default_column_filters([], max_cost=150),
-                         {"expiry": [], "cost": {"max": 150}})
         self.assertEqual(_default_column_filters(["2027-12-17", "2027-01-15", "2027-06-18"]),
                          {"expiry": ["2027-01-15", "2027-06-18", "2027-12-17"]})
         self.assertEqual(expirations, original)
@@ -1048,7 +1044,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         app = AppTest.from_string(source, default_timeout=15).run()
         self.assertFalse(app.exception)
         self.assertEqual([field.label for field in app.text_input],
-                         ["Ticker", "Max Cost", "MIN RISK:REWARD 1:"])
+                         ["Ticker", "MIN RISK:REWARD 1:"])
         args = app.session_state["fixture_component_args"]
         self.assertEqual(args["column_filters"], {"expiry": ["2028-01-15", "2029-01-15"]})
         self.assertEqual(args["total_rows"], 40)

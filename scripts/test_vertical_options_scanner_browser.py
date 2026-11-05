@@ -800,7 +800,7 @@ def test() -> None:
             driver.get(base)
             wait = WebDriverWait(driver, 60)
 
-            expected_labels = ["Max Cost", "MIN RISK:REWARD 1:"]
+            expected_labels = ["MIN RISK:REWARD 1:"]
             def ready_scanner_form(_):
                 # Streamlit can mount stForm before its inputs hydrate on CI.
                 apps = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stApp"]')
@@ -818,10 +818,9 @@ def test() -> None:
                 return forms[0] if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("placeholder") == "Not provided"
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
             optional_field_styles = driver.execute_script("""
-                return ['Ticker','Max Cost'].map(label=>{
+                return ['Ticker'].map(label=>{
                     const input=document.querySelector('input[aria-label="'+label+'"]');
                     const text=getComputedStyle(input),placeholder=getComputedStyle(input,'::placeholder');
                     return {label,background:text.backgroundColor,fontSize:text.fontSize,
@@ -874,7 +873,7 @@ def test() -> None:
                 geometry = driver.execute_script("""
                     const rect = el => { const r=el.getBoundingClientRect();
                         return {top:r.top,bottom:r.bottom,height:r.height,left:r.left,right:r.right}; };
-                    const inputs = ['Ticker','Max Cost','MIN RISK:REWARD 1:'].map(name =>
+                    const inputs = ['Ticker','MIN RISK:REWARD 1:'].map(name =>
                         document.querySelector('input[aria-label="'+name+'"]'));
                     const labels = inputs.map(input => input.closest('[data-testid="stTextInput"]')
                         .querySelector('[data-testid="stWidgetLabel"]'));
@@ -1002,15 +1001,6 @@ def test() -> None:
             assert "PUT WALL $90.00" in driver.find_element(By.TAG_NAME, "body").text
             assert not [item for item in events(event_path) if item["event"] == "chain"]
             form = wait.until(ready_scanner_form)
-            cost_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
-            cost_input.send_keys(SELECT_ALL, "a")
-            cost_input.send_keys("500")
-            assert driver.execute_script("""
-                return ['Max Cost'].every(label=>{
-                    const input=document.querySelector('input[aria-label="'+label+'"]');
-                    return input.value!==''&&getComputedStyle(input).fontSize==='14px';
-                });
-            """)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
 
             wait.until(lambda _: checked_count(driver) == 0)
@@ -1512,19 +1502,13 @@ def test() -> None:
             # Loading a list resets the prior ticker's result without scanning.
             assert driver.find_elements(By.CSS_SELECTOR, '[data-testid="stSelectbox"]')
             assert not grid_is_mounted(driver)
-            # Clearing cost restores the no-filter default; target is column-only.
-            # The scan must not derive a BE ceiling from spot or a wall.
+            # Both cost and target are column-only; new scans retain every
+            # qualified pair without deriving a ceiling from spot or a wall.
             form = wait.until(ready_scanner_form)
-            for label in ("Max Cost",):
-                field = form.find_element(By.CSS_SELECTOR, f'input[aria-label="{label}"]')
-                field.click()
-                field.send_keys(SELECT_ALL, "a")
-                field.send_keys(Keys.BACKSPACE)
-                assert field.get_attribute("value") == "", (label, field.get_attribute("value"))
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "MAX COST ANY" in driver.find_element(By.TAG_NAME, "body").text)
+            wait.until(lambda _: grid_is_mounted(driver))
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
             assert not driver.find_elements(By.CSS_SELECTOR, '.st-key-vo_be_filter_enabled'), (
                 "An unused breakeven target reserved filter space"
             )
@@ -1543,14 +1527,10 @@ def test() -> None:
             assert grid_snapshot(driver)["rows"]
             assert not any(item["event"] == "place" for item in events(event_path))
 
-            # A cost ceiling remains a scan input; target edits use the column.
-            form = wait.until(ready_scanner_form)
-            cost_input = form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
-            cost_input.click()
-            cost_input.send_keys(SELECT_ALL, "a")
-            cost_input.send_keys("150")
-            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: "MAX COST $150.00" in driver.find_element(By.TAG_NAME, "body").text)
+            # Debit MAX is the sole cost control. Changing it filters retained
+            # rows without another scan, and exports carry the active ceiling.
+            chain_before_cost = len([item for item in events(event_path) if item["event"] == "chain"])
+            set_grid_range(driver, "cost", "Debit", "", 150)
             def entered_cost_in_column():
                 panel = driver.find_element(By.ID, "filter-panel")
                 if not panel.is_displayed():
@@ -1563,9 +1543,11 @@ def test() -> None:
                                          "MSFT_vertical_qualified.csv")
             assert manual_target and all(float(row["Target Breakeven ($)"]) == 103
                                          for row in manual_target), manual_target[:2]
-            assert driver.find_element(By.XPATH, '//label[contains(., "BEST PER YEAR")]//input').is_selected()
-            assert "MAX COST" in driver.find_element(By.TAG_NAME, "body").text
-            assert driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == "150"
+            assert all(float(row["Max Cost Filter ($)"]) == 150
+                       and float(row["Cost Per Contract ($)"]) <= 150 for row in manual_target)
+            assert driver.find_element(By.XPATH, '//label[contains(., "ALL QUALIFIED")]//input').is_selected()
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
+            assert len([item for item in events(event_path) if item["event"] == "chain"]) == chain_before_cost
             assert not any(item["event"] == "place" for item in events(event_path))
 
             # A manual target belongs to its ticker. Another ticker keeps the
@@ -1669,7 +1651,7 @@ def test() -> None:
             ticker.send_keys("MASSIVE", Keys.TAB)
             form = wait.until(ready_scanner_form)
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]').get_attribute("value") == ""
+            assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: "10,100 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "SCANNING ALL YEARS //" not in driver.find_element(By.TAG_NAME, "body").text)
