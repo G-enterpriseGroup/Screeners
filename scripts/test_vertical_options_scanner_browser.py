@@ -224,8 +224,11 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
         for frame in driver.find_elements(By.TAG_NAME, "iframe"):
             try:
+                if not frame.is_displayed():
+                    continue  # Ignore a hidden old grid during a rerun.
                 driver.switch_to.frame(frame)
-                if driver.find_elements(By.ID, "scroll"):
+                scroll = driver.find_elements(By.ID, "scroll")
+                if scroll and scroll[0].is_displayed():
                     return True
             except Exception:
                 pass
@@ -244,9 +247,10 @@ def in_grid(driver: webdriver.Chrome, callback):
                     time.sleep(.1)
                     continue
                 return result
-            except StaleElementReferenceException:
-                # A Streamlit fragment rerun may replace the iframe between
-                # lookup and click; re-enter the current component once mounted.
+            except (StaleElementReferenceException, ElementNotInteractableException,
+                    ElementClickInterceptedException):
+                # Old component frames/overlays can intercept a click during a
+                # rerun. Retry only these transient DOM conditions.
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.1)
