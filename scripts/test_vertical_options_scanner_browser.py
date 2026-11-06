@@ -259,6 +259,16 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
 
 
+def visible_switch_label(driver: webdriver.Chrome, key: str):
+    """Select a mounted, visible switch rather than a retiring component."""
+    def locate(_):
+        elements = driver.find_elements(By.CSS_SELECTOR, f".st-key-{key} label")
+        return next((item for item in reversed(elements)
+                     if item.is_displayed() and item.find_elements(
+                         By.CSS_SELECTOR, 'input[role="switch"]')), False)
+    return WebDriverWait(driver, 20).until(locate)
+
+
 def active_ticker(driver: webdriver.Chrome):
     """Ignore retiring hidden Streamlit inputs after a process restart."""
     def visible(_):
@@ -998,7 +1008,7 @@ def test() -> None:
                 # An actual hover followed by leaving must keep the same colors.
                 def hover_and_leave(_):
                     try:
-                        target = driver.find_element(By.CSS_SELECTOR, f".st-key-{key} label")
+                        target = visible_switch_label(driver, key)
                         stable_note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
                         ActionChains(driver).move_to_element(target).move_to_element(stable_note).perform()
                         return True
@@ -1009,7 +1019,7 @@ def test() -> None:
                 print("Native switch resting contrast PASS", key, appearance, flush=True)
             assert_switch_visibility(False)
             assert_switch_visibility(False, "risk_capital_source_tactical")
-            driver.find_element(By.CSS_SELECTOR, ".st-key-risk_capital_source_tactical label").click()
+            visible_switch_label(driver, "risk_capital_source_tactical").click()
             assert_switch_visibility(True, "risk_capital_source_tactical")
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
@@ -1030,7 +1040,7 @@ def test() -> None:
             leave_button.click()
             wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected())
-            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            visible_switch_label(driver, "vo_smart_fill").click()
             wait.until(lambda _: pricing_preference_in_browser(driver) == "NORMAL")
             assert_switch_visibility(False)
             form = wait.until(ready_scanner_form)
@@ -1305,11 +1315,11 @@ def test() -> None:
                 assert_exact_tradingview_formula(row)
 
             chain_reads = sum(event["event"] == "chain" for event in events(event_path))
-            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            visible_switch_label(driver, "vo_smart_fill").click()
             smart = wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
                 all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
             assert_merged_debit(smart, "ASK")
-            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            visible_switch_label(driver, "vo_smart_fill").click()
             wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
                 all(row["fillDetail"] in {"LIMIT","MID"} for row in snapshot["rows"]) else False))
             assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
