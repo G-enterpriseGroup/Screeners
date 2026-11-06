@@ -423,6 +423,12 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             debitValue:row.querySelector('.debit-value')?.textContent,
             fillDetail:row.querySelector('.fill-detail')?.textContent,
             fillRuler:row.querySelector('.fill-ruler')?.textContent,
+            fillPrices:[...row.querySelectorAll('.fill-labels > span')].map(el=>({
+                value:el.textContent,accessible:el.getAttribute('aria-label'),
+                fontSize:getComputedStyle(el).fontSize
+            })),
+            fillEstimateFont:row.querySelector('.fill-estimate')?
+                getComputedStyle(row.querySelector('.fill-estimate')).fontSize:null,
             fillFits:(()=>{
                 const cell=row.querySelector('.cost'),value=cell?.querySelector('.debit-value'),
                       detail=cell?.querySelector('.fill-detail');
@@ -555,7 +561,14 @@ def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
         assert row["stacked"][2]["sell"] == expected_oi(row["values"][4]), row
         assert row["debitValue"] == row["values"][7] and row["debitValue"].startswith("$"), row
         assert row["fillDetail"] == row["values"][-1] and row["fillDetail"] in allowed, row
-        assert all(word in (row.get("fillRuler") or "") for word in ("BID", "MID", "ASK", "DEBIT")), row
+        assert "DEBIT" in (row.get("fillRuler") or ""), row
+        assert not any(word in row["fillRuler"] for word in ("BID", "MID", "ASK")), row
+        prices = row["fillPrices"]
+        assert len(prices) == 3 and row["fillEstimateFont"] == "10px", row
+        for index, field in enumerate(("BID", "MID", "ASK")):
+            price = prices[index]
+            assert price["fontSize"] == "11px" and price["accessible"] == field + " " + price["value"], row
+            assert price["value"] == "—" or re.fullmatch(r"-?\d+\.\d{2}", price["value"]), row
         assert row["fillFits"], row
 
 
