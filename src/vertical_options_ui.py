@@ -2969,27 +2969,6 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
 
 
-@st.fragment(run_every=.5)
-def _render_vertical_options_bootstrap(vault_key: str) -> None:
-    """Retry pricing restoration; stop polling on completion or timeout.
-
-    Component replies can race a top-tab rerun. A transient missing reply must
-    not leave the workspace cut off until the user switches tabs manually.
-    This bootstrap never downloads chains or touches broker orders.
-    """
-    started = st.session_state.setdefault("_vo_bootstrap_started", time.monotonic())
-    pricing_ready = _hydrate_vertical_options_pricing()
-    if pricing_ready:
-        st.session_state["_vo_workspace_ready"] = vault_key
-        st.rerun()
-    if time.monotonic() - started >= 12:
-        st.session_state["_vo_bootstrap_failed"] = True
-        st.rerun()  # Remove the polling fragment and show a stable retry state.
-        return
-    st.caption("RESTORING VERTICAL OPTIONS PREFERENCES…")
-
-
-
 @st.fragment(run_every=1)
 def _render_vertical_scan_continuation(client, touch_session) -> None:
     result = st.session_state.get("vo_scan_result") or {}
