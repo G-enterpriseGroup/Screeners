@@ -59,14 +59,14 @@ _CHOICE_FILTERS = {
 }
 
 # This is a quote-aggressiveness heuristic, NOT a calibrated fill probability.
-# Its 5..95 scale is monotonic from the executable spread BID to natural ASK.
+# Its 0..100 quote-position scale is monotonic from the executable spread BID to natural ASK.
 _FILL_EST_SQL = (
     "CASE WHEN json_extract(details, '$[6]') = 1"
     " AND json_extract(details, '$[7]') IS NOT NULL"
     " AND json_extract(details, '$[9]') IS NOT NULL"
     " AND CAST(json_extract(details, '$[9]') AS REAL)"
     " > CAST(json_extract(details, '$[7]') AS REAL)"
-    " THEN 5.0 + 90.0 * min(1.0, max(0.0,"
+    " THEN 100.0 * min(1.0, max(0.0,"
     " (cost / 100.0 - CAST(json_extract(details, '$[7]') AS REAL))"
     " / (CAST(json_extract(details, '$[9]') AS REAL)"
     " - CAST(json_extract(details, '$[7]') AS REAL))))"
@@ -86,7 +86,7 @@ def indicative_fill_score(row: dict[str, Any]) -> float | None:
         return None
     if not all(math.isfinite(value) for value in (bid, ask, debit)) or ask <= bid:
         return None
-    return 5.0 + 90.0 * min(1.0, max(0.0, (debit - bid) / (ask - bid)))
+    return 100.0 * min(1.0, max(0.0, (debit - bid) / (ask - bid)))
 
 
 # ==============================

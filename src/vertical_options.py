@@ -262,6 +262,7 @@ def scan_vertical_candidates(
     min_reward_risk: float = _MIN_REWARD_RISK,
     candidate_sink: Callable[[dict[str, Any]], None] | None = None,
     progress: Callable[[int], None] | None = None,
+    quote_pricer: Callable[..., dict[str, Any] | None] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
 
@@ -349,7 +350,7 @@ def scan_vertical_candidates(
                     continue
                 buy, sell = (lower, higher) if side == "CALL" else (higher, lower)
                 width = round(higher["strike"] - lower["strike"], 6)
-                price = price_vertical_quote(
+                price = (quote_pricer or price_vertical_quote)(
                     buy_last=buy["last"], sell_last=sell["last"],
                     buy_bid=buy["bid"], buy_ask=buy["ask"],
                     sell_bid=sell["bid"], sell_ask=sell["ask"],

@@ -54,16 +54,19 @@ from src.vertical_options import (
     extract_order_id,
     new_vertical_client_order_id,
     preview_details,
-    price_vertical_quote,
-    scan_vertical_candidates,
     smart_fill_ladder,
     validate_vertical,
 )
 from src.vertical_options_store import VerticalResultStore, indicative_fill_score
+from src.vertical_options_execution import (
+    POLICY_VERSION, price_vertical_quote, scan_vertical_candidates,
+    quote_ruler, refreshed_ticket,
+)
+from streamlit.errors import StreamlitAPIException
 from src.risk_sizing_ui_v9 import _select_true_cash
 
 
-_PREVIEW_FRESH_SECONDS = 150.0
+_PREVIEW_FRESH_SECONDS = 30.0
 _DEFAULT_ACCOUNT_SUFFIX = "5474"
 _SCAN_CACHE_SECONDS = 300.0
 _SCAN_BATCH_SECONDS = 4.0  # Yield between requests; a single source request may take longer.
@@ -434,6 +437,10 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-vertical_options_workspace .vo-help:hover>div,
 .st-key-vertical_options_workspace .vo-help:focus-within>div{display:block;}
 .st-key-vertical_options_workspace .vo-mode-help:focus-within .vo-mode-tooltip{visibility:visible;opacity:1;}
+/* Only the pricing switch is a two-mode selector, not an ON/OFF control. */
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label::after{content:none!important;display:none!important;}
+.st-key-vertical_options_workspace .vo-mode-help--normal{margin-left:0;margin-right:5px;}
+.st-key-vertical_options_workspace .st-key-vo_smart_fill [data-testid="stTooltipIcon"]{display:none!important;}
 @media(prefers-reduced-motion:reduce){.st-key-vertical_options_workspace *{transition:none!important;}}
 </style>
 """
@@ -1295,9 +1302,11 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
     policies = raw.setdefault("result_stores", {})
     policy = (target, max_cost, mode, min_reward_risk)
     store = policies.pop(policy, None)
-    if not isinstance(store, VerticalResultStore):
+    if (not isinstance(store, VerticalResultStore)
+            or getattr(store, "_vo_execution_policy", None) != POLICY_VERSION):
         store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
                                     min_reward_risk=min_reward_risk)
+    store._vo_execution_policy = POLICY_VERSION
     store.prune_before(_minimum_expiry_date())
     policies[policy] = store
     while len(policies) > 2:
@@ -1455,11 +1464,7 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exc
         "optionstrat_url": _optionstrat_url(candidate),
         "tradingview_url": _tradingview_spread_url(candidate, exchange=tv_exchange),
         "expiry_detail": _expiry_time_label(candidate["expiry"]),
-        "fill_market": {
-            "bid": candidate.get("spread_bid"), "mid": candidate.get("spread_mid"),
-            "ask": candidate.get("spread_ask"), "debit": candidate.get("debit"),
-            "estimate": indicative_fill_score(candidate),
-        },
+        "fill_market": quote_ruler(candidate),
         "values": [
             candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
             f"{candidate['buy_strike']:g}", f"{candidate['sell_strike']:g}",
@@ -1862,20 +1867,27 @@ def _scanner_help(label: str, explanation: str) -> None:
 
 
 def _hydrate_vertical_options_pricing() -> bool:
-    """Read the browser preference before any default can overwrite it."""
-    if not st.session_state.get("_vo_pricing_mode_hydrated", False):
-        restored = _PRICING_PREFERENCE_COMPONENT(
-            action="read", key="vo_pricing_preference_reader", height=0, default=None,
-        )
-        if not isinstance(restored, dict) or not restored.get("ready"):
-            return False
-        previous = restored.get("mode")
-        if previous not in {"NORMAL", "SMART FILL"}:
-            # Migrate an existing segmented selection in this live session.
-            previous = st.session_state.get("vo_pricing_mode", "NORMAL")
-        mode = previous if previous in {"NORMAL", "SMART FILL"} else "NORMAL"
-        st.session_state["_vo_pricing_mode_preference"] = mode
-        st.session_state["_vo_pricing_mode_hydrated"] = True
+    """Read optional browser storage without blocking the working scanner.
+
+    No fallback/default is written while a read is pending. A late reply never
+    overrides a user's explicit mode change made in the meantime.
+    """
+    if st.session_state.get("_vo_pricing_mode_hydrated", False):
+        return True
+    restored = _PRICING_PREFERENCE_COMPONENT(
+        action="read", key="vo_pricing_preference_reader", height=0, default=None,
+    )
+    if not isinstance(restored, dict) or not restored.get("ready"):
+        return False
+    previous = restored.get("mode")
+    if previous not in {"NORMAL", "SMART FILL"}:
+        previous = st.session_state.get("_vo_pricing_mode_preference",
+                                       st.session_state.get("vo_pricing_mode", "NORMAL"))
+    if not st.session_state.get("_vo_pricing_mode_dirty"):
+        st.session_state["_vo_pricing_mode_preference"] = (
+            previous if previous in {"NORMAL", "SMART FILL"} else "NORMAL")
+    st.session_state["_vo_pricing_storage_available"] = bool(restored.get("available", True))
+    st.session_state["_vo_pricing_mode_hydrated"] = True
     return True
 
 
@@ -1883,30 +1895,87 @@ def _remember_pricing_mode() -> None:
     st.session_state["_vo_pricing_mode_preference"] = (
         "SMART FILL" if st.session_state["vo_smart_fill"] else "NORMAL"
     )
+    st.session_state["_vo_pricing_mode_dirty"] = True
 
 
-def _pricing_mode_flip_switch() -> str | None:
-    """Restore saved pricing before showing the live switch."""
-    if not _hydrate_vertical_options_pricing():
-        return None
-
-    # Streamlit can clean up a widget key when another top-level tab renders.
-    # The non-widget preference remains stable for this server-side session.
+def _pricing_mode_flip_switch() -> str:
+    """Session mode is immediately usable; browser preferences restore when ready."""
+    ready = _hydrate_vertical_options_pricing()
+    st.session_state.setdefault("_vo_pricing_mode_preference", "NORMAL")
     st.session_state["vo_smart_fill"] = (
-        st.session_state.get("_vo_pricing_mode_preference") == "SMART FILL"
-    )
+        st.session_state["_vo_pricing_mode_preference"] == "SMART FILL")
     smart = st.toggle(
         "SMART FILL", key="vo_smart_fill", label_visibility="collapsed",
         on_change=_remember_pricing_mode,
-        help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
-             "Saved for this browser profile, including after page reload.",
+        help="LEFT: NORMAL, a MID-to-ASK limit. RIGHT: SMART FILL, natural ASK only. "
+             "Both require at least 1:2 reward/risk at the actual limit. No guaranteed fill.",
     )
     mode = "SMART FILL" if smart else "NORMAL"
     st.session_state["_vo_pricing_mode_preference"] = mode
-    _PRICING_PREFERENCE_COMPONENT(
-        action="write", value=mode, key="vo_pricing_preference_writer", height=0, default=None,
-    )
+    if (st.session_state.get("_vo_pricing_mode_dirty") or
+            (ready and st.session_state.get("_vo_pricing_storage_available", True))):
+        _PRICING_PREFERENCE_COMPONENT(
+            action="write", value=mode, key="vo_pricing_preference_writer",
+            allow_write=True, height=0, default=None,
+        )
     return mode
+
+
+def _rerun_vertical_fragment() -> None:
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
+
+
+def _consume_vertical_table_update(update: Any, result: dict[str, Any], symbol: str) -> bool:
+    """Apply an acknowledged table message before queries; never fetch quotes."""
+    if not isinstance(update, dict) or update.get("scope") != result["scope"]:
+        return False
+    store = result["candidates"]
+    filters = st.session_state.get("_vo_column_filters")
+    checked = st.session_state.get("_vo_checked_spreads")
+    if not filters or not checked or filters.get("scope") != result["scope"]:
+        return False
+    changed = False
+    revision = update.get("filter_revision")
+    if type(revision) is int and revision > int(filters.get("revision", 0)):
+        incoming = update.get("column_filters")
+        if isinstance(incoming, dict):
+            try:
+                store._where(column_filters=incoming)
+            except (ValueError, TypeError):
+                return False
+            old_cap = (filters["filters"].get("cost") or {}).get("max")
+            new_cap = (incoming.get("cost") or {}).get("max")
+            if old_cap != new_cap:
+                st.session_state.pop("vo_review_bundle", None)
+                st.session_state.pop("vo_live_confirm", None)
+            filters["filters"] = incoming
+            target = store.effective_target({"breakeven": {
+                "target": (incoming.get("breakeven") or {}).get("target")}})
+            st.session_state["vo_target_breakeven"] = "" if target is None else f"{target:g}"
+            _remember_presentation("vo_target_breakeven")
+            st.session_state.setdefault("_vo_manual_targets", {})[symbol] = st.session_state["vo_target_breakeven"]
+            if symbol in (st.session_state.get("vo_ticker_list") or []):
+                st.session_state.setdefault("vo_ticker_targets", {})[symbol] = st.session_state["vo_target_breakeven"]
+        incoming_sort, direction = update.get("sort_by"), update.get("sort_direction")
+        if incoming_sort in _QUALIFIED_SORT_FIELDS + ("YEAR + FILL",) and direction in {"ASC", "DESC"}:
+            prefix = "vo_best_pair" if st.session_state["vo_results_view"] == "BEST PER YEAR" else "vo_all_pair"
+            for key, value in ((prefix + "_sort", incoming_sort), (prefix + "_direction", direction)):
+                st.session_state[key] = value
+                _remember_presentation(key)
+        filters["revision"] = revision
+        changed = True
+    revision = update.get("revision")
+    if (type(revision) is int and revision > int(checked.get("revision", 0))
+            and isinstance(update.get("selected_ids"), list)):
+        checked["ids"] = set(store.get_many(update["selected_ids"]))
+        checked["revision"] = revision
+        changed = True
+    if changed:
+        _remember_scan_snapshot()
+    return changed
 
 
 @st.fragment
@@ -1944,22 +2013,21 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         with paste_cols[0]:
             if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
                 st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
-        with paste_cols[1], st.container(width=820):
+        with paste_cols[1], st.container(width=680):
             # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
             mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(
-                [1.05, .50, 1.25, 1.85], gap="small", vertical_alignment="center"
+                [1.0, .48, 1.35, 2.0], gap="small", vertical_alignment="center"
             )
             with mode_guide_col:
                 st.html(
                     '<div class="vo-mode-guide" style="justify-content:flex-end">'
-                    '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+                    '<span><span class="vo-mode-help vo-mode-help--normal" tabindex="0" aria-label="Normal mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
-                    'Existing pricing: natural ASK first when it meets your selected reward-to-risk '
-                    'and cost limits; otherwise qualifying LAST or MID. '
-                    'Unquoted LAST* is information only. No guaranteed fill.'
-                    '</span></span></span></div>'
+                    'NORMAL suggests a limit between MID and ASK, capped at your risk and cost limits. '
+                    'At least 1:2 reward/risk at the selected debit. A lower price may wait or not fill.'
+                    '</span></span> NORMAL</span></div>'
                 )
             with mode_switch_col:
                 pricing_mode = _pricing_mode_flip_switch()
@@ -1967,9 +2035,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.html(
                     '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
-                    'Suggests a limit between spread MID and natural ASK using quote width '
-                    'and available leg volume/open interest. Keeps your selected ratio and cost cap; '
-                    'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
+                    'SMART FILL uses natural ASK only: BUY ask minus SELL bid. '
+                    'Only spreads meeting at least 1:2 reward/risk at that ASK qualify. '
+                    'No cheaper fallback, automatic order, or guaranteed execution. DAY orders only.'
                     '</span></span></span></div>'
                 )
             with cash_col:
@@ -2160,7 +2228,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 else:
                     # Target ranking is now a column-menu query over retained results.
                     target = None
-                    min_reward_risk = _entered_reward_risk(ratio_text)
+                    min_reward_risk = max(2.0, _entered_reward_risk(ratio_text))
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
@@ -2239,7 +2307,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if not isinstance(result.get("candidates"), VerticalResultStore):
                 st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
                 return
-            if result.get("pricing_mode", "NORMAL") != pricing_mode:
+            if (result.get("pricing_mode", "NORMAL") != pricing_mode
+                    or getattr(result["candidates"], "_vo_execution_policy", None) != POLICY_VERSION):
                 updated = _reprice_cached_vertical_scan(result, pricing_mode)
                 st.session_state.pop("vo_review_bundle", None)
                 st.session_state.pop("vo_live_confirm", None)
@@ -2303,8 +2372,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
             _scanner_help("PRICING & RISK", (
                 "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
-                "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
-                f"SMART FILL suggests a MID-to-ASK limit under the 1:{min_reward_risk:g} requirement. "
+                "NORMAL uses a MID-to-ASK limit; unquoted LAST* is reference-only. "
+                f"SMART FILL requires natural ASK to meet at least 1:{max(2.0, min_reward_risk):g}. "
                 "The Debit MAX filter also caps the reviewed order limit. "
                 "For one standard 100-share contract: max loss = debit × 100; max profit = "
                 f"(strike width − debit) × 100. Reward/risk must be at least {min_reward_risk:g}. "
@@ -2314,8 +2383,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 "Quotes may be delayed; no reference price guarantees execution or a fill. "
                 "BREAKEVEN TARGET ±% filters prices around your target (default ±5%). "
                 "For example $250 ±5% selects $237.50–$262.50. "
-                "FILL EST is an uncalibrated quote-position indicator, not a historical fill probability; "
-                "bid≈5%, midpoint≈50%, ask≈95%, with no estimate for unquoted spreads. "
+                "BID / MID / ASK shows actual spread quotes and the proposed limit, not a fill probability. "
                 "Set cost minimum/maximum in Debit; these filter all retained results."
             ))
             candidates = result["candidates"]
@@ -2341,6 +2409,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                                     "filters": filters, "revision": 0}
                     st.session_state["_vo_column_filters"] = filter_state
                     _remember_scan_snapshot()
+                component_key = "vo_spread_scroll_" + scope
+                component_update = st.session_state.get(component_key)
+                _consume_vertical_table_update(component_update, result, symbol)
                 column_filters = dict(filter_state["filters"])
                 legacy_be = column_filters.get("breakeven")
                 if (isinstance(legacy_be, dict)
@@ -2425,6 +2496,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     f"{view}|{active_year}|{max_distance}|{repr(sorted(column_filters.items()))}"
                 )
                 view_identity += f"|{sort_filter}|{sort_direction}"
+                requested_offset = (component_update or {}).get("viewport_offset") if isinstance(component_update, dict) else None
+                if (isinstance(component_update, dict) and component_update.get("viewport_sort_key") == view_identity
+                        and type(requested_offset) is int and 0 <= requested_offset < matching_count):
+                    st.session_state["_vo_table_viewport"] = {
+                        "scope": scope, "sort_key": view_identity,
+                        "offset": min(requested_offset, max(0, matching_count - 200)),
+                    }
                 viewport = st.session_state.get("_vo_table_viewport") or {}
                 offset = (int(viewport["offset"]) if viewport.get("scope") == scope
                           and viewport.get("sort_key") == view_identity else 0)
@@ -2467,6 +2545,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     column_filters=column_filters, filter_choices=filter_choices,
                     sort_by=sort_filter, sort_direction=sort_direction,
                     sortable=True, has_target=effective_target is not None,
+                    group_by_year=view == "BEST PER YEAR",
                     filter_ack_revision=int(filter_state["revision"]),
                     key="vo_spread_scroll_" + scope, default=None,
                 )
@@ -2482,66 +2561,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                                 "scope": scope, "sort_key": view_identity, "offset": requested_offset,
                             }
                             rerun_for_component = True
-                    incoming_filters = selected_update.get("column_filters")
-                    try:
-                        incoming_filter_revision = int(selected_update.get("filter_revision", 0))
-                    except (TypeError, ValueError, OverflowError):
-                        incoming_filter_revision = 0
-                    if incoming_filter_revision > int(filter_state["revision"]):
-                        incoming_sort = selected_update.get("sort_by")
-                        incoming_direction = selected_update.get("sort_direction")
-                        if (incoming_sort in _QUALIFIED_SORT_FIELDS
-                                and incoming_direction in {"ASC", "DESC"}):
-                            sort_prefix = "vo_best_pair" if view == "BEST PER YEAR" else "vo_all_pair"
-                            for sort_key, value in ((sort_prefix + "_sort", incoming_sort),
-                                                    (sort_prefix + "_direction", incoming_direction)):
-                                if st.session_state[sort_key] != value:
-                                    st.session_state[sort_key] = value
-                                    _remember_presentation(sort_key)
-                                    rerun_for_component = True
-                        if isinstance(incoming_filters, dict):
-                            try:
-                                candidates._where(column_filters=incoming_filters)
-                            except ValueError:
-                                pass
-                            else:
-                                incoming_max = (incoming_filters.get("cost") or {}).get("max")
-                                incoming_max = None if incoming_max in (None, "") else float(incoming_max)
-                                if incoming_max != active_max_cost:
-                                    st.session_state.pop("vo_review_bundle", None)
-                                    st.session_state.pop("vo_live_confirm", None)
-                                filter_state["filters"] = incoming_filters
-                                target_value = candidates.effective_target({"breakeven": {
-                                    "target": (incoming_filters.get("breakeven") or {}).get("target")}})
-                                st.session_state["vo_target_breakeven"] = (
-                                    "" if target_value is None else f"{float(target_value):g}")
-                                _remember_presentation("vo_target_breakeven")
-                                if symbol in (st.session_state.get("vo_ticker_list") or []):
-                                    st.session_state.setdefault("vo_ticker_targets", {})[symbol] = (
-                                        st.session_state["vo_target_breakeven"])
-                                rerun_for_component = True
-                        filter_state["revision"] = incoming_filter_revision
-                        st.session_state["_vo_column_filters"] = filter_state
-                        _remember_scan_snapshot()
-                    incoming = selected_update.get("selected_ids")
-                    if isinstance(incoming, list):
-                        checked = set(candidates.get_many(incoming))
-                        try:
-                            incoming_revision = int(selected_update.get("revision", 0))
-                        except (TypeError, ValueError, OverflowError):
-                            incoming_revision = 0
-                        if incoming_revision > int(state["revision"]):
-                            state["ids"] = checked
-                            state["revision"] = incoming_revision
-                            st.session_state["_vo_checked_spreads"] = state
-                            st.session_state.pop("vo_review_bundle", None)
-                            st.session_state.pop("vo_live_confirm", None)
-                            st.session_state.pop("vo_last_send_results", None)
-                            rerun_for_component = True
+                    rerun_for_component |= _consume_vertical_table_update(selected_update, result, symbol)
                     if rerun_for_component:
-                        # Custom-component updates may run this fragment during a
-                        # full-app rerun; fragment scope is invalid in that context.
-                        st.rerun()
+                        _rerun_vertical_fragment()
                 checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
                 st.caption(
                     f'{matching_count:,} DISPLAYED // {matching_count:,} MATCHING OF '
@@ -2609,7 +2631,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         'BUY premium minus SELL premium, per share. Chart history and delay '
                         'depend on TradingView contract coverage and your market-data access.'
                     )
-                    with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
+                    with st.expander("E*TRADE ORDER // PREVIEW → CONFIRM & SEND", expanded=True):
                         _render_selected_order(client, touch_session, chosen,
                                                {**result, "max_cost": active_max_cost}, broker_live)
                     if len(checked_rows) > 1:
@@ -2686,7 +2708,11 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     sell_strike = candidate["sell_strike"]
     order_seed = candidate["id"]
     smart_mode = result.get("pricing_mode", "NORMAL") == "SMART FILL"
-    min_reward_risk = result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
+    min_reward_risk = max(2.0, result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK))
+    ticket = st.session_state.get("_vo_ticket_quote") or {}
+    if (ticket.get("scope") == result.get("scope") and ticket.get("id") == candidate["id"]
+            and ticket.get("mode") == result.get("pricing_mode", "NORMAL")):
+        candidate = {**candidate, **ticket["price"]}
     if st.session_state.get("_vo_order_candidate") != order_seed:
         st.session_state.pop("vo_limit_price", None)  # Remove the old editable debit's stale value.
         st.session_state["vo_qty"] = 1
@@ -2705,13 +2731,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
     # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
-    ladder = (smart_fill_ladder(candidate, result["max_cost"], min_reward_risk=min_reward_risk)
-              if smart_mode and candidate.get("basis") == "SMART" else
-              [limit_price] if smart_mode and candidate.get("basis") == "MID" else [])
-    if smart_mode and not ladder:
-        st.warning("SMART FILL PRICING UNAVAILABLE // Rescan a live quoted spread.")
-        return
-    controls = st.columns([.85, .9, 2.0, 1.3] if smart_mode else [.85, .9, 2.5], gap="small")
+    controls = st.columns([.85, .9, 2.5], gap="small")
     quantity = int(controls[0].number_input(
         "Qty", min_value=1, max_value=5000, step=1, key="vo_qty",
     ))
@@ -2726,16 +2746,6 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         help="For live submission, the same reviewed spread is placed once in EACH selected account. Saving Terminal drafts never sends to E*TRADE.",
     )
     account_keys = [key for key in selected_accounts if key in by_account]
-    if smart_mode:
-        limit_price = float(controls[3].selectbox(
-            "SMART LIMIT", ladder,
-            key="vo_smart_rung_" + result["scope"] + "_" + hashlib.sha256(
-                order_seed.encode("utf-8")
-            ).hexdigest()[:10],
-            format_func=lambda value: f"${value:.2f} / ${value * 100:.0f}",
-            help="Manual price ladder; selecting another rung NEVER places, "
-                 "changes or queues an order. A new E*TRADE preview is required.",
-        ))
     try:
         validate_vertical(
             call_put=call_put, buy_strike=buy_strike,
@@ -2790,7 +2800,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             f'// SELECTED R:R 1:{risk_ratio:.2f} // SELECTED BREAKEVEN {_money(live_be)} '
             '// VOLUME/OI ARE LEG-LEVEL SIGNALS; ORDER SIZE, QUEUE POSITION, '
             'QUOTE AGE AND ACTUAL FILL PROBABILITY ARE NOT PROVIDED. '
-            'MANUAL LIMIT CHOICES ONLY.'
+            'NATURAL-ASK DAY LIMIT; EXECUTION IS NOT GUARANTEED.'
         )
     st.caption(
         f'Pricing: {candidate["basis"]} // spread market BID {_money(candidate.get("spread_bid"))} / '
@@ -2834,22 +2844,24 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                 buy_open_interest=buy_leg.get("open_interest"),
                 sell_open_interest=sell_leg.get("open_interest"),
             )
-            if (not checked_price or not checked_price["orderable"]
-                    or checked_price["basis"] != candidate["basis"]
-                    or (smart_mode and (
-                        checked_price["debit"] != candidate["debit"]
-                        or limit_price < checked_price["spread_mid"] - .005
-                        or limit_price > checked_price["spread_ask"] + .005
-                        or candidate["width"] - limit_price + 1e-8 < min_reward_risk * limit_price
-                        or (result["max_cost"] is not None
-                            and limit_price * 100 > result["max_cost"] + 1e-8)
-                    ))
-                    or (not smart_mode and checked_price["debit"] != limit_price)):
-                raise ValueError(
-                    "The current spread market/SMART target changed or the selected limit "
-                    f"no longer meets your 1:{min_reward_risk:g} and cost criteria. "
-                    "SCAN ALL YEARS again before reviewing."
-                )
+            if not checked_price or not checked_price["orderable"]:
+                raise ValueError("The current quoted spread does not meet the selected price/risk limits. No order sent.")
+            candidate = refreshed_ticket(candidate, checked_price)
+            limit_price = candidate["debit"]
+            fingerprint = _review_fingerprint(
+                symbol=symbol, call_put=call_put, expiry=expiry,
+                buy_strike=buy_strike, sell_strike=sell_strike, quantity=quantity,
+                limit_price=limit_price, min_reward_risk=min_reward_risk,
+                order_term=order_term, account_keys=account_keys, max_cost=result.get("max_cost"),
+            )
+            st.session_state["_vo_ticket_quote"] = {
+                "scope": result.get("scope"), "id": candidate["id"],
+                "mode": result.get("pricing_mode", "NORMAL"), "price": candidate,
+            }
+            st.caption(f'FRESH REVIEW // {candidate["basis"]} LIMIT {_money(limit_price)} // '
+                       f'TOTAL {_money(limit_price * 100 * quantity)} PER ACCOUNT // '
+                       f'BREAKEVEN {_money(candidate["breakeven"])} // '
+                       f'R:R 1:{candidate["reward_risk"]:.2f}')
         except Exception as exc:
             st.session_state.pop("vo_review_bundle", None)
             st.session_state.pop("vo_live_confirm", None)
@@ -2917,18 +2929,20 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
             for message in details.get("messages") or []:
                 st.warning("E*TRADE PREVIEW // " + str(message))
-        confirmed = st.checkbox(
-            "I AUTHORIZE A LIVE E*TRADE ORDER IN EVERY SELECTED ACCOUNT (MAY QUEUE OR EXECUTE; NOT SAVED)",
-            key="vo_live_confirm",
-        )
+        st.caption("Confirm the exact fresh limit, quantity, legs and accounts above. "
+                   "The next button submits a live order; it is not a saved draft.")
         send_click = st.button(
-            f"PLACE LIVE ORDER // {len(account_keys)} ACCOUNT(S) (MAY QUEUE)",
-            key="vo_send", type="primary", use_container_width=True, disabled=not confirmed,
+            f"CONFIRM & SEND LIVE // {quantity} SPREAD(S) // {_money(limit_price * 100 * quantity)} "
+            f"PER ACCOUNT // {len(account_keys)} ACCOUNT(S)",
+            key="vo_send", type="primary", use_container_width=True,
         )
         if send_click:
             if not _reviews_are_fresh(st.session_state.get("vo_review_bundle"), fingerprint):
                 st.error("PREVIEW EXPIRED // Review again. No order was sent.")
                 return
+            # Consume approval before transmission. Reruns/double-clicks cannot
+            # re-use a preview, including after an uncertain network response.
+            st.session_state.pop("vo_review_bundle", None)
             results: list[dict[str, Any]] = []
             for account_key in account_keys:
                 review = previews.get(account_key) or {}
@@ -2960,24 +2974,10 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
 
 
-@st.fragment(run_every=.5)
 def _render_vertical_options_bootstrap(vault_key: str) -> None:
-    """Retry pricing restoration; stop polling on completion or timeout.
-
-    Component replies can race a top-tab rerun. A transient missing reply must
-    not leave the workspace cut off until the user switches tabs manually.
-    This bootstrap never downloads chains or touches broker orders.
-    """
-    started = st.session_state.setdefault("_vo_bootstrap_started", time.monotonic())
-    pricing_ready = _hydrate_vertical_options_pricing()
-    if pricing_ready:
-        st.session_state["_vo_workspace_ready"] = vault_key
-        st.rerun()
-    if time.monotonic() - started >= 12:
-        st.session_state["_vo_bootstrap_failed"] = True
-        st.rerun()  # Remove the polling fragment and show a stable retry state.
-        return
-    st.caption("RESTORING VERTICAL OPTIONS PREFERENCES…")
+    """Compatibility warm-up only: optional storage is never an entry gate."""
+    _hydrate_vertical_options_pricing()
+    st.session_state["_vo_workspace_ready"] = vault_key
 
 
 
@@ -3004,16 +3004,8 @@ def render_vertical_options(client, touch_session, *, vault_key: str = "default"
     install_native_switch_theme("vo_smart_fill")
     _restore_scan_memory(vault_key)
     _restore_presentation()
-    if st.session_state.get("_vo_workspace_ready") != vault_key:
-        if st.session_state.get("_vo_bootstrap_failed"):
-            st.error("PREFERENCE STORAGE DID NOT RESPOND // Retry initialization. Saved settings have not been overwritten.")
-            if st.button("RETRY INITIALIZATION", key="vo_retry_initialization"):
-                st.session_state.pop("_vo_bootstrap_failed", None)
-                st.session_state.pop("_vo_bootstrap_started", None)
-                st.rerun()
-            return
-        _render_vertical_options_bootstrap(vault_key)
-        return
+    st.session_state.pop("_vo_bootstrap_failed", None)
+    st.session_state["_vo_workspace_ready"] = vault_key
     _render_vertical_options_fragment(client, touch_session, vault_key)
     result = st.session_state.get("vo_scan_result") or {}
     if (result.get("max_cost") is None
