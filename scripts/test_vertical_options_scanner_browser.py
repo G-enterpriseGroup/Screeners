@@ -1850,9 +1850,28 @@ def test() -> None:
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            target_multi = wait.until(lambda _: grouped_page_if_ready(driver, 66, per_year=33))
-            assert all(101*.95-1e-8 <= float(row["values"][8].replace("$", "").replace(",", "")) <= 101*1.05+1e-8
-                       for row in target_multi["rows"]), target_multi
+            def target_band_ready(_):
+                # NORMAL quote improvement changes how many spreads pass 1:2,
+                # so assert the actual ±5% band rather than a legacy fixed count.
+                page = grid_page_rows(driver)
+                if not 0 < page["total"] < 120 or len(page["rows"]) != page["total"]:
+                    return False
+                breakevens = [float(row["values"][8].replace("$", "").replace(",", ""))
+                              for row in page["rows"]]
+                if not all(101*.95-1e-8 <= value <= 101*1.05+1e-8
+                           for value in breakevens):
+                    return False
+                years = {datetime.strptime(row["values"][2], "%b-%d-%y").year
+                         for row in page["rows"]}
+                if len(years) != 2:
+                    return False
+                try:
+                    assert_year_grouping(page)
+                except AssertionError:
+                    return False
+                return page
+            target_multi = wait.until(target_band_ready)
+            assert target_multi["total"] < 120 and target_multi["total"] > 0, target_multi
             set_grid_tolerance(driver, 100)
             reset_multi = wait.until(lambda _: grouped_page_if_ready(driver, 120, per_year=60))
             assert {row["values"][1] for row in reset_multi["rows"]} == {"C", "P"}, reset_multi
