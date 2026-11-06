@@ -2718,8 +2718,13 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     if smart_mode:
         st.session_state["vo_duration"] = "GOOD_FOR_DAY"
     account_options = list(by_account)
-    current_accounts = [key for key in (st.session_state.get("vo_accounts") or []) if key in by_account]
-    st.session_state["vo_accounts"] = current_accounts or _default_account_keys(accounts)
+    remembered_accounts = st.session_state.get(
+        "vo_accounts", st.session_state.get("_vo_order_accounts_memory")
+    )
+    current_accounts = (_default_account_keys(accounts) if remembered_accounts is None
+                        else [key for key in remembered_accounts if key in by_account])
+    # An explicitly empty selection must NEVER silently reset to a live account.
+    st.session_state["vo_accounts"] = current_accounts
     # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
     # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
@@ -2742,6 +2747,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         help="For live submission, the same reviewed spread is placed once in EACH selected account. Saving Terminal drafts never sends to E*TRADE.",
     )
     account_keys = [key for key in selected_accounts if key in by_account]
+    st.session_state["_vo_order_accounts_memory"] = list(account_keys)
     try:
         validate_vertical(
             call_put=call_put, buy_strike=buy_strike,
@@ -2792,11 +2798,9 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         live_be = (candidate["buy_strike"] + limit_price if call_put == "CALL"
                    else candidate["buy_strike"] - limit_price)
         st.caption(
-            f'SMART FILL // {candidate.get("liquidity_signal", "UNVERIFIED")} '
-            f'// SELECTED R:R 1:{risk_ratio:.2f} // SELECTED BREAKEVEN {_money(live_be)} '
-            '// VOLUME/OI ARE LEG-LEVEL SIGNALS; ORDER SIZE, QUEUE POSITION, '
-            'QUOTE AGE AND ACTUAL FILL PROBABILITY ARE NOT PROVIDED. '
-            'MANUAL LIMIT CHOICES ONLY.'
+            f'SMART // NATURAL ASK LIMIT {_money(limit_price)} // R:R 1:{risk_ratio:.2f} '
+            f'// BREAKEVEN {_money(live_be)} // MAY FILL QUICKLY IF LIVE QUOTES HOLD; '
+            'DEPTH, LATENCY AND FILL TIME CANNOT BE GUARANTEED.'
         )
     st.caption(
         f'Pricing: {candidate["basis"]} // spread market BID {_money(candidate.get("spread_bid"))} / '
@@ -2921,13 +2925,14 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
             for message in details.get("messages") or []:
                 st.warning("E*TRADE PREVIEW // " + str(message))
-        confirmed = st.checkbox(
-            "I AUTHORIZE A LIVE E*TRADE ORDER IN EVERY SELECTED ACCOUNT (MAY QUEUE OR EXECUTE; NOT SAVED)",
-            key="vo_live_confirm",
+        st.warning(
+            "FINAL LIVE ACTION // The next button submits the previewed spread "
+            "to E*TRADE for every listed account; it may execute immediately or queue."
         )
         send_click = st.button(
             f"PLACE LIVE ORDER // {len(account_keys)} ACCOUNT(S) (MAY QUEUE)",
-            key="vo_send", type="primary", use_container_width=True, disabled=not confirmed,
+            key="vo_send", type="primary", use_container_width=True,
+            disabled=not review_fresh or not account_keys,
         )
         if send_click:
             if not _reviews_are_fresh(st.session_state.get("vo_review_bundle"), fingerprint):
