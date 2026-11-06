@@ -845,7 +845,7 @@ else:
             restored = {**fresh, "expirations": expiries, "rows": rows,
                         "loaded_expirations": len(expiries), "next_expiry_index": len(expiries),
                         "scan_complete": False, "failed_expirations": [expiries[0]],
-                        "result_stores": {(None, None, "NORMAL", 2.0): old_store}}
+                        "result_stores": {(None, None, "NORMAL", 2.0, "desktop-quote-policy-v2"): old_store}}
             state["_vo_chain_cache"]["E*TRADE:QQQ"] = restored
             cached = vo._scan_all_years(client, "QQQ", lambda: None)
             self.assertIs(cached, restored)
@@ -1290,7 +1290,8 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
             for mode in ("SMART FILL", "NORMAL"):
                 actual = vo._rank_cached_vertical_chains(raw, 103, None, mode)
                 expected = scan_vertical_candidates(symbol="QQQ", spot_last=103, option_rows=rows,
-                    target_breakeven=103, max_cost=None, max_per_expiration=None, pricing_mode=mode)
+                    target_breakeven=103, max_cost=None, max_per_expiration=None,
+                    pricing_mode=mode, desktop_fast_fill=True)
                 self.assertEqual((list(actual[0].iter_ranked()), actual[1]), expected)
             self.assertEqual(calculate.call_count, 6)  # NORMAL reused after SMART.
             self.assertTrue(set(first[1]).issubset(complete[0].get_many(first[1])))
@@ -1915,7 +1916,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertIn(".vo-mode-help:focus .vo-mode-tooltip", ui)
         self.assertIn("NORMAL suggests a limit between the spread midpoint", ui)
         self.assertIn("SMART FILL uses the natural spread ASK", ui)
-        self.assertIn("Does not guarantee a fill or place orders automatically.", ui)
+        self.assertIn("cannot guarantee a fill", ui)
         self.assertIn('pricing_mode = _pricing_mode_flip_switch()', ui)
         self.assertIn('st.toggle(', ui)
         self.assertIn('key="vo_smart_fill"', ui)
@@ -2018,7 +2019,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
             self.assertTrue(session["vo_smart_fill"])
             self.assertTrue(session["_vo_pricing_mode_hydrated"])
             self.assertEqual(memory.call_args.kwargs["value"], "SMART FILL")
-            self.assertEqual(toggle.call_count, 1)
+            self.assertEqual(toggle.call_count, 2)  # Fallback and restored widget both rendered.
             session["vo_smart_fill"] = False  # Returning frontend sends its default.
             self.assertEqual(vo._pricing_mode_flip_switch(), "SMART FILL")
             self.assertTrue(session["vo_smart_fill"])
@@ -2202,7 +2203,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
             self.assertEqual(strict.count(), 1)
             permissive, _, _, _ = vo._rank_cached_vertical_chains(
                 raw, None, None, "NORMAL", min_reward_risk=1.5)
-            self.assertEqual(permissive.count(), 2)
+            self.assertEqual(permissive.count(), 1)  # Desktop enforces 1:2 even if input is lower.
             again, _, _, _ = vo._rank_cached_vertical_chains(
                 raw, None, None, "NORMAL", min_reward_risk=2.0)
             self.assertIs(again, strict)
