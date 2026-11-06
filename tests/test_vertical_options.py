@@ -293,6 +293,27 @@ else:
         self.assertEqual(app.text_input[0].value, '1.5')
         self.assertFalse(app.exception)
 
+    def test_live_review_bypasses_chain_cache_without_affecting_scans(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+
+        class CachedBrokerFixture:
+            def __init__(self):
+                self.get_option_chain = MagicMock(return_value={"OptionChainResponse": {"OptionPair": []}})
+
+        cached = CachedBrokerFixture()
+        touch = MagicMock()
+        with patch.object(vo, "CachedETradeClient", CachedBrokerFixture):
+            vo._chain(cached, "QQQ", date(2029, 1, 19), touch)
+            self.assertNotIn("force_refresh", cached.get_option_chain.call_args.kwargs)
+            vo._chain(cached, "QQQ", date(2029, 1, 19), touch, fresh_broker_quote=True)
+            self.assertIs(cached.get_option_chain.call_args.kwargs["force_refresh"], True)
+            self.assertEqual(touch.call_count, 2)
+        direct = MagicMock()
+        direct.get_option_chain.return_value = {"OptionChainResponse": {"OptionPair": []}}
+        vo._chain(direct, "QQQ", date(2029, 1, 19), touch, fresh_broker_quote=True)
+        self.assertNotIn("force_refresh", direct.get_option_chain.call_args.kwargs)
+
     def test_preference_storage_failure_does_not_block_scanner(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
