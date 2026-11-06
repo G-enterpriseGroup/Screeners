@@ -1184,7 +1184,8 @@ def test() -> None:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", year_button)
             year_button.click()
             one_year = wait.until(lambda _: (page if (page := grid_page_rows(driver))["total"] == 20 else False))
-            assert "20 DISPLAYED // 20 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "20 DISPLAYED // 20 MATCHING OF 60 QUALIFIED PAIRS"
+                       in driver.find_element(By.TAG_NAME, "body").text)
             assert all(datetime.strptime(row["values"][2], "%b-%d-%y").year == years[1]
                        for row in one_year["rows"]), one_year
             assert_year_grouping(one_year, per_year=20)
@@ -1202,7 +1203,8 @@ def test() -> None:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", all_years_button)
             all_years_button.click()
             all_years_page = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
-            assert "60 DISPLAYED // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "60 DISPLAYED // 60 MATCHING OF 60 QUALIFIED PAIRS"
+                       in driver.find_element(By.TAG_NAME, "body").text)
             assert_year_grouping(all_years_page, per_year=20)
             result_spacing = driver.execute_script("""
                 const metrics=document.querySelector('.vo-grid').getBoundingClientRect();
