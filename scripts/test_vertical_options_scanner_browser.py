@@ -28,6 +28,7 @@ from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
+    NoSuchElementException,
     StaleElementReferenceException,
 )
 from selenium.webdriver.chrome.options import Options
@@ -248,7 +249,7 @@ def in_grid(driver: webdriver.Chrome, callback):
                     continue
                 return result
             except (StaleElementReferenceException, ElementNotInteractableException,
-                    ElementClickInterceptedException):
+                    ElementClickInterceptedException, NoSuchElementException):
                 # Old component frames/overlays can intercept a click during a
                 # rerun. Retry only these transient DOM conditions.
                 if time.monotonic() >= deadline:
