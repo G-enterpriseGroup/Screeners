@@ -259,6 +259,15 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
 
 
+def active_ticker(driver: webdriver.Chrome):
+    """Ignore retiring hidden Streamlit inputs after a process restart."""
+    def visible(_):
+        inputs = driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+        return next((item for item in reversed(inputs)
+                     if item.is_displayed() and item.is_enabled()), False)
+    return WebDriverWait(driver, 20).until(visible)
+
+
 def grid_is_mounted(driver: webdriver.Chrome) -> bool:
     """Check for a result grid without waiting for one to appear."""
     try:
@@ -1027,7 +1036,7 @@ def test() -> None:
                     "return getComputedStyle(arguments[0]).visibility", tooltip
                 ) == "visible")
             ActionChains(driver).move_to_element(form).perform()
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "LAST $100.00" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
@@ -1586,12 +1595,12 @@ def test() -> None:
 
             # A manual target belongs to its ticker. Another ticker keeps the
             # no-filter default, and returning restores the manual override.
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
             assert not grid_is_mounted(driver)
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MSFT", Keys.TAB)
             wait.until(lambda _: grid_target(driver) == "103")
@@ -1644,12 +1653,12 @@ def test() -> None:
                                      and event.get("pid") == server.pid
                                      for event in events(event_path)))
             wait.until(ready_scanner_form)
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
@@ -1680,7 +1689,7 @@ def test() -> None:
             # Every one-year match shares a single virtual table. Select
             # beyond the old page boundary and at the final row, then return
             # to the top without losing either checked identity.
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MASSIVE", Keys.TAB)
             form = wait.until(ready_scanner_form)
@@ -1779,7 +1788,7 @@ def test() -> None:
             # Ignore 0-, 1- and 6-day expirations before any broker-chain
             # fetch; exactly seven New York calendar days remains eligible.
             chain_before_boundary = len([e for e in events(event_path) if e["event"] == "chain"])
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("BOUNDARY", Keys.TAB)
             form = wait.until(ready_scanner_form)
@@ -1807,7 +1816,7 @@ def test() -> None:
             # All expirations in the latest two available years are a view default.
             # Clearing EXP / YEAR must expose all retained expirations.
             before_multi = len([e for e in events(event_path) if e["event"] == "chain"])
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MULTIEXP", Keys.TAB)
             form = wait.until(ready_scanner_form)
@@ -1889,7 +1898,7 @@ def test() -> None:
             # A user-edited threshold must reach the actual candidate scan,
             # while the next scan still opens on BEST PER YEAR. This fixture
             # has some SPY spreads above 1:4.01 but fewer than at default 1:2.
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("SPY", Keys.TAB)
             form = wait.until(ready_scanner_form)
