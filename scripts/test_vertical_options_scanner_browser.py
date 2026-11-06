@@ -965,20 +965,24 @@ def test() -> None:
                         note.click()
                         ActionChains(driver).move_to_element(note).perform()
                         return True
-                    except (StaleElementReferenceException, ElementClickInterceptedException):
+                    except (StaleElementReferenceException, ElementClickInterceptedException,
+                            ElementNotInteractableException):
                         return False
                 wait.until(clear_focus)
                 def settled(_):
                     info = driver.execute_script("""
-                        const root=document.querySelector('.st-key-'+arguments[0]);
+                        const root=[...document.querySelectorAll('.st-key-'+arguments[0])]
+                            .reverse().find(item=>item.getClientRects().length);
                         if(!root)return null;
                         const input=root.querySelector('input[role="switch"]');
                         if(!input)return null;
                         const label=input.closest('label');
-                        const track=label.querySelector(':scope > div:first-of-type');
-                        const thumb=track.firstElementChild;
+                        const track=label?.querySelector(':scope > div:first-of-type');
+                        const thumb=track?.firstElementChild;
+                        if(!track||!thumb)return null;
                         const t=getComputedStyle(track), h=getComputedStyle(thumb);
                         const box=track.getBoundingClientRect(), dot=thumb.getBoundingClientRect();
+                        if(box.width<10||dot.width<5||t.outlineStyle!=='solid')return null;
                         return {checked:input.checked,hover:label.matches(':hover'),
                             focus:input.matches(':focus-visible'),track:t.backgroundColor,
                             thumb:h.backgroundColor,outline:t.outlineColor,outlineStyle:t.outlineStyle,
