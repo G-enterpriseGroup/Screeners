@@ -762,6 +762,9 @@ def set_exact_grid_filter(driver: webdriver.Chrome, key: str, label: str, value:
         )
         assert changed, (key, label)
     in_grid(driver, enter)
+    # Numeric filters intentionally stage without rerunning while typing.
+    # Apply the complete exact range in one acknowledged edit.
+    grid_menu_action(driver, key, "DONE")
 
 
 def toggle_put_column_filter(driver: webdriver.Chrome) -> None:
