@@ -49,14 +49,13 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 .row>.cell.fill-scale{padding:1px 4px;background:#000!important;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;justify-content:center}
 .fill-ruler{width:100%;min-width:0;display:flex;flex-direction:column;gap:2px;font:800 8px/1 "Courier New",monospace}
 .fill-labels{display:flex;justify-content:space-between;gap:2px;white-space:nowrap}
-.fill-labels>span{display:flex;flex-direction:column;align-items:center;min-width:0;font-size:8px;line-height:1.05}
+.fill-labels>span{display:flex;flex-direction:column;align-items:center;min-width:0;font-size:11px;line-height:1.05}
 .fill-labels>span:first-child{align-items:flex-start}
 .fill-labels>span:last-child{align-items:flex-end}
-.fill-labels b{font-weight:800;font-size:8px;color:#f6b56a}
 .fill-track{height:3px;margin:3px 4px 4px;position:relative;background:#8f99a8}
 .fill-track:before{content:"";position:absolute;left:50%;top:-3px;height:9px;border-left:1px solid #f6b56a}
 .fill-marker{position:absolute;top:-5px;width:5px;height:13px;background:#4af6c3;transform:translateX(-50%);box-shadow:0 0 2px #4af6c3}
-.fill-estimate{font:800 9px/1 "Courier New",monospace;text-align:center;color:#4af6c3!important;-webkit-text-fill-color:#4af6c3!important;white-space:nowrap}
+.fill-estimate{font:800 10px/1 "Courier New",monospace;text-align:center;color:#4af6c3!important;-webkit-text-fill-color:#4af6c3!important;white-space:nowrap}
 .fill-estimate.unavailable{color:#8f99a8!important;-webkit-text-fill-color:#8f99a8!important}
 .row.annual>.cell{font-weight:900!important}
 .row.annual>.select{box-shadow:inset 3px 0 #fff}
@@ -462,10 +461,10 @@ function makeRow(row,index){
    const ruler=document.createElement("div");ruler.className="fill-ruler";
    const labels=document.createElement("div");labels.className="fill-labels";
    for(const [word,value] of [["BID",bid],["MID",mid],["ASK",ask]]){
-    const tag=document.createElement("span"),title=document.createElement("b");
-    title.textContent=word;
-    const amount=document.createElement("span");amount.textContent=Number.isFinite(value)?value.toFixed(2):"—";
-    tag.append(title,amount);labels.appendChild(tag);
+    const tag=document.createElement("span");
+    const price=Number.isFinite(value)?value.toFixed(2):"—";
+    tag.textContent=price;tag.setAttribute("aria-label",word+" "+price);
+    labels.appendChild(tag);
    }
    const track=document.createElement("div");track.className="fill-track";
    const odds=document.createElement("small");odds.className="fill-estimate";
