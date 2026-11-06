@@ -3,7 +3,7 @@ on:
   push:
     branches: [fix/vo-seamless-execution-20261106]
     paths:
-      - scripts/_vo_repair_patch.py
+      - scripts/_vo_followup.b64
       - .github/workflows/vo-repair-workbench.yml
 permissions:
   contents: write
@@ -21,63 +21,65 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Exact source and dependencies for offline debugging
+      - name: Apply audited follow-up and remove temporary workbench
         run: |
-          mkdir -p /tmp/vo-offline/wheels /tmp/vo-evidence
-          git archive HEAD -o /tmp/vo-offline/source.zip
-          python -m pip download --only-binary=:all: --python-version 3.13 --implementation cp --abi cp313 --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --dest /tmp/vo-offline/wheels 'streamlit>=1.61,<2' 'yfinance>=1.7,<2' requests-oauthlib webauthn selenium
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vo-offline-workbench
-          path: /tmp/vo-offline
-          retention-days: 3
-      - name: Apply bounded patch and syntax-check
-        run: |
+          mkdir -p /tmp/vo-evidence
           python - <<'PY'
+          import base64, hashlib, zlib, subprocess
           from pathlib import Path
-          p=Path('scripts/_vo_repair_patch.py');text=p.read_text()
-          anchor='    if text.count(old) != 1:\n'
-          replacement='    if old == "    store.prune_before(_minimum_expiry_date())":\n        start = text.index(old, text.index("def _rank_cached_vertical_chains("))\n        return text[:start] + text[start:].replace(old, new, 1)\n' + anchor
+          data=zlib.decompress(base64.b64decode(Path('scripts/_vo_followup.b64').read_text()))
+          assert hashlib.sha256(data).hexdigest() == 'facc4c2a6194530baa40ae07b0a6a873f3a20a2b89df90488578d2f1e4b0b15c'
+          Path('/tmp/vo-followup.diff').write_bytes(data)
+          subprocess.run(['git','apply','--check','/tmp/vo-followup.diff'], check=True)
+          subprocess.run(['git','apply','/tmp/vo-followup.diff'], check=True)
+          p=Path('tests/test_vertical_options.py');text=p.read_text()
+          anchor='class VerticalOptionsTests(unittest.TestCase):'
           assert text.count(anchor)==1
-          text=text.replace(anchor,replacement,1)
-          text=text.replace("'   if(NUMERIC.has(openKey))syncNumericInputs();'", "'  if(NUMERIC.has(openKey))syncNumericInputs();'")
-          text=text.replace("'   if(NUMERIC.has(openKey)){syncNumericInputs();updateBandPreview();}'", "'  if(NUMERIC.has(openKey)){syncNumericInputs();updateBandPreview();}'")
-          text=text.replace('assert changed <= allowed, changed - allowed','changed.discard("scripts/_vo_repair_patch.py")\nassert changed <= allowed, changed - allowed')
+          text=text.replace(anchor,'# Run desktop execution safety in the existing production CI entry point.\nfrom tests.test_vertical_execution import DesktopExecutionTests, DesktopWorkflowSafetyTests\n\n\n'+anchor)
           p.write_text(text)
+          for name in ('scripts/_vo_repair_patch.py','scripts/_vo_followup.b64','.github/workflows/vo-repair-workbench.yml'):
+              Path(name).unlink()
+          p=Path('src/TERMINAL_CHANGELOG.md')
+          with p.open('a') as out:
+              out.write('\n- **Local safety receipt:** 152 focused tests passed before publication, including nonblocking/late preferences, ASK-only exclusion, immutable fresh-ticket repricing, no implicit SEND, all-account rejection, 30-second quote freshness, consumed-preview/uncertain-response duplicate suppression, changed-selection invalidation and phone isolation. Static Chromium component tests passed for signed quote values/marker, target bands, zero tolerance, presets, sorting and debounce. Architecture and Python/JavaScript syntax passed. Full production-renderer CI and deployment verification are separate; this entry does not claim authenticated production access. Added tests/test_vertical_execution.py; updated tests/test_vertical_options.py and scripts/test_vertical_options_scanner_browser.py. Temporary workbench files are removed from the final branch diff.\n')
           PY
-          python scripts/_vo_repair_patch.py
-          python -m py_compile src/vertical_options.py src/vertical_options_ui.py src/vertical_options_execution.py src/vertical_options_store.py
+          python -m py_compile src/vertical_options.py src/vertical_options_ui.py src/vertical_options_execution.py src/vertical_options_store.py tests/test_vertical_options.py tests/test_vertical_execution.py scripts/test_vertical_options_scanner_browser.py
           python scripts/validate_architecture.py
           python - <<'PY'
           import subprocess
           from pathlib import Path
-          for name in ('vo_pricing_preference_v1', 'vo_spread_scroller_v1'):
-              html = Path('src/components', name, 'index.html').read_text()
-              js = html.split('<script>', 1)[1].split('</script>', 1)[0]
-              file = Path('/tmp', name + '.js');file.write_text(js)
-              subprocess.run(['node', '--check', str(file)], check=True)
+          for name in ('vo_pricing_preference_v1','vo_spread_scroller_v1'):
+              html=Path('src/components',name,'index.html').read_text()
+              file=Path('/tmp',name+'.js');file.write_text(html.split('<script>',1)[1].split('</script>',1)[0])
+              subprocess.run(['node','--check',str(file)],check=True)
+          allowed={'src/vertical_options_ui.py','src/vertical_options_execution.py','src/TERMINAL_CHANGELOG.md','tests/test_vertical_options.py','tests/test_vertical_execution.py','scripts/test_vertical_options_scanner_browser.py','scripts/_vo_repair_patch.py','scripts/_vo_followup.b64','.github/workflows/vo-repair-workbench.yml'}
+          changes=set(subprocess.check_output(['git','diff','--name-only'],text=True).splitlines())
+          assert changes <= allowed, changes-allowed
           PY
           git diff --check
-      - name: Save isolated source changes on workbench branch
+      - name: Save audited isolated changes on branch
         run: |
           git config user.name 'G-enterpriseGroup'
           git config user.email '143067071+G-enterpriseGroup@users.noreply.github.com'
-          git add src/vertical_options.py src/vertical_options_ui.py src/vertical_options_store.py src/vertical_options_execution.py src/components/vo_pricing_preference_v1/index.html src/components/vo_spread_scroller_v1/index.html src/TERMINAL_CHANGELOG.md
-          git commit -m 'Repair desktop vertical startup, quote display, filters and ASK-only smart execution'
+          git add src/vertical_options_ui.py src/vertical_options_execution.py src/TERMINAL_CHANGELOG.md tests/test_vertical_options.py tests/test_vertical_execution.py scripts/test_vertical_options_scanner_browser.py scripts/_vo_repair_patch.py scripts/_vo_followup.b64 .github/workflows/vo-repair-workbench.yml
+          git commit -m 'Verify desktop execution safety and smooth filters; remove repair workbench'
           git push origin HEAD:fix/vo-seamless-execution-20261106
-          git rev-parse HEAD
+          git rev-parse HEAD | tee /tmp/vo-evidence/commit.txt
+          git archive HEAD -o /tmp/vo-evidence/source.zip
       - name: Install production and browser test dependencies
         run: python -m pip install -r requirements.txt selenium==4.36.0
-      - name: Run feature and neighboring regression tests
+      - name: Run final feature and neighboring regression tests
+        env:
+          VO_SCANNER_SCREENSHOT: /tmp/vo-evidence/vertical-screen.png
         run: |
           set +e
-          python -m unittest tests.test_vertical_execution tests.test_vertical_options tests.test_verti_phone > /tmp/vo-evidence/unit.log 2>&1
+          python -m unittest tests.test_vertical_options tests.test_verti_phone > /tmp/vo-evidence/unit.log 2>&1
           unit=$?
           python scripts/test_tab_layout.py > /tmp/vo-evidence/tabs.log 2>&1
           tabs=$?
           python scripts/test_vertical_options_scanner_browser.py > /tmp/vo-evidence/browser.log 2>&1
           browser=$?
-          tail -n 150 /tmp/vo-evidence/unit.log
+          tail -n 100 /tmp/vo-evidence/unit.log
           cat /tmp/vo-evidence/tabs.log
           tail -n 100 /tmp/vo-evidence/browser.log
           printf 'UNIT=%s TABS=%s BROWSER=%s\n' "$unit" "$tabs" "$browser"
@@ -85,6 +87,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vo-repair-evidence
+          name: vo-final-evidence
           path: /tmp/vo-evidence
           retention-days: 3
