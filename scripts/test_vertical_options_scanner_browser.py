@@ -259,6 +259,14 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
 
 
+def visible_note(driver: webdriver.Chrome):
+    """Find the active note without clicking a hidden old rerun copy."""
+    def locate(_):
+        elements = driver.find_elements(By.CSS_SELECTOR, ".vo-note")
+        return next((item for item in reversed(elements) if item.is_displayed()), False)
+    return WebDriverWait(driver, 20).until(locate)
+
+
 def visible_switch_label(driver: webdriver.Chrome, key: str):
     """Select a mounted, visible switch rather than a retiring component."""
     def locate(_):
@@ -749,7 +757,7 @@ def set_grid_target(driver: webdriver.Chrome, value: str, *, dismiss: bool = Tru
         assert target.get_attribute("value") == value
     in_grid(driver, enter)
     if dismiss:
-        note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+        note = visible_note(driver)
         driver.execute_script("arguments[0].scrollIntoView({block:'center'})", note)
         note.click()
         WebDriverWait(driver, 15).until(lambda _: in_grid(driver, lambda:
@@ -971,7 +979,7 @@ def test() -> None:
                 # pointer away. Hover/focus must not be required for contrast.
                 def clear_focus(_):
                     try:
-                        note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        note = visible_note(driver)
                         note.click()
                         ActionChains(driver).move_to_element(note).perform()
                         return True
@@ -1009,7 +1017,7 @@ def test() -> None:
                 def hover_and_leave(_):
                     try:
                         target = visible_switch_label(driver, key)
-                        stable_note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        stable_note = visible_note(driver)
                         ActionChains(driver).move_to_element(target).move_to_element(stable_note).perform()
                         return True
                     except StaleElementReferenceException:
@@ -1235,7 +1243,7 @@ def test() -> None:
             in_grid(driver, rapid_target)
             # Clicking a control outside the component closes the menu and
             # flushes the last edit, even inside the input debounce interval.
-            note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+            note = visible_note(driver)
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", note)
             note.click()
             wait.until(lambda _: in_grid(driver, lambda:
