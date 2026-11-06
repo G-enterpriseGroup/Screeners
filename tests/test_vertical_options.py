@@ -293,22 +293,21 @@ else:
         self.assertEqual(app.text_input[0].value, '1.5')
         self.assertFalse(app.exception)
 
-    def test_bootstrap_timeout_is_actionable_without_overwriting_preferences(self):
+    def test_preference_storage_failure_does_not_block_scanner(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
-        state = {"_vo_bootstrap_started": 1}
+        state = {"_vo_bootstrap_failed": True}
         with (patch.object(vo.st, "session_state", state),
-              patch.object(vo, "_hydrate_vertical_options_pricing", return_value=False),
-              patch.object(vo.time, "monotonic", return_value=14),
-              patch.object(vo.st, "error") as error,
-              patch.object(vo.st, "button", return_value=False),
-              patch.object(vo.st, "rerun") as rerun):
-            vo._render_vertical_options_bootstrap.__wrapped__("test")
-            error.assert_not_called()
-            rerun.assert_called_once()
-            self.assertTrue(state["_vo_bootstrap_failed"])
-            self.assertNotIn("_vo_workspace_ready", state)
-            self.assertNotIn("_vo_pricing_mode_preference", state)
+              patch.object(vo.st, "html"),
+              patch.object(vo, "install_native_switch_theme"),
+              patch.object(vo, "_restore_scan_memory"),
+              patch.object(vo, "_restore_presentation"),
+              patch.object(vo, "_render_vertical_options_fragment") as renderer):
+            vo.render_vertical_options(None, lambda: None, vault_key="fixture")
+            self.assertEqual(state["_vo_workspace_ready"], "fixture")
+            self.assertNotIn("_vo_bootstrap_failed", state)
+            renderer.assert_called_once()
+            self.assertNotIn("_vo_pricing_mode_hydrated", state)
 
     def test_calculation_budget_resumes_all_pairs_without_repricing_old_expirations(self):
         from unittest.mock import MagicMock, patch
@@ -1816,6 +1815,26 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                          (2, 1.95, 2.30))
         self.assertEqual(annual, {call["id"]})
 
+    def test_desktop_fast_fill_smart_ask_and_normal_market_limit(self):
+        from src.vertical_options import price_vertical_quote
+        quoted = dict(buy_last=4.5, sell_last=3, buy_bid=4.0,
+                      buy_ask=5.0, sell_bid=3.0, sell_ask=3.7,
+                      width=9, max_cost=None)
+        smart = price_vertical_quote(**quoted, pricing_mode="SMART FILL",
+                                     desktop_fast_fill=True)
+        normal = price_vertical_quote(**quoted, pricing_mode="NORMAL",
+                                      desktop_fast_fill=True)
+        self.assertEqual((smart["basis"], smart["debit"]), ("ASK", 2.00))
+        self.assertEqual((normal["basis"], normal["debit"]), ("LIMIT", 1.45))
+        self.assertLess(normal["debit"], smart["debit"])
+        self.assertGreaterEqual((9-smart["debit"])/smart["debit"], 2)
+        self.assertIsNone(price_vertical_quote(**{**quoted, "width": 5},
+                        pricing_mode="SMART FILL", desktop_fast_fill=True))
+        self.assertIsNotNone(price_vertical_quote(**{**quoted, "width": 5},
+                        pricing_mode="NORMAL", desktop_fast_fill=True))
+        self.assertIsNone(price_vertical_quote(**{**quoted, "buy_ask": None},
+                        pricing_mode="SMART FILL", desktop_fast_fill=True))
+
     def test_smart_fill_improves_on_natural_ask_without_changing_normal(self):
         from src.vertical_options import price_vertical_quote, smart_fill_ladder
         data = dict(
@@ -1894,8 +1913,8 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertIn('tabindex="0"', ui)
         self.assertIn(".vo-mode-help:hover .vo-mode-tooltip", ui)
         self.assertIn(".vo-mode-help:focus .vo-mode-tooltip", ui)
-        self.assertIn("natural ASK first when it meets your selected reward-to-risk", ui)
-        self.assertIn("Suggests a limit between spread MID and natural ASK", ui)
+        self.assertIn("NORMAL suggests a limit between the spread midpoint", ui)
+        self.assertIn("SMART FILL uses the natural spread ASK", ui)
         self.assertIn("Does not guarantee a fill or place orders automatically.", ui)
         self.assertIn('pricing_mode = _pricing_mode_flip_switch()', ui)
         self.assertIn('st.toggle(', ui)
@@ -1990,8 +2009,11 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 None,  # Write the restored mode after hydration.
                 None,  # Subsequent render write.
             ]
-            self.assertIsNone(vo._pricing_mode_flip_switch())
+            # The native widget still renders while the storage reply is pending.
+            toggle.side_effect = [False, True, True]
+            self.assertEqual(vo._pricing_mode_flip_switch(), "NORMAL")
             self.assertEqual(memory.call_count, 1)  # No default written!
+            self.assertFalse(session.get("_vo_pricing_mode_hydrated", False))
             self.assertEqual(vo._pricing_mode_flip_switch(), "SMART FILL")
             self.assertTrue(session["vo_smart_fill"])
             self.assertTrue(session["_vo_pricing_mode_hydrated"])
@@ -2039,8 +2061,8 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertIn('mode = "SMART FILL" if smart else "NORMAL"', ui)
         self.assertIn("def _reprice_cached_vertical_scan(", ui)
         self.assertIn('["GOOD_FOR_DAY"] if smart_mode', ui)
-        self.assertIn('checked_price["debit"] != candidate["debit"]', ui)
-        self.assertIn('or limit_price > checked_price["spread_ask"] + .005', ui)
+        self.assertIn('checked_price["spread_ask"] > limit_price + .005', ui)
+        self.assertIn('desktop_fast_fill=True', ui)
         self.assertIn('key="vo_preview"', ui)
         self.assertIn('key="vo_send"', ui)
         self.assertNotIn("client.change_order(", ui)
