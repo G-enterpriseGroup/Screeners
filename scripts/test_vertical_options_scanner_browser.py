@@ -116,6 +116,7 @@ class StubETrade:
             def option(side, last):
                 return {
                     "strikePrice": strike, "lastPrice": last,
+                    "openInterest": 0 if strike == 90 else strike * 10 + (1000 if side == "P" else 0),
                     # Asymmetric quotes: natural ASK differs from Last and MID.
                     "bid": last - (.01 if symbol == "MASSIVE" else .02),
                     "ask": last + .01 if symbol == "MASSIVE" else last + .02 + .002 * (strike - 90),
@@ -324,9 +325,26 @@ def grid_is_visible(driver: webdriver.Chrome) -> bool:
         driver.switch_to.default_content()
 
 
+# Read the same canonical values from the rendered stacked cells so existing
+# pricing/export/selection regressions keep checking actual on-screen data.
+_STACKED_ROW_VALUES_JS = """
+function readValues(row){
+ const fields=["ticker","side","expiry","buy","sell","buy_last","sell_last",
+               "cost","breakeven","ratio","profit","fill_scale"];
+ return fields.map(field=>{
+  const cell=row.querySelector('[data-field="'+field+'"]');
+  if(field==='buy'||field==='sell')return String(Number(cell.textContent.replace(/[$,]/g,'')));
+  if(field==='expiry')return cell.firstChild.textContent;
+  if(field==='cost')return cell.querySelector('.debit-value')?.textContent;
+  return cell?.textContent;
+ }).concat(row.querySelector('.fill-detail')?.textContent);
+}
+"""
+
+
 def grid_snapshot(driver: webdriver.Chrome) -> dict:
     return in_grid(driver, lambda: driver.execute_script(
-        """
+        _STACKED_ROW_VALUES_JS + """
         const scroll=document.getElementById('scroll');
         const head=document.getElementById('head');
         if(!scroll||!head)return {grid_mount_pending:true};
@@ -335,11 +353,16 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
           rows:rows.map(row=>({
             index:Number(row.dataset.index),
             annual:row.classList.contains('annual'),
-            values:[...row.querySelectorAll('.cell')].map(cell=>
-                cell.classList.contains('expiry') ? cell.firstChild.textContent :
-                cell.classList.contains('cost') ? cell.querySelector('.debit-value')?.textContent :
-                cell.textContent).concat(row.querySelector('.fill-detail')?.textContent),
+            values:readValues(row),
             cellCount:row.children.length,
+            stacked:[...row.querySelectorAll('.leg-stack')].map(cell=>{
+              const buy=cell.querySelector('.buy-leg'),sell=cell.querySelector('.sell-leg'),
+                    c=cell.getBoundingClientRect(),b=buy.getBoundingClientRect(),s=sell.getBoundingClientRect();
+              return {field:cell.dataset.field,buy:buy.textContent,sell:sell.textContent,
+                fits:b.top>=c.top&&s.top>=b.bottom&&s.bottom<=c.bottom&&
+                  buy.scrollWidth<=cell.clientWidth&&sell.scrollWidth<=cell.clientWidth,
+                buyWeight:getComputedStyle(buy).fontWeight,sellWeight:getComputedStyle(sell).fontWeight};
+            }),
             debitValue:row.querySelector('.debit-value')?.textContent,
             fillDetail:row.querySelector('.fill-detail')?.textContent,
             fillRuler:row.querySelector('.fill-ruler')?.textContent,
@@ -365,9 +388,9 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             selected:row.querySelector('.select').getAttribute('aria-pressed'),
             background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
             foreground:getComputedStyle(row.querySelector('.cell')).color,
-            emphasis:[7,8,10].map(i=>({
-              weight:getComputedStyle(row.querySelectorAll('.cell')[i]).fontWeight,
-              decoration:getComputedStyle(row.querySelectorAll('.cell')[i]).textDecorationLine,
+            emphasis:["cost","breakeven","profit"].map(field=>({
+              weight:getComputedStyle(row.querySelector('[data-field="'+field+'"]')).fontWeight,
+              decoration:getComputedStyle(row.querySelector('[data-field="'+field+'"]')).textDecorationLine,
             })),
             href:row.querySelector('.open[href]')?.href||'',
             target:row.querySelector('.open[href]')?.target||'',
@@ -380,7 +403,7 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
           horizontalOverflow:scroll.scrollWidth>scroll.clientWidth||
             document.documentElement.scrollWidth>document.documentElement.clientWidth,
           header:head.textContent,
-          headers:[...head.children].map(cell=>cell.querySelector('.filter-name')?.textContent||cell.textContent),
+          headers:[...head.children].map(cell=>cell.dataset.column||cell.textContent),
         };
         """
     ))
@@ -389,7 +412,7 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
 def grid_page_rows(driver: webdriver.Chrome) -> dict:
     """Read every row of a small fixture through the single virtual scroller."""
     return in_grid(driver, lambda: driver.execute_script(
-        """
+        _STACKED_ROW_VALUES_JS + """
         const scroll=document.getElementById('scroll');
         const space=document.getElementById('space');
         if(!scroll||!space)return {grid_mount_pending:true};
@@ -399,17 +422,14 @@ def grid_page_rows(driver: webdriver.Chrome) -> dict:
             seen.set(Number(row.dataset.index),{
               index:Number(row.dataset.index),
               annual:row.classList.contains('annual'),
-              values:[...row.querySelectorAll('.cell')].map(cell=>
-                cell.classList.contains('expiry') ? cell.firstChild.textContent :
-                cell.classList.contains('cost') ? cell.querySelector('.debit-value')?.textContent :
-                cell.textContent).concat(row.querySelector('.fill-detail')?.textContent),
+              values:readValues(row),
               background:getComputedStyle(row.querySelector('.cell')).backgroundColor,
               foreground:getComputedStyle(row.querySelector('.cell')).color,
               selectBackground:getComputedStyle(row.querySelector('.select')).backgroundColor,
               selectForeground:getComputedStyle(row.querySelector('.select')).color,
               annualBorder:getComputedStyle(row.querySelector('.select')).boxShadow,
               linkColors:[...row.querySelectorAll('.open')].map(link=>getComputedStyle(link).color),
-              lastColor:getComputedStyle(row.querySelectorAll('.cell')[10]).color,
+              lastColor:getComputedStyle(row.querySelector('[data-field="profit"]')).color,
               costColor:getComputedStyle(row.querySelector('.cost')).color,
               costBackground:getComputedStyle(row.querySelector('.cost')).backgroundColor
             });
@@ -461,11 +481,21 @@ def assert_row_colors(page: dict) -> None:
 
 def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
     """One visible Debit column retains numeric cost and its tiny pricing basis."""
-    assert len(snapshot["headers"]) == 14 and snapshot["headers"][9] == "Debit" and snapshot["headers"][-1] == "FILL EST", snapshot
+    assert snapshot["headers"] == ["SELECT", "OS / TV", "TICKER", "TYPE", "EXP / YEAR",
+                                    "STRIKE", "LAST PRICE", "OPEN INTEREST", "Debit", "BREAKEVEN",
+                                    "RISK:REWARD", "MAX PROFIT", "FILL EST"], snapshot
     assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
     allowed = {"LIMIT", "MID"} if expected_fill == "NORMAL" else {expected_fill}
     for row in snapshot["rows"]:
-        assert row["cellCount"] == 14 and len(row["values"]) == 13, row
+        assert row["cellCount"] == 13 and len(row["values"]) == 13, row
+        assert [item["field"] for item in row["stacked"]] == ["strike_pair", "last_pair", "open_interest"], row
+        assert all(item["fits"] and int(item["buyWeight"]) > int(item["sellWeight"])
+                   for item in row["stacked"]), row
+        def expected_oi(strike):
+            value = int(float(strike))
+            return f'{0 if value == 90 else value * 10 + (1000 if row["values"][1] == "P" else 0):,}'
+        assert row["stacked"][2]["buy"] == expected_oi(row["values"][3]), row
+        assert row["stacked"][2]["sell"] == expected_oi(row["values"][4]), row
         assert row["debitValue"] == row["values"][7] and row["debitValue"].startswith("$"), row
         assert row["fillDetail"] == row["values"][-1] and row["fillDetail"] in allowed, row
         assert all(word in (row.get("fillRuler") or "") for word in ("BID", "MID", "ASK", "DEBIT")), row
@@ -1333,7 +1363,7 @@ def test() -> None:
             wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
                 all(row["fillDetail"] in {"LIMIT","MID"} for row in snapshot["rows"]) else False))
             assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
-            print("Numeric BID/MID/ASK/debit ruler and SMART natural ASK PASS (14 columns, 43px rows)", flush=True)
+            print("Numeric BID/MID/ASK/debit ruler and SMART natural ASK PASS (13 columns with stacked legs/OI, 43px rows)", flush=True)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
@@ -1414,10 +1444,9 @@ def test() -> None:
                         for(let offset=0;offset<=scroll.scrollHeight;offset+=scroll.clientHeight){
                           scroll.scrollTop=offset;scroll.dispatchEvent(new Event('scroll'));
                           for(const row of document.querySelectorAll('.row')){
-                            const cells=row.querySelectorAll('.cell');
-                            types.add(cells[1].textContent);
-                            strikes.add(cells[3].textContent);
-                            strikes.add(cells[4].textContent);
+                            types.add(row.querySelector('[data-field="side"]').textContent);
+                            strikes.add(String(Number(row.querySelector('[data-field="buy"]').textContent.replace(/[$,]/g,''))));
+                            strikes.add(String(Number(row.querySelector('[data-field="sell"]').textContent.replace(/[$,]/g,''))));
                           }
                         }
                         scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));
@@ -1433,7 +1462,7 @@ def test() -> None:
                 for(let offset=0;offset<=scroller.scrollHeight;offset+=scroller.clientHeight){
                   scroller.scrollTop=offset;scroller.dispatchEvent(new Event('scroll'));
                   put=[...document.querySelectorAll('.row.put:not(.annual)')].find(
-                    row=>row.querySelectorAll('.cell')[1].textContent==='P');
+                    row=>row.querySelector('[data-field="side"]').textContent==='P');
                   if(put)break;
                 }
                 if(!put)return null;
