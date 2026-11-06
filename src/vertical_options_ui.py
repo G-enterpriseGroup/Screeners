@@ -272,6 +272,7 @@ _VERTICAL_OPTIONS_CSS = """
 .vo-note .muted{color:var(--vo-muted)!important;-webkit-text-fill-color:var(--vo-muted)!important;}
 /* A zero-height iframe still has a line box in its Streamlit wrapper. */
 .st-key-vertical_options_workspace .st-key-vo_pricing_preference_reader,
+.st-key-vertical_options_workspace .st-key-vo_pricing_background_reader,
 .st-key-vertical_options_workspace .st-key-vo_pricing_preference_writer{
     height:0!important;
     min-height:0!important;
@@ -1867,11 +1868,11 @@ def _scanner_help(label: str, explanation: str) -> None:
     )
 
 
-def _hydrate_vertical_options_pricing() -> bool:
+def _hydrate_vertical_options_pricing(reader_key: str = "vo_pricing_preference_reader") -> bool:
     """Read the browser preference before any default can overwrite it."""
     if not st.session_state.get("_vo_pricing_mode_hydrated", False):
         restored = _PRICING_PREFERENCE_COMPONENT(
-            action="read", key="vo_pricing_preference_reader", height=0, default=None,
+            action="read", key=reader_key, height=0, default=None,
         )
         if not isinstance(restored, dict) or not restored.get("ready"):
             return False
@@ -2970,6 +2971,23 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
 
 
 @st.fragment(run_every=1)
+def _recover_vertical_pricing_without_blocking() -> None:
+    """Restore delayed browser preferences while the scanner remains usable.
+
+    The separate component key avoids duplicating the live pricing-toggle
+    widget. Browser storage can be unavailable, so stop retrying silently.
+    """
+    if st.session_state.get("_vo_pricing_mode_hydrated"):
+        return
+    started = st.session_state.setdefault("_vo_pref_recovery_started", time.monotonic())
+    if _hydrate_vertical_options_pricing("vo_pricing_background_reader"):
+        st.rerun()  # Single redraw to adopt the actual saved browser mode.
+    if time.monotonic() - started >= 12:
+        st.session_state["_vo_pref_recovery_unavailable"] = True
+        st.rerun()  # Stop this timer; keep the visible session-mode switch.
+
+
+@st.fragment(run_every=1)
 def _render_vertical_scan_continuation(client, touch_session) -> None:
     result = st.session_state.get("vo_scan_result") or {}
     if (not result or result.get("max_cost") is not None or result.get("scan_complete", True)
@@ -2995,6 +3013,9 @@ def render_vertical_options(client, touch_session, *, vault_key: str = "default"
     st.session_state["_vo_workspace_ready"] = vault_key
     st.session_state.pop("_vo_bootstrap_failed", None)
     _render_vertical_options_fragment(client, touch_session, vault_key)
+    if (not st.session_state.get("_vo_pricing_mode_hydrated")
+            and not st.session_state.get("_vo_pref_recovery_unavailable")):
+        _recover_vertical_pricing_without_blocking()
     result = st.session_state.get("vo_scan_result") or {}
     if (result.get("max_cost") is None
             and result.get("symbol") == str(st.session_state.get("vo_symbol_value") or "").strip().upper()
