@@ -1,0 +1,21 @@
+name: Vertical Toolbar Alignment Workbench
+on:
+  push:
+    branches: [fix/vertical-toolbar-align-20261106]
+    paths: [.github/workflows/vo-align-workbench.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p /tmp/vo-align-source
+          git archive --format=zip HEAD -o /tmp/vo-align-source/source.zip
+          git rev-parse HEAD > /tmp/vo-align-source/commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vo-align-source
+          path: /tmp/vo-align-source
+          retention-days: 1
