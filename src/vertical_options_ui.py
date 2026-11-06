@@ -272,7 +272,7 @@ _VERTICAL_OPTIONS_CSS = """
 .vo-note .muted{color:var(--vo-muted)!important;-webkit-text-fill-color:var(--vo-muted)!important;}
 /* A zero-height iframe still has a line box in its Streamlit wrapper. */
 .st-key-vertical_options_workspace .st-key-vo_pricing_preference_reader,
-.st-key-vertical_options_workspace .st-key-vo_pricing_background_reader,
+.st-key-vo_pricing_background_reader,
 .st-key-vertical_options_workspace .st-key-vo_pricing_preference_writer{
     height:0!important;
     min-height:0!important;
