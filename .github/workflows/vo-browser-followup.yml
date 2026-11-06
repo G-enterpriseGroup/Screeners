@@ -1,0 +1,33 @@
+name: Vertical Browser Follow-up
+on:
+  push:
+    branches: [fix/vo-seamless-execution-20261106]
+    paths: [.github/workflows/vo-browser-followup.yml]
+permissions:
+  contents: write
+jobs:
+  update-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/vo-seamless-execution-20261106
+      - name: Adjust only the browser helper and preserve scope
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/test_vertical_options_scanner_browser.py');s=p.read_text()
+          old='        if not panel.is_displayed():\n            driver.find_element(By.CSS_SELECTOR, \'.filter-button[data-key="side"]\').click()'
+          new='        if (not panel.is_displayed() or panel.find_element(By.CSS_SELECTOR, ".filter-title").text != "FILTER TYPE"):\n            driver.find_element(By.CSS_SELECTOR, \'.filter-button[data-key="side"]\').click()'
+          assert s.count(old)==1
+          p.write_text(s.replace(old,new))
+          Path('.github/workflows/vo-browser-followup.yml').unlink()
+          PY
+          python -m py_compile scripts/test_vertical_options_scanner_browser.py
+          git diff --check
+          git config user.name G-enterpriseGroup
+          git config user.email 143067071+G-enterpriseGroup@users.noreply.github.com
+          git add scripts/test_vertical_options_scanner_browser.py .github/workflows/vo-browser-followup.yml
+          git commit -m 'Browser coverage: switch to TYPE menu when another sort menu intentionally remains open'
+          git push origin HEAD:fix/vo-seamless-execution-20261106
+          git rev-parse HEAD
