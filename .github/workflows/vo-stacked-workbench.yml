@@ -1,0 +1,21 @@
+name: Vertical Stacked Columns Workbench
+on:
+  push:
+    branches: [fix/vertical-stacked-legs-oi-20261106]
+    paths: [.github/workflows/vo-stacked-workbench.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p /tmp/vo-stacked
+          git archive --format=zip HEAD -o /tmp/vo-stacked/source.zip
+          git rev-parse HEAD > /tmp/vo-stacked/commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vo-stacked-source
+          path: /tmp/vo-stacked
+          retention-days: 1
