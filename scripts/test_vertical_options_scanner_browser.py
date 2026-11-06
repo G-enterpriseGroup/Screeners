@@ -774,7 +774,7 @@ def toggle_put_column_filter(driver: webdriver.Chrome) -> None:
     """Click the real TYPE menu checkbox, exercising component-to-app reruns."""
     def enter() -> None:
         panel = driver.find_element(By.ID, "filter-panel")
-        if not panel.is_displayed():
+        if (not panel.is_displayed() or panel.find_element(By.CSS_SELECTOR, ".filter-title").text != "FILTER TYPE"):
             driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="side"]').click()
         choices = panel.find_elements(By.CSS_SELECTOR, ".filter-choice")
         assert {item.find_element(By.TAG_NAME, "span").text for item in choices} == {"CALL", "PUT"}
