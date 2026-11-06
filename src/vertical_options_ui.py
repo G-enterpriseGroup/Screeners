@@ -280,8 +280,16 @@ _VERTICAL_OPTIONS_CSS = """
     line-height:0!important;
     overflow:hidden!important;
 }
-/* Pricing mode: center the native track vertically between its two descriptions. */
-.st-key-vertical_options_workspace .vo-mode-guide{min-height:32px;}
+/* One aligned toolbar: reuse the scan-field columns; only cash cards stretch.
+   A bounded mode group prevents empty space between the switch and its labels. */
+.st-key-vertical_options_workspace .vo-mode-guide{min-height:38px;}
+.st-key-vertical_options_workspace .st-key-vo_mode_controls .vo-mode-guide{white-space:nowrap;}
+.st-key-vertical_options_workspace .st-key-vo_mode_switch{gap:0!important;}
+.st-key-vertical_options_workspace .vo-liquid-cash .vo-card{
+    flex:1 1 100%;width:100%;height:38px;min-height:38px;
+}
+.st-key-vertical_options_workspace .vo-liquid-cash .vo-label{min-width:0;flex:1;}
+.st-key-vertical_options_workspace .vo-liquid-cash .vo-value{flex:none;}
 .st-key-vertical_options_workspace .st-key-vo_smart_fill{
     display:flex!important;align-items:center!important;justify-content:center!important;
     min-height:32px!important;margin:0!important;padding:0!important;
@@ -2002,17 +2010,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
         for switch in ("vo_smart_fill", "vo_auto_finish"):
             install_native_switch_theme(switch)
         _render_saved_spread_drafts()
-        note_col, portfolio_col = st.columns([4, 1.4], gap="small", vertical_alignment="center")
-        with note_col:
-            st.html(
-                '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
-                '<span class="muted">ENTER TICKER // DEBIT / BREAKEVEN IN COLUMN FILTER // PRESS ENTER TO SCAN</span></div>'
-            )
-        with portfolio_col:
-            st.button("PORTFOLIO VERTICALS", key="vo_portfolio_open", use_container_width=True,
-                      on_click=_open_portfolio_verticals)
-            if st.session_state.get("_vo_portfolio_dialog_open"):
-                _render_portfolio_verticals(client, touch_session)
+        st.html(
+            '<div class="vo-note">ALL-YEAR VERTICAL SCANNER // '
+            '<span class="muted">ENTER TICKER // DEBIT / BREAKEVEN IN COLUMN FILTER // PRESS ENTER TO SCAN</span></div>'
+        )
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
         if not broker_live:
             st.warning(
@@ -2022,41 +2023,51 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
 
         # Optional ticker list stays collapsed until requested. Selecting from
         # the list only pre-fills the existing one-ticker scanner; no chain calls.
-        paste_cols = st.columns([1.15, 3.85], gap="small", vertical_alignment="center")
-        with paste_cols[0]:
-            if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
-                st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
-        with paste_cols[1], st.container(width=820):
-            # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
-            # Switching modes reprices the cached snapshot only; it never fetches
-            # quotes, previews a broker order or submits one.
-            mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(
-                [1.05, .50, 1.25, 1.85], gap="small", vertical_alignment="center"
-            )
-            with mode_guide_col:
-                st.html(
-                    '<div class="vo-mode-guide" style="justify-content:flex-end">'
-                    '<span><span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
-                    '<span class="vo-mode-tooltip" role="tooltip">'
-                    'NORMAL suggests a limit between the spread midpoint and natural ask, '
-                    'falling back to MID when the suggested limit fails the 1:2 minimum. '
-                    'A midpoint limit can remain unfilled.'
-                    '</span></span> NORMAL</span></div>'
+        with st.container(key="vo_toolbar"):
+            # Match the ticker/company and ratio/scan edges in the row below.
+            paste_cols = st.columns([1.05, 1.7, 3.55], gap="small", vertical_alignment="top")
+            with paste_cols[0]:
+                if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
+                    st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
+            with paste_cols[1], st.container(width=250, key="vo_mode_controls"):
+                # Preserve the native switch and its saved pricing preference.
+                # Switching modes reprices the cached snapshot only; it never fetches
+                # quotes, previews a broker order or submits one.
+                mode_guide_col, mode_switch_col, smart_label_col = st.columns(
+                    [78, 42, 114], gap="small", vertical_alignment="center"
                 )
-            with mode_switch_col:
-                pricing_mode = _pricing_mode_flip_switch()
-            with smart_label_col:
-                st.html(
-                    '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
-                    '<span class="vo-mode-tooltip" role="tooltip">'
-                    'SMART FILL uses the natural spread ASK (buy leg ask minus sell leg bid) '
-                    'only when risk:reward is at least 1:2 and cost rules pass. '
-                    'It proposes a marketable DAY limit but cannot guarantee a fill '
-                    'or automatically submit an order.'
-                    '</span></span></span></div>'
-                )
-            with cash_col:
-                st.html(_liquid_cash_markup(client, touch_session))
+                with mode_guide_col:
+                    st.html(
+                        '<div class="vo-mode-guide" style="justify-content:flex-end">'
+                        '<span><span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+                        '<span class="vo-mode-tooltip" role="tooltip">'
+                        'NORMAL suggests a limit between the spread midpoint and natural ask, '
+                        'falling back to MID when the suggested limit fails the 1:2 minimum. '
+                        'A midpoint limit can remain unfilled.'
+                        '</span></span> NORMAL</span></div>'
+                    )
+                with mode_switch_col:
+                    with st.container(key="vo_mode_switch", gap=None):
+                        pricing_mode = _pricing_mode_flip_switch()
+                with smart_label_col:
+                    st.html(
+                        '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
+                        '<span class="vo-mode-tooltip" role="tooltip">'
+                        'SMART FILL uses the natural spread ASK (buy leg ask minus sell leg bid) '
+                        'only when risk:reward is at least 1:2 and cost rules pass. '
+                        'It proposes a marketable DAY limit but cannot guarantee a fill '
+                        'or automatically submit an order.'
+                        '</span></span></span></div>'
+                    )
+            with paste_cols[2]:
+                cash_col, portfolio_col = st.columns([.8, 1.1], gap="small", vertical_alignment="top")
+                with cash_col:
+                    st.html(_liquid_cash_markup(client, touch_session))
+                with portfolio_col:
+                    st.button("PORTFOLIO VERTICALS", key="vo_portfolio_open", use_container_width=True,
+                              on_click=_open_portfolio_verticals)
+        if st.session_state.get("_vo_portfolio_dialog_open"):
+            _render_portfolio_verticals(client, touch_session)
         if st.session_state.get("vo_list_open"):
             pasted = st.text_area(
                 "PASTE TICKERS // ONE PER LINE, COMMA-SEPARATED OR MARKDOWN TABLE",

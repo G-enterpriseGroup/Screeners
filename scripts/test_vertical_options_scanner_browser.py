@@ -260,6 +260,63 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
 
 
+def assert_toolbar_alignment(driver: webdriver.Chrome) -> dict:
+    """The cash/portfolio row follows scan-column edges without switch dead space."""
+    def measure(_):
+        return driver.execute_script("""
+            const visible = selector => [...document.querySelectorAll(selector)]
+                .reverse().find(el => el.getClientRects().length);
+            const rect = el => {const r=el.getBoundingClientRect();return {
+                left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height};};
+            const paste=visible('.st-key-vo_list_toggle button'),
+                cash=visible('.vo-liquid-cash .vo-card'),
+                portfolio=visible('.st-key-vo_portfolio_open button'),
+                ticker=visible('.st-key-vo_symbol_value [data-testid="stTextInputRootElement"]'),
+                ratio=visible('.st-key-vo_min_reward_risk [data-testid="stTextInputRootElement"]'),
+                scan=visible('[data-testid="stFormSubmitButton"] button'),
+                guides=[...document.querySelectorAll('.st-key-vo_mode_controls .vo-mode-guide')],
+                input=visible('.st-key-vo_smart_fill input[role="switch"]');
+            if(!paste||!cash||!portfolio||!ticker||!ratio||!scan||!input||guides.length!==2)return null;
+            const label=input.closest('label'),track=label?.querySelector(':scope > div:first-of-type'),
+                amount=cash.querySelector('.vo-value');
+            if(!track||!amount)return null;
+            return {width:innerWidth,paste:rect(paste),cash:rect(cash),portfolio:rect(portfolio),
+                ticker:rect(ticker),ratio:rect(ratio),scan:rect(scan),
+                normal:rect(guides[0]),smart:rect(guides[1]),track:rect(track),
+                // Hidden absolute-positioned tooltips affect scrollWidth; measure the visible inline label.
+      labelFits:guides.every(el=>{const text=el.querySelector(':scope > span').getBoundingClientRect(),
+          box=el.getBoundingClientRect();return text.left>=box.left-1&&text.right<=box.right+1;}),
+                cashFits:amount.scrollWidth<=amount.clientWidth+1,
+                suffix:getComputedStyle(label,'::after').content,
+                overflow:document.documentElement.scrollWidth>innerWidth};
+        """)
+    geometry = WebDriverWait(driver, 20).until(measure)
+    evidence = os.environ.get('VO_TOOLBAR_EVIDENCE_DIR')
+    if evidence:
+        folder = Path(evidence)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f'toolbar-{geometry["width"]}.json').write_text(json.dumps(geometry, indent=2))
+        driver.find_element(By.CSS_SELECTOR, '.st-key-vertical_options_workspace').screenshot(
+            str(folder / f'toolbar-{geometry["width"]}.png'))
+    boxes = [geometry[key] for key in ('paste', 'cash', 'portfolio')]
+    assert all(abs(box['height'] - 38) <= 1 for box in boxes), geometry
+    assert max(box['top'] for box in boxes) - min(box['top'] for box in boxes) <= 2, geometry
+    assert max(box['bottom'] for box in boxes) - min(box['bottom'] for box in boxes) <= 2, geometry
+    for top, bottom in (('paste', 'ticker'), ('cash', 'ratio'), ('portfolio', 'scan')):
+        for edge in ('left', 'right'):
+            assert abs(geometry[top][edge] - geometry[bottom][edge]) <= 2, geometry
+    for key in ('normal', 'smart'):
+        center = (geometry[key]['top'] + geometry[key]['bottom']) / 2
+        track_center = (geometry['track']['top'] + geometry['track']['bottom']) / 2
+        assert abs(center - track_center) <= 2, geometry
+    assert 0 <= geometry['track']['left'] - geometry['normal']['right'] <= 16, geometry
+    assert 0 <= geometry['smart']['left'] - geometry['track']['right'] <= 16, geometry
+    assert geometry['suffix'] in ('none', 'normal', '""'), geometry
+    assert geometry['labelFits'] and geometry['cashFits'] and not geometry['overflow'], geometry
+    print('Toolbar edge alignment / compact mode gap PASS', geometry, flush=True)
+    return geometry
+
+
 def visible_note(driver: webdriver.Chrome):
     """Find the active note without clicking a hidden old rerun copy."""
     def locate(_):
@@ -960,7 +1017,7 @@ def test() -> None:
             print("Vertical Options compact scan toolbar PASS", pricing_layout)
             # Compare visible box edges and labels with the shared production
             # theme at both desktop widths, including nested form boundaries.
-            for viewport_width in (1440, 1100):
+            for viewport_width in (1529, 1440, 1100, 1040):
                 driver.set_window_size(viewport_width, 900)
                 geometry = wait.until(lambda _: driver.execute_script("""
                     const rect = el => { const r=el.getBoundingClientRect();
@@ -1000,8 +1057,9 @@ def test() -> None:
                 assert geometry["formPadding"] == "0px", geometry
                 assert not geometry["overflow"], geometry
                 assert_liquid_cash_display(driver)
+                assert_toolbar_alignment(driver)
             driver.set_window_size(1440, 900)
-            print("Vertical Options aligned scan controls PASS (1440 + 1100)", flush=True)
+            print("Vertical Options aligned toolbar + scan controls PASS (1529/1440/1100/1040)", flush=True)
             assert [event for event in events(event_path) if event["event"] == "balance"]
             print("Read-only selected-account liquid cash beside SMART FILL PASS (1440 + 1100)", flush=True)
             def assert_switch_visibility(checked, key="vo_smart_fill"):
@@ -1054,6 +1112,8 @@ def test() -> None:
                         return False
                 wait.until(hover_and_leave)
                 assert wait.until(settled)["track"] == appearance["track"]
+                if key == "vo_smart_fill":
+                    assert_toolbar_alignment(driver)
                 print("Native switch resting contrast PASS", key, appearance, flush=True)
             assert_switch_visibility(False)
             assert_switch_visibility(False, "risk_capital_source_tactical")
