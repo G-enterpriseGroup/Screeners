@@ -13,6 +13,70 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_stacked_leg_open_interest_uses_exact_cached_quote_and_keeps_zero(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        expiry = date(2029, 1, 19)
+        rows = [dict(expiry=expiry, call_put="CALL", strike=100, osi="QQQ-C100",
+                     last=6.0, bid=5.9, ask=6.1, open_interest=12345),
+                dict(expiry=expiry, call_put="CALL", strike=110, osi="QQQ-C110",
+                     last=3.0, bid=2.9, ask=3.1, open_interest=0)]
+        raw = {"scan_id": 77, "rows": rows}
+        result = {"source": "E*TRADE", "symbol": "QQQ", "raw_scan_id": 77}
+        state = {"_vo_chain_cache": {"E*TRADE:QQQ": raw}}
+        candidates, annual = scan_vertical_candidates(
+            symbol="QQQ", spot_last=100, option_rows=rows, target_breakeven=None,
+            max_cost=None, max_per_expiration=None, pricing_mode="SMART FILL",
+            desktop_fast_fill=True)
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        before = deepcopy(candidate)
+        with patch.object(vo.st, "session_state", state):
+            index = vo._table_open_interest(result)
+            self.assertIs(index, vo._table_open_interest(result))
+            payload = vo._spread_table_row(candidate, annual, contract_open_interest=index)
+            self.assertEqual(payload["open_interest"], {"buy": 12345, "sell": 0})
+            self.assertEqual(payload["values"], vo._spread_table_row(candidate, annual)["values"])
+            self.assertEqual(candidate, before)  # Read-only presentation; no repricing.
+            self.assertEqual(vo._table_open_interest({**result, "raw_scan_id": 78}), {})
+            self.assertEqual(vo._table_open_interest({**result, "source": "YFINANCE"}), {})
+            # A second quote of the same OSI must not steal OI from the chosen quote.
+            rows.append({**rows[0], "last": 6.2, "open_interest": 999})
+            updated = vo._table_open_interest(result)
+            self.assertIsNot(index, updated)
+            self.assertEqual(vo._spread_table_row(candidate, annual,
+                             contract_open_interest=updated)["open_interest"]["buy"], 12345)
+            # Without matching quotes show unknown, not OI from another contract.
+            missing = {**candidate, "sell_osi": "OTHER"}
+            self.assertIsNone(vo._spread_table_row(missing, annual,
+                              contract_open_interest=updated)["open_interest"]["sell"])
+
+    def test_stacked_open_interest_missing_invalid_and_put_leg_identity(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        expiry = date(2029, 1, 19)
+        for invalid in (None, "", -1, float("nan"), float("inf"), 1.5, True):
+            with self.subTest(oi=invalid):
+                row = dict(expiry=expiry, call_put="PUT", strike=110, osi="QQQ-P110",
+                           last=3.0, bid=2.9, ask=3.1, open_interest=invalid)
+                raw = {"scan_id": 1, "rows": [row]}
+                state = {"_vo_chain_cache": {"E*TRADE:QQQ": raw}}
+                result = {"source": "E*TRADE", "symbol": "QQQ", "raw_scan_id": 1}
+                with patch.object(vo.st, "session_state", state):
+                    index = vo._table_open_interest(result)
+                self.assertIsNone(index[vo._leg_quote_key(row)])
+        buy = dict(expiry=expiry, call_put="PUT", strike=110, osi="QQQ-P110",
+                   last=3.0, bid=2.9, ask=3.1, open_interest=2500)
+        sell = {**buy, "strike": 100, "osi": "QQQ-P100", "last": 1.0,
+                "bid": .9, "ask": 1.1, "open_interest": 777}
+        index = {vo._leg_quote_key(buy): 2500, vo._leg_quote_key(sell): 777}
+        candidates, annual = scan_vertical_candidates(
+            symbol="QQQ", spot_last=100, option_rows=[buy, sell], target_breakeven=None,
+            max_cost=None, max_per_expiration=None)
+        self.assertEqual(vo._spread_table_row(candidates[0], annual,
+                         contract_open_interest=index)["open_interest"], {"buy": 2500, "sell": 777})
+
     def test_liquid_cash_uses_risk_cash_field_without_changing_trade_state(self):
         from copy import deepcopy
         from unittest.mock import MagicMock, patch

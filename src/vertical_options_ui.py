@@ -1461,13 +1461,72 @@ def _tradingview_spread_url(candidate: dict[str, Any], *, exchange: str = "") ->
     formula = _tradingview_spread_formula(candidate)
     return "https://www.tradingview.com/chart/?symbol=" + url_quote(formula, safe="") if formula else ""
 
-def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "") -> dict[str, Any]:
+# ==============================
+# TABLE-ONLY LEG OPEN INTEREST (SAME SNAPSHOT; NO BROKER CALLS)
+# ==============================
+def _leg_quote_key(row: dict[str, Any], prefix: str = "") -> tuple:
+    """Match the exact contract and quote retained by the canonical scanner."""
+    def number(value, *, positive=False):
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return value if math.isfinite(value) and (value > 0 if positive else value >= 0) else None
+    return (
+        row.get("expiry"), row.get("call_put"), number(row.get(prefix + "strike")),
+        str(row.get(prefix + "osi") or "").strip(),
+        number(row.get(prefix + "last"), positive=True),
+        number(row.get(prefix + "bid")), number(row.get(prefix + "ask")),
+    )
+
+
+def _table_open_interest(result: dict[str, Any]) -> dict[tuple, int | None]:
+    """Index raw leg OI once per snapshot/batch, not once per spread or rerun.
+
+    Keeping this presentation join here avoids changing shared spread math,
+    disk schemas, phone behavior, order payloads, or existing export columns.
+    Missing OI stays unknown; zero is a valid reported contract count.
+    """
+    raw = (st.session_state.get("_vo_chain_cache") or {}).get(
+        f'{result.get("source")}:{result.get("symbol")}'
+    )
+    if (not isinstance(raw, dict) or result.get("raw_scan_id") is None
+            or raw.get("scan_id") != result["raw_scan_id"]):
+        return {}
+    rows = raw.get("rows") or []
+    signature = (raw["scan_id"], len(rows))
+    cached = raw.get("_vo_table_open_interest")
+    if isinstance(cached, dict) and cached.get("signature") == signature:
+        return cached["values"]
+    values = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("open_interest")
+        try:
+            count = float(value)
+            count = (int(count) if not isinstance(value, bool) and math.isfinite(count)
+                     and count >= 0 and count.is_integer() else None)
+        except (TypeError, ValueError, OverflowError):
+            count = None
+        # Equal quoted duplicates use the first contract, as in the scanner.
+        values.setdefault(_leg_quote_key(row), count)
+    raw["_vo_table_open_interest"] = {"signature": signature, "values": values}
+    return values
+
+
+def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "",
+                      contract_open_interest: dict | None = None) -> dict[str, Any]:
     return {
         "id": candidate["id"],
         "annual": candidate["id"] in annual_ids,
         "optionstrat_url": _optionstrat_url(candidate),
         "tradingview_url": _tradingview_spread_url(candidate, exchange=tv_exchange),
         "expiry_detail": _expiry_time_label(candidate["expiry"]),
+        "open_interest": {
+            leg: (contract_open_interest or {}).get(_leg_quote_key(candidate, leg + "_"))
+            for leg in ("buy", "sell")
+        },
         "fill_market": {
             "bid": candidate.get("spread_bid"), "mid": candidate.get("spread_mid"),
             "ask": candidate.get("spread_ask"), "debit": candidate.get("debit"),
@@ -2480,8 +2539,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     st.info("No spreads match these filters. Clear a column filter.")
                 # The table has one continuous scroll range. Load only its
                 # requested viewport so large scans do not exhaust server memory.
-                displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
-                             for row in displayed_candidates]
+                contract_open_interest = _table_open_interest(result)
+                displayed = [_spread_table_row(
+                    row, annual_ids, tv_exchange=result.get("tv_exchange", ""),
+                    contract_open_interest=contract_open_interest,
+                ) for row in displayed_candidates]
                 selected_update = _SPREAD_SCROLL_COMPONENT(
                     scope=scope, sort_key=view_identity, rows=displayed,
                     total_rows=matching_count, row_offset=offset,
