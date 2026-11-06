@@ -290,6 +290,10 @@ _VERTICAL_OPTIONS_CSS = """
     align-items:center!important;
     white-space:nowrap!important;
 }
+/* Only this pricing toggle uses side labels; never show the generic OFF/ON suffix. */
+.st-key-vertical_options_workspace .st-key-vo_smart_fill label:has(input[role="switch"])::after{
+    content:none!important;display:none!important;
+}
 /* Native labels and the read-only company field share one 20px label row.
    st.form's real stForm wrapper owns padding; its key is not a CSS class. */
 .st-key-vertical_options_workspace .st-key-vo_symbol_value [data-testid="stWidgetLabel"],
@@ -1293,7 +1297,7 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
     _, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
-    policy = (target, max_cost, mode, min_reward_risk)
+    policy = (target, max_cost, mode, min_reward_risk, "desktop-quote-policy-v2")
     store = policies.pop(policy, None)
     if not isinstance(store, VerticalResultStore):
         store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
@@ -1314,7 +1318,9 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
                 progress.progress(index / len(groups),
                     text=f"SCANNING {_date_label(expiry)} // {checked:,} PAIRS CHECKED // {raw['symbol']}")
             update(0)
-            added = store.add_expiration(expiry, rows, scan_vertical_candidates, update)
+            added = store.add_expiration(
+                expiry, rows, partial(scan_vertical_candidates, desktop_fast_fill=True), update
+            )
             if added and time.monotonic() - started >= _SCAN_RANK_SECONDS:
                 break  # Resume calculation from disk without dropping a pair.
     finally:
@@ -1883,12 +1889,20 @@ def _remember_pricing_mode() -> None:
     st.session_state["_vo_pricing_mode_preference"] = (
         "SMART FILL" if st.session_state["vo_smart_fill"] else "NORMAL"
     )
+    # A deliberate user selection wins over any late or blocked browser response.
+    st.session_state["_vo_pricing_mode_hydrated"] = True
 
 
 def _pricing_mode_flip_switch() -> str | None:
     """Restore saved pricing before showing the live switch."""
-    if not _hydrate_vertical_options_pricing():
-        return None
+    # Browser localStorage is best-effort; a zero-height iframe can be blocked
+    # by the client. Never hold the entire scanner hostage to its reply.
+    _hydrate_vertical_options_pricing()
+    st.session_state.setdefault(
+        "_vo_pricing_mode_preference",
+        st.session_state.get("vo_pricing_mode", "NORMAL")
+        if st.session_state.get("vo_pricing_mode") in {"NORMAL", "SMART FILL"} else "NORMAL",
+    )
 
     # Streamlit can clean up a widget key when another top-level tab renders.
     # The non-widget preference remains stable for this server-side session.
@@ -1898,14 +1912,16 @@ def _pricing_mode_flip_switch() -> str | None:
     smart = st.toggle(
         "SMART FILL", key="vo_smart_fill", label_visibility="collapsed",
         on_change=_remember_pricing_mode,
-        help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
-             "Saved for this browser profile, including after page reload.",
+        help="Left = NORMAL midpoint-to-ask limit; right = SMART FILL natural ASK. "
+             "The chosen mode is retained in this session; browser storage is best-effort.",
     )
     mode = "SMART FILL" if smart else "NORMAL"
     st.session_state["_vo_pricing_mode_preference"] = mode
-    _PRICING_PREFERENCE_COMPONENT(
-        action="write", value=mode, key="vo_pricing_preference_writer", height=0, default=None,
-    )
+    # Do not overwrite a saved browser mode with a fallback before hydration.
+    if st.session_state.get("_vo_pricing_mode_hydrated"):
+        _PRICING_PREFERENCE_COMPONENT(
+            action="write", value=mode, key="vo_pricing_preference_writer", height=0, default=None,
+        )
     return mode
 
 
@@ -1954,12 +1970,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             with mode_guide_col:
                 st.html(
                     '<div class="vo-mode-guide" style="justify-content:flex-end">'
-                    '<span>NORMAL <span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+                    '<span><span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
-                    'Existing pricing: natural ASK first when it meets your selected reward-to-risk '
-                    'and cost limits; otherwise qualifying LAST or MID. '
-                    'Unquoted LAST* is information only. No guaranteed fill.'
-                    '</span></span></span></div>'
+                    'NORMAL suggests a limit between the spread midpoint and natural ask, '
+                    'falling back to MID when the suggested limit fails the 1:2 minimum. '
+                    'A midpoint limit can remain unfilled.'
+                    '</span></span> NORMAL</span></div>'
                 )
             with mode_switch_col:
                 pricing_mode = _pricing_mode_flip_switch()
@@ -1967,15 +1983,14 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.html(
                     '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
                     '<span class="vo-mode-tooltip" role="tooltip">'
-                    'Suggests a limit between spread MID and natural ASK using quote width '
-                    'and available leg volume/open interest. Keeps your selected ratio and cost cap; '
-                    'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
+                    'SMART FILL uses the natural spread ASK (buy leg ask minus sell leg bid) '
+                    'only when risk:reward is at least 1:2 and cost rules pass. '
+                    'It proposes a marketable DAY limit but cannot guarantee a fill '
+                    'or automatically submit an order.'
                     '</span></span></span></div>'
                 )
             with cash_col:
                 st.html(_liquid_cash_markup(client, touch_session))
-            if pricing_mode is None:
-                return
         if st.session_state.get("vo_list_open"):
             pasted = st.text_area(
                 "PASTE TICKERS // ONE PER LINE, COMMA-SEPARATED OR MARKDOWN TABLE",
@@ -2539,9 +2554,12 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                             st.session_state.pop("vo_last_send_results", None)
                             rerun_for_component = True
                     if rerun_for_component:
-                        # Custom-component updates may run this fragment during a
-                        # full-app rerun; fragment scope is invalid in that context.
-                        st.rerun()
+                        # Keep filter/selection acknowledgments inside the owning
+                        # fragment. A full-page rerun causes the grey-screen flash.
+                        try:
+                            st.rerun(scope="fragment")
+                        except st.errors.StreamlitAPIException:
+                            st.rerun()
                 checked_ids = set(st.session_state["_vo_checked_spreads"]["ids"])
                 st.caption(
                     f'{matching_count:,} DISPLAYED // {matching_count:,} MATCHING OF '
@@ -2609,7 +2627,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         'BUY premium minus SELL premium, per share. Chart history and delay '
                         'depend on TradingView contract coverage and your market-data access.'
                     )
-                    with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
+                    with st.expander("E*TRADE ORDER // REVIEW → PLACE", expanded=True):
                         _render_selected_order(client, touch_session, chosen,
                                                {**result, "max_cost": active_max_cost}, broker_live)
                     if len(checked_rows) > 1:
@@ -2705,13 +2723,11 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
     # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
-    ladder = (smart_fill_ladder(candidate, result["max_cost"], min_reward_risk=min_reward_risk)
-              if smart_mode and candidate.get("basis") == "SMART" else
-              [limit_price] if smart_mode and candidate.get("basis") == "MID" else [])
-    if smart_mode and not ladder:
-        st.warning("SMART FILL PRICING UNAVAILABLE // Rescan a live quoted spread.")
+    if smart_mode and (candidate.get("basis") != "ASK" or
+                       candidate.get("spread_ask") is None):
+        st.warning("SMART FILL NEEDS A VALID NATURAL ASK // Rescan a quoted spread.")
         return
-    controls = st.columns([.85, .9, 2.0, 1.3] if smart_mode else [.85, .9, 2.5], gap="small")
+    controls = st.columns([.85, .9, 2.5], gap="small")
     quantity = int(controls[0].number_input(
         "Qty", min_value=1, max_value=5000, step=1, key="vo_qty",
     ))
@@ -2726,16 +2742,6 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         help="For live submission, the same reviewed spread is placed once in EACH selected account. Saving Terminal drafts never sends to E*TRADE.",
     )
     account_keys = [key for key in selected_accounts if key in by_account]
-    if smart_mode:
-        limit_price = float(controls[3].selectbox(
-            "SMART LIMIT", ladder,
-            key="vo_smart_rung_" + result["scope"] + "_" + hashlib.sha256(
-                order_seed.encode("utf-8")
-            ).hexdigest()[:10],
-            format_func=lambda value: f"${value:.2f} / ${value * 100:.0f}",
-            help="Manual price ladder; selecting another rung NEVER places, "
-                 "changes or queues an order. A new E*TRADE preview is required.",
-        ))
     try:
         validate_vertical(
             call_put=call_put, buy_strike=buy_strike,
@@ -2829,7 +2835,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                 sell_bid=sell_leg.get("bid"), sell_ask=sell_leg.get("ask"),
                 width=candidate["width"], max_cost=result["max_cost"],
                 pricing_mode=result.get("pricing_mode", "NORMAL"),
-                min_reward_risk=min_reward_risk,
+                min_reward_risk=min_reward_risk, desktop_fast_fill=True,
                 buy_volume=buy_leg.get("volume"), sell_volume=sell_leg.get("volume"),
                 buy_open_interest=buy_leg.get("open_interest"),
                 sell_open_interest=sell_leg.get("open_interest"),
@@ -2837,9 +2843,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             if (not checked_price or not checked_price["orderable"]
                     or checked_price["basis"] != candidate["basis"]
                     or (smart_mode and (
-                        checked_price["debit"] != candidate["debit"]
-                        or limit_price < checked_price["spread_mid"] - .005
-                        or limit_price > checked_price["spread_ask"] + .005
+                        checked_price["spread_ask"] > limit_price + .005
                         or candidate["width"] - limit_price + 1e-8 < min_reward_risk * limit_price
                         or (result["max_cost"] is not None
                             and limit_price * 100 > result["max_cost"] + 1e-8)
@@ -2999,21 +3003,13 @@ def _render_vertical_scan_continuation(client, touch_session) -> None:
 
 
 def render_vertical_options(client, touch_session, *, vault_key: str = "default") -> None:
-    """Render the isolated Vertical Options workspace."""
+    """Render without blocking on optional browser preference storage."""
     st.html(_VERTICAL_OPTIONS_CSS)
     install_native_switch_theme("vo_smart_fill")
     _restore_scan_memory(vault_key)
     _restore_presentation()
-    if st.session_state.get("_vo_workspace_ready") != vault_key:
-        if st.session_state.get("_vo_bootstrap_failed"):
-            st.error("PREFERENCE STORAGE DID NOT RESPOND // Retry initialization. Saved settings have not been overwritten.")
-            if st.button("RETRY INITIALIZATION", key="vo_retry_initialization"):
-                st.session_state.pop("_vo_bootstrap_failed", None)
-                st.session_state.pop("_vo_bootstrap_started", None)
-                st.rerun()
-            return
-        _render_vertical_options_bootstrap(vault_key)
-        return
+    st.session_state["_vo_workspace_ready"] = vault_key
+    st.session_state.pop("_vo_bootstrap_failed", None)
     _render_vertical_options_fragment(client, touch_session, vault_key)
     result = st.session_state.get("vo_scan_result") or {}
     if (result.get("max_cost") is None
