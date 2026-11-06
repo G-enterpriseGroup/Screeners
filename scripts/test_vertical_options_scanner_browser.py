@@ -846,15 +846,17 @@ def test() -> None:
                 if (not apps or apps[0].get_attribute("data-test-script-state") != "notRunning"
                         or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
                     return False
-                forms = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
+                forms = [item for item in driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
+                         if item.is_displayed()]
                 if not forms:
                     return False
+                active = forms[-1]  # A retiring Streamlit form may still exist hidden.
                 labels = driver.execute_script(
                     "return [...arguments[0].querySelectorAll('input')]"
                     ".filter(input=>!input.disabled&&input.type==='text')"
-                    ".map(input=>input.getAttribute('aria-label'))", forms[0],
+                    ".map(input=>input.getAttribute('aria-label'))", active,
                 )
-                return forms[0] if labels == expected_labels else False
+                return active if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
