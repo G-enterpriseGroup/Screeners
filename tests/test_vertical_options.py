@@ -309,6 +309,28 @@ else:
             renderer.assert_called_once()
             self.assertNotIn("_vo_pricing_mode_hydrated", state)
 
+    def test_delayed_preferences_retry_silently_without_blocking_ui(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        state = {}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo, "_hydrate_vertical_options_pricing", return_value=True) as read,
+              patch.object(vo.st, "rerun") as rerun):
+            vo._recover_vertical_pricing_without_blocking.__wrapped__()
+            read.assert_called_once_with("vo_pricing_background_reader")
+            rerun.assert_called_once()
+            self.assertNotIn("_vo_pref_recovery_unavailable", state)
+        state = {"_vo_pref_recovery_started": 1}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo, "_hydrate_vertical_options_pricing", return_value=False),
+              patch.object(vo.time, "monotonic", return_value=30),
+              patch.object(vo.st, "rerun") as rerun,
+              patch.object(vo.st, "error") as error):
+            vo._recover_vertical_pricing_without_blocking.__wrapped__()
+            self.assertTrue(state["_vo_pref_recovery_unavailable"])
+            rerun.assert_called_once()
+            error.assert_not_called()
+
     def test_calculation_budget_resumes_all_pairs_without_repricing_old_expirations(self):
         from unittest.mock import MagicMock, patch
         import src.vertical_options_ui as vo
@@ -1929,7 +1951,8 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertIn('label_visibility="collapsed"', ui)
         self.assertIn('mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(', ui)
         self.assertIn('with mode_switch_col:', ui)
-        self.assertIn('key="vo_pricing_preference_reader", height=0', ui)
+        self.assertIn('reader_key: str = "vo_pricing_preference_reader"', ui)
+        self.assertIn('key=reader_key, height=0', ui)
         self.assertIn('key="vo_pricing_preference_writer", height=0', ui)
 
     def test_native_switch_theme_is_scoped_and_emitted_every_session(self):
