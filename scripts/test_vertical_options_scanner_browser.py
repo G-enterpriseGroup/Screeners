@@ -742,7 +742,10 @@ def grid_target(driver: webdriver.Chrome) -> str:
         if not panel.is_displayed() or not panel.find_elements(
                 By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN target"]'):
             driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="breakeven"]').click()
-        return panel.find_element(By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN target"]').get_attribute("value")
+        fields = panel.find_elements(By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN target"]')
+        if not fields:
+            return {"grid_mount_pending": True}
+        return fields[0].get_attribute("value")
     return in_grid(driver, inspect)
 
 
