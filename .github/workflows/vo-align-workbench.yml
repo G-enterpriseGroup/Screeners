@@ -21,6 +21,17 @@ jobs:
         run: |
           mkdir -p /tmp/vo-align-evidence
           python scripts/_vo_align_patch.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/test_vertical_options_scanner_browser.py')
+          s=p.read_text()
+          old='labelFits:guides.every(el=>el.scrollWidth<=el.clientWidth+1),'
+          new='''// Hidden absolute-positioned tooltips affect scrollWidth; measure the visible inline label.
+                labelFits:guides.every(el=>{const text=el.querySelector(':scope > span').getBoundingClientRect(),
+                    box=el.getBoundingClientRect();return text.left>=box.left-1&&text.right<=box.right+1;}),'''
+          assert s.count(old)==1
+          p.write_text(s.replace(old,new))
+          PY
           python -m py_compile src/vertical_options_ui.py tests/test_vertical_options.py scripts/test_vertical_options_scanner_browser.py
           python scripts/validate_architecture.py | tee /tmp/vo-align-evidence/architecture.log
           git diff --check
