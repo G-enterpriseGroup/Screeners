@@ -2588,13 +2588,6 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     checked_by_id = candidates.get_many(checked_ids)
                     by_id.update(checked_by_id)
                     checked_rows = list(checked_by_id.values())
-                    if st.button(
-                        f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
-                        key="vo_save_checked_spread_drafts", use_container_width=True,
-                    ):
-                        drafts = st.session_state.setdefault("vo_saved_spread_drafts", {})
-                        _save_checked_spreads(drafts, checked_rows, result["source"])
-                        st.rerun(scope="fragment")
                     if len(checked_rows) == 1:
                         chosen = checked_rows[0]
                     else:
@@ -2610,6 +2603,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                             key=f"vo_multi_review_choice_{scope}",
                         )
                         chosen = by_id[selected_id]
+                    # Trade review is the first action after selecting a spread.
+                    with st.expander("E*TRADE ORDER // REVIEW → PLACE", expanded=True):
+                        _render_selected_order(client, touch_session, chosen,
+                                               {**result, "max_cost": active_max_cost}, broker_live)
                     os_col, tv_col = st.columns(2, gap="small")
                     with os_col:
                         st.link_button(
@@ -2628,9 +2625,13 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         'BUY premium minus SELL premium, per share. Chart history and delay '
                         'depend on TradingView contract coverage and your market-data access.'
                     )
-                    with st.expander("E*TRADE ORDER // REVIEW → PLACE", expanded=True):
-                        _render_selected_order(client, touch_session, chosen,
-                                               {**result, "max_cost": active_max_cost}, broker_live)
+                    if st.button(
+                        f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
+                        key="vo_save_checked_spread_drafts", use_container_width=True,
+                    ):
+                        drafts = st.session_state.setdefault("vo_saved_spread_drafts", {})
+                        _save_checked_spreads(drafts, checked_rows, result["source"])
+                        st.rerun(scope="fragment")
                     if len(checked_rows) > 1:
                         st.caption(
                             "ALL CHECKED SPREADS CAN BE SAVED TOGETHER. E*TRADE PREVIEW AND "
