@@ -117,6 +117,7 @@ def price_vertical_quote(
     max_cost: float | None,
     pricing_mode: str = "NORMAL",
     min_reward_risk: float = _MIN_REWARD_RISK,
+    desktop_fast_fill: bool = False,
     buy_volume: float | None = None,
     sell_volume: float | None = None,
     buy_open_interest: float | None = None,
@@ -128,14 +129,17 @@ def price_vertical_quote(
     ask. LAST is eligible only if it is within the current spread market
     at or above its midpoint; an old Last below MID is not a likely fill.
     Missing bid/ask yields a visible LAST* estimate only, never an order.
-    SMART FILL offers a conservative, liquidity-aware *indicative* price
-    between MID and natural ASK, capped by the minimum reward/risk and max cost.
-    It is not a calibrated fill probability and cannot place orders.
+    Legacy SMART FILL offers a conservative MID-to-ASK price. When the original
+    desktop scanner explicitly enables desktop_fast_fill, SMART uses ONLY the
+    natural ASK debit (BUY ask minus SELL bid) and rejects spreads that fail
+    the risk floor there. Desktop NORMAL uses a MID-to-ASK limit. The phone
+    scanner retains the previous behavior when desktop_fast_fill is omitted.
+    This is a quote-based limit proposal, not a fill probability or order.
     No quote basis is a guarantee of execution or liquidity.
     """
     if pricing_mode not in {"NORMAL", "SMART FILL"}:
         raise ValueError("Invalid Vertical Options pricing mode.")
-    minimum = _reward_risk_floor(min_reward_risk)
+    minimum = max(2.0, _reward_risk_floor(min_reward_risk)) if desktop_fast_fill else _reward_risk_floor(min_reward_risk)
     spread_width = _finite_number(width, positive=True)
     budget = None if max_cost is None else _finite_number(max_cost, positive=True)
     if spread_width is None or (max_cost is not None and budget is None):
@@ -156,7 +160,21 @@ def price_vertical_quote(
         quote_bid = round(bb - sa, 4)
         quote_ask = round(ba - sb, 4)
         quote_mid = round((quote_bid + quote_ask) / 2, 4)
-        if pricing_mode == "SMART FILL":
+        if desktop_fast_fill:
+            if pricing_mode == "SMART FILL":
+                # The natural limit may be marketable at the displayed quote,
+                # but size, latency and quote changes can prevent an immediate fill.
+                choices.append(("ASK", quote_ask, 0, True))
+                liquidity = "NATURAL ASK / DEPTH UNVERIFIED"
+            else:
+                # NORMAL starts above midpoint, giving a price-improvement
+                # attempt without paying natural ASK unless the market is tight.
+                middle_to_ask = max(0.0, quote_ask - quote_mid)
+                desired_cents = math.ceil((quote_mid + .35 * middle_to_ask) * 100 - 1e-8)
+                normal_limit = min(quote_ask, desired_cents / 100)
+                choices.append(("LIMIT", normal_limit, 0, True))
+                choices.append(("MID", quote_mid, 1, True))
+        elif pricing_mode == "SMART FILL":
             # Volume/OI describe the individual legs, not executable spread
             # depth. No bid/ask size, quote timestamp, or fill history is
             # available through the existing normalized chain.
@@ -193,7 +211,7 @@ def price_vertical_quote(
                     and quote_mid - .005 <= last_debit <= quote_ask + .005):
                 choices.append(("LAST", last_debit, 1, True))
             choices.append(("MID", quote_mid, 2, True))
-    elif last_debit is not None:
+    elif last_debit is not None and not (desktop_fast_fill and pricing_mode == "SMART FILL"):
         choices.append(("LAST*", last_debit, 3, False))
 
     for basis, raw_debit, grade, orderable in choices:
@@ -262,6 +280,7 @@ def scan_vertical_candidates(
     min_reward_risk: float = _MIN_REWARD_RISK,
     candidate_sink: Callable[[dict[str, Any]], None] | None = None,
     progress: Callable[[int], None] | None = None,
+    desktop_fast_fill: bool = False,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rank one-contract debit spreads across every supplied expiration.
 
@@ -354,7 +373,7 @@ def scan_vertical_candidates(
                     buy_bid=buy["bid"], buy_ask=buy["ask"],
                     sell_bid=sell["bid"], sell_ask=sell["ask"],
                     width=width, max_cost=budget, pricing_mode=pricing_mode,
-                    min_reward_risk=minimum,
+                    min_reward_risk=minimum, desktop_fast_fill=desktop_fast_fill,
                     buy_volume=buy["volume"], sell_volume=sell["volume"],
                     buy_open_interest=buy["open_interest"],
                     sell_open_interest=sell["open_interest"],

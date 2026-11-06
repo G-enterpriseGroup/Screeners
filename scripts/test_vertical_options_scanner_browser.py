@@ -28,6 +28,7 @@ from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
+    NoSuchElementException,
     StaleElementReferenceException,
 )
 from selenium.webdriver.chrome.options import Options
@@ -224,8 +225,11 @@ def in_grid(driver: webdriver.Chrome, callback):
         driver.switch_to.default_content()
         for frame in driver.find_elements(By.TAG_NAME, "iframe"):
             try:
+                if not frame.is_displayed():
+                    continue  # Ignore a hidden old grid during a rerun.
                 driver.switch_to.frame(frame)
-                if driver.find_elements(By.ID, "scroll"):
+                scroll = driver.find_elements(By.ID, "scroll")
+                if scroll and scroll[0].is_displayed():
                     return True
             except Exception:
                 pass
@@ -244,14 +248,42 @@ def in_grid(driver: webdriver.Chrome, callback):
                     time.sleep(.1)
                     continue
                 return result
-            except StaleElementReferenceException:
-                # A Streamlit fragment rerun may replace the iframe between
-                # lookup and click; re-enter the current component once mounted.
+            except (StaleElementReferenceException, ElementNotInteractableException,
+                    ElementClickInterceptedException, NoSuchElementException):
+                # Old component frames/overlays can intercept a click during a
+                # rerun. Retry only these transient DOM conditions.
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.1)
     finally:
         driver.switch_to.default_content()
+
+
+def visible_note(driver: webdriver.Chrome):
+    """Find the active note without clicking a hidden old rerun copy."""
+    def locate(_):
+        elements = driver.find_elements(By.CSS_SELECTOR, ".vo-note")
+        return next((item for item in reversed(elements) if item.is_displayed()), False)
+    return WebDriverWait(driver, 20).until(locate)
+
+
+def visible_switch_label(driver: webdriver.Chrome, key: str):
+    """Select a mounted, visible switch rather than a retiring component."""
+    def locate(_):
+        elements = driver.find_elements(By.CSS_SELECTOR, f".st-key-{key} label")
+        return next((item for item in reversed(elements)
+                     if item.is_displayed() and item.find_elements(
+                         By.CSS_SELECTOR, 'input[role="switch"]')), False)
+    return WebDriverWait(driver, 20).until(locate)
+
+
+def active_ticker(driver: webdriver.Chrome):
+    """Ignore retiring hidden Streamlit inputs after a process restart."""
+    def visible(_):
+        inputs = driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+        return next((item for item in reversed(inputs)
+                     if item.is_displayed() and item.is_enabled()), False)
+    return WebDriverWait(driver, 20).until(visible)
 
 
 def grid_is_mounted(driver: webdriver.Chrome) -> bool:
@@ -310,6 +342,7 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             cellCount:row.children.length,
             debitValue:row.querySelector('.debit-value')?.textContent,
             fillDetail:row.querySelector('.fill-detail')?.textContent,
+            fillRuler:row.querySelector('.fill-ruler')?.textContent,
             fillFits:(()=>{
                 const cell=row.querySelector('.cost'),value=cell?.querySelector('.debit-value'),
                       detail=cell?.querySelector('.fill-detail');
@@ -430,10 +463,12 @@ def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
     """One visible Debit column retains numeric cost and its tiny pricing basis."""
     assert len(snapshot["headers"]) == 14 and snapshot["headers"][9] == "Debit" and snapshot["headers"][-1] == "FILL EST", snapshot
     assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
+    allowed = {"LIMIT", "MID"} if expected_fill == "NORMAL" else {expected_fill}
     for row in snapshot["rows"]:
         assert row["cellCount"] == 14 and len(row["values"]) == 13, row
         assert row["debitValue"] == row["values"][7] and row["debitValue"].startswith("$"), row
-        assert row["fillDetail"] == row["values"][-1] == expected_fill, row
+        assert row["fillDetail"] == row["values"][-1] and row["fillDetail"] in allowed, row
+        assert all(word in (row.get("fillRuler") or "") for word in ("BID", "MID", "ASK", "DEBIT")), row
         assert row["fillFits"], row
 
 
@@ -722,7 +757,7 @@ def set_grid_target(driver: webdriver.Chrome, value: str, *, dismiss: bool = Tru
         assert target.get_attribute("value") == value
     in_grid(driver, enter)
     if dismiss:
-        note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+        note = visible_note(driver)
         driver.execute_script("arguments[0].scrollIntoView({block:'center'})", note)
         note.click()
         WebDriverWait(driver, 15).until(lambda _: in_grid(driver, lambda:
@@ -735,7 +770,10 @@ def grid_target(driver: webdriver.Chrome) -> str:
         if not panel.is_displayed() or not panel.find_elements(
                 By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN target"]'):
             driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="breakeven"]').click()
-        return panel.find_element(By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN target"]').get_attribute("value")
+        fields = panel.find_elements(By.CSS_SELECTOR, 'input[aria-label="BREAKEVEN target"]')
+        if not fields:
+            return {"grid_mount_pending": True}
+        return fields[0].get_attribute("value")
     return in_grid(driver, inspect)
 
 
@@ -759,6 +797,9 @@ def set_exact_grid_filter(driver: webdriver.Chrome, key: str, label: str, value:
         )
         assert changed, (key, label)
     in_grid(driver, enter)
+    # Numeric filters intentionally stage without rerunning while typing.
+    # Apply the complete exact range in one acknowledged edit.
+    grid_menu_action(driver, key, "DONE")
 
 
 def toggle_put_column_filter(driver: webdriver.Chrome) -> None:
@@ -823,15 +864,17 @@ def test() -> None:
                 if (not apps or apps[0].get_attribute("data-test-script-state") != "notRunning"
                         or driver.find_elements(By.CSS_SELECTOR, '[data-stale="true"]')):
                     return False
-                forms = driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
+                forms = [item for item in driver.find_elements(By.CSS_SELECTOR, '[data-testid="stForm"]')
+                         if item.is_displayed()]
                 if not forms:
                     return False
+                active = forms[-1]  # A retiring Streamlit form may still exist hidden.
                 labels = driver.execute_script(
                     "return [...arguments[0].querySelectorAll('input')]"
                     ".filter(input=>!input.disabled&&input.type==='text')"
-                    ".map(input=>input.getAttribute('aria-label'))", forms[0],
+                    ".map(input=>input.getAttribute('aria-label'))", active,
                 )
-                return forms[0] if labels == expected_labels else False
+                return active if labels == expected_labels else False
             form = wait.until(ready_scanner_form)
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Max Cost"]')
@@ -850,11 +893,14 @@ def test() -> None:
                        and item["placeholderOpacity"] == "1"
                        for item in optional_field_styles), optional_field_styles
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="MIN RISK:REWARD 1:"]').get_attribute("value") == "2"
+            # Nonblocking bootstrap displays the scanner immediately. The
+            # read-only recovery fragment picks up delayed browser storage later.
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
-            assert any(not event["waiting"] for event in initial_reads), initial_reads
+            wait.until(lambda _: any(not event["waiting"] for event in events(event_path)
+                                     if event["event"] == "preference-read"))
             assert not [event for event in events(event_path) if event["event"] == "chain"]
-            print("Vertical Options first visit recovers late browser preference without tab switching PASS")
+            print("Vertical Options scanner renders before delayed browser preference and recovers silently PASS")
             # Pricing controls stay on one compact row. Hidden preference frames
             # must never reserve the custom-component default 150px height.
             pricing_layout = driver.execute_script("""
@@ -886,25 +932,34 @@ def test() -> None:
             # theme at both desktop widths, including nested form boundaries.
             for viewport_width in (1440, 1100):
                 driver.set_window_size(viewport_width, 900)
-                geometry = driver.execute_script("""
+                geometry = wait.until(lambda _: driver.execute_script("""
                     const rect = el => { const r=el.getBoundingClientRect();
                         return {top:r.top,bottom:r.bottom,height:r.height,left:r.left,right:r.right}; };
+                    const visible = selector => [...document.querySelectorAll(selector)]
+                        .reverse().find(item=>item.getClientRects().length);
                     const inputs = ['Ticker','MIN RISK:REWARD 1:'].map(name =>
-                        document.querySelector('input[aria-label="'+name+'"]'));
+                        visible('input[aria-label="'+name+'"]'));
+                    if(inputs.some(input=>!input))return null;
                     const labels = inputs.map(input => input.closest('[data-testid="stTextInput"]')
-                        .querySelector('[data-testid="stWidgetLabel"]'));
+                        ?.querySelector('[data-testid="stWidgetLabel"]'));
+                    if(labels.some(label=>!label))return null;
+                    const company=visible('.vo-company-box'),
+                        companyLabel=visible('.vo-company-label'),
+                        submit=visible('[data-testid="stFormSubmitButton"] button'),
+                        form=visible('[data-testid="stForm"]');
+                    if(!company||!companyLabel||!submit||!form)return null;
                     return {
                         inputs:inputs.map(input => rect(input.parentElement)),
                         inputDOM:inputs[0].parentElement.outerHTML.slice(0,1600),
-                        company:rect(document.querySelector('.vo-company-box')),
+                        company:rect(company),
                         labels:labels.map(rect),
                         labelFits:labels.map(label=>label.scrollWidth<=label.clientWidth+1),
-                        companyLabel:rect(document.querySelector('.vo-company-label')),
-                        scan:rect(document.querySelector('[data-testid="stFormSubmitButton"] button')),
-                        formPadding:getComputedStyle(document.querySelector('[data-testid="stForm"]')).padding,
+                        companyLabel:rect(companyLabel),
+                        scan:rect(submit),
+                        formPadding:getComputedStyle(form).padding,
                         overflow:document.documentElement.scrollWidth > window.innerWidth,
                     };
-                """)
+                """))
                 print("Vertical Options control geometry", viewport_width, geometry, flush=True)
                 boxes = geometry["inputs"] + [geometry["company"], geometry["scan"]]
                 labels = geometry["labels"] + [geometry["companyLabel"]]
@@ -924,24 +979,28 @@ def test() -> None:
                 # pointer away. Hover/focus must not be required for contrast.
                 def clear_focus(_):
                     try:
-                        note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        note = visible_note(driver)
                         note.click()
                         ActionChains(driver).move_to_element(note).perform()
                         return True
-                    except (StaleElementReferenceException, ElementClickInterceptedException):
+                    except (StaleElementReferenceException, ElementClickInterceptedException,
+                            ElementNotInteractableException):
                         return False
                 wait.until(clear_focus)
                 def settled(_):
                     info = driver.execute_script("""
-                        const root=document.querySelector('.st-key-'+arguments[0]);
+                        const root=[...document.querySelectorAll('.st-key-'+arguments[0])]
+                            .reverse().find(item=>item.getClientRects().length);
                         if(!root)return null;
                         const input=root.querySelector('input[role="switch"]');
                         if(!input)return null;
                         const label=input.closest('label');
-                        const track=label.querySelector(':scope > div:first-of-type');
-                        const thumb=track.firstElementChild;
+                        const track=label?.querySelector(':scope > div:first-of-type');
+                        const thumb=track?.firstElementChild;
+                        if(!track||!thumb)return null;
                         const t=getComputedStyle(track), h=getComputedStyle(thumb);
                         const box=track.getBoundingClientRect(), dot=thumb.getBoundingClientRect();
+                        if(box.width<10||dot.width<5||t.outlineStyle!=='solid')return null;
                         return {checked:input.checked,hover:label.matches(':hover'),
                             focus:input.matches(':focus-visible'),track:t.backgroundColor,
                             thumb:h.backgroundColor,outline:t.outlineColor,outlineStyle:t.outlineStyle,
@@ -957,8 +1016,8 @@ def test() -> None:
                 # An actual hover followed by leaving must keep the same colors.
                 def hover_and_leave(_):
                     try:
-                        target = driver.find_element(By.CSS_SELECTOR, f".st-key-{key} label")
-                        stable_note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+                        target = visible_switch_label(driver, key)
+                        stable_note = visible_note(driver)
                         ActionChains(driver).move_to_element(target).move_to_element(stable_note).perform()
                         return True
                     except StaleElementReferenceException:
@@ -968,7 +1027,7 @@ def test() -> None:
                 print("Native switch resting contrast PASS", key, appearance, flush=True)
             assert_switch_visibility(False)
             assert_switch_visibility(False, "risk_capital_source_tactical")
-            driver.find_element(By.CSS_SELECTOR, ".st-key-risk_capital_source_tactical label").click()
+            visible_switch_label(driver, "risk_capital_source_tactical").click()
             assert_switch_visibility(True, "risk_capital_source_tactical")
             # Flip switch saves immediately and must rehydrate after a hard reload.
             flip = wait.until(lambda _: driver.find_element(
@@ -989,14 +1048,14 @@ def test() -> None:
             leave_button.click()
             wait.until(lambda _: driver.find_element(By.XPATH, '//button[contains(., "RETURN TO SCANNER")]')).click()
             wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected())
-            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            visible_switch_label(driver, "vo_smart_fill").click()
             wait.until(lambda _: pricing_preference_in_browser(driver) == "NORMAL")
             assert_switch_visibility(False)
             form = wait.until(ready_scanner_form)
             print("Vertical Options flip toggle persistence PASS (refresh + both positions)")
             for label, text in (
-                ("Normal mode explanation", "natural ASK first"),
-                ("Smart Fill mode explanation", "between spread MID and natural ASK"),
+                ("Normal mode explanation", "between the spread midpoint and natural ask"),
+                ("Smart Fill mode explanation", "uses the natural spread ASK"),
             ):
                 help_icon = wait.until(lambda _: driver.find_element(
                     By.CSS_SELECTOR, f'.vo-mode-help[aria-label="{label}"]'
@@ -1010,7 +1069,7 @@ def test() -> None:
                     "return getComputedStyle(arguments[0]).visibility", tooltip
                 ) == "visible")
             ActionChains(driver).move_to_element(form).perform()
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "LAST $100.00" in driver.find_element(By.TAG_NAME, "body").text)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
@@ -1125,7 +1184,8 @@ def test() -> None:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", year_button)
             year_button.click()
             one_year = wait.until(lambda _: (page if (page := grid_page_rows(driver))["total"] == 20 else False))
-            assert "20 DISPLAYED // 20 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "20 DISPLAYED // 20 MATCHING OF 60 QUALIFIED PAIRS"
+                       in driver.find_element(By.TAG_NAME, "body").text)
             assert all(datetime.strptime(row["values"][2], "%b-%d-%y").year == years[1]
                        for row in one_year["rows"]), one_year
             assert_year_grouping(one_year, per_year=20)
@@ -1143,7 +1203,8 @@ def test() -> None:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", all_years_button)
             all_years_button.click()
             all_years_page = wait.until(lambda _: grouped_page_if_ready(driver, 60, per_year=20))
-            assert "60 DISPLAYED // 60 MATCHING OF 60 QUALIFIED PAIRS" in driver.find_element(By.TAG_NAME, "body").text
+            wait.until(lambda _: "60 DISPLAYED // 60 MATCHING OF 60 QUALIFIED PAIRS"
+                       in driver.find_element(By.TAG_NAME, "body").text)
             assert_year_grouping(all_years_page, per_year=20)
             result_spacing = driver.execute_script("""
                 const metrics=document.querySelector('.vo-grid').getBoundingClientRect();
@@ -1184,7 +1245,7 @@ def test() -> None:
             in_grid(driver, rapid_target)
             # Clicking a control outside the component closes the menu and
             # flushes the last edit, even inside the input debounce interval.
-            note = driver.find_element(By.CSS_SELECTOR, ".vo-note")
+            note = visible_note(driver)
             driver.execute_script("arguments[0].scrollIntoView({block:'center'})", note)
             note.click()
             wait.until(lambda _: in_grid(driver, lambda:
@@ -1244,7 +1305,7 @@ def test() -> None:
                 driver.set_window_size(width, 900)
                 resized = grid_snapshot(driver)
                 assert all(row["expiryFits"] for row in resized["rows"])
-                assert_merged_debit(resized, "ASK")
+                assert_merged_debit(resized, "NORMAL")
             print("Vertical Options tiny expiry detail PASS (calendar days + years, 43px rows)", flush=True)
             assert len(best_page["rows"]) == 60, best_page
             assert any(not row["annual"] for row in best["rows"]), best
@@ -1257,22 +1318,22 @@ def test() -> None:
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
             assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"] and "FILL EST" in best["headers"], best
-            assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
+            assert all(row["values"][-1] in {"LIMIT", "MID"} for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
             assert best["height"] == 516, best
             for row in best["rows"]:
                 assert_exact_tradingview_formula(row)
 
             chain_reads = sum(event["event"] == "chain" for event in events(event_path))
-            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
+            visible_switch_label(driver, "vo_smart_fill").click()
             smart = wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
-                all(row["fillDetail"] == "SMART" for row in snapshot["rows"]) else False))
-            assert_merged_debit(smart, "SMART")
-            driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
-            wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
                 all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
+            assert_merged_debit(smart, "ASK")
+            visible_switch_label(driver, "vo_smart_fill").click()
+            wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
+                all(row["fillDetail"] in {"LIMIT","MID"} for row in snapshot["rows"]) else False))
             assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
-            print("Merged Debit / tiny ASK and SMART basis PASS (14 columns, 43px rows, no chain reload)", flush=True)
+            print("Numeric BID/MID/ASK/debit ruler and SMART natural ASK PASS (14 columns, 43px rows)", flush=True)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
@@ -1401,9 +1462,9 @@ def test() -> None:
 
             order_expander = driver.find_element(
                 By.XPATH,
-                '//div[@data-testid="stExpander"]//summary[contains(., "OPTIONAL E*TRADE LIVE ORDER REVIEW")]',
+                '//div[@data-testid="stExpander"]//summary[contains(., "E*TRADE ORDER // REVIEW")]',
             )
-            order_expander.click()
+            # The checked spread's order review is already expanded.
             review = wait.until(lambda _: next((
                 button for button in driver.find_elements(
                     By.XPATH, '//button[contains(., "REVIEW WITH E*TRADE")]',
@@ -1464,9 +1525,9 @@ def test() -> None:
                 dollars(selected_values[5]) + .02 + .002 * (buy_strike - 90)
                 - (dollars(selected_values[6]) - .02), 2
             )
-            assert selected_values[-1] == "ASK", selected_values
-            assert order["limitPrice"] == expected_natural, (
-                "E*TRADE preview price diverged from selected ASK spread",
+            assert selected_values[-1] in {"LIMIT", "MID"}, selected_values
+            assert 0 < order["limitPrice"] <= expected_natural, (
+                "NORMAL limit must not exceed natural ASK",
                 order["limitPrice"], expected_natural
             )
             assert order["limitPrice"] == round(dollars(selected_values[7]) / 100, 2), order
@@ -1491,7 +1552,7 @@ def test() -> None:
             ), order
             assert wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_send button',
-            )).get_attribute("disabled") is not None, "PLACE must need affirmative confirmation"
+            )).get_attribute("disabled") is None, "PLACE requires accepted preview and a separate deliberate click"
             assert not any(item["event"] == "place" for item in events(event_path)), (
                 "Preview alone placed an order"
             )
@@ -1569,12 +1630,12 @@ def test() -> None:
 
             # A manual target belongs to its ticker. Another ticker keeps the
             # no-filter default, and returning restores the manual override.
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
             assert not grid_is_mounted(driver)
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MSFT", Keys.TAB)
             wait.until(lambda _: grid_target(driver) == "103")
@@ -1627,12 +1688,12 @@ def test() -> None:
                                      and event.get("pid") == server.pid
                                      for event in events(event_path)))
             wait.until(ready_scanner_form)
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("SPY", Keys.TAB)
             wait.until(lambda _: "CALL WALL $110.00" in driver.find_element(By.TAG_NAME, "body").text)
             assert not driver.find_elements(By.CSS_SELECTOR, 'input[aria-label="Target Breakeven"]')
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("QQQ", Keys.TAB)
             wait.until(lambda _: "LAST $92.00" in driver.find_element(By.TAG_NAME, "body").text)
@@ -1663,7 +1724,7 @@ def test() -> None:
             # Every one-year match shares a single virtual table. Select
             # beyond the old page boundary and at the final row, then return
             # to the top without losing either checked identity.
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MASSIVE", Keys.TAB)
             form = wait.until(ready_scanner_form)
@@ -1762,7 +1823,7 @@ def test() -> None:
             # Ignore 0-, 1- and 6-day expirations before any broker-chain
             # fetch; exactly seven New York calendar days remains eligible.
             chain_before_boundary = len([e for e in events(event_path) if e["event"] == "chain"])
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("BOUNDARY", Keys.TAB)
             form = wait.until(ready_scanner_form)
@@ -1790,7 +1851,7 @@ def test() -> None:
             # All expirations in the latest two available years are a view default.
             # Clearing EXP / YEAR must expose all retained expirations.
             before_multi = len([e for e in events(event_path) if e["event"] == "chain"])
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("MULTIEXP", Keys.TAB)
             form = wait.until(ready_scanner_form)
@@ -1833,9 +1894,28 @@ def test() -> None:
             assert grid_target(driver) == "101"
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            target_multi = wait.until(lambda _: grouped_page_if_ready(driver, 66, per_year=33))
-            assert all(101*.95-1e-8 <= float(row["values"][8].replace("$", "").replace(",", "")) <= 101*1.05+1e-8
-                       for row in target_multi["rows"]), target_multi
+            def target_band_ready(_):
+                # NORMAL quote improvement changes how many spreads pass 1:2,
+                # so assert the actual ±5% band rather than a legacy fixed count.
+                page = grid_page_rows(driver)
+                if not 0 < page["total"] < 120 or len(page["rows"]) != page["total"]:
+                    return False
+                breakevens = [float(row["values"][8].replace("$", "").replace(",", ""))
+                              for row in page["rows"]]
+                if not all(101*.95-1e-8 <= value <= 101*1.05+1e-8
+                           for value in breakevens):
+                    return False
+                years = {datetime.strptime(row["values"][2], "%b-%d-%y").year
+                         for row in page["rows"]}
+                if len(years) != 2:
+                    return False
+                try:
+                    assert_year_grouping(page)
+                except AssertionError:
+                    return False
+                return page
+            target_multi = wait.until(target_band_ready)
+            assert target_multi["total"] < 120 and target_multi["total"] > 0, target_multi
             set_grid_tolerance(driver, 100)
             reset_multi = wait.until(lambda _: grouped_page_if_ready(driver, 120, per_year=60))
             assert {row["values"][1] for row in reset_multi["rows"]} == {"C", "P"}, reset_multi
@@ -1853,7 +1933,7 @@ def test() -> None:
             # A user-edited threshold must reach the actual candidate scan,
             # while the next scan still opens on BEST PER YEAR. This fixture
             # has some SPY spreads above 1:4.01 but fewer than at default 1:2.
-            ticker = driver.find_element(By.CSS_SELECTOR, 'input[aria-label="Ticker"]')
+            ticker = active_ticker(driver)
             ticker.send_keys(SELECT_ALL, "a")
             ticker.send_keys("SPY", Keys.TAB)
             form = wait.until(ready_scanner_form)
