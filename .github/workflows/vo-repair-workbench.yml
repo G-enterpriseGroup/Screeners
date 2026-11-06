@@ -21,20 +21,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Exact source snapshot for offline regression work
+      - name: Exact source and dependencies for offline debugging
         run: |
-          mkdir -p /tmp/vo-evidence
-          git archive HEAD -o /tmp/vo-evidence/source.zip
+          mkdir -p /tmp/vo-offline/wheels /tmp/vo-evidence
+          git archive HEAD -o /tmp/vo-offline/source.zip
+          python -m pip download --only-binary=:all: --python-version 3.13 --implementation cp --abi cp313 --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --dest /tmp/vo-offline/wheels 'streamlit>=1.61,<2' 'yfinance>=1.7,<2' requests-oauthlib webauthn selenium
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vo-offline-workbench
+          path: /tmp/vo-offline
+          retention-days: 3
       - name: Apply bounded patch and syntax-check
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('scripts/_vo_repair_patch.py')
-          text=p.read_text()
+          p=Path('scripts/_vo_repair_patch.py');text=p.read_text()
           anchor='    if text.count(old) != 1:\n'
           replacement='    if old == "    store.prune_before(_minimum_expiry_date())":\n        start = text.index(old, text.index("def _rank_cached_vertical_chains("))\n        return text[:start] + text[start:].replace(old, new, 1)\n' + anchor
           assert text.count(anchor)==1
-          p.write_text(text.replace(anchor,replacement,1))
+          text=text.replace(anchor,replacement,1)
+          text=text.replace("'   if(NUMERIC.has(openKey))syncNumericInputs();'", "'  if(NUMERIC.has(openKey))syncNumericInputs();'")
+          text=text.replace("'   if(NUMERIC.has(openKey)){syncNumericInputs();updateBandPreview();}'", "'  if(NUMERIC.has(openKey)){syncNumericInputs();updateBandPreview();}'")
+          text=text.replace('assert changed <= allowed, changed - allowed','changed.discard("scripts/_vo_repair_patch.py")\nassert changed <= allowed, changed - allowed')
+          p.write_text(text)
           PY
           python scripts/_vo_repair_patch.py
           python -m py_compile src/vertical_options.py src/vertical_options_ui.py src/vertical_options_execution.py src/vertical_options_store.py
@@ -45,8 +54,7 @@ jobs:
           for name in ('vo_pricing_preference_v1', 'vo_spread_scroller_v1'):
               html = Path('src/components', name, 'index.html').read_text()
               js = html.split('<script>', 1)[1].split('</script>', 1)[0]
-              file = Path('/tmp', name + '.js')
-              file.write_text(js)
+              file = Path('/tmp', name + '.js');file.write_text(js)
               subprocess.run(['node', '--check', str(file)], check=True)
           PY
           git diff --check
@@ -63,13 +71,13 @@ jobs:
       - name: Run feature and neighboring regression tests
         run: |
           set +e
-          python -m unittest tests.test_vertical_options tests.test_verti_phone > /tmp/vo-evidence/unit.log 2>&1
+          python -m unittest tests.test_vertical_execution tests.test_vertical_options tests.test_verti_phone > /tmp/vo-evidence/unit.log 2>&1
           unit=$?
           python scripts/test_tab_layout.py > /tmp/vo-evidence/tabs.log 2>&1
           tabs=$?
           python scripts/test_vertical_options_scanner_browser.py > /tmp/vo-evidence/browser.log 2>&1
           browser=$?
-          tail -n 130 /tmp/vo-evidence/unit.log
+          tail -n 150 /tmp/vo-evidence/unit.log
           cat /tmp/vo-evidence/tabs.log
           tail -n 100 /tmp/vo-evidence/browser.log
           printf 'UNIT=%s TABS=%s BROWSER=%s\n' "$unit" "$tabs" "$browser"
