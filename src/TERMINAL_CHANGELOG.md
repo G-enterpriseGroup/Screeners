@@ -3675,3 +3675,13 @@ Append-only record of production fixes. Read this after `src/ARCHITECTURE.md` be
 - **Lesson:** Presentation grouping must not change canonical contract identity or field order. Join supplementary market data to the exact cached quote and scan, never fetch it per result or replace missing OI with zero.
 
 - **Implementation receipt:** Commit `b34a06192897a12f478f4a6aea1fca8afe8c19d5` contains the isolated source changes; production UI/component and focused tests are byte-identical to the locally tested files. Architecture guard PASS, 144 local focused tests PASS; final PR/production CI and signed-in deployment status remain separately verified. Temporary workbench files were removed before review.
+
+## 2026-11-06 — Vertical Options aligned cash/portfolio toolbar and compact mode switch
+- **Feature / production route:** Original desktop Vertical Options, `streamlit_app.py -> src/vertical_options_ui.py`, based on stacked-leg/OI release `f3ee85b5d363a622e9462bd651931c642f547902`.
+- **Exact production file:** `src/vertical_options_ui.py` only. Coverage: `tests/test_vertical_options.py`, `scripts/test_vertical_options_scanner_browser.py`; this append-only history.
+- **Root cause:** Portfolio Verticals was in a separate row above Liquid Cash; cash cards were 34px versus 38px buttons. Proportional mode columns left an empty gap beside the switch.
+- **Change:** One toolbar uses the scan row's column boundaries. Cash and buttons share 38px height. A 250px bounded native mode group keeps NORMAL/switch/SMART close. Cash values stay fully visible; only long account labels can truncate. The portfolio callback, multi-account cash display and native preference behavior are preserved.
+- **Must remain:** Existing pricing and 1:2+ natural-ASK Smart rules; cash field and account semantics; stacked legs/OI, filters, exports, quote caching and explicit Preview/Place approval. No new broker calls, polling or global patches.
+- **Not changed:** Table component, shared spread math/store, Verti Phone, Risk, GEX, Holdings, OAuth, navigation, shared theme, terminal_core.py, streamlit_app.py and configuration.
+- **Tests:** 144 desktop/phone tests and architecture/Python syntax passed locally. Browser regression now measures matching edges, 38px height, <=16px mode gaps, both switch states, unclipped cash and no overflow at 1529/1440/1100/1040px. Workbench/PR checks must pass before publication. The local browser blocked fixture navigation; no restriction was bypassed and no authenticated session or managed Cloud reboot is claimed. No live trades submitted.
+- **Lesson:** Fix layout structure inside the feature, not with negative margins or unrelated global CSS. Implementation SHA recorded below after successful verification.
