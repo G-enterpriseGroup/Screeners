@@ -914,25 +914,34 @@ def test() -> None:
             # theme at both desktop widths, including nested form boundaries.
             for viewport_width in (1440, 1100):
                 driver.set_window_size(viewport_width, 900)
-                geometry = driver.execute_script("""
+                geometry = wait.until(lambda _: driver.execute_script("""
                     const rect = el => { const r=el.getBoundingClientRect();
                         return {top:r.top,bottom:r.bottom,height:r.height,left:r.left,right:r.right}; };
+                    const visible = selector => [...document.querySelectorAll(selector)]
+                        .reverse().find(item=>item.getClientRects().length);
                     const inputs = ['Ticker','MIN RISK:REWARD 1:'].map(name =>
-                        document.querySelector('input[aria-label="'+name+'"]'));
+                        visible('input[aria-label="'+name+'"]'));
+                    if(inputs.some(input=>!input))return null;
                     const labels = inputs.map(input => input.closest('[data-testid="stTextInput"]')
-                        .querySelector('[data-testid="stWidgetLabel"]'));
+                        ?.querySelector('[data-testid="stWidgetLabel"]'));
+                    if(labels.some(label=>!label))return null;
+                    const company=visible('.vo-company-box'),
+                        companyLabel=visible('.vo-company-label'),
+                        submit=visible('[data-testid="stFormSubmitButton"] button'),
+                        form=visible('[data-testid="stForm"]');
+                    if(!company||!companyLabel||!submit||!form)return null;
                     return {
                         inputs:inputs.map(input => rect(input.parentElement)),
                         inputDOM:inputs[0].parentElement.outerHTML.slice(0,1600),
-                        company:rect(document.querySelector('.vo-company-box')),
+                        company:rect(company),
                         labels:labels.map(rect),
                         labelFits:labels.map(label=>label.scrollWidth<=label.clientWidth+1),
-                        companyLabel:rect(document.querySelector('.vo-company-label')),
-                        scan:rect(document.querySelector('[data-testid="stFormSubmitButton"] button')),
-                        formPadding:getComputedStyle(document.querySelector('[data-testid="stForm"]')).padding,
+                        companyLabel:rect(companyLabel),
+                        scan:rect(submit),
+                        formPadding:getComputedStyle(form).padding,
                         overflow:document.documentElement.scrollWidth > window.innerWidth,
                     };
-                """)
+                """))
                 print("Vertical Options control geometry", viewport_width, geometry, flush=True)
                 boxes = geometry["inputs"] + [geometry["company"], geometry["scan"]]
                 labels = geometry["labels"] + [geometry["companyLabel"]]
