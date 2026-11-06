@@ -54,7 +54,6 @@ from src.vertical_options import (
     extract_order_id,
     new_vertical_client_order_id,
     preview_details,
-    smart_fill_ladder,
     validate_vertical,
 )
 from src.vertical_options_store import VerticalResultStore, indicative_fill_score
@@ -1972,6 +1971,9 @@ def _consume_vertical_table_update(update: Any, result: dict[str, Any], symbol: 
             and isinstance(update.get("selected_ids"), list)):
         checked["ids"] = set(store.get_many(update["selected_ids"]))
         checked["revision"] = revision
+        # A changed selection can never inherit approval from another ticket.
+        for key in ("vo_review_bundle", "vo_live_confirm", "vo_last_send_results", "_vo_ticket_quote"):
+            st.session_state.pop(key, None)
         changed = True
     if changed:
         _remember_scan_snapshot()
@@ -2014,7 +2016,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if st.button("PASTE TICKER LIST", key="vo_list_toggle", use_container_width=True):
                 st.session_state["vo_list_open"] = not st.session_state.get("vo_list_open", False)
         with paste_cols[1], st.container(width=680):
-            # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
+            # Desktop NORMAL uses a risk-capped MID-to-ASK limit; SMART pays ASK.
             # Switching modes reprices the cached snapshot only; it never fetches
             # quotes, previews a broker order or submits one.
             mode_guide_col, mode_switch_col, smart_label_col, cash_col = st.columns(
@@ -2167,7 +2169,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             with scan_fields[0]:
                 ratio_text = st.text_input(
                     "MIN RISK:REWARD 1:", key="vo_min_reward_risk", placeholder="2",
-                    help="Minimum reward for each $1 risked. Standard is 1:2; enter 2, 1:2, or another positive value.",
+                    help="Minimum reward per $1 risked. Enter 2, 1:2, or higher. Values below 2 use the mandatory 1:2 floor.",
                 )
             with scan_fields[1]:
                 scan_clicked = st.form_submit_button(
@@ -2680,8 +2682,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         st.warning("UNQUOTED SPREAD // This row is informational only. Select a live quoted spread before E*TRADE review.")
         return
     if time.time() - float(result["loaded_at"]) >= _SCAN_CACHE_SECONDS:
-        st.warning("MARKET SNAPSHOT EXPIRED // Scan again before reviewing a live order.")
-        return
+        st.caption("OLDER SCAN // Preview refreshes these exact legs before showing the final live limit.")
     accounts = [
         account for account in (st.session_state.get("etrade_accounts") or [])
         if isinstance(account, dict) and _account_key(account)
@@ -2810,12 +2811,30 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     )
     st.caption(
         "SAVE CHECKED SPREADS = TERMINAL-ONLY DRAFT; NOT SAVED AT E*TRADE. "
-        "REVIEW WITH E*TRADE = PREVIEW ONLY. PLACE LIVE ORDER = BROKER "
+        "PREVIEW WITH E*TRADE = PREVIEW ONLY. CONFIRM & SEND LIVE = BROKER "
         "SUBMISSION THAT MAY APPEAR AS QUEUED AND MAY EXECUTE. "
         "The E*TRADE public API cannot create broker-side Saved orders."
     )
+    # Keep a per-account attempt receipt independent of price. A delayed broker
+    # response must not allow a newly quoted price to resubmit the same ticket.
+    intent = (candidate["id"], quantity, order_term)
+    attempts = st.session_state.setdefault("_vo_order_attempts", {})
+    attempted_keys = [(intent, key) for key in account_keys if (intent, key) in attempts]
+    if attempted_keys:
+        for attempt_key in attempted_keys:
+            receipt = attempts[attempt_key]
+            st.warning(f'{_account_label(by_account[attempt_key[1]])} // '
+                       f'{receipt["status"]} // {receipt.get("order_id") or "CHECK E*TRADE ORDERS"}')
+        st.caption("This exact ticket has already been submitted or attempted. Check E*TRADE Orders before starting another.")
+        if st.button("I CHECKED E*TRADE ORDERS — START A NEW TICKET", key="vo_new_ticket"):
+            for attempt_key in attempted_keys:
+                attempts.pop(attempt_key, None)
+            st.session_state.pop("vo_review_bundle", None)
+            st.session_state.pop("vo_last_send_results", None)
+            _rerun_vertical_fragment()
+        return
     preview_click = st.button(
-        f"REVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
+        f"PREVIEW WITH E*TRADE // {len(account_keys)} ACCOUNT(S)",
         key="vo_preview", type="primary", use_container_width=True,
         disabled=bool(validation_error) or not account_keys,
     )
@@ -2823,6 +2842,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         # Requote only on an explicit Review click: no broker traffic on
         # checkbox, filter, order quantity, or OptionStrat interactions.
         try:
+            quote_checked_at = time.time()
             latest = _chain(client, symbol, expiry, touch_session)
             def exact_leg(strike: float, osi: str) -> dict[str, Any]:
                 for row in latest:
@@ -2904,7 +2924,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                 st.warning(error)
         elif len(previews) == len(account_keys):
             st.session_state["vo_review_bundle"] = {
-                "fingerprint": fingerprint, "previewed_at": time.time(), "previews": previews,
+                "fingerprint": fingerprint, "previewed_at": quote_checked_at, "previews": previews,
             }
             st.session_state.pop("vo_live_confirm", None)
             st.success("E*TRADE PREVIEW ACCEPTED FOR ALL SELECTED ACCOUNTS // NO ORDER SENT YET")
@@ -2929,8 +2949,11 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
             for message in details.get("messages") or []:
                 st.warning("E*TRADE PREVIEW // " + str(message))
-        st.caption("Confirm the exact fresh limit, quantity, legs and accounts above. "
-                   "The next button submits a live order; it is not a saved draft.")
+        st.caption(f'APPROVED TICKET // LIMIT {_money(limit_price)} // '
+                   f'TOTAL {_money(limit_price * 100 * quantity)} PER ACCOUNT // '
+                   f'BREAKEVEN {_money(candidate["breakeven"])} // '
+                   f'R:R 1:{(candidate["width"] - limit_price) / limit_price:.2f}. '
+                   'The next button submits a live order, not a saved draft.')
         send_click = st.button(
             f"CONFIRM & SEND LIVE // {quantity} SPREAD(S) // {_money(limit_price * 100 * quantity)} "
             f"PER ACCOUNT // {len(account_keys)} ACCOUNT(S)",
@@ -2946,17 +2969,21 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             results: list[dict[str, Any]] = []
             for account_key in account_keys:
                 review = previews.get(account_key) or {}
+                receipt = {"status": "SUBMISSION PENDING / VERIFY AT BROKER", "order_id": ""}
+                attempts[(intent, account_key)] = receipt
                 try:
                     response = client.place_order(account_key, review["place_payload"])
                     touch_session()
                     order_id = extract_order_id(response)
                     if order_id in (None, ""):
                         raise ETradeError("E*TRADE returned no order ID after placement.")
+                    receipt.update(status="SUBMITTED", order_id=order_id)
                     results.append({
                         "account": _account_label(by_account[account_key]),
                         "order_id": order_id, "status": "SUBMITTED",
                     })
                 except Exception as exc:
+                    receipt["status"] = "UNCERTAIN / FAILED — CHECK E*TRADE ORDERS"
                     results.append({
                         "account": _account_label(by_account[account_key]),
                         "order_id": "", "status": "UNCERTAIN / FAILED", "error": str(exc),

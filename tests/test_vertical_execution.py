@@ -78,5 +78,122 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(ticket["reward_risk"], 7/3)
 
 
+class DesktopWorkflowSafetyTests(unittest.TestCase):
+    """Exercise the real renderer with inert broker/widget doubles."""
+    def setUp(self):
+        import time
+        from copy import deepcopy
+        from unittest.mock import MagicMock
+        from tests.test_verti_phone import quoted_spread, ACCOUNTS
+        self.candidate, self.rows = quoted_spread()
+        self.result = {"source":"E*TRADE", "loaded_at":time.time()-900,
+                       "max_cost":200, "pricing_mode":"SMART FILL", "scope":"test"}
+        self.state = {"etrade_accounts":deepcopy(ACCOUNTS),"vo_accounts":["preferred"]}
+        self.client = MagicMock(is_offline=False)
+        self.client.preview_order.return_value = {"PreviewOrderResponse":{"PreviewIds":[{"previewId":123}]}}
+        self.client.place_order.return_value = {"PlaceOrderResponse":{"OrderIds":[{"orderId":456}]}}
+
+    def render(self, clicked=(), rows=None):
+        from unittest.mock import MagicMock, patch
+        from tests.test_verti_phone import order_ui
+        import src.vertical_options_ui as vo
+        ui=order_ui(self.state,clicked)
+        with patch.object(vo,"st",ui), patch.object(vo,"_chain",return_value=self.rows if rows is None else rows):
+            vo._render_selected_order(self.client,MagicMock(),self.candidate,self.result,True)
+        return ui
+
+    def test_preview_fresh_price_and_one_explicit_send_without_checkbox(self):
+        self.render()
+        self.client.preview_order.assert_not_called()
+        self.client.place_order.assert_not_called()
+        self.rows[0]["ask"] = 3.2  # Selected ASK moves from 1.20 to 1.30.
+        self.render({"vo_preview"})
+        self.client.preview_order.assert_called_once()
+        order=self.client.preview_order.call_args.args[1]["PreviewOrderRequest"]["Order"][0]
+        self.assertEqual(order["limitPrice"],1.3)
+        self.assertEqual(self.state["_vo_ticket_quote"]["price"]["breakeven"],101.3)
+        self.client.place_order.assert_not_called()
+        ui=self.render({"vo_send"})
+        ui.checkbox.assert_not_called()
+        self.client.place_order.assert_called_once()
+        self.assertEqual(self.client.place_order.call_args.args[1]["PlaceOrderRequest"]["Order"],[order])
+        self.assertNotIn("vo_review_bundle",self.state)
+        self.render({"vo_send"})
+        self.render({"vo_preview"})
+        self.assertEqual(self.client.place_order.call_count,1)
+        self.assertEqual(self.client.preview_order.call_count,1)
+
+    def test_uncertain_submission_cannot_be_repeated_with_another_preview(self):
+        self.render({"vo_preview"})
+        self.client.place_order.side_effect=TimeoutError("Broker response lost")
+        self.render({"vo_send"})
+        self.render({"vo_preview","vo_send"})
+        self.assertEqual(self.client.place_order.call_count,1)
+        self.assertEqual(self.client.preview_order.call_count,1)
+        self.assertNotIn("vo_review_bundle",self.state)
+
+    def test_price_risk_and_contract_changes_fail_closed(self):
+        from copy import deepcopy
+        for change in ("missing", "crossed", "risk"):
+            with self.subTest(change=change):
+                rows=deepcopy(self.rows)
+                if change=="missing": rows[0]["osi"]="DIFFERENT"
+                elif change=="crossed": rows[0]["bid"]=10
+                else: rows[0]["ask"]=8
+                ui=self.render({"vo_preview"},rows)
+                self.assertTrue(ui.error.called)
+        self.client.preview_order.assert_not_called()
+        self.client.place_order.assert_not_called()
+
+    def test_all_accounts_must_pass_and_expired_preview_cannot_send(self):
+        import time
+        self.state["vo_accounts"]=["preferred","other"]
+        self.client.preview_order.side_effect=[self.client.preview_order.return_value,ValueError("rejected")]
+        self.render({"vo_preview"})
+        self.render({"vo_send"})
+        self.client.place_order.assert_not_called()
+        self.assertNotIn("vo_review_bundle",self.state)
+        self.client.preview_order.side_effect=None
+        self.state["vo_accounts"]=["preferred"]
+        self.render({"vo_preview"})
+        self.state["vo_review_bundle"]["previewed_at"]=time.time()-31
+        self.render({"vo_send"})
+        self.client.place_order.assert_not_called()
+
+    def test_selection_event_invalidates_review_and_stale_ack_does_not(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        store=MagicMock();store.get_many.return_value={"new":{}}
+        state={"_vo_checked_spreads":{"scope":"test","ids":{"old"},"revision":2},
+               "_vo_column_filters":{"scope":"test","filters":{},"revision":3},
+               "vo_review_bundle":{"approved":True},"vo_live_confirm":True,
+               "_vo_ticket_quote":{"old":True},"vo_results_view":"BEST PER YEAR"}
+        with patch.object(vo.st,"session_state",state):
+            result={"scope":"test","candidates":store}
+            self.assertFalse(vo._consume_vertical_table_update(
+                {"scope":"test","revision":1,"selected_ids":["new"]},result,"SPY"))
+            self.assertIn("vo_review_bundle",state)
+            self.assertTrue(vo._consume_vertical_table_update(
+                {"scope":"test","revision":3,"selected_ids":["new"]},result,"SPY"))
+            self.assertNotIn("vo_review_bundle",state)
+            self.assertNotIn("_vo_ticket_quote",state)
+
+    def test_late_preference_cannot_override_explicit_choice_or_write_default(self):
+        from unittest.mock import patch
+        import src.vertical_options_ui as vo
+        state={}
+        with (patch.object(vo.st,"session_state",state),
+              patch.object(vo.st,"toggle",side_effect=lambda *a,**k:state["vo_smart_fill"]),
+              patch.object(vo,"_PRICING_PREFERENCE_COMPONENT",return_value=None) as component):
+            self.assertEqual(vo._pricing_mode_flip_switch(),"NORMAL")
+            self.assertEqual(component.call_count,1)
+            self.assertEqual(component.call_args.kwargs["action"],"read")
+            state["vo_smart_fill"]=True
+            vo._remember_pricing_mode()
+            component.side_effect=[{"ready":True,"mode":"NORMAL","available":True},None]
+            self.assertEqual(vo._pricing_mode_flip_switch(),"SMART FILL")
+            self.assertEqual(component.call_args.kwargs["value"],"SMART FILL")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -56,7 +56,10 @@ def price_vertical_quote(**kwargs: Any) -> dict[str, Any] | None:
 
 def scan_vertical_candidates(**kwargs: Any):
     """Reuse complete canonical pairing with an explicitly desktop-owned pricer."""
-    kwargs["min_reward_risk"] = max(2.0, float(kwargs.get("min_reward_risk", 2.0)))
+    minimum = float(kwargs.get("min_reward_risk", 2.0))
+    if not math.isfinite(minimum) or minimum <= 0:
+        raise ValueError("Minimum reward-to-risk ratio must be positive and finite.")
+    kwargs["min_reward_risk"] = max(2.0, minimum)
     return _legacy_scan(**kwargs, quote_pricer=price_vertical_quote)
 
 

@@ -58,7 +58,8 @@ def delayed_preference_component(**kwargs):
     value = original_preference_component(**kwargs)
     if kwargs.get("action") == "read":
         started = st.session_state.setdefault("fixture_preference_started", time.monotonic())
-        waiting = time.monotonic() - started < 2
+        waiting = not st.session_state.get("fixture_preference_seen", False)
+        st.session_state["fixture_preference_seen"] = True
         record("preference-read", waiting=waiting)
         if waiting:
             return None
@@ -307,6 +308,9 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
                 cell.classList.contains('expiry') ? cell.firstChild.textContent :
                 cell.classList.contains('cost') ? cell.querySelector('.debit-value')?.textContent :
                 cell.textContent).concat(row.querySelector('.fill-detail')?.textContent),
+            quotePrices:[...row.querySelectorAll('.fill-labels small')].map(e=>e.textContent),
+            quoteMarker:row.querySelector('.fill-marker')?.style.left,
+            quoteNote:row.querySelector('.fill-estimate')?.textContent,
             cellCount:row.children.length,
             debitValue:row.querySelector('.debit-value')?.textContent,
             fillDetail:row.querySelector('.fill-detail')?.textContent,
@@ -428,13 +432,18 @@ def assert_row_colors(page: dict) -> None:
 
 def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
     """One visible Debit column retains numeric cost and its tiny pricing basis."""
-    assert len(snapshot["headers"]) == 14 and snapshot["headers"][9] == "Debit" and snapshot["headers"][-1] == "FILL EST", snapshot
+    assert len(snapshot["headers"]) == 14 and snapshot["headers"][9] == "Debit" and snapshot["headers"][-1] == "BID / MID / ASK", snapshot
     assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
     for row in snapshot["rows"]:
         assert row["cellCount"] == 14 and len(row["values"]) == 13, row
         assert row["debitValue"] == row["values"][7] and row["debitValue"].startswith("$"), row
         assert row["fillDetail"] == row["values"][-1] == expected_fill, row
         assert row["fillFits"], row
+        assert len(row["quotePrices"]) == 3 and all("$" in value for value in row["quotePrices"]), row
+        assert row["quoteMarker"] and row["quoteNote"].startswith("LIMIT $"), row
+        assert "%" not in row["quoteNote"], row
+        if expected_fill == "ASK":
+            assert row["quoteMarker"] == "100%", row
 
 
 def grouped_page_if_ready(driver: webdriver.Chrome, total: int,
@@ -852,9 +861,9 @@ def test() -> None:
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="MIN RISK:REWARD 1:"]').get_attribute("value") == "2"
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
-            assert any(not event["waiting"] for event in initial_reads), initial_reads
+            assert "PREFERENCE STORAGE DID NOT RESPOND" not in driver.find_element(By.TAG_NAME, "body").text
             assert not [event for event in events(event_path) if event["event"] == "chain"]
-            print("Vertical Options first visit recovers late browser preference without tab switching PASS")
+            print("Vertical Options first visit remains usable before optional storage replies PASS")
             # Pricing controls stay on one compact row. Hidden preference frames
             # must never reserve the custom-component default 150px height.
             pricing_layout = driver.execute_script("""
@@ -881,6 +890,14 @@ def test() -> None:
             assert 0 <= pricing_layout["gap"] < 64, pricing_layout
             assert pricing_layout["toggleWidth"] >= 24, pricing_layout
             assert pricing_layout["normalX"] < pricing_layout["switchX"] < pricing_layout["smartX"], pricing_layout
+            mode_details = driver.execute_script("""
+                const label=document.querySelector('.st-key-vo_smart_fill label');
+                const help=document.querySelector('.vo-mode-help--normal');
+                return {after:getComputedStyle(label,'::after').content,
+                        normal:help.parentElement.textContent,
+                        helpFirst:help.parentElement.firstElementChild===help};
+            """)
+            assert mode_details["after"] == "none" and mode_details["helpFirst"], mode_details
             print("Vertical Options compact scan toolbar PASS", pricing_layout)
             # Compare visible box edges and labels with the shared production
             # theme at both desktop widths, including nested form boundaries.
@@ -995,8 +1012,8 @@ def test() -> None:
             form = wait.until(ready_scanner_form)
             print("Vertical Options flip toggle persistence PASS (refresh + both positions)")
             for label, text in (
-                ("Normal mode explanation", "natural ASK first"),
-                ("Smart Fill mode explanation", "between spread MID and natural ASK"),
+                ("Normal mode explanation", "NORMAL suggests a limit between MID and ASK"),
+                ("Smart Fill mode explanation", "SMART FILL uses natural ASK only"),
             ):
                 help_icon = wait.until(lambda _: driver.find_element(
                     By.CSS_SELECTOR, f'.vo-mode-help[aria-label="{label}"]'
@@ -1244,7 +1261,7 @@ def test() -> None:
                 driver.set_window_size(width, 900)
                 resized = grid_snapshot(driver)
                 assert all(row["expiryFits"] for row in resized["rows"])
-                assert_merged_debit(resized, "ASK")
+                assert_merged_debit(resized, "LIMIT")
             print("Vertical Options tiny expiry detail PASS (calendar days + years, 43px rows)", flush=True)
             assert len(best_page["rows"]) == 60, best_page
             assert any(not row["annual"] for row in best["rows"]), best
@@ -1256,8 +1273,8 @@ def test() -> None:
             ), best
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
-            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"] and "FILL EST" in best["headers"], best
-            assert all(row["values"][-1] == "ASK" for row in best["rows"]), best
+            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"] and "BID / MID / ASK" in best["headers"], best
+            assert all(row["values"][-1] == "LIMIT" for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
             assert best["height"] == 516, best
             for row in best["rows"]:
@@ -1266,13 +1283,16 @@ def test() -> None:
             chain_reads = sum(event["event"] == "chain" for event in events(event_path))
             driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
             smart = wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
-                all(row["fillDetail"] == "SMART" for row in snapshot["rows"]) else False))
-            assert_merged_debit(smart, "SMART")
+                all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
+            assert_merged_debit(smart, "ASK")
+            if os.environ.get("VO_SCANNER_SCREENSHOT"):
+                driver.execute_script("window.scrollTo(0,0)")
+                driver.save_screenshot(os.environ["VO_SCANNER_SCREENSHOT"])
             driver.find_element(By.CSS_SELECTOR, ".st-key-vo_smart_fill label").click()
             wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
-                all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
+                all(row["fillDetail"] == "LIMIT" for row in snapshot["rows"]) else False))
             assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
-            print("Merged Debit / tiny ASK and SMART basis PASS (14 columns, 43px rows, no chain reload)", flush=True)
+            print("Merged Debit / NORMAL LIMIT and SMART ASK basis PASS (14 columns, 43px rows, no chain reload)", flush=True)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
@@ -1401,12 +1421,12 @@ def test() -> None:
 
             order_expander = driver.find_element(
                 By.XPATH,
-                '//div[@data-testid="stExpander"]//summary[contains(., "OPTIONAL E*TRADE LIVE ORDER REVIEW")]',
+                '//div[@data-testid="stExpander"]//summary[contains(., "E*TRADE ORDER //")]',
             )
-            order_expander.click()
+            assert order_expander.find_element(By.XPATH, "..").get_attribute("open") is not None
             review = wait.until(lambda _: next((
                 button for button in driver.find_elements(
-                    By.XPATH, '//button[contains(., "REVIEW WITH E*TRADE")]',
+                    By.XPATH, '//button[contains(., "PREVIEW WITH E*TRADE")]',
                 ) if button.is_displayed() and button.is_enabled()
             ), None))
             chip = wait.until(lambda _: driver.execute_script(
@@ -1433,7 +1453,7 @@ def test() -> None:
             def click_review(_):
                 try:
                     button = next((item for item in driver.find_elements(
-                        By.XPATH, '//button[contains(., "REVIEW WITH E*TRADE")]',
+                        By.XPATH, '//button[contains(., "PREVIEW WITH E*TRADE")]',
                     ) if item.is_displayed() and item.is_enabled()), None)
                     if button is None:
                         return False
@@ -1464,10 +1484,9 @@ def test() -> None:
                 dollars(selected_values[5]) + .02 + .002 * (buy_strike - 90)
                 - (dollars(selected_values[6]) - .02), 2
             )
-            assert selected_values[-1] == "ASK", selected_values
-            assert order["limitPrice"] == expected_natural, (
-                "E*TRADE preview price diverged from selected ASK spread",
-                order["limitPrice"], expected_natural
+            assert selected_values[-1] == "LIMIT", selected_values
+            assert order["limitPrice"] <= expected_natural, (
+                "NORMAL limit must not exceed the natural ASK", order["limitPrice"], expected_natural
             )
             assert order["limitPrice"] == round(dollars(selected_values[7]) / 100, 2), order
             assert len([item for item in events(event_path) if item["event"] == "chain"]) == 4, (
@@ -1491,7 +1510,7 @@ def test() -> None:
             ), order
             assert wait.until(lambda _: driver.find_element(
                 By.CSS_SELECTOR, '.st-key-vo_send button',
-            )).get_attribute("disabled") is not None, "PLACE must need affirmative confirmation"
+            )).get_attribute("disabled") is None, "SEND is an explicit final authorization after a successful preview"
             assert not any(item["event"] == "place" for item in events(event_path)), (
                 "Preview alone placed an order"
             )
