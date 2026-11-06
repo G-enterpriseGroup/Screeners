@@ -420,9 +420,14 @@ function makeRow(row,index){
     odds.textContent=position?"DEBIT "+debit.toFixed(2)+" · NO EST":"QUOTE N/A · NO EST";
     odds.classList.add("unavailable");
    }
-   cell.title=quoted?"BID "+bid.toFixed(2)+" / MID "+(Number.isFinite(mid)?mid.toFixed(2):"—")+
-    " / ASK "+ask.toFixed(2)+" / LIMIT "+(Number.isFinite(debit)?debit.toFixed(2):"—")+
-    ". Estimate is NOT a measured fill probability.":"Missing reliable two-leg bid/ask quotes; cannot estimate a fill.";
+   // Keep the explanatory text accessible without a native hover tooltip
+   // obscuring multiple table rows (reported by Raj in the live QQQ scan).
+   cell.removeAttribute("title");
+   cell.setAttribute("aria-label",quoted?"Spread BID "+bid.toFixed(2)+
+    ", MID "+(Number.isFinite(mid)?mid.toFixed(2):"unavailable")+
+    ", ASK "+ask.toFixed(2)+", chosen debit "+(Number.isFinite(debit)?debit.toFixed(2):"unavailable")+
+    ". Fill estimate is a quote-position heuristic, not a calibrated probability.":
+    "Spread quotes unavailable; fill likelihood cannot be estimated.");
    ruler.append(labels,track,odds);cell.classList.add("fill-scale");cell.replaceChildren(ruler);
    line.appendChild(cell);continue;
   }
