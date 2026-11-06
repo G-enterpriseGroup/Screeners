@@ -1,0 +1,70 @@
+name: Vertical Options Repair Workbench
+on:
+  push:
+    branches: [fix/vo-seamless-execution-20261106]
+    paths:
+      - scripts/_vo_repair_patch.py
+      - .github/workflows/vo-repair-workbench.yml
+permissions:
+  contents: write
+concurrency:
+  group: vo-repair-workbench
+  cancel-in-progress: false
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/vo-seamless-execution-20261106
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply bounded patch and syntax-check
+        run: |
+          python scripts/_vo_repair_patch.py
+          python -m py_compile src/vertical_options.py src/vertical_options_ui.py src/vertical_options_execution.py src/vertical_options_store.py
+          python scripts/validate_architecture.py
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          for name in ('vo_pricing_preference_v1', 'vo_spread_scroller_v1'):
+              html = Path('src/components', name, 'index.html').read_text()
+              js = html.split('<script>', 1)[1].split('</script>', 1)[0]
+              file = Path('/tmp', name + '.js')
+              file.write_text(js)
+              subprocess.run(['node', '--check', str(file)], check=True)
+          PY
+          git diff --check
+      - name: Save isolated source changes on workbench branch
+        run: |
+          git config user.name 'G-enterpriseGroup'
+          git config user.email '143067071+G-enterpriseGroup@users.noreply.github.com'
+          git add src/vertical_options.py src/vertical_options_ui.py src/vertical_options_store.py src/vertical_options_execution.py src/components/vo_pricing_preference_v1/index.html src/components/vo_spread_scroller_v1/index.html src/TERMINAL_CHANGELOG.md
+          git commit -m 'Repair desktop vertical startup, quote display, filters and ASK-only smart execution'
+          git push origin HEAD:fix/vo-seamless-execution-20261106
+          git rev-parse HEAD
+      - name: Install production and browser test dependencies
+        run: python -m pip install -r requirements.txt selenium==4.36.0
+      - name: Run feature and neighboring regression tests
+        run: |
+          mkdir -p /tmp/vo-evidence
+          set +e
+          python -m unittest tests.test_vertical_options tests.test_verti_phone > /tmp/vo-evidence/unit.log 2>&1
+          unit=$?
+          python scripts/test_tab_layout.py > /tmp/vo-evidence/tabs.log 2>&1
+          tabs=$?
+          python scripts/test_vertical_options_scanner_browser.py > /tmp/vo-evidence/browser.log 2>&1
+          browser=$?
+          tail -n 130 /tmp/vo-evidence/unit.log
+          cat /tmp/vo-evidence/tabs.log
+          tail -n 100 /tmp/vo-evidence/browser.log
+          printf 'UNIT=%s TABS=%s BROWSER=%s\n' "$unit" "$tabs" "$browser"
+          test "$unit" = 0 -a "$tabs" = 0 -a "$browser" = 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vo-repair-evidence
+          path: /tmp/vo-evidence
+          retention-days: 3
