@@ -2325,8 +2325,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
             _scanner_help("PRICING & RISK", (
                 "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
-                "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
-                f"SMART FILL suggests a MID-to-ASK limit under the 1:{min_reward_risk:g} requirement. "
+                "NORMAL suggests a limit between MID and ASK, falling back to MID when needed. "
+                f"SMART FILL proposes only the natural spread ASK when reward:risk meets 1:{max(2.0, min_reward_risk):g}. "
                 "The Debit MAX filter also caps the reviewed order limit. "
                 "For one standard 100-share contract: max loss = debit × 100; max profit = "
                 f"(strike width − debit) × 100. Reward/risk must be at least {min_reward_risk:g}. "
@@ -2813,8 +2813,8 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     st.caption(
         f'Pricing: {candidate["basis"]} // spread market BID {_money(candidate.get("spread_bid"))} / '
         f'MID {_money(candidate.get("spread_mid"))} / ASK {_money(candidate.get("spread_ask"))}. '
-        'ASK = BUY option ask − SELL option bid. MID/LAST can remain unfilled; '
-        'quotes will be rechecked before E*TRADE preview.'
+        'ASK = BUY option ask − SELL option bid. A proposed marketable ASK limit '
+        'may still queue or remain unfilled; an uncached chain quote is obtained before broker preview.'
     )
     st.caption(
         "SAVE CHECKED SPREADS = TERMINAL-ONLY DRAFT; NOT SAVED AT E*TRADE. "
