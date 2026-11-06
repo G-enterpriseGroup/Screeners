@@ -853,11 +853,14 @@ def test() -> None:
                        and item["placeholderOpacity"] == "1"
                        for item in optional_field_styles), optional_field_styles
             assert form.find_element(By.CSS_SELECTOR, 'input[aria-label="MIN RISK:REWARD 1:"]').get_attribute("value") == "2"
+            # Nonblocking bootstrap displays the scanner immediately. The
+            # read-only recovery fragment picks up delayed browser storage later.
             initial_reads = [event for event in events(event_path) if event["event"] == "preference-read"]
             assert any(event["waiting"] for event in initial_reads), initial_reads
-            assert any(not event["waiting"] for event in initial_reads), initial_reads
+            wait.until(lambda _: any(not event["waiting"] for event in events(event_path)
+                                     if event["event"] == "preference-read"))
             assert not [event for event in events(event_path) if event["event"] == "chain"]
-            print("Vertical Options first visit recovers late browser preference without tab switching PASS")
+            print("Vertical Options scanner renders before delayed browser preference and recovers silently PASS")
             # Pricing controls stay on one compact row. Hidden preference frames
             # must never reserve the custom-component default 150px height.
             pricing_layout = driver.execute_script("""
