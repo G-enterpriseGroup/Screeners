@@ -42,6 +42,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
+from src.etrade_data_cache import CachedETradeClient
 from src.option_book import extract_option_rows
 from src.theme import install_native_switch_theme
 from src.gex_cboe import cboe_results
@@ -929,14 +930,19 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
                "OptionStrat may use current quotes. TradingView charts long minus short option premiums per share; coverage and delay vary.")
 
 
-def _chain(client, symbol: str, expiry: date, touch_session) -> list[dict[str, Any]]:
+def _chain(client, symbol: str, expiry: date, touch_session, *,
+           fresh_broker_quote: bool = False) -> list[dict[str, Any]]:
+    params = {"no_of_strikes": None, "chain_type": "CALLPUT"}
+    # The authenticated session wrapper caches chains for up to five minutes.
+    # Broker REVIEW must obtain a new quote, unlike ordinary result scanning.
+    if fresh_broker_quote and isinstance(client, CachedETradeClient):
+        params["force_refresh"] = True
     payload = client.get_option_chain(
         symbol,
         expiry.year,
         expiry.month,
         expiry.day,
-        no_of_strikes=None,
-        chain_type="CALLPUT",
+        **params,
     )
     touch_session()
     return extract_option_rows(payload, expiry)
@@ -2825,7 +2831,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         # Requote only on an explicit Review click: no broker traffic on
         # checkbox, filter, order quantity, or OptionStrat interactions.
         try:
-            latest = _chain(client, symbol, expiry, touch_session)
+            latest = _chain(client, symbol, expiry, touch_session, fresh_broker_quote=True)
             def exact_leg(strike: float, osi: str) -> dict[str, Any]:
                 for row in latest:
                     if (row.get("call_put") == call_put
