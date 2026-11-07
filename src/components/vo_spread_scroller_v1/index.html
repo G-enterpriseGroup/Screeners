@@ -376,7 +376,7 @@ for(let index=0;index<HEAD.length;index++){
  head.appendChild(cell);
  if(headerKey==="buy_last"){
   const oi=document.createElement("span");oi.className="leg-head";oi.dataset.column="OPEN INTEREST";
-  const name=document.createElement("span");name.className="leg-column-title";name.textContent="OPEN INTEREST";
+  const name=document.createElement("span");name.className="leg-column-title";name.textContent="OI";
   const order=document.createElement("span");order.className="leg-order";order.textContent="(BUY / SELL)";
   oi.title="Open contracts per leg from this scan snapshot; BUY above SELL. — means not supplied.";
   oi.append(name,order);head.appendChild(oi);
