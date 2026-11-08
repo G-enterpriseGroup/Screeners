@@ -34,6 +34,7 @@ _HISTORY_DAYS = 729   # E*TRADE rejects start dates older than two years
 _OVERLAP_DAYS = 7     # late-posted/corrected executions
 _SYNC_SECONDS = 12 * 3600
 _SHARE_TYPES = {"EQ", "EQUITY", "ETF", "STOCK", "COMMON", "COMMON_STOCK"}
+_VERTICAL_CACHE_VERSION = 1
 _CSS = """
 <style>
 .st-key-acquisition_root {gap:4px!important;padding:0!important;margin:0!important;font-family:"Courier New",monospace}
@@ -169,6 +170,13 @@ def _readable_account_identity(account: dict[str, Any]) -> tuple[str, str]:
     return name or "E*TRADE Account", "".join(c for c in number if c.isdigit())[-4:]
 
 
+def _private_blotter_digest(saved: dict[str, Any], account: dict[str, Any]) -> str:
+    name, last_four = _readable_account_identity(account)
+    content = {**_archive_snapshot(saved), "name": name, "last_four": last_four,
+               "vertical_algorithm": _VERTICAL_CACHE_VERSION}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def _sync_history(
     client: Any,
     vault_key: str,
@@ -195,6 +203,25 @@ def _sync_history(
     # In fixture tests the archive client can be injected without secrets.
     private_config = ArchiveConfig.from_runtime() if archive else None
     private_blotter = PrivateTradeBlotter(private_config) if private_config else None
+    # A widget/filter rerun must not perform a GitHub metadata request. Keep
+    # fresh private verification for actual restore/publish work only.
+    with vault["lock"]:
+        private_work = False
+        for account in accounts:
+            key = str(account.get("accountIdKey") or "").strip()
+            if not key:
+                continue
+            scope = (str(vault_key), key)
+            saved = vault["accounts"].get(scope)
+            retry = vault.get("blotter_retry_at", {}).get(scope, 0)
+            private_work |= (scope not in vault.get("private_loaded", set()) or force or
+                             (saved is not None and (time.time() >= retry) and (
+                                 scope not in vault.get("archive_loaded", set()) or
+                                 time.time() - float(saved.get("synced_at", 0)) >= _SYNC_SECONDS or
+                                 _private_blotter_digest(saved, account) != vault.get("blotter_digest", {}).get(scope) or
+                                 bool(vault.get("vertical_cache_error", {}).get(scope)))))
+    if not private_work:
+        private_blotter = None
     if private_blotter is not None:
         # One credential preflight for the ENTIRE account batch. GitHub uses
         # HTTP 404 when a PAT cannot see a private repository. Do not retry
@@ -327,23 +354,50 @@ def _sync_history(
                 # Private plaintext historical blotter, isolated from public
                 # code repo. Skip repeat GitHub requests for unchanged history.
                 name, last_four = _readable_account_identity(account)
-                content = json.dumps(
-                    {"rows": saved["rows"], "name": name, "last_four": last_four},
-                    sort_keys=True, default=str,
-                )
-                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                source = _vertical_source_fingerprint(saved["rows"])
+                if vault.setdefault("vertical_loaded", {}).get(scope) != _VERTICAL_CACHE_VERSION:
+                    try:
+                        cached = private_blotter.read_vertical_cache(key, preverified=True)
+                        if _valid_vertical_cache(cached, source):
+                            vault.setdefault("vertical_cache", {})[scope] = cached
+                            vault.setdefault("vertical_cache_saved", {})[scope] = source
+                    except ArchiveError:
+                        vault.setdefault("vertical_cache_error", {})[scope] = "Saved vertical cache unavailable; rebuilding from preserved raw history."
+                    vault["vertical_loaded"][scope] = _VERTICAL_CACHE_VERSION
+                digest = _private_blotter_digest(saved, account)
                 previous = vault.setdefault("blotter_digest", {}).get(scope)
                 retry_at = vault.setdefault("blotter_retry_at", {}).get(scope, 0)
-                if digest != previous and (force or time.time() >= retry_at):
+                if (digest != previous or vault.get("vertical_cache_error", {}).get(scope)) and (force or time.time() >= retry_at):
                     try:
                         readable_snapshot = _archive_snapshot(saved)
                         readable_snapshot.update(account_name=name, account_last_four=last_four)
                         url = private_blotter.save(
                             key, readable_snapshot, _merge, _equity_trade,
+                            build_verticals=lambda rows: _cached_verticals(rows, vault_key, key),
                         )
+                        canonical = getattr(private_blotter, "canonical_snapshot", None)
+                        if isinstance(canonical, dict) and canonical.get("account") == key:
+                            saved = _restore_archive(canonical)
+                            vault["accounts"][scope] = saved
+                            canonical_source = _vertical_source_fingerprint(saved["rows"])
+                            if canonical_source != source and archive is not None:
+                                vault["archive_dirty"][scope] = True
+                            source = canonical_source
+                            digest = _private_blotter_digest(saved, account)
                         vault["blotter_digest"][scope] = digest
                         vault.setdefault("blotter_url", {})[scope] = url
                         vault["blotter_retry_at"].pop(scope, None)
+                        vertical_error = getattr(private_blotter, "vertical_error", "")
+                        if vertical_error:
+                            vault.setdefault("vertical_cache_error", {})[scope] = vertical_error
+                            vault["blotter_retry_at"][scope] = time.time() + 300
+                        else:
+                            published = getattr(private_blotter, "vertical_payload", None)
+                            if _valid_vertical_cache(published, source):
+                                vault.setdefault("vertical_cache", {})[scope] = published
+                                vault.setdefault("vertical_cache_saved", {})[scope] = source
+                                vault.setdefault("vertical_cache_url", {})[scope] = url.rsplit("/", 1)[0] + "/vertical_blotter.csv"
+                            vault.setdefault("vertical_cache_error", {}).pop(scope, None)
                     except ArchiveError as exc:
                         errors[key] = "PRIVATE GITHUB BLOTTER NOT UPDATED // " + str(exc)
                         vault["blotter_retry_at"][scope] = time.time() + 300
@@ -697,7 +751,15 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
         bucket = (account, when.date() if when else None, order) if order else (account, when)
         leg = {"ticker": ticker, "when": when, "expiry": None,
                "type": str(_find(product, "callPut") or "").upper(),
-               "strike": None, "qty": None, "action": "", "order": order}
+               "strike": None, "qty": None, "action": "", "order": order,
+               "account": account, "root": str(_find(product, "optionRootSymbol", "rootSymbol") or "").upper()}
+        # Preserve contract context even for an assignment/unpaired leg, so it
+        # can interrupt an otherwise misleading later round-trip P&L match.
+        try:
+            leg["expiry"] = date(*(int(_find(product, field)) for field in ("expiryYear", "expiryMonth", "expiryDay")))
+            leg["strike"] = float(_find(product, "strikePrice"))
+        except (TypeError, ValueError, OverflowError):
+            pass
         try:
             if isinstance(_find(tx, "transactionDate"), bool) or isinstance(_find(broker, "orderNo", "orderId", "orderNumber"), bool):
                 raise ValueError("Invalid execution date or order reference")
@@ -755,6 +817,8 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                 raise ValueError("Adjusted contract requires review")
             multiplier = _find(broker, "optionMultiplier", "multiplier")
             if multiplier is not None:
+                if isinstance(multiplier, bool):
+                    raise ValueError("Invalid contract multiplier")
                 multiplier = float(multiplier)
                 if not math.isfinite(multiplier) or multiplier <= 0:
                     raise ValueError("Invalid contract multiplier")
@@ -764,7 +828,28 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                                  for stamp in (when, when.astimezone(timezone.utc))):
                 raise ValueError("No shared order reference or precise intraday execution time")
             phase = "OPENED" if leg["action"] in {"BTO", "STO"} else "CLOSED"
-            leg.update(price=price, bucket=bucket, event=phase)
+            def recorded_number(field):
+                raw = _find(tx, field)
+                try:
+                    value = float(raw)
+                    return value if not isinstance(raw, bool) and math.isfinite(value) else None
+                except (TypeError, ValueError, OverflowError):
+                    return None
+            fee = recorded_number("fee")
+            cash = recorded_number("amount")
+            cash_basis = "RECORDED CASH" if cash is not None else "UNAVAILABLE"
+            expected_cash = (price * leg["qty"] * multiplier * (-1 if leg["action"] in {"BTO", "BTC"} else 1) - fee
+                             if multiplier is not None and fee is not None else None)
+            inconsistent_cash = cash is not None and expected_cash is not None and abs(cash - expected_cash) > .03
+            if cash is None and multiplier is not None and fee is not None:
+                cash = expected_cash
+                cash_basis = "PREMIUM + FEES"
+            if cash is not None and (inconsistent_cash or not math.isfinite(cash) or (leg["action"] in {"BTO", "BTC"} and cash > 0)):
+                cash, cash_basis = None, "UNAVAILABLE"
+            leg.update(price=price, bucket=bucket, event=phase, root=root,
+                       multiplier=multiplier, currency=currency, fee=fee, cash=cash,
+                       cash_basis=cash_basis, id=_identity(tx),
+                       subtype=str(_find(product, "securitySubType") or ""))
             groups[(bucket, ticker, root, leg["expiry"], leg["type"], multiplier, currency,
                     str(_find(product, "securitySubType") or ""), phase)].append(leg)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -799,9 +884,182 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                        "long": longs[0]["strike"], "short": shorts[0]["strike"], "qty": long_qty,
                        "long_price": long_price, "short_price": short_price, "net": net,
                        "event": legs[0]["event"], "cash_flow": cash_flow, "order": legs[0]["order"],
-                       "match": "ORDER" if legs[0]["order"] else "TIME // INFERRED"})
+                       "match": "ORDER" if legs[0]["order"] else "TIME // INFERRED",
+                       "account": account, "root": legs[0]["root"], "multiplier": legs[0]["multiplier"],
+                       "currency": legs[0]["currency"], "subtype": legs[0]["subtype"],
+                       "ids": sorted(leg["id"] for leg in legs),
+                       "fee": math.fsum(leg["fee"] for leg in legs) if all(leg["fee"] is not None for leg in legs) else None,
+                       "cash": math.fsum(leg["cash"] for leg in legs) if all(leg["cash"] is not None for leg in legs) else None,
+                       "cash_basis": ("RECORDED CASH" if all(leg["cash_basis"] == "RECORDED CASH" for leg in legs)
+                                      else "PREMIUM + FEES" if all(leg["cash"] is not None for leg in legs) else "UNAVAILABLE")})
     events.sort(key=lambda event: (event["when"], event["ticker"], event["order"], event["long"], event["short"]))
     return events, review
+
+
+def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Match exact recorded spread events FIFO without inventing missing cash or legs."""
+    def number(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def stamp(value):
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+        return (value if value.tzinfo else value.replace(tzinfo=_ET)) if isinstance(value, datetime) else None
+
+    def total(values):
+        try:
+            return number(math.fsum(values))
+        except (OverflowError, ValueError):
+            return None
+
+    def iso(value):
+        return value.isoformat() if isinstance(value, (date, datetime)) else str(value) if value else None
+
+    def ids(event):
+        return sorted(str(value) for value in event.get("ids", []) if value is not None)
+
+    def currencies(event):
+        value = event.get("currency") or ("", "")
+        if isinstance(value, str):
+            value = (value, value)
+        return tuple(str(item or "").strip().upper() for item in value)
+
+    def currency(event):
+        value = currencies(event)
+        return value[0] if len(value) == 2 and value[0] and value[0] == value[1] else ""
+
+    def identity(event):
+        return (str(event.get("account") or ""), event.get("ticker"), event.get("root"),
+                iso(event.get("expiry")), event.get("type"), number(event.get("long")),
+                number(event.get("short")), number(event.get("multiplier")), currencies(event),
+                event.get("subtype") or "", json.dumps(event.get("contract_context"), sort_keys=True, default=str))
+
+    def related(leg, event):
+        for field in ("account", "ticker", "type"):
+            value, other = leg.get(field), event.get(field)
+            if value not in (None, "", "UNKNOWN") and other not in (None, "", "UNKNOWN") and value != other:
+                return False
+        root = leg.get("rawroot") or leg.get("root")
+        if root and event.get("root") and root != event["root"]:
+            return False
+        if leg.get("expiry") and iso(leg["expiry"]) != iso(event.get("expiry")):
+            return False
+        leg_currency, event_currency = currencies(leg), currencies(event)
+        if all(leg_currency) and all(event_currency) and leg_currency != event_currency:
+            return False
+        leg_multiplier, event_multiplier = number(leg.get("multiplier")), number(event.get("multiplier"))
+        if leg_multiplier is not None and event_multiplier is not None and leg_multiplier != event_multiplier:
+            return False
+        for field in ("subtype", "contract_context"):
+            if field in leg and field in event and leg[field] is not None and event[field] is not None and leg[field] != event[field]:
+                return False
+        strike = number(leg.get("strike"))
+        return strike is None or strike in (number(event.get("long")), number(event.get("short")))
+
+    def allocated(event, field, quantity):
+        value, total = number(event.get(field)), number(event.get("qty"))
+        return number(value * (quantity / total)) if value is not None and total and total > 0 else None
+
+    def row(event, quantity, status, opening=None, closing=None, basis=""):
+        open_fee = allocated(opening, "fee", quantity) if opening else 0.0
+        close_fee = allocated(closing, "fee", quantity) if closing else 0.0
+        fees = total((open_fee, close_fee)) if (opening or closing) and open_fee is not None and close_fee is not None else None
+        pnl = None
+        if opening and closing and status == "CLOSED":
+            open_cash, close_cash = allocated(opening, "cash", quantity), allocated(closing, "cash", quantity)
+            if not currency(event):
+                basis += "; currency unavailable or settlement/payment currency differs"
+            elif open_cash is None or close_cash is None:
+                basis += "; recorded cash or a verified premium/fee cash basis is unavailable"
+            else:
+                pnl = total((open_cash, close_cash))
+                basis += "; " + str(opening.get("cash_basis") or "UNAVAILABLE") + " / " + str(closing.get("cash_basis") or "UNAVAILABLE")
+        inferred = any(item and item.get("match") == "TIME // INFERRED" for item in (event, opening, closing))
+        if inferred:
+            basis += "; timestamp pairing is inferred"
+        return {"ticker": str(event.get("ticker") or "UNKNOWN"), "type": str(event.get("type") or ""),
+                "expiry": iso(event.get("expiry")), "long": number(event.get("long")), "short": number(event.get("short")),
+                "qty": number(quantity), "status": status,
+                "opened": iso(stamp(opening.get("when"))) if opening else None,
+                "closed": iso(stamp(closing.get("when"))) if closing else None,
+                "open_net": number(opening.get("net")) if opening else None,
+                "close_net": number(closing.get("net")) if closing else None,
+                "fees": round(fees, 8) if fees is not None else None,
+                "pnl": round(pnl, 8) if pnl is not None else None, "currency": currency(event),
+                "match": "TIME // INFERRED" if inferred else "ORDER", "basis": basis,
+                "open_ids": ids(opening) if opening else [], "close_ids": ids(closing) if closing else []}
+
+    barriers = {}
+    simultaneous = defaultdict(list)
+    for event in events:
+        key = identity(event)
+        if key not in barriers:
+            relevant = [leg for leg in review if related(leg, event)]
+            barriers[key] = (min((stamp(leg.get("when")) or datetime.min.replace(tzinfo=_ET)) for leg in relevant)
+                             if relevant else None)
+        if event.get("event") in {"OPENED", "CLOSED"}:
+            simultaneous[(key, stamp(event.get("when")), event["event"])].append(event)
+    for (key, when, _), cohort in simultaneous.items():
+        if len(cohort) > 1 and len({allocated(event, "cash", 1) for event in cohort}) > 1:
+            when = when or datetime.min.replace(tzinfo=_ET)
+            barriers[key] = min(barriers[key], when) if barriers[key] else when
+
+    lots = defaultdict(deque)
+    output = []
+    ordered = sorted(events, key=lambda event: (stamp(event.get("when")) or datetime.min.replace(tzinfo=_ET),
+                                                event.get("event") == "OPENED", ids(event)))
+    for event in ordered:
+        key, when, quantity = identity(event), stamp(event.get("when")), number(event.get("qty"))
+        opening = event if event.get("event") == "OPENED" else None
+        closing = event if event.get("event") == "CLOSED" else None
+        if when is None or not quantity or quantity <= 0 or not quantity.is_integer() or not (opening or closing):
+            output.append(row(event, quantity, "REVIEW", opening, closing, "Invalid spread event; no FIFO match"))
+            continue
+        if barriers[key] is not None and when >= barriers[key]:
+            output.append(row(event, quantity, "REVIEW", opening, closing,
+                              "Unpaired leg activity or ambiguous execution sequence interrupts this contract's FIFO history"))
+            continue
+        if opening:
+            lots[key].append({"event": opening, "remaining": quantity})
+            continue
+        remaining = quantity
+        while remaining > 0 and lots[key]:
+            lot = lots[key][0]
+            matched = min(remaining, lot["remaining"])
+            output.append(row(event, matched, "CLOSED", lot["event"], event, "Exact-contract FIFO cash match"))
+            lot["remaining"] -= matched
+            remaining -= matched
+            if lot["remaining"] == 0:
+                lots[key].popleft()
+        if remaining:
+            output.append(row(event, remaining, "UNMATCHED CLOSE", closing=event,
+                              basis="Opening spread is unavailable in retained history; no realized P&L"))
+    for key, queue in lots.items():
+        for lot in queue:
+            interrupted = barriers[key] is not None
+            output.append(row(lot["event"], lot["remaining"], "REVIEW" if interrupted else "OPEN", opening=lot["event"],
+                              basis=("Unpaired leg activity interrupts the remaining FIFO quantity; no realized P&L" if interrupted else
+                                     "Remaining recorded FIFO opening quantity; no realized P&L")))
+    for leg in review:
+        action = leg.get("action")
+        event = {**leg, "long": leg.get("strike") if action in {"BTO", "STC"} else None,
+                 "short": leg.get("strike") if action in {"STO", "BTC"} else None}
+        output.append(row(event, number(leg.get("qty")), "REVIEW",
+                          opening=event if action in {"BTO", "STO"} else None,
+                          closing=event if action in {"STC", "BTC"} else None,
+                          basis=str(leg.get("reason") or "Unpaired option leg requires review")))
+    output.sort(key=lambda item: (item["closed"] or item["opened"] or "", item["ticker"], item["status"],
+                                  item["open_ids"], item["close_ids"]))
+    return output
 
 
 def _vertical_text(events: list[dict[str, Any]]) -> str:
@@ -813,6 +1071,103 @@ def _vertical_text(events: list[dict[str, Any]]) -> str:
         f'NET {number(abs(row["net"]))} {row["cash_flow"]} [{row["match"]}]'
         for row in events
     )
+
+
+def _vertical_source_fingerprint(rows: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps(_merge([], rows), sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _vertical_result_fingerprint(payload: dict[str, Any]) -> str:
+    result = {key: payload[key] for key in ("events", "review", "blotter")}
+    return hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _build_vertical_cache(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    events, review = _vertical_history(rows)
+    payload = {"schema_version": 1, "algorithm_version": _VERTICAL_CACHE_VERSION,
+               "source_fingerprint": _vertical_source_fingerprint(rows),
+               "events": events, "review": review, "blotter": _vertical_blotter(events, review)}
+    # Native ISO dates and finite JSON numbers keep GitHub reloads independent
+    # of the current Python process or pandas serialization behavior.
+    def native(value):
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {key: native(child) for key, child in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [native(child) for child in value]
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+    payload = native(payload)
+    payload["result_fingerprint"] = _vertical_result_fingerprint(payload)
+    return payload
+
+
+def _valid_vertical_cache(payload: Any, source: str) -> bool:
+    try:
+        valid = (isinstance(payload, dict) and payload["schema_version"] == 1
+                and payload["algorithm_version"] == _VERTICAL_CACHE_VERSION
+                and payload["source_fingerprint"] == source
+                and all(isinstance(payload[key], list) and all(isinstance(row, dict) for row in payload[key])
+                        for key in ("events", "review", "blotter"))
+                and payload["result_fingerprint"] == _vertical_result_fingerprint(payload))
+        if not valid:
+            return False
+        def finite_number(value):
+            return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        for event in payload["events"]:
+            if not {"ticker", "when", "expiry", "type", "long", "short", "qty", "net", "event", "match"} <= event.keys():
+                return False
+            datetime.fromisoformat(event["when"])
+            date.fromisoformat(event["expiry"])
+            if (not all(finite_number(event[key]) for key in ("long", "short", "qty", "net"))
+                    or event["qty"] <= 0 or event["long"] <= 0 or event["short"] <= 0):
+                return False
+        for leg in payload["review"]:
+            if not {"ticker", "when", "expiry", "type", "strike", "qty", "action", "reason"} <= leg.keys():
+                return False
+            if leg["when"]:
+                datetime.fromisoformat(leg["when"])
+            if leg["expiry"]:
+                date.fromisoformat(leg["expiry"])
+        for row in payload["blotter"]:
+            if not {"ticker", "type", "expiry", "long", "short", "qty", "status", "opened", "closed", "open_net", "close_net", "fees", "pnl", "currency", "match", "basis", "open_ids", "close_ids"} <= row.keys():
+                return False
+            for key in ("opened", "closed"):
+                if row[key]:
+                    datetime.fromisoformat(row[key])
+            if row["expiry"]:
+                date.fromisoformat(row["expiry"])
+            if any(row[key] is not None and not finite_number(row[key])
+                   for key in ("long", "short", "qty", "open_net", "close_net", "fees", "pnl")):
+                return False
+        return True
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _cached_verticals(rows: list[dict[str, Any]], vault_key: str, account: str) -> dict[str, Any]:
+    vault = _history_vault()
+    scope = (str(vault_key), str(account))
+    source = _vertical_source_fingerprint(rows)
+    with vault["lock"]:
+        payload = vault.setdefault("vertical_cache", {}).get(scope)
+        if not _valid_vertical_cache(payload, source):
+            payload = _build_vertical_cache(rows)
+            vault["vertical_cache"][scope] = payload
+            vault.setdefault("vertical_cache_saved", {}).pop(scope, None)
+        return payload
+
+
+def _vertical_event_rows(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    rows = []
+    for original in payload[key]:
+        row = dict(original)
+        row["when"] = datetime.fromisoformat(row["when"]) if row.get("when") else None
+        row["expiry"] = date.fromisoformat(row["expiry"]) if row.get("expiry") else None
+        rows.append(row)
+    return rows
 
 
 def render_acquisition(
@@ -955,7 +1310,9 @@ def render_acquisition(
                 "COPY RECORDS", ["BOUGHT + SOLD", "OPEN LOTS // FIFO", vertical_mode], key=mode_key,
                 on_change=_remember_copy_preference, args=(scope, "mode", mode_key),
             )
-        verticals, review = _vertical_history(saved["rows"]) if mode == vertical_mode else ([], [])
+        vertical_payload = _cached_verticals(saved["rows"], vault_key, chosen) if mode == vertical_mode else None
+        verticals, review = ((_vertical_event_rows(vertical_payload, "events"), _vertical_event_rows(vertical_payload, "review"))
+                             if vertical_payload else ([], []))
         setting = "vertical_tickers" if mode == vertical_mode else "tickers"
         if mode == vertical_mode:
             choices = sorted({row["ticker"] for row in verticals + review})
@@ -972,6 +1329,48 @@ def render_acquisition(
         if mode == vertical_mode:
             matched = [row for row in verticals if row["ticker"] in selected]
             text = _vertical_text(matched)
+            report = [row for row in vertical_payload["blotter"] if row["ticker"] in selected
+                      and row["long"] is not None and row["short"] is not None]
+            st.html('<div class="acq-section">VERTICAL SPREAD BLOTTER // REALIZED P&L</div>')
+            st.caption(
+                "LONG / SHORT strikes retain the original sides. ENTRY / EXIT are signed net premiums per share before fees. "
+                "P&L matches closed contracts to prior exact-spread openings by FIFO using recorded net cash, or known multiplier and fees. "
+                "Cash already includes fees; charges are not subtracted twice. Missing basis, unmatched closes and interrupted leg histories remain unvalued. "
+                "INFERRED identifies timestamp-only pairing; remaining openings have no unrealized valuation."
+            )
+            if report:
+                def quote(value):
+                    return "—" if value is None else f"{value:g}"
+                def day(value):
+                    return datetime.fromisoformat(value).strftime("%m/%d/%Y") if value else "—"
+                st.dataframe(pd.DataFrame([{
+                    "Ticker": row["ticker"], "Spread (L / S)": f'{row["type"]} {quote(row["long"])} / {quote(row["short"])}',
+                    "Expiry": date.fromisoformat(row["expiry"]).strftime("%m/%d/%Y") if row["expiry"] else "—",
+                    "Opened": day(row["opened"]), "Closed": day(row["closed"]), "Contracts": row["qty"],
+                    "Entry / Exit": quote(row["open_net"]) + " / " + quote(row["close_net"]),
+                    "Fees": round(row["fees"], 2) if row["fees"] is not None else None,
+                    "Realized P&L": round(row["pnl"], 2) if row["pnl"] is not None else None,
+                    "Ccy": row["currency"] or "UNKNOWN",
+                    "Status": row["status"] + (" // INFERRED" if row["match"] != "ORDER" else ""),
+                } for row in report]), hide_index=True, width="stretch", row_height=32)
+                totals = defaultdict(list)
+                for row in report:
+                    if row["status"] == "CLOSED" and row["pnl"] is not None:
+                        totals[(row["currency"], row["match"])].append(row["pnl"])
+                if totals:
+                    st.caption("REALIZED TOTALS // " + " | ".join(
+                        f'{currency} {math.fsum(values):,.2f} ({"INFERRED FIFO" if evidence != "ORDER" else "ORDER-MATCHED FIFO"})'
+                        for (currency, evidence), values in sorted(totals.items())))
+            else:
+                st.info("NO PAIRED VERTICAL BLOTTER RECORDS FOR THE SELECTED TICKERS.")
+            private_scope = (str(vault_key), str(chosen))
+            cache_error = vault.get("vertical_cache_error", {}).get(private_scope)
+            if cache_error:
+                st.warning("VERTICAL GITHUB CACHE PENDING // " + cache_error)
+            elif vault.get("vertical_cache_saved", {}).get(private_scope) == vertical_payload["source_fingerprint"]:
+                st.caption("PRIVATE GITHUB BLOTTER SAVED // VERSIONED REPORT + RAW HISTORY // REFRESH REUSES CACHE; SYNC READS RECENT OVERLAP ONLY")
+            else:
+                st.caption("VERTICAL BLOTTER CACHED IN THIS PROCESS // PRIVATE GITHUB REPORT NOT YET VERIFIED SAVED")
             st.caption(
                 "OPENED = BTO + STO; CLOSED = STC + BTC. Same underlying, expiration, type and balanced contracts. "
                 "LONG / SHORT identify the original sides. ORDER = shared broker order; TIME // INFERRED = exact intraday time only. "
@@ -979,12 +1378,13 @@ def render_acquisition(
                 "Event quantities do not establish a flat position or lifetime P&L; history is limited to the window above."
             )
             if matched:
-                st.dataframe(pd.DataFrame([{
+                with st.expander("OPENED / CLOSED EXECUTION DETAILS"):
+                    st.dataframe(pd.DataFrame([{
                     "Ticker": row["ticker"], "Date": row["when"].strftime("%m/%d/%Y"),
                     "Event": row["event"], "Expiry": row["expiry"].strftime("%m/%d/%Y"),
                     "Type": row["type"], "Long": row["long"], "Short": row["short"], "Contracts": row["qty"],
                     "Net Premium": round(abs(row["net"]), 8), "Flow": row["cash_flow"], "Match": row["match"],
-                } for row in matched]), hide_index=True, width="stretch", row_height=32)
+                    } for row in matched]), hide_index=True, width="stretch", row_height=32)
             else:
                 st.info("NO MATCHED VERTICAL OPEN/CLOSE EVENTS FOR THE SELECTED TICKERS.")
             pending = [row for row in review if row["ticker"] in selected]
@@ -1034,11 +1434,12 @@ def render_acquisition(
         with archive_col:
             # This link targets only the verified PRIVATE plaintext trade
             # blotter; the legacy encrypted backup remains a recovery fallback.
-            blotter_url = vault.get("blotter_url", {}).get((str(vault_key), str(chosen)))
+            blotter_url = vault.get("vertical_cache_url" if mode == vertical_mode else "blotter_url", {}).get((str(vault_key), str(chosen)))
             if blotter_url:
                 st.link_button(
                     "VIEW GITHUB ARCHIVE", blotter_url,
-                    help="Opens the full historical BUY/SELL share blotter in your private Portfolio GitHub repository.",
+                    help=("Opens the saved vertical P&L CSV in your private Portfolio GitHub repository." if mode == vertical_mode else
+                          "Opens the full historical BUY/SELL share blotter in your private Portfolio GitHub repository."),
                     width="stretch",
                 )
             else:
