@@ -1344,6 +1344,101 @@ for row in history["raj"]:
         self.assertEqual(app.session_state["fixture_archive_calls"], [])
 
 
+class AcquisitionVerticalDisplayTests(unittest.TestCase):
+    def test_passed_expiry_labels_only_unsettled_rows_without_mutating_cached_cash(self):
+        from copy import deepcopy
+        import pandas as pd
+        from src.acquisition_ui import _vertical_blotter_frame
+        original = AcquisitionVerticalBlotterTests.blotter([
+            AcquisitionVerticalBlotterTests.event("open", qty=2),
+            AcquisitionVerticalBlotterTests.event("close", "CLOSED", net=3,
+                                                  stamp="2026-10-02T10:00:00"),
+        ])
+        opened = next(row for row in original if row["status"] == "OPEN")
+        closed = next(row for row in original if row["status"] == "CLOSED")
+        report = [*original, {**opened, "ticker": "REVIEW", "status": "REVIEW", "match": "TIME // INFERRED"},
+                  {**closed, "ticker": "REVIEW_CLOSE", "status": "REVIEW", "pnl": None},
+                  {**opened, "ticker": "TODAY", "expiry": "2027-02-01"},
+                  {**opened, "ticker": "FUTURE", "expiry": "2027-02-02"},
+                  {**opened, "ticker": "SETTLED", "status": "EXPIRED", "pnl": -201.3,
+                   "close_net": 0, "closed": "2027-01-15T16:00:00-05:00"}]
+        before = deepcopy(report)
+        frame = _vertical_blotter_frame(report, today=date(2027, 2, 1))
+        self.assertEqual(report, before)
+        self.assertEqual(sorted(frame[frame["Ticker"] == "SYN"]["Status"].tolist()), ["CLOSED", "EXPIRED // UNVERIFIED"])
+        review = frame[frame["Ticker"] == "REVIEW"].iloc[0]
+        self.assertEqual(review["Status"], "EXPIRED // REVIEW // INFERRED")
+        self.assertTrue(pd.isna(review["Realized P&L"]))
+        self.assertEqual(frame[frame["Ticker"] == "REVIEW_CLOSE"].iloc[0]["Status"], "REVIEW")
+        self.assertEqual(frame[frame["Ticker"] == "TODAY"].iloc[0]["Status"], "OPEN")
+        self.assertEqual(frame[frame["Ticker"] == "FUTURE"].iloc[0]["Status"], "OPEN")
+        settled = frame[frame["Ticker"] == "SETTLED"].iloc[0]
+        self.assertEqual((settled["Status"], settled["Realized P&L"], settled["Expiry"]),
+                         ("EXPIRED", -201.3, "01/15/2027"))
+
+    def test_native_styler_keeps_signed_financial_colors_formats_and_numeric_sort_data(self):
+        import pandas as pd
+        from types import SimpleNamespace
+        from src.acquisition_ui import _style_vertical_blotter
+        from src.theme import _style_dataframe_body
+        from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
+        from streamlit.elements.lib.pandas_styler_utils import marshall_styler
+        frame = pd.DataFrame({"Realized P&L": [-52.6, 97.4, 0.0, None],
+                              "Fees": [2.6, 1.3, 0.0, None], "Contracts": [1.0, 3.0, 2.0, None]})
+        before = frame.copy(deep=True)
+        styled = _style_dataframe_body(_style_vertical_blotter(frame).set_uuid("acq_pnl"))
+        proto = SimpleNamespace(styler=SimpleNamespace(uuid=""))
+        marshall_styler(proto, styled, "acq_pnl")
+        display = convert_arrow_bytes_to_pandas_df(proto.styler.display_values)
+        self.assertEqual(display["Realized P&L"].tolist(), ["-52.60", "+97.40", "0.00", ""])
+        self.assertEqual(display["Fees"].tolist(), ["2.60", "1.30", "0.00", ""])
+        self.assertEqual(display["Contracts"].tolist(), ["1", "3", "2", ""])
+        self.assertIn("#T_acq_pnl_row0_col0 { color: #ff433d }", proto.styler.styles)
+        self.assertIn("#T_acq_pnl_row1_col0 { color: #4af6c3 }", proto.styler.styles)
+        self.assertIn("color: #fb8b1e", proto.styler.styles)
+        self.assertTrue(frame.equals(before))
+        self.assertTrue(pd.api.types.is_numeric_dtype(styled.data["Realized P&L"]))
+        self.assertEqual(styled.data.sort_values("Realized P&L")["Realized P&L"].dropna().tolist(),
+                         [-52.6, 0.0, 97.4])
+
+    def test_production_owner_renders_red_loss_green_gain_without_changing_copy_or_network_calls(self):
+        from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
+        controls = AcquisitionVerticalCopyTests()
+        app = controls._app('''
+history["raj"].extend([
+    option(108,"STC","PVT",105,6,1005,"2026-10-03T11:01:02",side="PUT"),
+    option(109,"BTC","PVT",100,3,1005,"2026-10-03T11:01:02",side="PUT"),
+])
+amounts = {101:-300.65,102:99.35,103:399.35,104:-250.65,
+           105:-400.65,106:199.35,108:599.35,109:-300.65}
+for row in history["raj"]:
+    if isinstance(row,dict) and row.get("transactionId") in amounts:
+        row["amount"] = amounts[row["transactionId"]]
+        row["brokerage"]["fee"] = .65
+''')
+        controls._mode(app)
+        controls._tickers(app).set_value(["SYN", "PVT"]).run()
+        text = controls._text(app)
+        self.assertEqual(len(text.splitlines()), 4)
+        table = next(frame for frame in app.dataframe if "Realized P&L" in frame.value.columns)
+        self.assertEqual(table.value.set_index("Ticker")["Realized P&L"].to_dict(), {"SYN": -52.6, "PVT": 97.4})
+        proto = getattr(table.proto, "arrow_data", table.proto)
+        display = convert_arrow_bytes_to_pandas_df(proto.styler.display_values).set_index("Ticker")
+        self.assertEqual(display.loc["SYN", "Realized P&L"], "-52.60")
+        self.assertEqual(display.loc["PVT", "Realized P&L"], "+97.40")
+        self.assertEqual(display["Contracts"].tolist(), ["1", "1"])
+        self.assertTrue(all(display["Fees"] == "2.60"))
+        self.assertIn("#ff433d", proto.styler.styles)
+        self.assertIn("#4af6c3", proto.styler.styles)
+        self.assertTrue(any("GREEN +" in caption.value and "blank P&L = unknown" in caption.value
+                            for caption in app.caption))
+        self.assertTrue(any("broker-confirmed expiry and its record date" in caption.value for caption in app.caption))
+        self.assertTrue(any("USD +44.80" in caption.value for caption in app.caption))
+        self.assertEqual(app.session_state["fixture_download"]["text"], text)
+        self.assertEqual(app.session_state["fixture_transaction_calls"], [])
+        self.assertEqual(app.session_state["fixture_archive_calls"], [])
+
+
 class AcquisitionPnlCacheValidationTests(unittest.TestCase):
     def test_two_digit_history_expiry_matches_four_digit_contract_and_review_context(self):
         from src.acquisition_ui import _build_vertical_cache
@@ -1397,6 +1492,213 @@ class AcquisitionPnlCacheValidationTests(unittest.TestCase):
                 broken[key] = [row]
                 broken["result_fingerprint"] = _vertical_result_fingerprint(broken)
                 self.assertFalse(_valid_vertical_cache(broken, broken["source_fingerprint"]))
+
+
+class AcquisitionVerticalExpirationTests(unittest.TestCase):
+    @staticmethod
+    def opening(*, qty=1, side="CALL", long=100, short=105, long_price=3, short_price=1):
+        make = AcquisitionVerticalHistoryTests.option_tx
+        rows = [make(1,"BTO",long,long_price,qty,side=side),make(2,"STO",short,short_price,qty,side=side)]
+        for row,sign,price in zip(rows,(-1,1),(long_price,short_price)):
+            row["brokerage"]["fee"] = .65*qty
+            row["amount"] = sign*price*qty*100-.65*qty
+        return rows
+
+    @staticmethod
+    def expiration(*, qty=1, side="CALL", long=100, short=105, stamp="2027-01-16T10:00:00"):
+        make = AcquisitionVerticalHistoryTests.option_tx
+        rows = [make(5,"Option Expired",long,0,-qty,side=side,order=None,stamp=stamp),
+                make(6,"Option Expired",short,0,qty,side=side,order=None,stamp=stamp)]
+        for row in rows:
+            row["amount"] = 0
+            row["brokerage"]["fee"] = 0
+            row["brokerage"].pop("optionMultiplier")
+            row["brokerage"]["product"]["expiryYear"] = 27
+        return rows
+
+    @staticmethod
+    def parse(rows):
+        from src.acquisition_ui import _vertical_history, _vertical_blotter
+        events, review = _vertical_history(rows)
+        return events, review, _vertical_blotter(events,review)
+
+    def test_broker_confirmed_worthless_debit_and_credit_call_put_spreads_realize_signed_opening_cash(self):
+        for side,long,short,long_price,short_price,pnl in (
+                ("CALL",100,105,3,1,-201.3),("PUT",105,100,3,1,-201.3),
+                ("CALL",105,100,1,3,198.7),("PUT",100,105,1,3,198.7)):
+            with self.subTest(side=side,long=long,short=short):
+                events, review, rows = self.parse(self.opening(side=side,long=long,short=short,
+                    long_price=long_price,short_price=short_price)+self.expiration(side=side,long=long,short=short))
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["event"], "OPENED")
+                self.assertEqual([leg["lifecycle"] for leg in review], ["EXPIRATION","EXPIRATION"])
+                self.assertEqual(len(rows), 1)
+                self.assertEqual((rows[0]["status"],rows[0]["qty"],rows[0]["pnl"],rows[0]["close_net"]),
+                                 ("EXPIRED",1,pnl,0))
+                self.assertEqual(rows[0]["fees"], 1.3)
+                self.assertEqual(rows[0]["close_ids"], ["5","6"])
+                self.assertTrue(rows[0]["closed"].startswith("2027-01-16T10:00:00"))
+
+    def test_partial_close_on_expiry_day_then_confirmed_remaining_expiration_ignores_bookkeeping_clock_order(self):
+        raw = self.opening(qty=3)
+        closing = AcquisitionVerticalCacheTests.rows()[2:]
+        for row in closing:
+            row["transactionDate"] = int(datetime(2027,1,15,15,tzinfo=ZoneInfo("America/New_York")).timestamp()*1000)
+        events, review, rows = self.parse(raw+closing+self.expiration(qty=2,stamp="2027-01-15T08:00:00"))
+        self.assertEqual([event["event"] for event in events], ["OPENED","CLOSED"])
+        self.assertEqual({row["status"] for row in rows}, {"CLOSED","EXPIRED"})
+        closed = next(row for row in rows if row["status"] == "CLOSED")
+        expired = next(row for row in rows if row["status"] == "EXPIRED")
+        self.assertEqual((closed["qty"],closed["pnl"]),(1,97.4))
+        self.assertEqual((expired["qty"],expired["pnl"]),(2,-402.6))
+        self.assertAlmostEqual(sum(row["fees"] for row in rows), 5.2)
+
+    def test_expiration_allocates_multiple_exact_fifo_openings_without_losing_original_cash_basis(self):
+        raw = self.opening()
+        second = self.opening(long_price=4)
+        for row in second:
+            row["transactionId"] += 10
+            row["brokerage"]["orderNo"] += 10
+            row["transactionDate"] += 86400000
+        events, review, rows = self.parse(raw+second+self.expiration(qty=2))
+        self.assertEqual(len(events), 2)
+        self.assertEqual([(row["status"],row["qty"],row["pnl"]) for row in rows],
+                         [("EXPIRED",1,-201.3),("EXPIRED",1,-301.3)])
+        self.assertEqual({tuple(row["open_ids"]) for row in rows}, {("1","2"),("11","12")})
+
+    def test_partial_expiration_never_values_the_unconfirmed_remaining_quantity(self):
+        events, review, rows = self.parse(self.opening(qty=3)+self.expiration())
+        self.assertEqual({row["status"] for row in rows}, {"EXPIRED","OPEN"})
+        self.assertEqual([(row["qty"],row["pnl"]) for row in rows if row["status"] == "EXPIRED"], [(1,-201.3)])
+        self.assertEqual([(row["qty"],row["pnl"]) for row in rows if row["status"] == "OPEN"], [(2,None)])
+
+    def test_separate_expiration_leg_posting_dates_resolve_unique_inventory_with_latest_evidence_date(self):
+        evidence = self.expiration()
+        evidence[1]["transactionDate"] += 2*86400000+1000
+        events, review, rows = self.parse(self.opening()+evidence)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["status"],rows[0]["pnl"]),("EXPIRED",-201.3))
+        self.assertTrue(rows[0]["closed"].startswith("2027-01-18T10:00:01"))
+
+    def test_incomplete_unbalanced_uncovered_or_wrong_signed_expiration_stays_unvalued(self):
+        from copy import deepcopy
+        one_sided = self.expiration()[:1]
+        unbalanced = self.expiration(qty=2)
+        unbalanced[1]["brokerage"]["quantity"] = 1
+        reversed_sides = self.expiration()
+        for row in reversed_sides:
+            row["brokerage"]["quantity"] *= -1
+        for opening,evidence in ((self.opening(),one_sided),(self.opening(qty=2),unbalanced),
+                                 (self.opening(),self.expiration(qty=2)),([],self.expiration()),
+                                 (self.opening(),reversed_sides)):
+            with self.subTest(openings=len(opening),evidence=deepcopy(evidence)):
+                events, review, rows = self.parse(opening+evidence)
+                self.assertFalse(any(row["status"] == "EXPIRED" for row in rows))
+                self.assertTrue(all(row["pnl"] is None for row in rows))
+                self.assertTrue(any(row["status"] == "REVIEW" for row in rows))
+
+    def test_shared_contract_across_different_verticals_prevents_iteration_based_expiry_assignment(self):
+        raw = self.opening()
+        second = self.opening(short=110)
+        for row in second:
+            row["transactionId"] += 10
+            row["brokerage"]["orderNo"] += 10
+            row["transactionDate"] += 86400000
+        evidence = self.expiration(qty=2)
+        evidence[1]["brokerage"]["quantity"] = 1
+        extra_short = self.expiration(short=110)[1]
+        extra_short["transactionId"] = 7
+        events, review, rows = self.parse(raw+second+evidence+[extra_short])
+        self.assertEqual(len(events), 2)
+        self.assertFalse(any(row["status"] == "EXPIRED" for row in rows))
+        self.assertTrue(all(row["pnl"] is None for row in rows))
+
+    def test_expiry_requires_explicit_action_zero_cash_full_identity_valid_date_and_no_reversal_or_exercise(self):
+        for change in ("missing amount","nonzero amount","nonzero price","missing expiry","invalid date",
+                       "early date","exercise","assignment","reversal","conflicting trade","description only",
+                       "bool quantity","fractional quantity","currency","missing currency","currency conversion",
+                       "invalid fee","root","osi"):
+            with self.subTest(change=change):
+                evidence = self.expiration()
+                broken = evidence[0]
+                broker = broken["brokerage"]
+                if change == "missing amount": broken.pop("amount")
+                elif change == "nonzero amount": broken["amount"] = -1
+                elif change == "nonzero price": broker["price"] = 1
+                elif change == "missing expiry": broker["product"].pop("expiryDay")
+                elif change == "invalid date": broken["transactionDate"] = "invalid"
+                elif change == "early date": broken["transactionDate"] -= 3*86400000
+                elif change == "exercise": broker["transactionType"] = "Option Exercised"
+                elif change == "assignment": broker["transactionType"] = "Assignment"
+                elif change == "reversal": broken["reversalFlag"] = True
+                elif change == "conflicting trade": broker["orderAction"] = "STC"
+                elif change == "description only":
+                    broker["transactionType"] = "Other"
+                    broker["description"] = "Option Expired"
+                elif change == "bool quantity": broker["quantity"] = True
+                elif change == "fractional quantity": broker["quantity"] = -.5
+                elif change == "currency": broker["currency"] = "CAD"
+                elif change == "missing currency": broker.pop("currency")
+                elif change == "currency conversion":
+                    broker["settlementCurrency"] = "USD"
+                    broker["paymentCurrency"] = "CAD"
+                elif change == "invalid fee": broker["fee"] = float("nan")
+                elif change == "root": broker["product"]["optionRootSymbol"] = "OTHER"
+                else: broken["osiKey"] = "SYN---270115C00101000"
+                events, review, rows = self.parse(self.opening()+evidence)
+                self.assertFalse(any(row["status"] == "EXPIRED" for row in rows))
+                self.assertTrue(all(row["pnl"] is None for row in rows))
+
+    def test_top_level_broker_expired_enum_needs_no_order_or_intraday_execution_time(self):
+        evidence = self.expiration(stamp="2027-01-16T00:00:00")
+        for row in evidence:
+            row["transactionType"] = row["brokerage"].pop("transactionType")
+            row["description"] = "SYN JAN 15 2027 OPTION CONTRACT"
+        events, review, rows = self.parse(self.opening()+evidence)
+        self.assertEqual((rows[0]["status"],rows[0]["pnl"]),("EXPIRED",-201.3))
+        self.assertTrue(all(leg["lifecycle"] == "EXPIRATION" for leg in review))
+
+    def test_past_contract_date_without_explicit_expiration_never_becomes_zero_value_loss(self):
+        events, review, rows = self.parse(self.opening())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["status"],rows[0]["pnl"],rows[0]["closed"]),("OPEN",None,None))
+
+    def test_later_date_close_cannot_bypass_expiration_evidence_but_earlier_realized_cash_is_preserved(self):
+        for stamp,expected in (("2027-01-14T15:00:00",97.4),("2027-01-17T15:00:00",None)):
+            with self.subTest(stamp=stamp):
+                closing = AcquisitionVerticalCacheTests.rows()[2:]
+                for row in closing:
+                    row["transactionDate"] = int(datetime.fromisoformat(stamp).replace(tzinfo=ZoneInfo("America/New_York")).timestamp()*1000)
+                events, review, rows = self.parse(self.opening()+closing+self.expiration())
+                realized = [row["pnl"] for row in rows if row["status"] == "CLOSED"]
+                self.assertEqual(realized, [expected] if expected is not None else [])
+                self.assertFalse(any(row["status"] == "EXPIRED" for row in rows))
+
+    def test_expiration_correction_replaces_prior_quantity_and_preserves_json_cache_contract(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        evidence = self.expiration(qty=2)
+        stale = deepcopy(evidence[0])
+        stale["brokerage"]["quantity"] = -1
+        payload = acq._build_vertical_cache(self.opening(qty=2)+[stale]+evidence)
+        self.assertEqual([(row["status"],row["qty"],row["pnl"]) for row in payload["blotter"]],[("EXPIRED",2,-402.6)])
+        self.assertTrue(acq._valid_vertical_cache(payload,payload["source_fingerprint"]))
+        self.assertEqual(json.loads(json.dumps(payload,allow_nan=False)), payload)
+
+    def test_after_expiry_close_cannot_shift_fifo_basis_to_a_different_opening_lot(self):
+        raw = self.opening()
+        second = self.opening(long_price=4)
+        for row in second:
+            row["transactionId"] += 10
+            row["brokerage"]["orderNo"] += 10
+            row["transactionDate"] += 86400000
+        closing = AcquisitionVerticalCacheTests.rows()[2:]
+        for row in closing:
+            row["transactionDate"] = int(datetime(2027,1,17,15,tzinfo=ZoneInfo("America/New_York")).timestamp()*1000)
+        events, review, rows = self.parse(raw+second+closing+self.expiration())
+        self.assertFalse(any(row["status"] in {"CLOSED","EXPIRED"} for row in rows))
+        self.assertTrue(all(row["pnl"] is None for row in rows))
+        self.assertEqual({tuple(row["open_ids"]) for row in rows if row["opened"]}, {("1","2"),("11","12")})
 
 
 if __name__ == "__main__":
