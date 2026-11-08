@@ -275,9 +275,9 @@ class AcquisitionTests(unittest.TestCase):
 
 class AcquisitionCopySelectionTests(unittest.TestCase):
     @staticmethod
-    def _app():
+    def _app(history_extension=""):
         from streamlit.testing.v1 import AppTest
-        return AppTest.from_string('''
+        source = '''
 from datetime import date, datetime
 import threading
 import time
@@ -359,7 +359,10 @@ with (patch.object(acq,"_history_vault",return_value=st.session_state["fixture_v
         acq.render_acquisition(Broker(),vault_key=st.session_state.get("fixture_access","copy-fixture"))
     else:
         st.write("Another terminal tab")
-''', default_timeout=15).run()
+'''
+        source = source.replace('\nif "fixture_vault" not in st.session_state:',
+                                history_extension + '\nif "fixture_vault" not in st.session_state:')
+        return AppTest.from_string(source, default_timeout=15).run()
 
     def _check(self, app):
         self.assertFalse(app.exception, [error.message for error in app.exception])
@@ -463,6 +466,451 @@ with (patch.object(acq,"_history_vault",return_value=st.session_state["fixture_v
         self._check(app)
         self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"OPEN LOTS // FIFO")
         self.assertEqual(self._control(app,"multiselect","TICKERS TO INCLUDE").value, ["APH"])
+
+
+class AcquisitionVerticalHistoryTests(unittest.TestCase):
+    @staticmethod
+    def option_tx(identifier, action, strike, price, qty=1, *, symbol="SYN", side="CALL",
+                  expiry=(2027,1,15), stamp="2026-10-01T10:01:02", order=1001,
+                  order_field="orderNo", root="SYN", multiplier=100, currency="USD", account="raj"):
+        product = {"symbol":symbol,"securityType":"OPTN","callPut":side,"strikePrice":strike,
+                   "expiryYear":expiry[0],"expiryMonth":expiry[1],"expiryDay":expiry[2]}
+        if root is not None:
+            product["optionRootSymbol"] = root
+        brokerage = {"transactionType":action,"product":product,"quantity":qty,"price":price,
+                     "optionMultiplier":multiplier,"currency":currency}
+        if order is not None:
+            brokerage[order_field] = order
+        return {"transactionId":identifier,"accountIdKey":account,
+                "transactionDate":int(datetime.fromisoformat(stamp).replace(
+                    tzinfo=ZoneInfo("America/New_York")).timestamp()*1000),"brokerage":brokerage}
+
+    def parse(self, rows):
+        from src.acquisition_ui import _vertical_history
+        return _vertical_history(rows)
+
+    def test_opened_and_closed_call_verticals_keep_original_legs_and_cash_flow(self):
+        rows = [self.option_tx(1,"BUY_OPEN",100,3.25,2),
+                self.option_tx(2,"SELL_OPEN",105,1.5,2),
+                self.option_tx(3,"SELL_CLOSE",100,4,2,order=1002,stamp="2026-10-02T11:00:01"),
+                self.option_tx(4,"BUY_CLOSE",105,2.75,2,order=1002,stamp="2026-10-02T11:00:01")]
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual(len(events), 2)
+        self.assertEqual([(event["event"],event["long"],event["short"],event["qty"],
+                           event["net"],event["cash_flow"],event["match"],event["order"])
+                          for event in events],
+                         [("OPENED",100,105,2,1.75,"DEBIT","ORDER","1001"),
+                          ("CLOSED",100,105,2,1.25,"CREDIT","ORDER","1002")])
+        self.assertTrue(all(event["ticker"] == "SYN" and event["type"] == "CALL" for event in events))
+        self.assertEqual(events[0]["expiry"].isoformat(), "2027-01-15")
+        self.assertIsInstance(events[0]["when"], datetime)
+        self.assertLess(events[0]["when"], events[1]["when"])
+
+    def test_puts_credit_structures_and_zero_price_closing_fills_are_preserved(self):
+        cases = [
+            ("PUT","BUY_OPEN","SELL_OPEN",110,100,5,2,"OPENED",3,"DEBIT"),
+            ("CALL","BUY_OPEN","SELL_OPEN",110,100,2,4,"OPENED",-2,"CREDIT"),
+            ("PUT","SELL_CLOSE","BUY_CLOSE",110,100,0,0,"CLOSED",0,"EVEN"),
+            ("CALL","SELL_CLOSE","BUY_CLOSE",110,100,1,3,"CLOSED",-2,"DEBIT"),
+        ]
+        for side,long_action,short_action,long_strike,short_strike,long_price,short_price,event,net,cash in cases:
+            with self.subTest(case=(side,event,cash)):
+                events, review = self.parse([
+                    self.option_tx(1,long_action,long_strike,long_price,side=side),
+                    self.option_tx(2,short_action,short_strike,short_price,side=side)])
+                self.assertEqual(review, [])
+                self.assertEqual(len(events), 1)
+                self.assertEqual((events[0]["event"],events[0]["type"],events[0]["net"],
+                                  events[0]["cash_flow"]),(event,side,net,cash))
+                self.assertEqual((events[0]["long"],events[0]["short"]),(long_strike,short_strike))
+
+    def test_explicit_open_close_action_and_order_number_aliases(self):
+        aliases = [("BUY_OPEN","SELL_OPEN","OPENED"),("BTO","STO","OPENED"),
+                   ("BUY_TO_OPEN","SELL_TO_OPEN","OPENED"),("BOUGHT_TO_OPEN","SOLD_TO_OPEN","OPENED"),
+                   ("SELL_CLOSE","BUY_CLOSE","CLOSED"),("STC","BTC","CLOSED"),
+                   ("SELL_TO_CLOSE","BUY_TO_CLOSE","CLOSED"),("SOLD_TO_CLOSE","BOUGHT_TO_CLOSE","CLOSED")]
+        for long_action,short_action,event in aliases:
+            with self.subTest(actions=(long_action,short_action)):
+                events, review = self.parse([self.option_tx(1,long_action,100,3),
+                                             self.option_tx(2,short_action,105,1)])
+                self.assertEqual(review, [])
+                self.assertEqual([row["event"] for row in events], [event])
+        for field in ("orderNo","orderId","orderNumber"):
+            with self.subTest(order_field=field):
+                events, review = self.parse([self.option_tx(1,"BTO",100,3,order_field=field),
+                                             self.option_tx(2,"STO",105,1,order_field=field)])
+                self.assertEqual(review, [])
+                self.assertEqual(events[0]["order"], "1001")
+
+    def test_balanced_split_fills_use_weighted_prices_and_preserve_distinct_ids(self):
+        rows = [self.option_tx(1,"BTO",100,3), self.option_tx(2,"BTO",100,4,2),
+                self.option_tx(3,"STO",105,1,2), self.option_tx(4,"STO",105,2)]
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["qty"], 3)
+        self.assertAlmostEqual(events[0]["long_price"], 11/3)
+        self.assertAlmostEqual(events[0]["short_price"], 4/3)
+        self.assertAlmostEqual(events[0]["net"], 7/3)
+        identical = [self.option_tx(1,"BTO",100,3),self.option_tx(2,"BTO",100,3),
+                     self.option_tx(3,"STO",105,1),self.option_tx(4,"STO",105,1)]
+        events, review = self.parse(identical)
+        self.assertEqual(review, [])
+        self.assertEqual(events[0]["qty"], 2)
+
+    def test_last_corrected_transaction_id_wins_without_mutating_cached_rows(self):
+        from copy import deepcopy
+        rows = [self.option_tx(1,"BTO",100,3),self.option_tx(2,"STO",105,1),
+                self.option_tx(1,"BTO",100,4)]
+        before = deepcopy(rows)
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual((events[0]["qty"],events[0]["long_price"],events[0]["net"]),(1,4,3))
+        self.assertEqual(rows, before)
+
+    def test_orderless_pair_requires_exact_nonmidnight_timestamp_and_is_labeled_inferred(self):
+        events, review = self.parse([self.option_tx(1,"BTO",100,3,order=None),
+                                     self.option_tx(2,"STO",105,1,order=None)])
+        self.assertEqual(review, [])
+        self.assertEqual(events[0]["match"], "TIME // INFERRED")
+        for first,second in (("2026-10-01T00:00:00","2026-10-01T00:00:00"),
+                             ("2026-10-01T20:00:00","2026-10-01T20:00:00"),
+                             ("2026-10-01T10:01:02","2026-10-01T10:01:03")):
+            with self.subTest(stamps=(first,second)):
+                events, review = self.parse([self.option_tx(1,"BTO",100,3,order=None,stamp=first),
+                                             self.option_tx(2,"STO",105,1,order=None,stamp=second)])
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), 2)
+
+    def test_mismatched_contract_context_or_account_never_forms_a_spread(self):
+        for changed in ({"symbol":"OTHER"},{"root":"SYN1"},{"side":"PUT"},
+                        {"expiry":(2027,2,19)},{"multiplier":10},{"currency":"CAD"},
+                        {"account":"other"},{"stamp":"2026-10-02T10:01:02"},
+                        {"order":1002}):
+            with self.subTest(changed=changed):
+                events, review = self.parse([self.option_tx(1,"BTO",100,3),
+                                             self.option_tx(2,"STO",105,1,**changed)])
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), 2)
+
+    def test_direct_product_symbol_wins_over_unrelated_nested_symbol(self):
+        rows = [self.option_tx(1,"BTO",100,3),self.option_tx(2,"STO",105,1)]
+        rows = [{"unrelated":{"symbol":"WRONG"},**row} for row in rows]
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual(events[0]["ticker"], "SYN")
+
+    def test_unequal_or_ambiguous_contract_groups_are_wholly_reviewed(self):
+        for rows in ([self.option_tx(1,"BTO",100,3,2),self.option_tx(2,"STO",105,1)],
+                     [self.option_tx(1,"BTO",100,3),self.option_tx(2,"STO",105,1),
+                      self.option_tx(3,"BTO",110,3),self.option_tx(4,"STO",115,1)],
+                     [self.option_tx(1,"BTO",100,3,2),self.option_tx(2,"STO",105,1),
+                      self.option_tx(3,"STO",110,.5)]):
+            with self.subTest(strikes=[row["brokerage"]["product"]["strikePrice"] for row in rows]):
+                events, review = self.parse(rows)
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), len(rows))
+                self.assertTrue(all(row["reason"] for row in review))
+
+    def test_partial_close_and_missing_older_open_are_events_without_lifetime_claims(self):
+        rows = [self.option_tx(1,"BTO",100,3,3),self.option_tx(2,"STO",105,1,3),
+                self.option_tx(3,"STC",100,4,1,order=1002,stamp="2026-10-02T10:01:02"),
+                self.option_tx(4,"BTC",105,2,1,order=1002,stamp="2026-10-02T10:01:02")]
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual([(row["event"],row["qty"]) for row in events],[("OPENED",3),("CLOSED",1)])
+        closed, review = self.parse(rows[2:])
+        self.assertEqual(review, [])
+        self.assertEqual([(row["event"],row["qty"]) for row in closed],[("CLOSED",1)])
+
+    def test_same_order_roll_pairs_each_expiry_and_open_close_event_separately(self):
+        rows = [self.option_tx(1,"STC",100,2),self.option_tx(2,"BTC",105,.5),
+                self.option_tx(3,"BTO",100,3,expiry=(2027,2,19)),
+                self.option_tx(4,"STO",105,1,expiry=(2027,2,19))]
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual({(row["event"],row["expiry"].isoformat()) for row in events},
+                         {("CLOSED","2027-01-15"),("OPENED","2027-02-19")})
+
+    def test_signed_quantities_are_absolute_but_fractional_and_invalid_fills_are_reviewed(self):
+        events, review = self.parse([self.option_tx(1,"BTO",100,3,-2),
+                                     self.option_tx(2,"STO",105,1,-2)])
+        self.assertEqual(review, [])
+        self.assertEqual(events[0]["qty"], 2)
+        for price,qty in ((-1,1),(float("nan"),1),(float("inf"),1),(3,0),(3,.5),
+                          (3,float("nan")),(3,float("inf"))):
+            with self.subTest(price=price,qty=qty):
+                events, review = self.parse([self.option_tx(1,"BTO",100,price,qty),
+                                             self.option_tx(2,"STO",105,1)])
+                self.assertEqual(events, [])
+                self.assertTrue(review)
+                self.assertTrue(all(row["reason"] for row in review))
+
+    def test_missing_identity_invalid_date_and_unexplicit_actions_never_become_verticals(self):
+        for change in ("expiry","strike","symbol","side","date","generic buy","exercise"):
+            with self.subTest(change=change):
+                broken = self.option_tx(1,"BTO",100,3)
+                product = broken["brokerage"]["product"]
+                if change == "expiry": product.pop("expiryYear")
+                elif change == "strike": product.pop("strikePrice")
+                elif change == "symbol": product.pop("symbol")
+                elif change == "side": product.pop("callPut")
+                elif change == "date": broken["transactionDate"] = "invalid"
+                elif change == "generic buy": broken["brokerage"]["transactionType"] = "BUY"
+                else: broken["brokerage"]["transactionType"] = "EXERCISE"
+                events, review = self.parse([broken,self.option_tx(2,"STO",105,1)])
+                self.assertEqual(events, [])
+                self.assertTrue(review)
+                self.assertTrue(all(row["reason"] for row in review))
+
+    def test_invalid_option_leg_blocks_false_pair_in_the_same_order(self):
+        broken = self.option_tx(3,"BUY",110,2)
+        events, review = self.parse([self.option_tx(1,"BTO",100,3),
+                                     self.option_tx(2,"STO",105,1),broken])
+        self.assertEqual(events, [])
+        self.assertEqual(len(review), 3)
+        expected_keys = {"ticker","when","expiry","type","strike","action","qty","reason"}
+        self.assertTrue(all(expected_keys <= row.keys() for row in review))
+
+    def test_malformed_date_on_third_leg_blocks_valid_looking_pair_with_the_same_account_order(self):
+        for missing in (True,False):
+            with self.subTest(missing=missing):
+                broken = self.option_tx(3,"BTO",110,2)
+                if missing:
+                    broken.pop("transactionDate")
+                else:
+                    broken["transactionDate"] = "invalid"
+                events, review = self.parse([self.option_tx(1,"BTO",100,3),
+                                             self.option_tx(2,"STO",105,1),broken])
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), 3)
+                self.assertTrue(all(row["reason"] for row in review))
+
+    def test_reversal_text_is_not_an_option_execution(self):
+        events, review = self.parse([self.option_tx(1,"REVERSE BUY_OPEN",100,3),
+                                     self.option_tx(2,"STO",105,1)])
+        self.assertEqual(events, [])
+        self.assertEqual(len(review), 2)
+
+    def test_nontrade_option_types_cannot_become_executions_from_an_order_action_hint(self):
+        for kind in ("EXERCISE","ASSIGNMENT","EXPIRATION"):
+            with self.subTest(kind=kind):
+                broken = self.option_tx(1,kind,100,0)
+                broken["brokerage"]["orderAction"] = "BTO"
+                events, review = self.parse([broken,self.option_tx(2,"STO",105,0)])
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), 2)
+
+    def test_option_sold_short_and_bought_to_cover_aliases_pair_without_affecting_share_history(self):
+        rows = [self.option_tx(1,"Bought To Open",100,3,order=None),
+                self.option_tx(2,"Sold Short",105,1,order=None),
+                self.option_tx(3,"Sold To Close",100,4,order=None,stamp="2026-10-02T10:01:02"),
+                self.option_tx(4,"Bought To Cover",105,2,order=None,stamp="2026-10-02T10:01:02")]
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual([(row["event"],row["match"]) for row in events],
+                         [("OPENED","TIME // INFERRED"),("CLOSED","TIME // INFERRED")])
+        from src.acquisition_ui import _equity_trade
+        self.assertTrue(all(_equity_trade(row) is None for row in rows))
+
+    def test_contract_product_id_symbols_validate_identity_without_separating_the_two_legs(self):
+        from copy import deepcopy
+        rows = [self.option_tx(1,"BTO",100,3),self.option_tx(2,"STO",105,1)]
+        for row,osi in zip(rows,("SYN---270115C00100000","SYN---270115C00105000")):
+            row["brokerage"]["product"]["productId"] = {"symbol":osi}
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual((events[0]["ticker"],events[0]["long"],events[0]["short"]),("SYN",100,105))
+        broken = deepcopy(rows)
+        broken[1]["brokerage"]["product"]["productId"]["symbol"] = "SYN---270115C00106000"
+        events, review = self.parse(broken)
+        self.assertEqual(events, [])
+        self.assertEqual(len(review), 2)
+
+    def test_all_supplied_osi_identities_must_agree_with_each_other_and_the_contract(self):
+        from copy import deepcopy
+        rows = [self.option_tx(1,"BTO",100,3,root=None),self.option_tx(2,"STO",105,1,root=None)]
+        for row,osi in zip(rows,("SYN---270115C00100000","SYN---270115C00105000")):
+            row["osiKey"] = osi
+            row["brokerage"]["product"]["productId"] = {"symbol":osi}
+        events, review = self.parse(rows)
+        self.assertEqual(review, [])
+        self.assertEqual((events[0]["long"],events[0]["short"]),(100,105))
+        broken = deepcopy(rows)
+        broken[0]["brokerage"]["product"]["productId"]["symbol"] = "OTHER---270115C00100000"
+        events, review = self.parse(broken)
+        self.assertEqual(events, [])
+        self.assertEqual(len(review), 2)
+        self.assertTrue(all(row["reason"] for row in review))
+
+    def test_ticker_action_aliases_in_contract_descriptions_do_not_override_explicit_actions(self):
+        for symbol in ("BTC","STC"):
+            with self.subTest(symbol=symbol):
+                rows = [self.option_tx(1,"BTO",100,3,symbol=symbol,root=symbol),
+                        self.option_tx(2,"STO",105,1,symbol=symbol,root=symbol)]
+                for row in rows:
+                    row["brokerage"]["description"] = symbol + " JAN 15 2027 CALL CONTRACT"
+                events, review = self.parse(rows)
+                self.assertEqual(review, [])
+                self.assertEqual(events[0]["ticker"], symbol)
+                rows[0]["brokerage"]["transactionType"] = "BUY"
+                events, review = self.parse(rows)
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), 2)
+
+    def test_boolean_order_dates_and_reversal_flags_are_reviewed_instead_of_paired(self):
+        for field,value in (("transactionDate",True),("orderNo",True),
+                            ("reversalFlag",True),("isReversal","Y"),("reversed",1)):
+            with self.subTest(field=field):
+                broken = self.option_tx(1,"BTO",100,3)
+                (broken["brokerage"] if field == "orderNo" else broken)[field] = value
+                events, review = self.parse([broken,self.option_tx(2,"STO",105,1)])
+                self.assertEqual(events, [])
+                self.assertEqual(len(review), 2)
+
+    def test_share_transactions_are_not_option_review_rows_or_spread_events(self):
+        events, review = self.parse([transaction(1,"2025-01-01","BUY","APH",10,100),
+                                     transaction(2,"2025-02-01","SELL","APH",10,110)])
+        self.assertEqual((events,review), ([],[]))
+
+
+class AcquisitionVerticalCopyTests(unittest.TestCase):
+    _control = staticmethod(AcquisitionCopySelectionTests._control)
+    _check = AcquisitionCopySelectionTests._check
+    _text = AcquisitionCopySelectionTests._text
+    vertical_mode = "VERTICALS // OPENED + CLOSED"
+
+    @staticmethod
+    def _app():
+        return AcquisitionCopySelectionTests._app('''
+def option(identifier, action, symbol, strike, price, order, stamp="2026-10-01T10:01:02", side="CALL"):
+    row = tx(identifier,stamp,action,symbol,1,price,"OPTN")
+    row["brokerage"]["product"].update(callPut=side,strikePrice=strike,
+                                      expiryYear=2027,expiryMonth=1,expiryDay=15,
+                                      optionRootSymbol=symbol)
+    row["brokerage"].update(orderNo=order,optionMultiplier=100,currency="USD")
+    return row
+history["raj"].extend([
+    option(101,"BTO","SYN",100,3,1001), option(102,"STO","SYN",105,1,1001),
+    option(103,"STC","SYN",100,4,1002,"2026-10-02T11:01:02"),
+    option(104,"BTC","SYN",105,2.5,1002,"2026-10-02T11:01:02"),
+    option(105,"BTO","PVT",105,4,1003,side="PUT"),
+    option(106,"STO","PVT",100,2,1003,side="PUT"),
+    option(107,"BTO","REVIEW",100,3,1004),
+])
+history["other"].extend([
+    option(201,"STC","OTH",50,2,2001), option(202,"BTC","OTH",55,.5,2001),
+])
+''')
+
+    def _mode(self, app, mode=None):
+        return self._control(app,"selectbox","COPY RECORDS").set_value(mode or self.vertical_mode).run()
+
+    def _tickers(self, app):
+        return self._control(app,"multiselect","TICKERS TO INCLUDE")
+
+    def test_vertical_selection_controls_table_copy_and_download_without_changing_equity_outputs(self):
+        app = self._app()
+        self._check(app)
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
+        self.assertEqual(set(self._tickers(app).options), {"APH","DUP","HTD","MSFT","VTI"})
+        stock_text = self._text(app)
+        equity_table = app.dataframe[0].value.copy(deep=True)
+        self._mode(app)
+        self.assertEqual(set(self._tickers(app).options), {"OPTION","PVT","REVIEW","SYN"})
+        self.assertEqual(set(self._tickers(app).value), set(self._tickers(app).options))
+        self._tickers(app).set_value(["SYN"]).run()
+        text = self._text(app)
+        self.assertEqual(len(text.splitlines()), 2)
+        self.assertTrue(all(line.startswith("SYN ") for line in text.splitlines()))
+        self.assertIn(" OPENED ", text)
+        self.assertIn(" CLOSED ", text)
+        self.assertEqual(app.session_state["fixture_download"]["file_name"],"acquisition_verticals.txt")
+        vertical_table = next(frame.value for frame in app.dataframe if "Event" in frame.value.columns)
+        self.assertEqual(vertical_table["Ticker"].tolist(), ["SYN","SYN"])
+        self.assertEqual(vertical_table["Event"].tolist(), ["OPENED","CLOSED"])
+        self.assertEqual(vertical_table["Long"].tolist(), [100,100])
+        self.assertEqual(vertical_table["Short"].tolist(), [105,105])
+        self.assertEqual(vertical_table["Contracts"].tolist(), [1,1])
+        self.assertTrue(equity_table.equals(app.dataframe[0].value))
+        self._mode(app,"BOUGHT + SOLD")
+        self.assertEqual(self._text(app), stock_text)
+        self.assertEqual(app.session_state["fixture_download"]["file_name"],"acquisition_bought_sold.txt")
+        self.assertEqual(app.session_state["fixture_lot_calls"], [("raj",700)])
+
+    def test_stock_and_vertical_preferences_are_separate_and_empty_survives_tab_cleanup(self):
+        app = self._app()
+        self._tickers(app).set_value(["APH"]).run()
+        stock_text = self._text(app)
+        self._mode(app)
+        self._tickers(app).set_value(["PVT"]).run()
+        self.assertTrue(self._text(app).startswith("PVT "))
+        self._mode(app,"OPEN LOTS // FIFO")
+        self.assertEqual(self._tickers(app).value, ["APH"])
+        self.assertEqual(self._text(app), "")
+        self._mode(app,"BOUGHT + SOLD")
+        self.assertEqual(self._text(app), stock_text)
+        self._mode(app)
+        self.assertEqual(self._tickers(app).value, ["PVT"])
+        self._tickers(app).set_value([]).run()
+        self.assertEqual(self._text(app), "")
+        app.session_state["fixture_hide_acquisition"] = True
+        app.run()
+        self._check(app)
+        app.session_state["fixture_hide_acquisition"] = False
+        app.run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,self.vertical_mode)
+        self.assertEqual(self._tickers(app).value, [])
+        self.assertEqual(self._text(app), "")
+        self.assertTrue(app.session_state["fixture_download"]["disabled"])
+        self.assertEqual(app.session_state["fixture_lot_calls"], [("raj",700)])
+
+    def test_vertical_preferences_are_isolated_by_account_and_terminal_access(self):
+        app = self._app()
+        self._mode(app)
+        self._tickers(app).set_value(["SYN"]).run()
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
+        self._mode(app)
+        self.assertEqual(self._tickers(app).options, ["OTH"])
+        self.assertEqual(self._tickers(app).value, ["OTH"])
+        self._tickers(app).set_value([]).run()
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("raj").run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,self.vertical_mode)
+        self.assertEqual(self._tickers(app).value, ["SYN"])
+        app.session_state["fixture_access"] = "copy-fixture-2"
+        app.run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
+        self._mode(app)
+        self.assertEqual(set(self._tickers(app).value), {"OPTION","PVT","REVIEW","SYN"})
+        self._tickers(app).set_value(["PVT"]).run()
+        app.session_state["fixture_access"] = "copy-fixture"
+        app.run()
+        self.assertEqual(self._tickers(app).value, ["SYN"])
+        self.assertTrue(self._text(app).startswith("SYN "))
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,self.vertical_mode)
+        self.assertEqual(self._tickers(app).value, [])
+        self.assertEqual(self._text(app), "")
+
+    def test_closed_only_option_history_is_selectable_and_unpaired_legs_are_reviewed_without_copy(self):
+        app = self._app()
+        self._mode(app)
+        self._tickers(app).set_value(["REVIEW"]).run()
+        self.assertEqual(self._text(app), "")
+        review_table = next(frame.value for frame in app.dataframe if "Reason" in frame.value.columns)
+        self.assertEqual(review_table["Ticker"].tolist(), ["REVIEW"])
+        self.assertEqual(review_table["Action"].tolist(), ["BTO"])
+        self.assertTrue(review_table["Reason"].iloc[0])
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
+        self._mode(app)
+        text = self._text(app)
+        self.assertTrue(text.startswith("OTH "))
+        self.assertIn(" CLOSED ", text)
+        self.assertEqual(len(text.splitlines()), 1)
+        self.assertEqual(app.session_state["fixture_download"]["file_name"],"acquisition_verticals.txt")
+        self.assertFalse(any("Open Shares" in frame.value.columns for frame in app.dataframe))
 
 
 if __name__ == "__main__":
