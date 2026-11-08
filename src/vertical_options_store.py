@@ -13,7 +13,10 @@ The canonical scanner streams each result here; no result-count cutoff exists.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 from datetime import date
+import gzip
+import io
 import json
 import math
 from pathlib import Path
@@ -122,6 +125,7 @@ class VerticalResultStore:
         self._annual: dict[int, dict[str, Any]] = {}
         self._minimum_expiry: date | None = None
         self._indexes = {}
+        self._analyzed_count = -1
         self._choices_cache = None
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
@@ -443,14 +447,20 @@ class VerticalResultStore:
         if sort_by == "TARGET DISTANCE" and direction == "ASC":
             return  # Covered by the permanent distance index; do not duplicate it.
         key = (sort_by, direction)
-        if key not in self._indexes:
+        if key not in self._indexes or self._analyzed_count != self._count:
             with self._lock, self._connect() as db:
-                name = f"sort_{list(_SORTS).index(sort_by)}_{direction}"
-                db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON spreads ({order})")
-                self._indexes[key] = name
-                while len(self._indexes) > 3:
-                    old = next(iter(self._indexes))
-                    db.execute(f"DROP INDEX {self._indexes.pop(old)}")
+                if key in self._indexes and self._analyzed_count == self._count:
+                    return
+                if key not in self._indexes:
+                    name = f"sort_{list(_SORTS).index(sort_by)}_{direction}"
+                    db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON spreads ({order})")
+                    self._indexes[key] = name
+                    while len(self._indexes) > 3:
+                        old = next(iter(self._indexes))
+                        db.execute(f"DROP INDEX {self._indexes.pop(old)}")
+                # Keep broad expiry filters from choosing a full-result sort.
+                db.execute("ANALYZE")
+                self._analyzed_count = self._count
 
     def _decode(self, row):
         (identity, expiry, side, grade, _, cost, ratio, breakeven, profit, width,
@@ -508,3 +518,213 @@ class VerticalResultStore:
             while batch := cursor.fetchmany(256):
                 for row in batch:
                     yield self._decode(row)
+
+
+def filterable_verticals_html(store: VerticalResultStore, *, source, loaded_at, pricing_mode,
+                             column_filters=None, year=None, sort_by="YEAR + FILL", direction="ASC",
+                             contract_open_interest=None) -> str:
+    """Export the complete retained market-data universe, with offline worker filters.
+
+    The caller checks minimum expiry; the read cursor snapshots the rows. A pure
+    callable joins each candidate to its cached BUY/SELL open-interest values.
+    No account, order, credential or Streamlit state enters the document.
+    """
+    store._where(column_filters=column_filters, year=year)
+    store._order(sort_by, direction, column_filters)
+    metadata = {
+        "symbol": store.symbol, "spot": store.spot, "source": str(source),
+        "loaded_at": float(loaded_at), "pricing_mode": str(pricing_mode),
+        "target": store.target, "filters": column_filters or {}, "year": year,
+        "sort_by": sort_by, "direction": direction, "min_reward_risk": store.min_reward_risk,
+    }
+    packed = io.BytesIO()
+    count = 0
+    with gzip.GzipFile(fileobj=packed, mode="wb", compresslevel=6, mtime=0) as archive:
+        archive.write(b"[")
+        batch = []
+        for candidate in store.iter_ranked():
+            interest = contract_open_interest(candidate) if contract_open_interest else {}
+            def oi(leg):
+                value = interest.get(leg)
+                return (value if type(value) is int and 0 <= value <= 9007199254740991 else None)
+            values = [candidate["expiry"].isoformat(), candidate["call_put"],
+                      candidate["buy_strike"], candidate["sell_strike"],
+                      candidate.get("buy_last"), candidate.get("sell_last"), oi("buy"), oi("sell"),
+                      candidate["debit"], candidate["cost"], candidate["breakeven"],
+                      candidate["reward_risk"], candidate["max_profit"], candidate["basis"],
+                      candidate.get("spread_bid"), candidate.get("spread_mid"), candidate.get("spread_ask"),
+                      indicative_fill_score(candidate), candidate["grade"],
+                      candidate.get("buy_osi", ""), candidate.get("sell_osi", ""), candidate["id"],
+                      candidate["width"], candidate.get("buy_bid"), candidate.get("buy_ask"),
+                      candidate.get("sell_bid"), candidate.get("sell_ask")]
+            batch.append((b"," if count else b"") + json.dumps(
+                values, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii"))
+            count += 1
+            if len(batch) == 512:
+                archive.write(b"".join(batch))
+                batch.clear()
+        archive.write(b"".join(batch))
+        archive.write(b"]")
+    metadata["count"] = count
+    safe_metadata = json.dumps(metadata, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    safe_metadata = safe_metadata.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return (_FILTERABLE_VERTICALS_HTML.replace(
+        "__VERTICAL_DATA__", base64.b64encode(packed.getvalue()).decode("ascii"))
+        .replace("__VERTICAL_META__", safe_metadata))
+
+
+_FILTERABLE_VERTICALS_HTML = r'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vertical Options | Offline Snapshot</title><style>
+*{box-sizing:border-box}body{margin:0;background:#000;color:#fb8b1e;font:13px "Courier New",monospace;padding:12px}
+h1{font-size:18px;margin:0 0 5px;background:#fb8b1e;color:#000;padding:7px}p{margin:5px 0;line-height:1.4}
+#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:7px;margin:10px 0}
+label{display:flex;flex-direction:column;gap:3px;font-weight:bold}input,select,button{border:1px solid #fb8b1e;border-radius:0;background:#111;color:#fb8b1e;font:13px "Courier New",monospace;min-height:34px;padding:5px;min-width:0}
+select[multiple]{height:70px}button{cursor:pointer;font-weight:bold}button:disabled{opacity:.4;cursor:default}input:focus,select:focus,button:focus-visible{outline:2px solid #fff;outline-offset:1px}
+.pair{display:flex;gap:5px}.pair>*{width:50%}.actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:7px 0}
+#grid{overflow:auto;max-height:70vh;border:1px solid #a65c16}table{width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
+th{position:sticky;top:0;background:#fb8b1e;color:#000;text-align:right}th,td{border:1px solid #a65c16;padding:5px 7px;text-align:right}td:first-child,td:nth-child(2){text-align:left}
+tr.call{background:#a3e635;color:#000}tr.put{background:#ea0101;color:#000}#status{font-weight:bold}#active{overflow-wrap:anywhere;color:#f6b56a}#error{color:#ff5757}small{font-size:11px;color:#aaa}
+@media(max-width:600px){body{padding:6px}h1{font-size:15px}#controls{grid-template-columns:repeat(2,minmax(0,1fr))}input,select,button{font-size:16px;min-height:40px}th,td{padding:5px}}
+</style></head><body>
+<h1 id="heading">VERTICAL OPTIONS // OFFLINE</h1><p id="meta"></p>
+<p>Complete retained qualifying scan snapshot. CLEAR FILTERS restores every exported qualifying spread; contracts and pairs excluded by the scan are not included.</p>
+<small>Read-only market data. Fill EST is an uncalibrated quote-position heuristic. Quotes do not update offline.</small>
+<div id="controls">
+<label>SEARCH<input id="search" type="search" placeholder="Ticker, contract, value"></label>
+<label>TYPE<select id="side"><option value="ALL">CALL + PUT</option><option>CALL</option><option>PUT</option><option value="NONE">NONE</option></select></label>
+<label>EXPIRATIONS<select id="expiry" multiple aria-label="Expiration choices"></select></label>
+<label>YEAR<select id="year"><option value="">ALL YEARS</option></select></label>
+<label>SORT<select id="sort"></select></label>
+<label>DIRECTION<select id="direction"><option>ASC</option><option>DESC</option></select></label>
+<label>TARGET $ / ±%<div class="pair"><input id="target" type="number" step="any" min="0" aria-label="Target breakeven"><input id="percent" type="number" min="0" max="100" step=".5" aria-label="Target tolerance percent" value="5"></div></label>
+<label>NUMERIC COLUMN<select id="numeric"></select></label>
+<label>MIN / MAX<div class="pair"><input id="minimum" type="number" step="any" aria-label="Column minimum"><input id="maximum" type="number" step="any" aria-label="Column maximum"></div></label>
+</div><div class="actions"><button id="apply">APPLY RANGE</button><button id="clear">CLEAR FILTERS</button><button id="previous">PREVIOUS</button><button id="next">NEXT</button><span id="status" role="status">Loading snapshot…</span></div>
+<p id="active"></p><p id="error" role="alert"></p><div id="grid"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
+<script id="vertical-meta" type="application/json">__VERTICAL_META__</script>
+<script id="vertical-data" type="application/octet-stream">__VERTICAL_DATA__</script>
+<script>
+"use strict";
+function verticalsWorker(){
+ "use strict";
+ let rows=[],meta={},cachedKey="",matching=[],pending=null,timer=null,ready=false;
+ const numeric={buy:2,sell:3,buy_last:4,sell_last:5,buy_oi:6,sell_oi:7,debit:8,cost:9,breakeven:10,ratio:11,profit:12,fill_scale:17,width:22,buy_bid:23,buy_ask:24,sell_bid:25,sell_ask:26};
+ const columns={"R:R":11,COST:9,BREAKEVEN:10,"MAX PROFIT":12,EXPIRATION:0,"BUY STRIKE":2,"SELL STRIKE":3,"BUY LAST":4,"SELL LAST":5,"SPREAD WIDTH":22,"FILL QUALITY":18,"FILL EST":17,TYPE:1,TICKER:21};
+ function target(filters){return Object.hasOwn(filters.breakeven||{},"target")?filters.breakeven.target:meta.target;}
+ function distance(row,value){return value===null||value===undefined?0:Math.abs(row[10]-value);}
+ function compare(a,b){return a<b?-1:a>b?1:0;}
+ function run(request){
+  const state=request.state,filters=state.filters||{},aim=target(filters),sign=state.direction==="DESC"?-1:1;
+  const key=JSON.stringify([filters,state.year,state.sort_by,state.direction,state.search]);
+  if(key!==cachedKey){
+   const query=String(state.search||"").trim().toLowerCase(),predicates=Object.entries(filters);matching=[];
+   for(let index=0;index<rows.length;index++){
+    const row=rows[index];let keep=!state.year||row[0].slice(0,4)===String(state.year);
+    for(const [field,value] of predicates){
+     if(!keep)break;
+     if(["ticker","side","expiry","basis"].includes(field)){
+      const cell=field==="ticker"?meta.symbol:row[{side:1,expiry:0,basis:13}[field]];
+      if(!value.includes(cell))keep=false;
+     }else if(Object.hasOwn(numeric,field)){
+      const cell=row[numeric[field]],bounds=value||{};
+      if(field==="breakeven"&&Object.hasOwn(bounds,"percent")){
+       if(aim!==null&&aim!==undefined){const band=aim*bounds.percent/100;keep=cell>=aim-band-1e-8&&cell<=aim+band+1e-8;}
+      }else if((bounds.min!==undefined&&bounds.min!==null&&(cell===null||cell<bounds.min-1e-8))||(bounds.max!==undefined&&bounds.max!==null&&(cell===null||cell>bounds.max+1e-8)))keep=false;
+     }
+    }
+    if(keep&&query&&!((meta.symbol+" "+row.join(" ")).toLowerCase().includes(query)))keep=false;
+    if(keep)matching.push(index);
+   }
+   const sorting=state.sort_by;
+   const terms=sorting==="YEAR + FILL"?["year",18,"distance",9,-11,0,1,2,3,19,20]:sorting==="FILL + TARGET"?[18,"distance",9,-11]:sorting==="TARGET DISTANCE"?["distance"]:[columns[sorting]??9];
+   matching.sort((left,right)=>{
+    const a=rows[left],b=rows[right];
+    for(const term of terms){
+     const x=term==="year"?a[0].slice(0,4):term==="distance"?distance(a,aim):term===-11?b[11]:a[term];
+     const y=term==="year"?b[0].slice(0,4):term==="distance"?distance(b,aim):term===-11?a[11]:b[term];
+     if(x===null||y===null){if(x!==y)return x===null?(sorting==="FILL EST"?1:sign):-(sorting==="FILL EST"?1:sign);}
+     const order=compare(x,y);if(order)return order*sign;
+    }
+    return compare(a[21],b[21]);
+   });cachedKey=key;
+  }
+  const page=Math.max(0,Math.min(Number(state.page)||0,Math.max(0,Math.ceil(matching.length/100)-1)));
+  postMessage({type:"page",revision:request.revision,page,total:matching.length,rows:matching.slice(page*100,page*100+100).map(index=>rows[index])});
+ }
+ function schedule(request){pending=request;if(timer!==null)clearTimeout(timer);timer=setTimeout(()=>{timer=null;if(ready&&pending)run(pending);},35);}
+ onmessage=async event=>{
+  try{
+   if(event.data.type==="init"){
+    if(typeof DecompressionStream!=="function")throw new Error("This browser cannot decompress the snapshot. Open it in a current browser with DecompressionStream support.");
+    meta=event.data.meta;const binary=atob(event.data.compressed),bytes=new Uint8Array(binary.length);
+    for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+    rows=JSON.parse(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text());ready=true;
+    const expiries=[...new Set(rows.map(row=>row[0]))].sort();
+    postMessage({type:"ready",total:rows.length,expiries,years:[...new Set(expiries.map(value=>value.slice(0,4)))]});
+    if(pending)schedule(pending);
+   }else if(event.data.type==="query")schedule(event.data);
+  }catch(error){postMessage({type:"error",message:String(error.message||error)});}
+ };
+}
+(()=>{
+ const $=id=>document.getElementById(id),meta=JSON.parse($("vertical-meta").textContent);
+ const fields=[[0,"EXPIRATION"],[1,"TYPE"],[2,"BUY STRIKE"],[3,"SELL STRIKE"],[4,"BUY LAST"],[5,"SELL LAST"],[6,"BUY OI"],[7,"SELL OI"],[8,"DEBIT / SHARE"],[9,"COST $"],[10,"BREAKEVEN"],[11,"R:R"],[12,"MAX PROFIT"],[13,"FILL"],[14,"SPREAD BID"],[15,"SPREAD MID"],[16,"SPREAD ASK"],[17,"FILL EST %"],[22,"WIDTH"],[23,"BUY BID"],[24,"BUY ASK"],[25,"SELL BID"],[26,"SELL ASK"],[19,"BUY OSI"],[20,"SELL OSI"],[21,"SPREAD ID"]];
+ const numeric={buy:"BUY STRIKE",sell:"SELL STRIKE",buy_last:"BUY LAST",sell_last:"SELL LAST",buy_oi:"BUY OI",sell_oi:"SELL OI",debit:"DEBIT / SHARE",cost:"COST $",ratio:"R:R",profit:"MAX PROFIT",fill_scale:"FILL EST %",width:"WIDTH",buy_bid:"BUY BID",buy_ask:"BUY ASK",sell_bid:"SELL BID",sell_ask:"SELL ASK"};
+ let filters=structuredClone(meta.filters),page=0,revision=0,worker=null,debounce=null,ready=false;
+ function option(value,label=value){const node=document.createElement("option");node.value=value;node.textContent=label;return node;}
+ $("heading").textContent=meta.symbol+" VERTICAL OPTIONS // OFFLINE";
+ $("meta").textContent=meta.count.toLocaleString()+" QUALIFYING SPREADS // "+meta.source+" // "+meta.pricing_mode+" // MIN R:R 1:"+meta.min_reward_risk+" // QUOTE SNAPSHOT "+new Date(meta.loaded_at*1000).toLocaleString();
+ const header=document.createElement("tr");for(const [,name] of fields){const cell=document.createElement("th");cell.textContent=name;header.appendChild(cell);}$("head").appendChild(header);
+ for(const name of ["YEAR + FILL","FILL + TARGET","R:R","COST","BREAKEVEN","TARGET DISTANCE","MAX PROFIT","EXPIRATION","BUY STRIKE","SELL STRIKE","BUY LAST","SELL LAST","SPREAD WIDTH","FILL QUALITY","FILL EST","TYPE","TICKER"])$("sort").appendChild(option(name));
+ for(const [key,name] of Object.entries(numeric))$("numeric").appendChild(option(key,name));
+ $("sort").value=meta.sort_by;$("direction").value=meta.direction;
+ const band=filters.breakeven||{};$("target").value=Object.hasOwn(band,"target")?band.target??"":meta.target??"";$("percent").value=band.percent??5;
+ function rangeInputs(){const bounds=filters[$("numeric").value]||{};$("minimum").value=bounds.min??"";$("maximum").value=bounds.max??"";}
+ function submit(reset=true){
+  if(reset)page=0;clearTimeout(debounce);revision++;const current=revision;
+  $("status").textContent="Filtering…";$("previous").disabled=true;$("next").disabled=true;
+  $("active").textContent="ACTIVE FILTERS // "+JSON.stringify(filters);
+  debounce=setTimeout(()=>{if(worker&&ready)worker.postMessage({type:"query",revision:current,state:{filters,year:$("year").value,sort_by:$("sort").value,direction:$("direction").value,search:$("search").value,page}});},180);
+ }
+ function render(message){
+  page=message.page;const fragment=document.createDocumentFragment();
+  for(const row of message.rows){const line=document.createElement("tr");line.className=row[1]==="CALL"?"call":"put";
+   for(const [index] of fields){const cell=document.createElement("td"),value=row[index];cell.textContent=value===null?"—":typeof value==="number"?(index===6||index===7?value.toLocaleString("en-US"):index===11?"1:"+value.toFixed(2):value.toLocaleString("en-US",{maximumFractionDigits:6})):String(value);line.appendChild(cell);}fragment.appendChild(line);
+  }$("body").replaceChildren(fragment);$("status").textContent=message.total.toLocaleString()+" / "+meta.count.toLocaleString()+" SPREADS // PAGE "+(page+1)+" / "+Math.max(1,Math.ceil(message.total/100));
+  $("previous").disabled=page===0;$("next").disabled=(page+1)*100>=message.total;
+ }
+ function fail(message){$("error").textContent=message;$("status").textContent="Snapshot unavailable";}
+ $("numeric").addEventListener("change",rangeInputs);rangeInputs();
+ $("apply").addEventListener("click",()=>{
+  for(const id of ["minimum","maximum"])if(!$(id).validity.valid){$(id).reportValidity();return;}
+  const field=$("numeric").value,bounds={};for(const [id,key] of [["minimum","min"],["maximum","max"]]){const text=$(id).value;if(text!==""&&Number.isFinite(Number(text)))bounds[key]=Number(text);}
+  if(Object.keys(bounds).length)filters[field]=bounds;else delete filters[field];submit();
+ });
+ for(const id of ["minimum","maximum"])$(id).addEventListener("keydown",event=>{if(event.key==="Enter")$("apply").click();});
+ $("side").addEventListener("change",()=>{const value=$("side").value;if(value==="ALL")delete filters.side;else filters.side=value==="NONE"?[]:[value];submit();});
+ $("expiry").addEventListener("change",()=>{const values=[...$("expiry").selectedOptions].map(item=>item.value);if(values.length===$("expiry").options.length)delete filters.expiry;else filters.expiry=values;submit();});
+ for(const id of ["target","percent"])$(id).addEventListener("input",()=>{
+  if(!$("target").validity.valid||!$("percent").validity.valid)return;
+  const target=$("target").value,percent=$("percent").value;if(target!==""&&!(Number(target)>0))return;filters.breakeven=target!==""?{target:Number(target),percent:percent===""?5:Number(percent)}:{target:null};rangeInputs();submit();
+ });
+ for(const id of ["year","sort","direction"])$(id).addEventListener("change",()=>submit());$("search").addEventListener("input",()=>submit());
+ $("previous").addEventListener("click",()=>{page--;submit(false);});$("next").addEventListener("click",()=>{page++;submit(false);});
+ $("clear").addEventListener("click",()=>{filters={breakeven:{target:null}};$("search").value="";$("side").value="ALL";$("year").value="";$("target").value="";$("percent").value=5;for(const item of $("expiry").options)item.selected=true;rangeInputs();submit();});
+ if(typeof Worker!=="function"||typeof DecompressionStream!=="function"){fail("Open this offline snapshot in a current browser supporting Web Workers and DecompressionStream.");return;}
+ try{
+  const url=URL.createObjectURL(new Blob(["("+verticalsWorker.toString()+")()"],{type:"text/javascript"}));worker=new Worker(url);URL.revokeObjectURL(url);
+  worker.onerror=event=>fail("Snapshot worker failed: "+event.message);
+  worker.onmessage=event=>{
+   const message=event.data;
+   if(message.type==="error"){fail(message.message);return;}
+   if(message.type==="ready"){
+    ready=true;for(const value of message.expiries){const node=option(value);node.selected=!Object.hasOwn(filters,"expiry")||filters.expiry.includes(value);$("expiry").appendChild(node);}for(const value of message.years)$("year").appendChild(option(value));
+    $("year").value=meta.year??"";$("side").value=!Object.hasOwn(filters,"side")||filters.side.length===2?"ALL":filters.side[0]||"NONE";submit();
+   }else if(message.type==="page"&&message.revision===revision)render(message);
+  };
+  worker.postMessage({type:"init",meta,compressed:$("vertical-data").textContent});
+  $("vertical-data").remove();
+ }catch(error){fail("Cannot start the offline snapshot: "+error.message);}
+})();
+</script></body></html>'''

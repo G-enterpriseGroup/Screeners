@@ -36,7 +36,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select, WebDriverWait
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -468,6 +468,14 @@ def grid_snapshot(driver: webdriver.Chrome) -> dict:
             document.documentElement.scrollWidth>document.documentElement.clientWidth,
           header:head.textContent,
           headers:[...head.children].map(cell=>cell.dataset.column||cell.textContent),
+          openInterestHeader:(()=>{
+            const cell=head.querySelector('[data-column="OPEN INTEREST"]');
+            const last=head.querySelector('[data-column="LAST PRICE"]');
+            return cell&&last?{label:cell.querySelector('.leg-column-title').textContent,
+              order:cell.querySelector('.leg-order').textContent,
+              width:cell.getBoundingClientRect().width,lastWidth:last.getBoundingClientRect().width,
+              fits:[...cell.children].every(item=>item.scrollWidth<=item.clientWidth)}:null;
+          })(),
         };
         """
     ))
@@ -549,6 +557,9 @@ def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
                                     "STRIKE", "LAST PRICE", "OPEN INTEREST", "Debit", "BREAKEVEN",
                                     "RISK:REWARD", "MAX PROFIT", "FILL EST"], snapshot
     assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
+    oi_header = snapshot["openInterestHeader"]
+    assert oi_header["label"] == "OI" and oi_header["order"] == "(B / S)", oi_header
+    assert oi_header["fits"] and oi_header["width"] < .9 * oi_header["lastWidth"], oi_header
     allowed = {"LIMIT", "MID"} if expected_fill == "NORMAL" else {expected_fill}
     for row in snapshot["rows"]:
         assert row["cellCount"] == 13 and len(row["values"]) == 13, row
@@ -1230,7 +1241,7 @@ def test() -> None:
                             for row in initial_best["rows"]})
             assert len(years) == 3, years
             year_labels = ["ALL YEARS // 60"] + [f"{year} // 20" for year in years]
-            export_labels = ["EXPORT CSV // 60", "EXPORT EXCEL // 60"]
+            export_labels = ["EXPORT CSV // 60", "EXPORT EXCEL // 60", "EXPORT HTML // ALL"]
             for width in (1100, 1440):
                 driver.set_window_size(width, 900)
                 year_layout = driver.execute_script("""
@@ -1264,7 +1275,7 @@ def test() -> None:
                           left:box.left,right:box.right};
                       })};
                 """, export_labels)
-                assert len(export_layout["buttons"]) == 2 and not export_layout["overflow"], export_layout
+                assert len(export_layout["buttons"]) == 3 and not export_layout["overflow"], export_layout
                 assert all(button["height"] <= 42 and button["textHeight"] <= 20
                            and 0 <= button["left"] < button["right"] <= width
                            for button in export_layout["buttons"]), export_layout
@@ -1301,6 +1312,37 @@ def test() -> None:
             assert len(one_year_csv) == 20 and all(
                 date.fromisoformat(row["Expiration"]).year == years[1] for row in one_year_csv
             ), one_year_csv[:2]
+            offline_html = download_file(driver, wait, downloads,
+                "vo_export_qualified_html", "SPY_vo_vertical_all.html")
+            scanner_window = driver.current_window_handle
+            driver.switch_to.new_window("tab")
+            try:
+                driver.get(offline_html.as_uri())
+                wait.until(lambda _: driver.find_element(By.ID, "status").text.startswith("20 / 60 SPREADS"))
+                assert driver.find_element(By.ID, "error").text == ""
+                driver.find_element(By.ID, "clear").click()
+                wait.until(lambda _: driver.find_element(By.ID, "status").text.startswith("60 / 60 SPREADS"))
+                Select(driver.find_element(By.ID, "side")).select_by_visible_text("PUT")
+                wait.until(lambda _: driver.find_element(By.ID, "status").text.startswith("30 / 60 SPREADS"))
+                Select(driver.find_element(By.ID, "numeric")).select_by_value("cost")
+                driver.find_element(By.ID, "maximum").send_keys("150")
+                driver.find_element(By.ID, "apply").click()
+                wait.until(lambda _: driver.find_element(By.ID, "status").text.startswith("12 / 60 SPREADS"))
+                Select(driver.find_element(By.ID, "sort")).select_by_value("COST")
+                Select(driver.find_element(By.ID, "direction")).select_by_visible_text("DESC")
+                wait.until(lambda _: "Filtering" not in driver.find_element(By.ID, "status").text)
+                offline_rows = driver.find_elements(By.CSS_SELECTOR, "#body tr")
+                costs = [float(row.find_elements(By.TAG_NAME, "td")[9].text.replace(",", ""))
+                         for row in offline_rows]
+                assert len(costs) == 12 and costs == sorted(costs, reverse=True), costs
+                assert all(row.find_elements(By.TAG_NAME, "td")[1].text == "PUT"
+                           for row in offline_rows)
+                assert len(offline_rows) <= 100
+                assert driver.find_element(By.ID, "error").text == ""
+            finally:
+                driver.close()
+                driver.switch_to.window(scanner_window)
+            print("Offline HTML download retains full universe, seeds year and filters/sorts locally PASS", flush=True)
             assert len([event for event in events(event_path) if event["event"] == "chain"]) == 3
             all_years_button = driver.find_element(By.XPATH,
                 '//button[contains(normalize-space(.), "ALL YEARS // 60")]')

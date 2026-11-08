@@ -43,6 +43,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
+from src.etrade_data_cache import CachedETradeClient
 from src.option_book import extract_option_rows
 from src.theme import install_native_switch_theme
 from src.gex_cboe import cboe_results
@@ -60,7 +61,7 @@ from src.vertical_options import (
     smart_fill_ladder,
     validate_vertical,
 )
-from src.vertical_options_store import VerticalResultStore
+from src.vertical_options_store import VerticalResultStore, filterable_verticals_html, indicative_fill_score
 from src.risk_sizing_ui_v9 import _select_true_cash
 
 
@@ -273,18 +274,27 @@ _VERTICAL_OPTIONS_CSS = """
 .vp-note .muted{color:var(--vp-muted)!important;-webkit-text-fill-color:var(--vp-muted)!important;}
 /* A zero-height iframe still has a line box in its Streamlit wrapper. */
 .st-key-verti_phone_workspace .st-key-vp_pricing_preference_reader,
+.st-key-vp_pricing_background_reader,
 .st-key-verti_phone_workspace .st-key-vp_pricing_preference_writer{
     height:0!important;
     min-height:0!important;
     line-height:0!important;
     overflow:hidden!important;
 }
+/* Keep the phone toolbar compact without widening its paired controls. */
+.st-key-verti_phone_workspace .st-key-vp_mode_controls .vp-mode-guide{white-space:nowrap;min-height:38px;gap:0;}
+.st-key-verti_phone_workspace .st-key-vp_mode_switch{gap:0!important;}
+.st-key-verti_phone_workspace .vp-liquid-cash .vp-card{flex:1 1 100%;width:100%;height:38px;min-height:38px;}
+.st-key-verti_phone_workspace .vp-liquid-cash .vp-label{min-width:0;flex:1;}
+.st-key-verti_phone_workspace .vp-liquid-cash .vp-value{flex:none;}
+.st-key-verti_phone_workspace .st-key-vp_smart_fill{display:flex!important;align-items:center!important;justify-content:center!important;min-height:32px!important;margin:0!important;padding:0!important;}
 /* Same native switch as Risk Sizing; labels flank the unchanged track. */
 .st-key-verti_phone_workspace .st-key-vp_smart_fill label{
     display:inline-flex!important;
     align-items:center!important;
     white-space:nowrap!important;
 }
+.st-key-verti_phone_workspace .st-key-vp_smart_fill label:has(input[role="switch"])::after{content:none!important;display:none!important;}
 /* Native labels and the read-only company field share one 20px label row.
    st.form's real stForm wrapper owns padding; its key is not a CSS class. */
 .st-key-verti_phone_workspace .st-key-vp_symbol_value [data-testid="stWidgetLabel"],
@@ -449,6 +459,7 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-verti_phone_workspace .vp-mode-guide{font-size:12px;white-space:nowrap;}
 .st-key-verti_phone_workspace .vp-company-box{font-size:12px;padding:0 6px;}
 .st-key-verti_phone_workspace .vp-liquid-cash .vp-grid{grid-template-columns:1fr;}
+.st-key-verti_phone_workspace .st-key-vp_toolbar .vp-liquid-cash .vp-card{height:44px;min-height:44px;}
 .st-key-verti_phone_workspace .vp-summary{font-size:12px;overflow-wrap:anywhere;}
 .st-key-verti_phone_workspace [data-testid="stMultiSelect"] [role="group"]{height:auto!important;}
 }
@@ -945,14 +956,17 @@ def _render_portfolio_verticals_content(client, touch_session) -> None:
                "OptionStrat may use current quotes. TradingView charts long minus short option premiums per share; coverage and delay vary.")
 
 
-def _chain(client, symbol: str, expiry: date, touch_session) -> list[dict[str, Any]]:
+def _chain(client, symbol: str, expiry: date, touch_session, *,
+           fresh_broker_quote: bool = False) -> list[dict[str, Any]]:
+    params = {"no_of_strikes": None, "chain_type": "CALLPUT"}
+    if fresh_broker_quote and isinstance(client, CachedETradeClient):
+        params["force_refresh"] = True
     payload = client.get_option_chain(
         symbol,
         expiry.year,
         expiry.month,
         expiry.day,
-        no_of_strikes=None,
-        chain_type="CALLPUT",
+        **params,
     )
     touch_session()
     return extract_option_rows(payload, expiry)
@@ -1314,7 +1328,7 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
     _, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
-    policy = (target, max_cost, mode, min_reward_risk)
+    policy = (target, max_cost, mode, min_reward_risk, "phone-quote-policy-v2")
     store = policies.pop(policy, None)
     if not isinstance(store, VerticalResultStore):
         store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
@@ -1335,7 +1349,9 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
                 progress.progress(index / len(groups),
                     text=f"SCANNING {_date_label(expiry)} // {checked:,} PAIRS CHECKED // {raw['symbol']}")
             update(0)
-            added = store.add_expiration(expiry, rows, scan_vertical_candidates, update)
+            added = store.add_expiration(
+                expiry, rows, partial(scan_vertical_candidates, desktop_fast_fill=True), update
+            )
             if added and time.monotonic() - started >= _SCAN_RANK_SECONDS:
                 break  # Resume calculation from disk without dropping a pair.
     finally:
@@ -1469,13 +1485,74 @@ def _tradingview_spread_url(candidate: dict[str, Any], *, exchange: str = "") ->
     formula = _tradingview_spread_formula(candidate)
     return "https://www.tradingview.com/chart/?symbol=" + url_quote(formula, safe="") if formula else ""
 
-def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "") -> dict[str, Any]:
+def _leg_quote_key(row: dict[str, Any], prefix: str = "") -> tuple:
+    """Match the exact contract and quote retained by the canonical scanner."""
+    def number(value, *, positive=False):
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return value if math.isfinite(value) and (value > 0 if positive else value >= 0) else None
+    return (
+        row.get("expiry"), row.get("call_put"), number(row.get(prefix + "strike")),
+        str(row.get(prefix + "osi") or "").strip(),
+        number(row.get(prefix + "last"), positive=True),
+        number(row.get(prefix + "bid")), number(row.get(prefix + "ask")),
+    )
+
+
+def _table_open_interest(result: dict[str, Any]) -> dict[tuple, int | None]:
+    """Index raw leg OI once per snapshot/batch, not once per spread or rerun.
+
+    Keeping this presentation join here avoids changing shared spread math,
+    disk schemas, order payloads, or existing export columns.
+    Missing OI stays unknown; zero is a valid reported contract count.
+    """
+    raw = (st.session_state.get("_vp_chain_cache") or {}).get(
+        f'{result.get("source")}:{result.get("symbol")}'
+    )
+    if (not isinstance(raw, dict) or result.get("raw_scan_id") is None
+            or raw.get("scan_id") != result["raw_scan_id"]):
+        return {}
+    rows = raw.get("rows") or []
+    signature = (raw["scan_id"], len(rows))
+    cached = raw.get("_vp_table_open_interest")
+    if isinstance(cached, dict) and cached.get("signature") == signature:
+        return cached["values"]
+    values = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("open_interest")
+        try:
+            count = float(value)
+            count = (int(count) if not isinstance(value, bool) and math.isfinite(count)
+                     and count >= 0 and count.is_integer() else None)
+        except (TypeError, ValueError, OverflowError):
+            count = None
+        # Equal quoted duplicates use the first contract, as in the scanner.
+        values.setdefault(_leg_quote_key(row), count)
+    raw["_vp_table_open_interest"] = {"signature": signature, "values": values}
+    return values
+
+
+def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "",
+                      contract_open_interest: dict | None = None) -> dict[str, Any]:
     return {
         "id": candidate["id"],
         "annual": candidate["id"] in annual_ids,
         "optionstrat_url": _optionstrat_url(candidate),
         "tradingview_url": _tradingview_spread_url(candidate, exchange=tv_exchange),
         "expiry_detail": _expiry_time_label(candidate["expiry"]),
+        "open_interest": {
+            leg: (contract_open_interest or {}).get(_leg_quote_key(candidate, leg + "_"))
+            for leg in ("buy", "sell")
+        },
+        "fill_market": {
+            "bid": candidate.get("spread_bid"), "mid": candidate.get("spread_mid"),
+            "ask": candidate.get("spread_ask"), "debit": candidate.get("debit"),
+            "estimate": indicative_fill_score(candidate),
+        },
         "values": [
             candidate["symbol"], candidate["call_put"], _date_label(candidate["expiry"]),
             f"{candidate['buy_strike']:g}", f"{candidate['sell_strike']:g}",
@@ -1495,6 +1572,7 @@ _QUALIFIED_SORT_FIELDS = (
     "FILL + TARGET", "R:R", "COST", "BREAKEVEN", "TARGET DISTANCE",
     "MAX PROFIT", "EXPIRATION", "BUY STRIKE", "SELL STRIKE",
     "BUY LAST", "SELL LAST", "SPREAD WIDTH", "FILL QUALITY",
+    "TICKER", "TYPE", "FILL EST",
 )
 
 
@@ -1513,6 +1591,22 @@ def _sort_qualified_spreads(
         key = lambda row: abs(row["breakeven"] - target) if target is not None else 0
     elif sort_by == "FILL QUALITY":
         key = lambda row: row["grade"]
+    elif sort_by == "TICKER":
+        # Every scanner snapshot has one symbol; use the stable spread ID.
+        return sorted(rows, key=lambda row: row["id"], reverse=direction == "DESC")
+    elif sort_by == "TYPE":
+        return sorted(sorted(rows, key=lambda row: row["id"]),
+                      key=lambda row: row["call_put"], reverse=direction == "DESC")
+    elif sort_by == "FILL EST":
+        # Match SQL's NULLS LAST in either direction.
+        return sorted(
+            sorted(rows, key=lambda row: row["id"]),
+            key=lambda row: (
+                indicative_fill_score(row) is None,
+                -(indicative_fill_score(row) or 0) if direction == "DESC"
+                else (indicative_fill_score(row) or 0),
+            ),
+        )
     else:
         field = {
             "R:R": "reward_risk", "COST": "cost",
@@ -1520,6 +1614,7 @@ def _sort_qualified_spreads(
             "EXPIRATION": "expiry", "BUY STRIKE": "buy_strike",
             "SELL STRIKE": "sell_strike", "BUY LAST": "buy_last",
             "SELL LAST": "sell_last", "SPREAD WIDTH": "width",
+            "TICKER": "symbol", "TYPE": "call_put",
         }[sort_by]
         key = lambda row: (
             row.get(field) is None,
@@ -1708,6 +1803,24 @@ def _qualified_store_xlsx(store: VerticalResultStore, *, source: str, loaded_at:
         )
 
 
+def _qualified_store_html(store: VerticalResultStore, *, source: str, loaded_at: float,
+                          pricing_mode: str, column_filters=None, year=None,
+                          sort_by="YEAR + FILL", direction="ASC",
+                          contract_open_interest=None) -> str:
+    """Build an offline copy of every retained spread only when downloaded."""
+    store.prune_before(_minimum_expiry_date())
+    lookup = contract_open_interest or {}
+    # iter_ranked's SQLite cursor owns a consistent read snapshot. Holding the
+    # store lock through compression would stall interactive sort-index creation.
+    return filterable_verticals_html(
+        store, source=source, loaded_at=loaded_at, pricing_mode=pricing_mode,
+        column_filters=column_filters, year=year, sort_by=sort_by, direction=direction,
+        contract_open_interest=lambda candidate: {
+            leg: lookup.get(_leg_quote_key(candidate, leg + "_")) for leg in ("buy", "sell")
+        },
+    )
+
+
 # ==============================
 # ISOLATED NORMAL / SMART FILL MODE (NO BROKER SIDE EFFECTS)
 # ==============================
@@ -1743,7 +1856,8 @@ _PRESENTATION_DEFAULTS = {
     "vp_min_reward_risk": "2",
     "vp_results_view": "BEST PER YEAR", "vp_be_filter_enabled": False,
     "vp_be_range_percent": 5.0, "vp_all_pair_sort": "FILL + TARGET",
-    "vp_all_pair_direction": "ASC", "vp_all_pair_expiry": "ALL",
+    "vp_all_pair_direction": "ASC", "vp_best_pair_sort": "YEAR + FILL",
+    "vp_best_pair_direction": "ASC", "vp_all_pair_expiry": "ALL",
     "vp_all_pair_side": "CALL + PUT", "vp_auto_finish": True,
 }
 
@@ -1824,7 +1938,9 @@ def _default_column_filters(expirations: list[str], target_text: str = "") -> di
     years = set(sorted({expiry[:4] for expiry in available})[-2:])
     filters: dict[str, Any] = {"expiry": [expiry for expiry in available if expiry[:4] in years]}
     if str(target_text or "").strip().casefold() not in {"", _NO_BREAKEVEN}:
-        filters["breakeven"] = {"target": _entered_price(target_text, "target breakeven")}
+        filters["breakeven"] = {
+            "target": _entered_price(target_text, "target breakeven"), "percent": 5.0,
+        }
     return filters
 
 
@@ -1856,11 +1972,11 @@ def _scanner_help(label: str, explanation: str) -> None:
     )
 
 
-def _hydrate_vertical_options_pricing() -> bool:
+def _hydrate_vertical_options_pricing(reader_key: str = "vp_pricing_preference_reader") -> bool:
     """Read the browser preference before any default can overwrite it."""
     if not st.session_state.get("_vp_pricing_mode_hydrated", False):
         restored = _PRICING_PREFERENCE_COMPONENT(
-            action="read", key="vp_pricing_preference_reader", height=0, default=None,
+            action="read", key=reader_key, height=0, default=None,
         )
         if not isinstance(restored, dict) or not restored.get("ready"):
             return False
@@ -1878,12 +1994,20 @@ def _remember_pricing_mode() -> None:
     st.session_state["_vp_pricing_mode_preference"] = (
         "SMART FILL" if st.session_state["vp_smart_fill"] else "NORMAL"
     )
+    # A deliberate user selection wins over any late or blocked browser response.
+    st.session_state["_vp_pricing_mode_hydrated"] = True
 
 
 def _pricing_mode_flip_switch() -> str | None:
     """Restore saved pricing before showing the live switch."""
-    if not _hydrate_vertical_options_pricing():
-        return None
+    # Browser localStorage is best-effort; a zero-height iframe can be blocked
+    # by the client. Never hold the entire scanner hostage to its reply.
+    _hydrate_vertical_options_pricing()
+    st.session_state.setdefault(
+        "_vp_pricing_mode_preference",
+        st.session_state.get("vp_pricing_mode", "NORMAL")
+        if st.session_state.get("vp_pricing_mode") in {"NORMAL", "SMART FILL"} else "NORMAL",
+    )
 
     # Streamlit can clean up a widget key when another top-level tab renders.
     # The non-widget preference remains stable for this server-side session.
@@ -1893,14 +2017,16 @@ def _pricing_mode_flip_switch() -> str | None:
     smart = st.toggle(
         "SMART FILL", key="vp_smart_fill", label_visibility="collapsed",
         on_change=_remember_pricing_mode,
-        help="Flip LEFT/OFF for NORMAL pricing; RIGHT/ON for SMART FILL. "
-             "Saved for this browser profile, including after page reload.",
+        help="Left = NORMAL midpoint-to-ask limit; right = SMART FILL natural ASK. "
+             "The chosen mode is retained in this session; browser storage is best-effort.",
     )
     mode = "SMART FILL" if smart else "NORMAL"
     st.session_state["_vp_pricing_mode_preference"] = mode
-    _PRICING_PREFERENCE_COMPONENT(
-        action="write", value=mode, key="vp_pricing_preference_writer", height=0, default=None,
-    )
+    # Do not overwrite a saved browser mode with a fallback before hydration.
+    if st.session_state.get("_vp_pricing_mode_hydrated"):
+        _PRICING_PREFERENCE_COMPONENT(
+            action="write", value=mode, key="vp_pricing_preference_writer", height=0, default=None,
+        )
     return mode
 
 
@@ -1915,17 +2041,10 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
         for switch in ("vp_smart_fill", "vp_auto_finish"):
             install_native_switch_theme(switch)
         _render_saved_spread_drafts()
-        note_col, portfolio_col = st.columns([1.5, 1], gap="small", vertical_alignment="center")
-        with note_col:
-            st.html(
-                '<div class="vp-note">VERTI PHONE // ALL YEARS // '
-                '<span class="muted">DEBIT MIN / MAX IN COLUMN FILTER</span></div>'
-            )
-        with portfolio_col:
-            st.button("PORTFOLIO VERTICALS", key="vp_portfolio_open", use_container_width=True,
-                      on_click=_open_portfolio_verticals)
-            if st.session_state.get("_vp_portfolio_dialog_open"):
-                _render_portfolio_verticals(client, touch_session)
+        st.html(
+            '<div class="vp-note">VERTI PHONE // ALL YEARS // '
+            '<span class="muted">DEBIT / BREAKEVEN IN COLUMN FILTER</span></div>'
+        )
         broker_live = client is not None and not bool(getattr(client, "is_offline", False))
         if not broker_live:
             st.warning(
@@ -1935,39 +2054,46 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
 
         # Optional ticker list stays collapsed until requested. Selecting from
         # the list only pre-fills the existing one-ticker scanner; no chain calls.
-        if st.button("PASTE TICKER LIST", key="vp_list_toggle", use_container_width=True):
-            st.session_state["vp_list_open"] = not st.session_state.get("vp_list_open", False)
-        with st.container(key="vp_pricing_toolbar"):
-            # Default NORMAL exactly preserves the existing ASK/LAST/MID scan.
-            # Switching modes reprices the cached snapshot only; it never fetches
-            # quotes, previews a broker order or submits one.
-            mode_guide_col, mode_switch_col, smart_label_col = st.columns(
-                [1.0, .5, 1.0], gap="small", vertical_alignment="center"
-            )
-            with mode_guide_col:
-                st.html(
-                    '<div class="vp-mode-guide" style="justify-content:flex-end">'
-                    '<span>NORMAL <span class="vp-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
-                    '<span class="vp-mode-tooltip" role="tooltip">'
-                    'Existing pricing: natural ASK first when it meets your selected reward-to-risk '
-                    'and cost limits; otherwise qualifying LAST or MID. '
-                    'Unquoted LAST* is information only. No guaranteed fill.'
-                    '</span></span></span></div>'
+        with st.container(key="vp_toolbar"):
+            paste_col, mode_col = st.columns([1, 1.7], gap="small", vertical_alignment="center")
+            with paste_col:
+                if st.button("PASTE TICKER LIST", key="vp_list_toggle", use_container_width=True):
+                    st.session_state["vp_list_open"] = not st.session_state.get("vp_list_open", False)
+            with mode_col, st.container(width=250, key="vp_mode_controls"):
+                # Reprice retained chains only; never fetch quotes or send orders.
+                mode_guide_col, mode_switch_col, smart_label_col = st.columns(
+                    [78, 42, 114], gap="small", vertical_alignment="center"
                 )
-            with mode_switch_col:
-                pricing_mode = _pricing_mode_flip_switch()
-            with smart_label_col:
-                st.html(
-                    '<div class="vp-mode-guide"><span>SMART FILL <span class="vp-mode-help vp-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
-                    '<span class="vp-mode-tooltip" role="tooltip">'
-                    'Suggests a limit between spread MID and natural ASK using quote width '
-                    'and available leg volume/open interest. Keeps your selected ratio and cost cap; '
-                    'offers manual DAY-order price steps. Does not guarantee a fill or place orders automatically.'
-                    '</span></span></span></div>'
-                )
-            st.html(_liquid_cash_markup(client, touch_session))
-            if pricing_mode is None:
-                return
+                with mode_guide_col:
+                    st.html(
+                        '<div class="vp-mode-guide" style="justify-content:flex-end">'
+                        '<span><span class="vp-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
+                        '<span class="vp-mode-tooltip" role="tooltip">'
+                        'NORMAL suggests a limit between the spread midpoint and natural ask, '
+                        'falling back to MID when the suggested limit fails the 1:2 minimum. '
+                        'A midpoint limit can remain unfilled.'
+                        '</span></span> NORMAL</span></div>'
+                    )
+                with mode_switch_col:
+                    with st.container(key="vp_mode_switch", gap=None):
+                        pricing_mode = _pricing_mode_flip_switch()
+                with smart_label_col:
+                    st.html(
+                        '<div class="vp-mode-guide"><span>SMART FILL <span class="vp-mode-help vp-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
+                        '<span class="vp-mode-tooltip" role="tooltip">'
+                        'SMART FILL uses the natural spread ASK (buy leg ask minus sell leg bid) '
+                        'only when risk:reward is at least 1:2 and cost rules pass. '
+                        'A marketable DAY limit cannot guarantee a fill or automatically submit an order.'
+                        '</span></span></span></div>'
+                    )
+            cash_col, portfolio_col = st.columns(2, gap="small", vertical_alignment="top")
+            with cash_col:
+                st.html(_liquid_cash_markup(client, touch_session))
+            with portfolio_col:
+                st.button("PORTFOLIO VERTICALS", key="vp_portfolio_open", use_container_width=True,
+                          on_click=_open_portfolio_verticals)
+        if st.session_state.get("_vp_portfolio_dialog_open"):
+            _render_portfolio_verticals(client, touch_session)
         if st.session_state.get("vp_list_open"):
             pasted = st.text_area(
                 "PASTE TICKERS // ONE PER LINE, COMMA-SEPARATED OR MARKDOWN TABLE",
@@ -2295,8 +2421,8 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                 st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
             _scanner_help("PRICING & RISK", (
                 "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
-                "NORMAL ranks natural ASK, in-market LAST, MID, then unquoted LAST*. "
-                f"SMART FILL suggests a MID-to-ASK limit under the 1:{min_reward_risk:g} requirement. "
+                "NORMAL suggests a limit between MID and ASK, falling back to MID when needed. "
+                f"SMART FILL proposes only the natural spread ASK when reward:risk meets 1:{max(2.0, min_reward_risk):g}. "
                 "The Debit MAX filter also caps the reviewed order limit. "
                 "For one standard 100-share contract: max loss = debit × 100; max profit = "
                 f"(strike width − debit) × 100. Reward/risk must be at least {min_reward_risk:g}. "
@@ -2304,7 +2430,8 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                 "Calculations are expiration payoffs before fees. LAST* cannot be ordered. "
                 "Snapshot age does not establish when an individual option last traded. "
                 "Quotes may be delayed; no reference price guarantees execution or a fill. "
-                "Set an optional ranking target or minimum/maximum in the BREAKEVEN column. "
+                "BREAKEVEN TARGET ±% filters prices around your target (default ±5%). "
+                "FILL EST is an uncalibrated quote-position indicator, not a fill probability. "
                 "Set cost minimum/maximum in Debit; these filter all retained results."
             ))
             candidates = result["candidates"]
@@ -2331,6 +2458,18 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     st.session_state["_vp_column_filters"] = filter_state
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
+                legacy_be = column_filters.get("breakeven")
+                if (isinstance(legacy_be, dict)
+                        and ({"min", "max"} & set(legacy_be)
+                             or ("target" in legacy_be and legacy_be["target"] not in (None, "")
+                                 and "percent" not in legacy_be))):
+                    previous_target = legacy_be.get("target")
+                    if previous_target not in (None, ""):
+                        column_filters["breakeven"] = {"target": previous_target, "percent": 5.0}
+                    else:
+                        column_filters.pop("breakeven", None)
+                    filter_state["filters"] = column_filters
+                    _remember_scan_snapshot()
                 cost_max = (column_filters.get("cost") or {}).get("max")
                 active_max_cost = None if cost_max in (None, "") else float(cost_max)
                 effective_target = (column_filters.get("breakeven") or {}).get("target")
@@ -2353,8 +2492,12 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     help="BEST PER YEAR: every eligible result grouped and ranked within its calendar year, with the top pick highlighted. ALL QUALIFIED: the same complete set ranked across all years. Both views use one scrollable table without downloading chains again.",
                 )
                 expiry_filter, side_filter = "ALL", "CALL + PUT"
-                sort_filter = "YEAR + FILL" if view == "BEST PER YEAR" else st.session_state["vp_all_pair_sort"]
-                sort_direction = "ASC" if view == "BEST PER YEAR" else st.session_state["vp_all_pair_direction"]
+                sort_filter = st.session_state[
+                    "vp_best_pair_sort" if view == "BEST PER YEAR" else "vp_all_pair_sort"
+                ]
+                sort_direction = st.session_state[
+                    "vp_best_pair_direction" if view == "BEST PER YEAR" else "vp_all_pair_direction"
+                ]
                 all_matching_count = candidates.count(
                     max_distance=max_distance, column_filters=query_filters,
                 )
@@ -2403,8 +2546,9 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     sort_by=sort_filter, direction=sort_direction,
                     max_distance=max_distance, column_filters=query_filters, year=active_year,
                 )
+                contract_open_interest = _table_open_interest(result)
                 with st.container():
-                    exports = st.columns(2, gap="small")
+                    exports = st.columns(3, gap="small")
                     export_options = dict(
                         source=result["source"], loaded_at=result["loaded_at"],
                         target=effective_target, max_cost=active_max_cost,
@@ -2417,25 +2561,42 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
                     ):
                         column.download_button(
-                            f"EXPORT {label} // {matching_count:,}",
+                            f"{label} // {matching_count:,}",
                             data=partial(exporter, candidates, **export_options),
                             file_name=f'{result["symbol"]}_vertical_qualified.{extension}',
                             mime=mime, key=f"vp_export_qualified_{'excel' if extension == 'xlsx' else 'csv'}",
                             on_click="ignore", use_container_width=True,
                         )
+                    exports[2].download_button(
+                        "HTML // ALL",
+                        data=partial(
+                            _qualified_store_html, candidates,
+                            source=result["source"], loaded_at=result["loaded_at"],
+                            pricing_mode=result.get("pricing_mode", "NORMAL"),
+                            column_filters={key: dict(value) if isinstance(value, dict) else list(value)
+                                            for key, value in query_filters.items()},
+                            year=active_year, sort_by=sort_filter, direction=sort_direction,
+                            contract_open_interest=dict(contract_open_interest),
+                        ),
+                        file_name=f'{result["symbol"]}_vp_vertical_all.html', mime="text/html",
+                        key="vp_export_qualified_html", on_click="ignore", use_container_width=True,
+                        help="Download every retained qualifying spread, with the current filters and sort as a starting view. Open the HTML offline and clear filters to explore the full snapshot; no broker connection is used.",
+                    )
                 if not matching_count:
                     st.info("No spreads match these filters. Clear a column filter.")
                 # The table has one continuous scroll range. Load only its
                 # requested viewport so large scans do not exhaust server memory.
-                displayed = [_spread_table_row(row, annual_ids, tv_exchange=result.get("tv_exchange", ""))
-                             for row in displayed_candidates]
+                displayed = [_spread_table_row(
+                    row, annual_ids, tv_exchange=result.get("tv_exchange", ""),
+                    contract_open_interest=contract_open_interest,
+                ) for row in displayed_candidates]
                 selected_update = _SPREAD_SCROLL_COMPONENT(
                     scope=scope, sort_key=view_identity, rows=displayed,
                     total_rows=matching_count, row_offset=offset,
                     selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
                     column_filters=column_filters, filter_choices=filter_choices,
                     sort_by=sort_filter, sort_direction=sort_direction,
-                    sortable=view == "ALL QUALIFIED", has_target=effective_target is not None,
+                    sortable=True, has_target=effective_target is not None,
                     filter_ack_revision=int(filter_state["revision"]),
                     key="vp_spread_scroll_" + scope, default=None,
                 )
@@ -2461,8 +2622,9 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                         incoming_direction = selected_update.get("sort_direction")
                         if (incoming_sort in _QUALIFIED_SORT_FIELDS
                                 and incoming_direction in {"ASC", "DESC"}):
-                            for sort_key, value in (("vp_all_pair_sort", incoming_sort),
-                                                    ("vp_all_pair_direction", incoming_direction)):
+                            sort_prefix = "vp_best_pair" if view == "BEST PER YEAR" else "vp_all_pair"
+                            for sort_key, value in ((sort_prefix + "_sort", incoming_sort),
+                                                    (sort_prefix + "_direction", incoming_direction)):
                                 if st.session_state[sort_key] != value:
                                     st.session_state[sort_key] = value
                                     _remember_presentation(sort_key)
@@ -2507,9 +2669,10 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                             st.session_state.pop("vp_last_send_results", None)
                             rerun_for_component = True
                     if rerun_for_component:
-                        # Custom-component updates may run this fragment during a
-                        # full-app rerun; fragment scope is invalid in that context.
-                        st.rerun()
+                        try:
+                            st.rerun(scope="fragment")
+                        except st.errors.StreamlitAPIException:
+                            st.rerun()
                 checked_ids = set(st.session_state["_vp_checked_spreads"]["ids"])
                 st.caption(
                     f'{matching_count:,} DISPLAYED // {matching_count:,} MATCHING OF '
@@ -2521,9 +2684,9 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     "Column menus filter and sort the retained universe. Filtering, sorting and "
                     "target edits never download chains. New scans initially show all expiration "
                     "dates in the latest two available years; clear EXP / YEAR to see all years. The "
-                    "BREAKEVEN target ranks proximity; MIN / MAX explicitly limit values. "
+                    "BREAKEVEN TARGET ±% selects a price band (default ±5%). "
                     "Scrolling reuses stored results. BEST PER YEAR "
-                    "shows every match grouped and ranked within its year; its year buttons "
+                    "defaults to matches grouped by year; column sorts can reorder the table; its year buttons "
                     "show all matches for the selected year. ALL QUALIFIED ranks the same matches "
                     "across all years. The top pick in each year is ranked inside the active filters. "
                     "C = CALL; P = PUT. Green = CALL; red = PUT. Cost / max loss is bright red; "
@@ -2537,13 +2700,6 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     checked_by_id = candidates.get_many(checked_ids)
                     by_id.update(checked_by_id)
                     checked_rows = list(checked_by_id.values())
-                    if st.button(
-                        f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
-                        key="vp_save_checked_spread_drafts", use_container_width=True,
-                    ):
-                        drafts = st.session_state.setdefault("vp_saved_spread_drafts", {})
-                        _save_checked_spreads(drafts, checked_rows, result["source"])
-                        st.rerun(scope="fragment")
                     if len(checked_rows) == 1:
                         chosen = checked_rows[0]
                     else:
@@ -2559,6 +2715,9 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                             key=f"vp_multi_review_choice_{scope}",
                         )
                         chosen = by_id[selected_id]
+                    with st.expander("E*TRADE ORDER // REVIEW → PLACE", expanded=True):
+                        _render_selected_order(client, touch_session, chosen,
+                                               {**result, "max_cost": active_max_cost}, broker_live)
                     os_col, tv_col = st.columns(2, gap="small")
                     with os_col:
                         st.link_button(
@@ -2577,9 +2736,13 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                         'BUY premium minus SELL premium, per share. Chart history and delay '
                         'depend on TradingView contract coverage and your market-data access.'
                     )
-                    with st.expander("OPTIONAL E*TRADE LIVE ORDER REVIEW // SELECTED SPREAD", expanded=False):
-                        _render_selected_order(client, touch_session, chosen,
-                                               {**result, "max_cost": active_max_cost}, broker_live)
+                    if st.button(
+                        f"SAVE {len(checked_rows)} CHECKED SPREAD(S) AS TERMINAL DRAFTS",
+                        key="vp_save_checked_spread_drafts", use_container_width=True,
+                    ):
+                        drafts = st.session_state.setdefault("vp_saved_spread_drafts", {})
+                        _save_checked_spreads(drafts, checked_rows, result["source"])
+                        st.rerun(scope="fragment")
                     if len(checked_rows) > 1:
                         st.caption(
                             "ALL CHECKED SPREADS CAN BE SAVED TOGETHER. E*TRADE PREVIEW AND "
@@ -2672,11 +2835,9 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
     # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
-    ladder = (smart_fill_ladder(candidate, result["max_cost"], min_reward_risk=min_reward_risk)
-              if smart_mode and candidate.get("basis") == "SMART" else
-              [limit_price] if smart_mode and candidate.get("basis") == "MID" else [])
-    if smart_mode and not ladder:
-        st.warning("SMART FILL PRICING UNAVAILABLE // Rescan a live quoted spread.")
+    if smart_mode and (candidate.get("basis") != "ASK" or
+                       candidate.get("spread_ask") is None):
+        st.warning("SMART FILL NEEDS A VALID NATURAL ASK // Rescan a quoted spread.")
         return
     controls = st.columns(2, gap="small")
     quantity = int(controls[0].number_input(
@@ -2694,16 +2855,6 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         help="For live submission, the same reviewed spread is placed once in EACH selected account. Saving Terminal drafts never sends to E*TRADE.",
     )
     account_keys = [key for key in selected_accounts if key in by_account]
-    if smart_mode:
-        limit_price = float(st.selectbox(
-            "SMART LIMIT", ladder,
-            key="vp_smart_rung_" + result["scope"] + "_" + hashlib.sha256(
-                order_seed.encode("utf-8")
-            ).hexdigest()[:10],
-            format_func=lambda value: f"${value:.2f} / ${value * 100:.0f}",
-            help="Manual price ladder; selecting another rung NEVER places, "
-                 "changes or queues an order. A new E*TRADE preview is required.",
-        ))
     try:
         validate_vertical(
             call_put=call_put, buy_strike=buy_strike,
@@ -2754,17 +2905,14 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         live_be = (candidate["buy_strike"] + limit_price if call_put == "CALL"
                    else candidate["buy_strike"] - limit_price)
         st.caption(
-            f'SMART FILL // {candidate.get("liquidity_signal", "UNVERIFIED")} '
-            f'// SELECTED R:R 1:{risk_ratio:.2f} // SELECTED BREAKEVEN {_money(live_be)} '
-            '// VOLUME/OI ARE LEG-LEVEL SIGNALS; ORDER SIZE, QUEUE POSITION, '
-            'QUOTE AGE AND ACTUAL FILL PROBABILITY ARE NOT PROVIDED. '
-            'MANUAL LIMIT CHOICES ONLY.'
+            f'SMART // NATURAL ASK LIMIT {_money(limit_price)} // R:R 1:{risk_ratio:.2f} '
+            f'// BREAKEVEN {_money(live_be)} // DEPTH, LATENCY AND FILL TIME CANNOT BE GUARANTEED.'
         )
     st.caption(
         f'Pricing: {candidate["basis"]} // spread market BID {_money(candidate.get("spread_bid"))} / '
         f'MID {_money(candidate.get("spread_mid"))} / ASK {_money(candidate.get("spread_ask"))}. '
-        'ASK = BUY option ask − SELL option bid. MID/LAST can remain unfilled; '
-        'quotes will be rechecked before E*TRADE preview.'
+        'ASK = BUY option ask − SELL option bid. A proposed marketable ASK limit '
+        'may still queue or remain unfilled; an uncached chain quote is obtained before broker preview.'
     )
     st.caption(
         "SAVE CHECKED SPREADS = TERMINAL-ONLY DRAFT; NOT SAVED AT E*TRADE. "
@@ -2781,7 +2929,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         # Requote only on an explicit Review click: no broker traffic on
         # checkbox, filter, order quantity, or OptionStrat interactions.
         try:
-            latest = _chain(client, symbol, expiry, touch_session)
+            latest = _chain(client, symbol, expiry, touch_session, fresh_broker_quote=True)
             def exact_leg(strike: float, osi: str) -> dict[str, Any]:
                 for row in latest:
                     if (row.get("call_put") == call_put
@@ -2797,7 +2945,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                 sell_bid=sell_leg.get("bid"), sell_ask=sell_leg.get("ask"),
                 width=candidate["width"], max_cost=result["max_cost"],
                 pricing_mode=result.get("pricing_mode", "NORMAL"),
-                min_reward_risk=min_reward_risk,
+                min_reward_risk=min_reward_risk, desktop_fast_fill=True,
                 buy_volume=buy_leg.get("volume"), sell_volume=sell_leg.get("volume"),
                 buy_open_interest=buy_leg.get("open_interest"),
                 sell_open_interest=sell_leg.get("open_interest"),
@@ -2805,9 +2953,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             if (not checked_price or not checked_price["orderable"]
                     or checked_price["basis"] != candidate["basis"]
                     or (smart_mode and (
-                        checked_price["debit"] != candidate["debit"]
-                        or limit_price < checked_price["spread_mid"] - .005
-                        or limit_price > checked_price["spread_ask"] + .005
+                        checked_price["spread_ask"] > limit_price + .005
                         or candidate["width"] - limit_price + 1e-8 < min_reward_risk * limit_price
                         or (result["max_cost"] is not None
                             and limit_price * 100 > result["max_cost"] + 1e-8)
@@ -2885,13 +3031,14 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
             for message in details.get("messages") or []:
                 st.warning("E*TRADE PREVIEW // " + str(message))
-        confirmed = st.checkbox(
-            "I AUTHORIZE A LIVE E*TRADE ORDER IN EVERY SELECTED ACCOUNT (MAY QUEUE OR EXECUTE; NOT SAVED)",
-            key="vp_live_confirm",
+        st.warning(
+            "FINAL LIVE ACTION // The next button submits the previewed spread "
+            "to E*TRADE for every listed account; it may execute immediately or queue."
         )
         send_click = st.button(
             f"PLACE LIVE ORDER // {len(account_keys)} ACCOUNT(S) (MAY QUEUE)",
-            key="vp_send", type="primary", use_container_width=True, disabled=not confirmed,
+            key="vp_send", type="primary", use_container_width=True,
+            disabled=not review_fresh or not account_keys,
         )
         if send_click:
             if not _reviews_are_fresh(st.session_state.get("vp_review_bundle"), fingerprint):
@@ -2928,24 +3075,21 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
 
 
-@st.fragment(run_every=.5)
-def _render_verti_phone_bootstrap(vault_key: str) -> None:
-    """Retry pricing restoration; stop polling on completion or timeout.
+@st.fragment(run_every=1)
+def _recover_vertical_pricing_without_blocking() -> None:
+    """Restore delayed browser preferences while the scanner remains usable.
 
-    Component replies can race a top-tab rerun. A transient missing reply must
-    not leave the workspace cut off until the user switches tabs manually.
-    This bootstrap never downloads chains or touches broker orders.
+    The separate component key avoids duplicating the live pricing-toggle
+    widget. Browser storage can be unavailable, so stop retrying silently.
     """
-    started = st.session_state.setdefault("_vp_bootstrap_started", time.monotonic())
-    pricing_ready = _hydrate_vertical_options_pricing()
-    if pricing_ready:
-        st.session_state["_vp_workspace_ready"] = vault_key
-        st.rerun()
-    if time.monotonic() - started >= 12:
-        st.session_state["_vp_bootstrap_failed"] = True
-        st.rerun()  # Remove the polling fragment and show a stable retry state.
+    if st.session_state.get("_vp_pricing_mode_hydrated"):
         return
-    st.caption("RESTORING VERTI PHONE PREFERENCES…")
+    started = st.session_state.setdefault("_vp_pref_recovery_started", time.monotonic())
+    if _hydrate_vertical_options_pricing("vp_pricing_background_reader"):
+        st.rerun()  # Single redraw to adopt the actual saved browser mode.
+    if time.monotonic() - started >= 12:
+        st.session_state["_vp_pref_recovery_unavailable"] = True
+        st.rerun()  # Stop this timer; keep the visible session-mode switch.
 
 
 
@@ -2967,22 +3111,17 @@ def _render_vertical_scan_continuation(client, touch_session) -> None:
 
 
 def render_verti_phone(client, touch_session, *, vault_key: str = "default") -> None:
-    """Render the isolated Vertical Options workspace."""
+    """Render without blocking on optional browser preference storage."""
     st.html(_VERTICAL_OPTIONS_CSS)
     install_native_switch_theme("vp_smart_fill")
     _restore_scan_memory(vault_key)
     _restore_presentation()
-    if st.session_state.get("_vp_workspace_ready") != vault_key:
-        if st.session_state.get("_vp_bootstrap_failed"):
-            st.error("PREFERENCE STORAGE DID NOT RESPOND // Retry initialization. Saved settings have not been overwritten.")
-            if st.button("RETRY INITIALIZATION", key="vp_retry_initialization"):
-                st.session_state.pop("_vp_bootstrap_failed", None)
-                st.session_state.pop("_vp_bootstrap_started", None)
-                st.rerun()
-            return
-        _render_verti_phone_bootstrap(vault_key)
-        return
+    st.session_state["_vp_workspace_ready"] = vault_key
+    st.session_state.pop("_vp_bootstrap_failed", None)
     _render_verti_phone_fragment(client, touch_session, vault_key)
+    if (not st.session_state.get("_vp_pricing_mode_hydrated")
+            and not st.session_state.get("_vp_pref_recovery_unavailable")):
+        _recover_vertical_pricing_without_blocking()
     result = st.session_state.get("vp_scan_result") or {}
     if (result.get("max_cost") is None
             and result.get("symbol") == str(st.session_state.get("vp_symbol_value") or "").strip().upper()

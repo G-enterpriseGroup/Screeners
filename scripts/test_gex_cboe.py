@@ -6,10 +6,12 @@ Requires production requirements. No live CBOE or broker request is made.
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from contextlib import ExitStack, contextmanager
 import copy
 import math
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -21,10 +23,138 @@ from src import gex_ui as core
 from src import gex_ui_v3 as ui
 from src import gex_ui_v3_base as base
 from src import gex_snapshot_cache as memory
+from src import gex_workspace_v2 as workspace
 
 
 def occ(symbol: str, expiry, cp: str, strike: float) -> str:
     return f"{symbol}{expiry.strftime('%y%m%d')}{cp}{int(round(strike * 1000)):08d}"
+
+
+class GexRenderIsolationTests(unittest.TestCase):
+    @staticmethod
+    def _callbacks():
+        return {
+            **{f"st.{name}": getattr(ui.st, name)
+               for name in ("html", "markdown", "button")},
+            **{f"proven.{name}": getattr(ui._proven, name) for name in (
+                "_decorate_overview", "_render_tradingview_pine", "_render_background_status",
+            )},
+            **{f"base.{name}": getattr(base, name) for name in (
+                "_overview_html", "_remove_ticker", "_render_overview", "_refresh_symbol",
+                "_after_tickers_added", "_render_etrade_txt_control", "_render_cboe_txt_control",
+                "_render_cboe_refresh_all_control", "_run_cboe_refresh_all",
+                "_render_cboe_overview", "_render_morningstar_gex",
+                "_render_cboe_publication_status", "_render_settings", "_render_tradingview",
+            )},
+        }
+
+    @contextmanager
+    def _render_environment(self, renderer):
+        counts = {}
+
+        def toggle(*args, **kwargs):
+            key = threading.current_thread().name
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] > 1:
+                raise RuntimeError("Duplicate keyed toggle: " + str(kwargs.get("key")))
+            return True
+
+        with ExitStack() as patches:
+            patches.enter_context(patch.object(ui, "hydrate_gex_snapshots", return_value=True))
+            patches.enter_context(patch.object(ui, "persist_gex_snapshots"))
+            patches.enter_context(patch.object(workspace, "_decorate_gex_running_status",
+                                              side_effect=lambda body, key: body))
+            for name, value in (("session_state", {}), ("query_params", {}),
+                                ("toggle", toggle)):
+                patches.enter_context(patch.object(ui.st, name, value))
+            for name in ("html", "markdown", "caption", "divider"):
+                patches.enter_context(patch.object(ui.st, name))
+            patches.enter_context(patch.object(base, "_render_settings",
+                                              side_effect=lambda key, state, results: state))
+            patches.enter_context(patch.object(ui._proven, "render_gex", side_effect=renderer))
+            yield counts
+
+    def _assert_callbacks_restored(self, originals):
+        for name, callback in self._callbacks().items():
+            self.assertIs(callback, originals[name], name)
+
+    def test_overlapping_production_gex_renders_register_one_toggle_each(self):
+        first_entered, second_started, second_entered, release = (
+            threading.Event() for _ in range(4)
+        )
+        errors = []
+
+        def render(client, key, touch, **kwargs):
+            if key == "first":
+                first_entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("First renderer timed out")
+            else:
+                second_entered.set()
+            return base._render_settings(key, {"revision": 0, "auto_refresh_on_login": True}, {})
+
+        def run(key):
+            try:
+                if key == "second":
+                    second_started.set()
+                workspace._render_with_style_only_html(None, key, None, None, "", None)
+            except BaseException as exc:
+                errors.append(exc)
+
+        with self._render_environment(render) as counts:
+            originals = self._callbacks()
+            first = threading.Thread(target=run, args=("first",), name="first", daemon=True)
+            second = threading.Thread(target=run, args=("second",), name="second", daemon=True)
+            try:
+                first.start()
+                self.assertTrue(first_entered.wait(3))
+                second.start()
+                self.assertTrue(second_started.wait(3))
+                self.assertFalse(second_entered.wait(.1))
+            finally:
+                release.set()
+                first.join(3)
+                if second.ident is not None:
+                    second.join(3)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertFalse(errors, errors)
+            self.assertEqual(counts, {"first": 1, "second": 1})
+            self._assert_callbacks_restored(originals)
+
+    def test_gex_callbacks_and_lock_restore_after_error_rerun_and_repeat(self):
+        from streamlit.runtime.scriptrunner import RerunData, RerunException
+
+        interruption = {"error": None}
+
+        def render(client, key, touch, **kwargs):
+            base._render_settings(key, {"revision": 0, "auto_refresh_on_login": True}, {})
+            if interruption["error"] is not None:
+                raise interruption["error"]
+
+        with self._render_environment(render) as counts:
+            originals = self._callbacks()
+            for error in (RuntimeError("render failed"), RerunException(RerunData()), None, None):
+                counts.clear()
+                interruption["error"] = error
+                with self.subTest(interruption=type(error).__name__):
+                    if error is None:
+                        workspace._render_with_style_only_html(None, "repeat", None, None, "", None)
+                    else:
+                        with self.assertRaises(type(error)):
+                            workspace._render_with_style_only_html(None, "repeat", None, None, "", None)
+                    self.assertEqual(sum(counts.values()), 1)
+                    self._assert_callbacks_restored(originals)
+                    # A different thread can acquire the render bridge after a
+                    # normal exception or Streamlit's BaseException rerun signal.
+                    acquired = []
+                    def acquire():
+                        with workspace._GEX_RENDER_LOCK:
+                            acquired.append(True)
+                    waiter = threading.Thread(target=acquire, daemon=True)
+                    waiter.start()
+                    waiter.join(3)
+                    self.assertEqual(acquired, [True])
 
 
 class CboeGexTests(unittest.TestCase):

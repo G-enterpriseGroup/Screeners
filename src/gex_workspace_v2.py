@@ -36,6 +36,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
+from functools import wraps
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -56,7 +57,7 @@ from src.gex_ui_v3 import (
 # ==============================
 # Increment this on every production GEX code push so the live Streamlit page
 # makes it obvious which build is actually deployed.
-GEX_BUILD_VERSION = "v2026.10.21.1"
+GEX_BUILD_VERSION = "v2026.11.07.1"
 GEX_ENGINE_LABEL = "E*TRADE // IVX30 + IV/HV // 20 CALC // 20 FETCH // 3.7 RPS"
 
 
@@ -978,7 +979,20 @@ def _discover_terminal_context() -> tuple[
 # ==============================
 # SAFE GEX RENDER BRIDGE
 # ==============================
+_GEX_RENDER_LOCK = threading.RLock()
 
+
+def _serialize_gex_render(render):
+    @wraps(render)
+    def serialized(*args, **kwargs):
+        # Callback adapters are process-wide; overlapping sessions must not
+        # capture another render's temporary wrappers as their originals.
+        with _GEX_RENDER_LOCK:
+            return render(*args, **kwargs)
+    return serialized
+
+
+@_serialize_gex_render
 def _render_with_style_only_html(
     client: Any,
     vault_key: str,

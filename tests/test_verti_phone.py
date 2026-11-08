@@ -33,7 +33,7 @@ def quoted_spread():
     ]
     candidates, _ = math.scan_vertical_candidates(
         symbol="SPY", spot_last=100, option_rows=rows,
-        target_breakeven=None, max_cost=200,
+        target_breakeven=None, max_cost=200, desktop_fast_fill=True,
     )
     return candidates[0], rows
 
@@ -166,13 +166,289 @@ class PhoneIsolationTests(unittest.TestCase):
         with (patch.object(phone, "st", ui),
               patch.object(phone, "_PRICING_PREFERENCE_COMPONENT") as component):
             component.side_effect = [None, {"ready": True, "mode": "NORMAL", "available": True}, None]
-            self.assertIsNone(phone._pricing_mode_flip_switch())
+            self.assertEqual(phone._pricing_mode_flip_switch(), "NORMAL")
             self.assertEqual(component.call_count, 1)
             self.assertEqual(component.call_args.kwargs["action"], "read")
             self.assertEqual(phone._pricing_mode_flip_switch(), "NORMAL")
             self.assertEqual(component.call_args.kwargs["action"], "write")
             self.assertEqual(component.call_args.kwargs["value"], "NORMAL")
         self.assertEqual({key: state[key] for key in before}, before)
+
+
+class PhoneParityTests(unittest.TestCase):
+    def test_html_download_keeps_a_read_snapshot_without_blocking_new_sort_indexes(self):
+        import threading
+        from src.vertical_options_store import VerticalResultStore
+        expiry = date.today() + timedelta(days=45)
+        contracts = [dict(expiry=expiry, call_put="CALL", strike=100 + k,
+                          last=4 - .05 * k, bid=3.95 - .05 * k, ask=4.05 - .05 * k,
+                          osi=f"SYNTHETIC-{k}") for k in range(25)]
+        for owner in (desktop, phone):
+            with self.subTest(owner=owner.__name__):
+                store = VerticalResultStore("SPY", 100, None, None, "NORMAL")
+                store.add_expiration(expiry, contracts, math.scan_vertical_candidates)
+                original = [row["id"] for row in store.iter_ranked()]
+                self.assertGreater(len(original), 256)  # Keep the SQLite read cursor active.
+                reading, release, indexed = (threading.Event() for _ in range(3))
+                errors, exported, output = [], [], []
+                def builder(retained, **options):
+                    rows = retained.iter_ranked()
+                    exported.append(next(rows)["id"])
+                    reading.set()
+                    if not release.wait(5):
+                        raise RuntimeError("Export release timed out")
+                    exported.extend(row["id"] for row in rows)
+                    return "complete offline snapshot"
+                def download():
+                    try:
+                        output.append(owner._qualified_store_html(
+                            store, source="E*TRADE", loaded_at=1000, pricing_mode="NORMAL"))
+                    except BaseException as error:
+                        errors.append(error)
+                def interact():
+                    try:
+                        store.page(sort_by="MAX PROFIT", direction="DESC")
+                        later = expiry + timedelta(days=30)
+                        store.add_expiration(later, [{**row, "expiry": later} for row in contracts[:2]],
+                                             math.scan_vertical_candidates)
+                        indexed.set()
+                    except BaseException as error:
+                        errors.append(error)
+                with patch.object(owner, "filterable_verticals_html", side_effect=builder):
+                    download_thread = threading.Thread(target=download, daemon=True)
+                    interaction_thread = threading.Thread(target=interact, daemon=True)
+                    try:
+                        download_thread.start()
+                        self.assertTrue(reading.wait(3))
+                        interaction_thread.start()
+                        self.assertTrue(indexed.wait(3), "HTML compression blocked interactive sorting")
+                    finally:
+                        release.set()
+                        download_thread.join(3)
+                        if interaction_thread.ident is not None:
+                            interaction_thread.join(3)
+                self.assertFalse(download_thread.is_alive())
+                self.assertFalse(interaction_thread.is_alive())
+                self.assertFalse(errors, errors)
+                self.assertEqual(output, ["complete offline snapshot"])
+                self.assertEqual(exported, original)
+                self.assertGreater(len(store), len(original))
+
+    def test_offline_html_delegates_complete_snapshot_without_deferred_ui_calls(self):
+        from src.vertical_options_store import VerticalResultStore
+        _, rows = quoted_spread()
+        expiries = [date.today() + timedelta(days=6), date.today() + timedelta(days=30),
+                    date.today() + timedelta(days=60)]
+        for owner in (desktop, phone):
+            with self.subTest(owner=owner.__name__):
+                store = VerticalResultStore("SPY", 100, None, None, "NORMAL")
+                for expiry in expiries:
+                    store.add_expiration(expiry, [{**row, "expiry": expiry} for row in rows],
+                                         math.scan_vertical_candidates)
+                candidate = next(row for row in store.iter_ranked() if row["expiry"] == expiries[1])
+                lookup = {owner._leg_quote_key(candidate, "buy_"): 0,
+                          owner._leg_quote_key(candidate, "sell_"): 1250}
+                filters = {"cost": {"max": 0}, "expiry": [expiries[1].isoformat()]}
+                captured = {}
+                def builder(retained, **options):
+                    captured.update(options)
+                    captured["rows"] = list(retained.iter_ranked())
+                    captured["oi"] = options["contract_open_interest"](candidate)
+                    return "<!doctype html>synthetic complete snapshot"
+                ui = MagicMock()
+                with (patch.object(owner, "st", ui),
+                      patch.object(owner, "_table_open_interest", side_effect=AssertionError("UI access")),
+                      patch.object(owner, "_chain") as chain,
+                      patch.object(owner, "_rank_cached_vertical_chains") as rank,
+                      patch.object(owner, "filterable_verticals_html", side_effect=builder)):
+                    downloaded = owner._qualified_store_html(
+                        store, source="E*TRADE", loaded_at=1000, pricing_mode="NORMAL",
+                        column_filters=filters, year=expiries[1].year, sort_by="COST", direction="DESC",
+                        contract_open_interest=lookup)
+                self.assertTrue(downloaded.startswith("<!doctype html>"))
+                self.assertEqual(len(captured["rows"]), 2)
+                self.assertEqual({row["expiry"] for row in captured["rows"]}, set(expiries[1:]))
+                self.assertEqual(captured["column_filters"], filters)
+                self.assertEqual((captured["year"], captured["sort_by"], captured["direction"]),
+                                 (expiries[1].year, "COST", "DESC"))
+                self.assertEqual(captured["oi"], {"buy": 0, "sell": 1250})
+                self.assertEqual(store.count(column_filters=filters), 0)
+                ui.assert_not_called()
+                self.assertFalse(ui.method_calls)
+                chain.assert_not_called()
+                rank.assert_not_called()
+
+    def test_phone_quote_policy_matches_desktop_and_reuses_ranked_expirations(self):
+        _, rows = quoted_spread()
+        raw = {"rows": rows, "symbol": "SPY", "spot": 100}
+        ui = order_ui({})
+        with (patch.object(phone, "st", ui),
+              patch.object(phone, "scan_vertical_candidates", wraps=math.scan_vertical_candidates) as scanner):
+            normal, _, _, _ = phone._rank_cached_vertical_chains(raw, None, None, "NORMAL")
+            again, _, _, _ = phone._rank_cached_vertical_chains(raw, None, None, "NORMAL")
+            self.assertIs(again, normal)
+            self.assertEqual(scanner.call_count, 1)
+            self.assertTrue(scanner.call_args.kwargs["desktop_fast_fill"])
+            smart, _, _, _ = phone._rank_cached_vertical_chains(raw, None, None, "SMART FILL")
+            self.assertEqual(scanner.call_count, 2)
+            normal_again, _, _, _ = phone._rank_cached_vertical_chains(raw, None, None, "NORMAL")
+            self.assertIs(normal_again, normal)
+            self.assertEqual(scanner.call_count, 2)
+        for mode, store in (("NORMAL", normal), ("SMART FILL", smart)):
+            expected, _ = math.scan_vertical_candidates(
+                symbol="SPY", spot_last=100, option_rows=rows, target_breakeven=None,
+                max_cost=None, pricing_mode=mode, desktop_fast_fill=True)
+            self.assertEqual([(r["id"], r["basis"], r["debit"]) for r in store.iter_ranked()],
+                             [(r["id"], r["basis"], r["debit"]) for r in expected])
+        ui.get_option_chain.assert_not_called()
+        ui.preview_order.assert_not_called()
+        ui.place_order.assert_not_called()
+
+    def test_explicit_mode_wins_over_late_preferences_and_sort_memories_are_separate(self):
+        state = {"vp_smart_fill": True, "_vp_pricing_mode_preference": "NORMAL",
+                 "_vp_presentation": {"vp_best_pair_sort": "COST", "vp_best_pair_direction": "DESC",
+                                      "vp_all_pair_sort": "FILL EST", "vp_all_pair_direction": "ASC"}}
+        ui = order_ui(state)
+        ui.toggle.return_value = True
+        with (patch.object(phone, "st", ui),
+              patch.object(phone, "_PRICING_PREFERENCE_COMPONENT") as component):
+            phone._remember_pricing_mode()
+            self.assertEqual(phone._pricing_mode_flip_switch(), "SMART FILL")
+            self.assertEqual([call.kwargs["action"] for call in component.call_args_list], ["write"])
+            phone._restore_presentation()
+        self.assertEqual(state["vp_best_pair_sort"], "COST")
+        self.assertEqual(state["vp_best_pair_direction"], "DESC")
+        self.assertEqual(state["vp_all_pair_sort"], "FILL EST")
+        self.assertEqual(state["vp_all_pair_direction"], "ASC")
+        self.assertFalse(any(key.startswith(("vo_", "_vo_")) for key in state))
+
+    def test_stacked_leg_open_interest_uses_exact_cached_quote_and_keeps_zero(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        import src.verti_phone_ui as vo
+        expiry = date(2029, 1, 19)
+        rows = [dict(expiry=expiry, call_put="CALL", strike=100, osi="QQQ-C100",
+                     last=6.0, bid=5.9, ask=6.1, open_interest=12345),
+                dict(expiry=expiry, call_put="CALL", strike=110, osi="QQQ-C110",
+                     last=3.0, bid=2.9, ask=3.1, open_interest=0)]
+        raw = {"scan_id": 77, "rows": rows}
+        result = {"source": "E*TRADE", "symbol": "QQQ", "raw_scan_id": 77}
+        state = {"_vp_chain_cache": {"E*TRADE:QQQ": raw}}
+        candidates, annual = math.scan_vertical_candidates(
+            symbol="QQQ", spot_last=100, option_rows=rows, target_breakeven=None,
+            max_cost=None, max_per_expiration=None, pricing_mode="SMART FILL",
+            desktop_fast_fill=True)
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        before = deepcopy(candidate)
+        with patch.object(vo.st, "session_state", state):
+            index = vo._table_open_interest(result)
+            self.assertIs(index, vo._table_open_interest(result))
+            payload = vo._spread_table_row(candidate, annual, contract_open_interest=index)
+            self.assertEqual(payload["open_interest"], {"buy": 12345, "sell": 0})
+            self.assertEqual(payload["values"], vo._spread_table_row(candidate, annual)["values"])
+            self.assertEqual(candidate, before)  # Read-only presentation; no repricing.
+            self.assertEqual(vo._table_open_interest({**result, "raw_scan_id": 78}), {})
+            self.assertEqual(vo._table_open_interest({**result, "source": "YFINANCE"}), {})
+            # A second quote of the same OSI must not steal OI from the chosen quote.
+            rows.append({**rows[0], "last": 6.2, "open_interest": 999})
+            updated = vo._table_open_interest(result)
+            self.assertIsNot(index, updated)
+            self.assertEqual(vo._spread_table_row(candidate, annual,
+                             contract_open_interest=updated)["open_interest"]["buy"], 12345)
+            # Without matching quotes show unknown, not OI from another contract.
+            missing = {**candidate, "sell_osi": "OTHER"}
+            self.assertIsNone(vo._spread_table_row(missing, annual,
+                              contract_open_interest=updated)["open_interest"]["sell"])
+
+
+    def test_stacked_open_interest_missing_invalid_and_put_leg_identity(self):
+        from unittest.mock import patch
+        import src.verti_phone_ui as vo
+        expiry = date(2029, 1, 19)
+        for invalid in (None, "", -1, float("nan"), float("inf"), 1.5, True):
+            with self.subTest(oi=invalid):
+                row = dict(expiry=expiry, call_put="PUT", strike=110, osi="QQQ-P110",
+                           last=3.0, bid=2.9, ask=3.1, open_interest=invalid)
+                raw = {"scan_id": 1, "rows": [row]}
+                state = {"_vp_chain_cache": {"E*TRADE:QQQ": raw}}
+                result = {"source": "E*TRADE", "symbol": "QQQ", "raw_scan_id": 1}
+                with patch.object(vo.st, "session_state", state):
+                    index = vo._table_open_interest(result)
+                self.assertIsNone(index[vo._leg_quote_key(row)])
+        buy = dict(expiry=expiry, call_put="PUT", strike=110, osi="QQQ-P110",
+                   last=3.0, bid=2.9, ask=3.1, open_interest=2500)
+        sell = {**buy, "strike": 100, "osi": "QQQ-P100", "last": 1.0,
+                "bid": .9, "ask": 1.1, "open_interest": 777}
+        index = {vo._leg_quote_key(buy): 2500, vo._leg_quote_key(sell): 777}
+        candidates, annual = math.scan_vertical_candidates(
+            symbol="QQQ", spot_last=100, option_rows=[buy, sell], target_breakeven=None,
+            max_cost=None, max_per_expiration=None)
+        self.assertEqual(vo._spread_table_row(candidates[0], annual,
+                         contract_open_interest=index)["open_interest"], {"buy": 2500, "sell": 777})
+
+
+    def test_live_review_bypasses_chain_cache_without_affecting_scans(self):
+        from unittest.mock import MagicMock, patch
+        import src.verti_phone_ui as vo
+
+        class CachedBrokerFixture:
+            def __init__(self):
+                self.get_option_chain = MagicMock(return_value={"OptionChainResponse": {"OptionPair": []}})
+
+        cached = CachedBrokerFixture()
+        touch = MagicMock()
+        with patch.object(vo, "CachedETradeClient", CachedBrokerFixture):
+            vo._chain(cached, "QQQ", date(2029, 1, 19), touch)
+            self.assertNotIn("force_refresh", cached.get_option_chain.call_args.kwargs)
+            vo._chain(cached, "QQQ", date(2029, 1, 19), touch, fresh_broker_quote=True)
+            self.assertIs(cached.get_option_chain.call_args.kwargs["force_refresh"], True)
+            self.assertEqual(touch.call_count, 2)
+        direct = MagicMock()
+        direct.get_option_chain.return_value = {"OptionChainResponse": {"OptionPair": []}}
+        vo._chain(direct, "QQQ", date(2029, 1, 19), touch, fresh_broker_quote=True)
+        self.assertNotIn("force_refresh", direct.get_option_chain.call_args.kwargs)
+
+
+    def test_preference_storage_failure_does_not_block_scanner(self):
+        from unittest.mock import patch
+        import src.verti_phone_ui as vo
+        state = {"_vp_bootstrap_failed": True}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "html"),
+              patch.object(vo, "install_native_switch_theme"),
+              patch.object(vo, "_restore_scan_memory"),
+              patch.object(vo, "_restore_presentation"),
+              patch.object(vo, "_render_verti_phone_fragment") as renderer):
+            vo.render_verti_phone(None, lambda: None, vault_key="fixture")
+            self.assertEqual(state["_vp_workspace_ready"], "fixture")
+            self.assertNotIn("_vp_bootstrap_failed", state)
+            renderer.assert_called_once()
+            self.assertNotIn("_vp_pricing_mode_hydrated", state)
+
+
+    def test_delayed_preferences_retry_silently_without_blocking_ui(self):
+        from unittest.mock import patch
+        import src.verti_phone_ui as vo
+        state = {}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo, "_hydrate_vertical_options_pricing", return_value=True) as read,
+              patch.object(vo.st, "rerun") as rerun):
+            vo._recover_vertical_pricing_without_blocking.__wrapped__()
+            read.assert_called_once_with("vp_pricing_background_reader")
+            rerun.assert_called_once()
+            self.assertNotIn("_vp_pref_recovery_unavailable", state)
+        state = {"_vp_pref_recovery_started": 1}
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo, "_hydrate_vertical_options_pricing", return_value=False),
+              patch.object(vo.time, "monotonic", return_value=30),
+              patch.object(vo.st, "rerun") as rerun,
+              patch.object(vo.st, "error") as error):
+            vo._recover_vertical_pricing_without_blocking.__wrapped__()
+            self.assertTrue(state["_vp_pref_recovery_unavailable"])
+            rerun.assert_called_once()
+            error.assert_not_called()
+
 
 
 class PhoneAccountTests(unittest.TestCase):
@@ -310,7 +586,7 @@ class PhoneOrderTests(unittest.TestCase):
         self.assertEqual({key: self.state[key] for key in self.desktop_state}, self.desktop_state)
         return ui
 
-    def test_review_requotes_exact_legs_then_only_explicit_phone_confirmation_can_send(self):
+    def test_review_requotes_exact_legs_then_only_explicit_place_can_send(self):
         self.render_order()
         self.client.preview_order.assert_not_called()
         self.client.place_order.assert_not_called()
@@ -323,9 +599,8 @@ class PhoneOrderTests(unittest.TestCase):
         self.assertEqual(order["limitPrice"], self.candidate["debit"])
         self.assertEqual([leg["orderAction"] for leg in order["Instrument"]], ["BUY_OPEN", "SELL_OPEN"])
         self.assertNotIn("vp_live_confirm", self.state)
-        self.render_order({"vp_send"})
+        self.render_order()
         self.client.place_order.assert_not_called()
-        self.state["vp_live_confirm"] = True
         self.render_order({"vp_send"})
         self.client.place_order.assert_called_once()
         placed_account, placed = self.client.place_order.call_args.args
@@ -337,6 +612,17 @@ class PhoneOrderTests(unittest.TestCase):
         self.assertEqual(self.state["vp_last_send_results"][0]["status"], "SUBMITTED")
         self.render_order({"vp_send"})
         self.assertEqual(self.client.place_order.call_count, 1)
+
+    def test_review_requests_uncached_quote_only_on_explicit_review(self):
+        ui = order_ui(self.state, {"vp_preview"})
+        touch = MagicMock()
+        with (patch.object(phone, "st", ui),
+              patch.object(phone, "_chain", return_value=self.rows) as chain):
+            phone._render_selected_order(self.client, touch, self.candidate, self.result, True)
+        chain.assert_called_once_with(self.client, "SPY", self.candidate["expiry"], touch,
+                                      fresh_broker_quote=True)
+        self.client.preview_order.assert_called_once()
+        self.client.place_order.assert_not_called()
 
     def test_two_account_review_sends_each_exact_preview_once(self):
         self.state["_vp_order_account_selection"] = ["other", "preferred"]
@@ -465,7 +751,7 @@ class VerticalCostFilterTests(unittest.TestCase):
         expected = {"expiry": ["2028-01-21", "2028-06-16", "2029-01-19"]}
         self.assertEqual(phone._default_column_filters(expiries), expected)
         self.assertEqual(phone._default_column_filters(expiries, "103"),
-                         {**expected, "breakeven": {"target": 103}})
+                         {**expected, "breakeven": {"target": 103, "percent": 5.0}})
 
     def test_both_renderers_use_only_column_max_over_the_complete_store(self):
         import csv
@@ -520,6 +806,8 @@ def exporter(function, *args, **kwargs):
     if function is feature._qualified_store_csv:
         st.session_state["fixture_csv"] = function(*args, **kwargs)
         st.session_state["fixture_export_cap"] = kwargs["max_cost"]
+    if function is feature._qualified_store_html:
+        st.session_state["fixture_html_callback"] = deferred(function, *args, **kwargs)
     return deferred(function, *args, **kwargs)
 def order(client, touch, candidate, result, broker_live):
     st.session_state["fixture_order_cap"] = result["max_cost"]
@@ -552,6 +840,7 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
       patch.object(feature, "_scan_all_years", side_effect=scan),
       patch.object(feature, "_rank_cached_vertical_chains", side_effect=rank),
       patch.object(feature, "_render_selected_order", side_effect=order),
+      patch.object(feature, "filterable_verticals_html", side_effect=AssertionError("Eager HTML export")),
       patch.object(feature, "partial", side_effect=exporter)):
     feature.FEATURE_RENDER(Broker(), lambda: None, vault_key=vault)
 '''.replace("FEATURE_MODULE", module).replace("FEATURE_PREFIX", prefix).replace("FEATURE_RENDER", renderer).replace("FIXTURE_VAULT", vault)
@@ -566,6 +855,18 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 self.assertNotIn("cost", args["column_filters"])
                 self.assertIsNone(app.session_state[result_key]["max_cost"])
                 self.assertNotIn("scan_max_cost", app.session_state[filter_key])
+                html_callback = app.session_state["fixture_html_callback"]
+                self.assertTrue(callable(html_callback))
+                self.assertEqual(html_callback.keywords["column_filters"],
+                                 {**args["column_filters"], "breakeven": {"target": None}})
+                self.assertEqual(html_callback.keywords["sort_by"], args["sort_by"])
+                self.assertIsInstance(html_callback.keywords["contract_open_interest"], dict)
+                cached_oi = app.session_state["_" + prefix + "_chain_cache"]["E*TRADE:QQQ"][
+                    "_" + prefix + "_table_open_interest"]["values"]
+                self.assertIsNot(html_callback.keywords["contract_open_interest"], cached_oi)
+                self.assertNotIn("fixture_scan_calls", app.session_state)
+                self.assertTrue(args["sortable"])
+                self.assertEqual(args["sort_by"], "YEAR + FILL")
                 store = app.session_state[result_key]["candidates"]
                 self.assertEqual(len(store), 9)
                 self.assertTrue(any(row["cost"] > 150 for row in store.iter_rows()))
@@ -581,10 +882,7 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 app.session_state[prefix + "_live_confirm"] = True
                 edited = {**args["column_filters"], "side": ["CALL"],
                           "breakeven": {"target": 103}, "cost": {"min": 75, "max": 150}}
-                # Desktop migrates target-only updates to its requested ±5% band;
-                # Verti Phone preserves its original target-only ranking contract.
-                expected_edited = ({**edited, "breakeven": {"target": 103, "percent": 5.0}}
-                                   if prefix == "vo" else edited)
+                expected_edited = {**edited, "breakeven": {"target": 103, "percent": 5.0}}
                 rank_caps = list(app.session_state["fixture_rank_caps"])
                 app.session_state["fixture_update"] = {
                     "scope": args["scope"], "column_filters": edited, "filter_revision": 1,
@@ -619,6 +917,12 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                     self.assertIsNone(app.session_state[result_key]["max_cost"])
                     if cap <= 0:
                         self.assertEqual(app.session_state["fixture_args"]["total_rows"], 0)
+                        html_callback = app.session_state["fixture_html_callback"]
+                        self.assertEqual(html_callback.keywords["column_filters"]["cost"]["max"], cap)
+                        controls = {button.proto.label: button.proto.disabled
+                                    for button in app.get("download_button")}
+                        self.assertEqual(len(controls), 3)
+                        self.assertFalse(controls["EXPORT HTML // ALL" if prefix == "vo" else "HTML // ALL"])
                 app.toggle(key=prefix + "_smart_fill").set_value(True).run()
                 self.assertFalse(app.exception)
                 self.assertEqual(app.session_state["fixture_args"]["column_filters"], expected_edited)
@@ -660,6 +964,24 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 self.assertEqual(app.session_state[result_key]["raw_scan_id"], 2)
                 self.assertIsNone(app.session_state[result_key]["max_cost"])
                 self.assertTrue(all(cap is None for cap in app.session_state["fixture_rank_caps"]))
+
+                ranks_before_sort = list(app.session_state["fixture_rank_caps"])
+                scans_before_sort = list(app.session_state["fixture_scan_calls"])
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "column_filters": args["column_filters"],
+                    "filter_revision": args["filter_ack_revision"] + 1,
+                    "selected_ids": [], "revision": 0,
+                    "sort_by": "COST", "sort_direction": "DESC"}
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["sort_by"], "COST")
+                app.radio[0].set_value("ALL QUALIFIED").run()
+                self.assertEqual(app.session_state["fixture_args"]["sort_by"], "FILL + TARGET")
+                app.radio[0].set_value("BEST PER YEAR").run()
+                args = app.session_state["fixture_args"]
+                self.assertEqual((args["sort_by"], args["sort_direction"]), ("COST", "DESC"))
+                self.assertEqual(app.session_state["fixture_rank_caps"], ranks_before_sort)
+                self.assertEqual(app.session_state["fixture_scan_calls"], scans_before_sort)
 
                 # Capped legacy snapshots require an explicit rescan and cannot resume or trade.
                 legacy = dict(app.session_state[result_key])

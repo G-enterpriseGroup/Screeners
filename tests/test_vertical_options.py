@@ -549,6 +549,156 @@ else:
         for key in ("CALL", "PUT"):
             self.assertEqual(sum(1 for _ in store.iter_rows(side=key)), 124750)
 
+    def test_disk_store_broad_expiry_page_uses_sort_index_and_refreshes_stats_after_growth(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        from src.vertical_options_store import VerticalResultStore
+        expiry = date(2029, 1, 19)
+        rows = [self._row(expiry, side, 100 + k,
+                         110 - .2 * k if side == "CALL" else 2 + .2 * k,
+                         bid=109.99 - .2 * k if side == "CALL" else 1.99 + .2 * k,
+                         ask=110.01 - .2 * k if side == "CALL" else 2.01 + .2 * k)
+                for side in ("CALL", "PUT") for k in range(100)]
+        store = VerticalResultStore("QQQ", 350, None, None, "NORMAL")
+        store.add_expiration(expiry, rows, scan_vertical_candidates)
+        expected, _ = scan_vertical_candidates(symbol="QQQ", spot_last=350,
+            option_rows=rows, target_breakeven=None, max_cost=None, max_per_expiration=None)
+        filters = {"expiry": [expiry.isoformat()], "breakeven": {"target": None}}
+        statements = []
+        connect = store._connect
+
+        @contextmanager
+        def traced_connection():
+            with connect() as db:
+                db.set_trace_callback(statements.append)
+                yield db
+
+        with patch.object(store, "_connect", traced_connection):
+            for _ in range(2):
+                self.assertEqual(store.page(column_filters=filters, sort_by="YEAR + FILL",
+                                            offset=len(expected) - 200), expected[-200:])
+            self.assertEqual(statements.count("ANALYZE"), 1)
+            where, args = store._where(column_filters=filters)
+            with store._connect() as db:
+                plan = [row[3] for row in db.execute(
+                    "EXPLAIN QUERY PLAN SELECT rowid FROM spreads" + where
+                    + " ORDER BY " + store._order("YEAR + FILL", "ASC", filters)
+                    + " LIMIT ? OFFSET ?", args + [200, len(expected) - 200])]
+            self.assertTrue(any("USING COVERING INDEX " + store._indexes[("YEAR + FILL", "ASC")]
+                                in detail for detail in plan), plan)
+            self.assertFalse(any("SEARCH spreads USING INDEX expiry_side" in detail
+                                 for detail in plan), plan)
+            later = date(2030, 1, 18)
+            store.add_expiration(later, [self._row(later, "CALL", 100, 3, bid=2.9, ask=3.1),
+                                        self._row(later, "CALL", 105, 2, bid=1.9, ask=2.1)],
+                                 scan_vertical_candidates)
+            self.assertGreater(len(store), len(expected))
+            for _ in range(2):
+                self.assertEqual(store.page(column_filters=filters, sort_by="YEAR + FILL",
+                                            offset=len(expected) - 200), expected[-200:])
+            self.assertEqual(statements.count("ANALYZE"), 2)
+            store.page(sort_by="COST")
+            self.assertEqual(statements.count("ANALYZE"), 3)
+
+    def test_filterable_html_contains_every_retained_row_and_exact_snapshot_values(self):
+        import base64
+        import gzip
+        import json
+        import re
+        from src.vertical_options_store import VerticalResultStore, filterable_verticals_html
+        expiries = (date(2028, 1, 21), date(2029, 1, 19))
+        rows = [self._row(expiry, side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k,
+                         bid=14.99 - .2 * k if side == "CALL" else 1.99 + .2 * k,
+                         ask=15.01 - .2 * k if side == "CALL" else 2.01 + .2 * k)
+                for expiry in expiries for side in ("CALL", "PUT") for k in range(22)]
+        store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+        for expiry in expiries:
+            store.add_expiration(expiry, [row for row in rows if row["expiry"] == expiry],
+                                 scan_vertical_candidates)
+        filters = {"side": ["PUT"], "cost": {"max": 0}}
+        hostile = '</script><img src=x onerror="alert(1)">&\u2028__VERTICAL_DATA__'
+        output = filterable_verticals_html(store, source=hostile, loaded_at=1234,
+            pricing_mode="NORMAL", column_filters=filters, year=2029,
+            contract_open_interest=lambda candidate: {"buy": 0, "sell": None})
+        metadata = json.loads(re.search(r'id="vertical-meta"[^>]*>(.*?)</script>', output).group(1))
+        packed = re.search(r'id="vertical-data"[^>]*>(.*?)</script>', output).group(1)
+        values = json.loads(gzip.decompress(base64.b64decode(packed)))
+        expected = list(store.iter_ranked())
+        self.assertGreater(len(values), 200)
+        self.assertEqual(len(values), len(store))
+        self.assertEqual([row[21] for row in values], [row["id"] for row in expected])
+        self.assertEqual(metadata["filters"], filters)
+        self.assertEqual(metadata["year"], 2029)
+        self.assertEqual(metadata["source"], hostile)
+        self.assertEqual(metadata["loaded_at"], 1234)
+        self.assertEqual(metadata["min_reward_risk"], store.min_reward_risk)
+        self.assertNotIn(hostile, output)
+        for actual, original in zip(values, expected):
+            self.assertEqual(actual[6:8], [0, None])
+            self.assertEqual(actual[8:13], [original[key] for key in
+                ("debit", "cost", "breakeven", "reward_risk", "max_profit")])
+            self.assertEqual(actual[14:17], [original[key] for key in
+                ("spread_bid", "spread_mid", "spread_ask")])
+        self.assertIn("matching.slice(page*100,page*100+100)", output)
+        self.assertIn("message.revision===revision", output)
+        self.assertIn("replaceChildren(fragment)", output)
+        self.assertNotIn("innerHTML", output)
+        self.assertNotIn("<script src=", output)
+        self.assertNotIn("fetch(", output)
+
+    def test_filterable_html_worker_matches_store_sorts_filters_and_full_universe_clear(self):
+        import json
+        import re
+        import shutil
+        import subprocess
+        from src.vertical_options_store import VerticalResultStore, filterable_verticals_html, _SORTS
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable for standalone JavaScript verification")
+        expiry = date(2029, 1, 19)
+        rows = [self._row(expiry, side, 100 + k,
+                         15 - .2 * k if side == "CALL" else 2 + .2 * k,
+                         bid=14.99 - .2 * k if side == "CALL" else 1.99 + .2 * k,
+                         ask=15.01 - .2 * k if side == "CALL" else 2.01 + .2 * k)
+                for side in ("CALL", "PUT") for k in range(20)]
+        rows.extend([self._row(expiry, "CALL", 130, None, bid=.5, ask=.52),
+                     self._row(expiry, "CALL", 140, None, bid=.1, ask=.12)])
+        store = VerticalResultStore("QQQ", 110, None, None, "NORMAL")
+        store.add_expiration(expiry, rows, scan_vertical_candidates)
+        output = filterable_verticals_html(store, source="SYNTHETIC", loaded_at=1234,
+            pricing_mode="NORMAL", column_filters={"side": ["PUT"], "cost": {"max": 150}})
+        script = output.split("<script>", 1)[1].split("</script>", 1)[0]
+        metadata = json.loads(re.search(r'id="vertical-meta"[^>]*>(.*?)</script>', output).group(1))
+        packed = re.search(r'id="vertical-data"[^>]*>(.*?)</script>', output).group(1)
+        cases = []
+        for sort_by in _SORTS:
+            for direction in ("ASC", "DESC"):
+                for filters in ({}, {"side": ["PUT"], "cost": {"max": 150}},
+                                {"breakeven": {"target": 113, "percent": 1}}):
+                    ordered = store.page(sort_by=sort_by, direction=direction,
+                                         column_filters=filters, limit=100)
+                    cases.append({"state": {"filters": filters, "sort_by": sort_by,
+                        "direction": direction, "year": "", "search": "", "page": 0},
+                        "total": store.count(column_filters=filters),
+                        "ids": [row["id"] for row in ordered]})
+        harness = r'''
+const vm=require('vm'),assert=require('assert');const fixture=JSON.parse(require('fs').readFileSync(0,'utf8'));
+const context={DecompressionStream,Response,Blob,Uint8Array,atob,setTimeout,clearTimeout,onmessage:null,postMessage:()=>{}};
+vm.createContext(context);vm.runInContext(fixture.script.split('\n(()=>{')[0]+'\nverticalsWorker();',context);
+(async()=>{await context.onmessage({data:{type:'init',meta:fixture.meta,compressed:fixture.packed}});
+let revision=0;for(const item of fixture.cases){const page=await new Promise((resolve,reject)=>{
+const timer=setTimeout(()=>reject(Error('Worker response timeout')),3000);
+context.postMessage=value=>{if(value.type==='error')reject(Error(value.message));if(value.type==='page'){clearTimeout(timer);resolve(value);}};
+context.onmessage({data:{type:'query',revision:++revision,state:item.state}});});
+assert.equal(page.total,item.total);assert.deepEqual(Array.from(page.rows,row=>row[21]),item.ids);assert(page.rows.length<=100);}
+new vm.Script(fixture.script);console.log('PASS '+fixture.cases.length+' complete-store sort/filter cases');
+})().catch(error=>{console.error(error);process.exitCode=1;});'''
+        result = subprocess.run([node, "-e", harness], input=json.dumps({"script": script,
+            "meta": metadata, "packed": packed, "cases": cases}), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
     def test_year_grouped_pages_keep_every_pair_and_one_annual_marker_per_year(self):
         import csv
         import io
