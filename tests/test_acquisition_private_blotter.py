@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import threading
 import urllib.error
@@ -14,7 +16,7 @@ from zoneinfo import ZoneInfo
 from cryptography.fernet import Fernet
 from src.acquisition_private_blotter import PrivateTradeBlotter, share_blotter, PRIVATE_REPO, BRANCH
 from src.acquisition_history_github import ArchiveConfig, ArchiveError
-from src.acquisition_ui import _equity_trade, _merge, _sync_history
+from src.acquisition_ui import _build_vertical_cache, _equity_trade, _merge, _sync_history, _valid_vertical_cache, _vertical_result_fingerprint
 
 
 ET = ZoneInfo("America/New_York")
@@ -127,7 +129,9 @@ class PrivateBlotterTests(unittest.TestCase):
             def read_snapshot(self, account, *, preverified=False):
                 self.reads.append((account, preverified))
                 return snapshots[account]
-            def save(self, account, snapshot, merge, parse):
+            def read_vertical_cache(self, account, *, preverified=False):
+                return None
+            def save(self, account, snapshot, merge, parse, *, build_verticals=None):
                 self.writes.append((account, snapshot))
                 return "https://github.com/private/" + account
         private = Private()
@@ -185,7 +189,9 @@ class PrivateBlotterTests(unittest.TestCase):
                     "covered_through": "2026-10-27",
                     "synced_at": 2000,
                 }
-            def save(self, key, snapshot, merge, parse):
+            def read_vertical_cache(self, key, *, preverified=False):
+                return None
+            def save(self, key, snapshot, merge, parse, *, build_verticals=None):
                 return "https://github.com/private"
         for encrypted_ts, expected_cost in ((1000, 300), (3000, 270)):
             with self.subTest(encrypted_ts=encrypted_ts):
@@ -566,6 +572,305 @@ class PrivateBlotterTests(unittest.TestCase):
             ArchiveConfig("TOKEN", Fernet.generate_key().decode()), self.repo.store,
         )
         self.assertNotEqual(self.repo.paths("RAJ"), rotated.paths("RAJ"))
+
+
+class PrivateVerticalCacheTests(unittest.TestCase):
+    columns = ("ticker", "type", "expiry", "long", "short", "qty", "status", "opened", "closed",
+               "open_net", "close_net", "fees", "pnl", "currency", "match", "basis", "open_ids", "close_ids")
+
+    def setUp(self):
+        self.config = ArchiveConfig("FAKE_GITHUB_TOKEN", Fernet.generate_key().decode())
+        self.repo = PrivateGitHubInMemory(self.config)
+        self.rows = [tx(1, "2024-06-10", "BUY", "SYN", 2, 10)]
+        self.snapshot = {"rows": self.rows, "covered_from": "2024-06-10", "covered_through": "2026-10-27"}
+
+    def publish(self, payload=None, **kwargs):
+        return self.repo.save_vertical_cache(
+            "SYN_ACCOUNT", payload if payload is not None else _build_vertical_cache(self.rows),
+            covered_from=self.snapshot["covered_from"], covered_through=self.snapshot["covered_through"], **kwargs,
+        )
+
+    def inject(self, payload, account="SYN_ACCOUNT"):
+        path, _ = self.repo.vertical_paths(account)
+        content = payload if isinstance(payload, str) else json.dumps(payload)
+        self.repo.store["files"][path] = {
+            "sha": "fixture-blob", "content": base64.b64encode(content.encode()).decode(),
+        }
+
+    def sync(self, vault, broker, current):
+        class Encrypted:
+            def read(self, account):
+                return None
+            def save(self, account, snapshot, merge):
+                return snapshot
+        with patch("src.acquisition_ui._history_vault", return_value=vault), patch(
+            "src.acquisition_ui._archive_client", return_value=Encrypted()
+        ), patch("src.acquisition_ui.ArchiveConfig.from_runtime", return_value=self.config), patch(
+            "src.acquisition_ui.PrivateTradeBlotter", return_value=self.repo
+        ), patch("src.acquisition_ui.time.time", return_value=current):
+            return _sync_history(broker, "SYN_ACCESS", [{"accountIdKey": "SYN_ACCOUNT"}],
+                                 now=datetime(2026, 10, 27, tzinfo=ET))
+
+    def test_paths_share_existing_account_folders_and_keep_accounts_separate(self):
+        for name in ("", "../../Synthetic Account/"):
+            with self.subTest(name=name):
+                source, _ = (self.repo.named_paths("SYN_ACCOUNT", name, "1000") if name
+                             else self.repo.paths("SYN_ACCOUNT"))
+                report, csv_path = self.repo.vertical_paths("SYN_ACCOUNT", name, "1000")
+                self.assertEqual(report.rsplit("/", 1)[0], source.rsplit("/", 1)[0])
+                self.assertTrue(report.endswith("/vertical_blotter.json"))
+                self.assertTrue(csv_path.endswith("/vertical_blotter.csv"))
+                self.assertNotIn("../", report)
+                self.assertNotEqual(report, self.repo.vertical_paths("OTHER_ACCOUNT", name, "1000")[0])
+
+    def test_save_publishes_matching_json_csv_and_named_mirrors_with_zero_values(self):
+        payload = _build_vertical_cache(self.rows)
+        payload["blotter"] = [{
+            "ticker": "SYN", "type": "CALL", "expiry": "2027-01-15", "long": 100, "short": 105,
+            "qty": 1, "status": "CLOSED", "opened": "2026-10-01T10:00:00-04:00",
+            "closed": "2026-10-02T10:00:00-04:00", "open_net": 2, "close_net": 2,
+            "fees": 0, "pnl": 0, "currency": "USD", "match": "ORDER", "basis": "Synthetic, verified cash",
+            "open_ids": ["101", "102"], "close_ids": ["103", "104"],
+        }]
+        payload["result_fingerprint"] = _vertical_result_fingerprint(payload)
+        envelope = self.publish(payload, account_name="Synthetic Account", last_four="1000")
+        canonical, readable = self.repo.vertical_paths("SYN_ACCOUNT")
+        named_json, named_csv = self.repo.vertical_paths("SYN_ACCOUNT", "Synthetic Account", "1000")
+        self.assertEqual(json.loads(self.repo.text(canonical)), envelope)
+        self.assertEqual(self.repo.text(canonical), self.repo.text(named_json))
+        self.assertEqual(self.repo.text(readable), self.repo.text(named_csv))
+        csv_rows = list(csv.DictReader(io.StringIO(self.repo.text(readable))))
+        self.assertEqual(tuple(csv_rows[0]), self.columns)
+        self.assertEqual(csv_rows[0]["pnl"], "0")
+        self.assertEqual(csv_rows[0]["fees"], "0")
+        self.assertEqual(csv_rows[0]["basis"], payload["blotter"][0]["basis"])
+        self.assertEqual(json.loads(csv_rows[0]["open_ids"]), ["101", "102"])
+        self.assertEqual(self.repo.vertical_payload, envelope)
+        self.assertEqual(self.repo.vertical_error, "")
+        self.assertEqual(self.repo.read_vertical_cache("SYN_ACCOUNT"), envelope)
+        self.assertIsNone(self.repo.read_snapshot("SYN_ACCOUNT"))  # Derived data cannot bootstrap raw history.
+
+    def test_empty_cache_has_headers_and_unchanged_save_does_not_write(self):
+        self.assertIsNone(self.repo.read_vertical_cache("SYN_ACCOUNT"))
+        self.publish()
+        self.assertEqual(self.repo.text(self.repo.vertical_paths("SYN_ACCOUNT")[1]), ",".join(self.columns) + "\n")
+        writes = self.repo.store["write_count"]
+        self.publish()
+        self.assertEqual(self.repo.store["write_count"], writes)
+
+    def test_private_gate_blocks_direct_read_and_publish(self):
+        self.repo.private = False
+        with self.assertRaises(ArchiveError):
+            self.publish()
+        with self.assertRaises(ArchiveError):
+            self.repo.read_vertical_cache("SYN_ACCOUNT")
+        self.assertEqual(self.repo.store["write_count"], 0)
+
+    def test_corrupt_or_cross_account_envelopes_are_rejected(self):
+        valid = self.publish()
+        cases = [
+            "not JSON", [], {**valid, "account": "OTHER_ACCOUNT"}, {**valid, "schema_version": True},
+            {**valid, "schema_version": 2}, {**valid, "algorithm_version": True},
+            {**valid, "algorithm_version": 1.5}, {**valid, "algorithm_version": 0},
+            {**valid, "source_fingerprint": "bad"}, {**valid, "result_fingerprint": "bad"},
+            {**valid, "result_fingerprint": "0" * 64},
+            {**valid, "events": {}}, {**valid, "review": ["not a record"]},
+            {**valid, "blotter": None}, {**valid, "covered_from": "bad"},
+            {**valid, "covered_through": "2020-01-01"}, {**valid, "blotter": [{"pnl": float("nan")}]},
+        ]
+        for payload in cases:
+            with self.subTest(payload_type=type(payload).__name__):
+                self.inject(payload)
+                with self.assertRaises(ArchiveError):
+                    self.repo.read_vertical_cache("SYN_ACCOUNT")
+        self.assertIsNone(self.repo.read_snapshot("SYN_ACCOUNT"))
+
+    def test_non_native_payload_cannot_be_published(self):
+        for value in (datetime(2026, 10, 1), ("tuple",), float("inf")):
+            with self.subTest(value_type=type(value).__name__):
+                payload = {**_build_vertical_cache(self.rows), "review": [{"bad": value}]}
+                with self.assertRaises(ArchiveError):
+                    self.publish(payload)
+        self.assertEqual(self.repo.store["write_count"], 0)
+
+    def test_stale_source_or_algorithm_is_never_accepted_by_owner(self):
+        valid = self.publish()
+        self.assertTrue(_valid_vertical_cache(valid, valid["source_fingerprint"]))
+        for changed in ({**valid, "source_fingerprint": "0" * 64}, {**valid, "algorithm_version": 2}):
+            self.inject(changed)
+            restored = self.repo.read_vertical_cache("SYN_ACCOUNT")
+            self.assertFalse(_valid_vertical_cache(restored, valid["source_fingerprint"]))
+        self.assertIsNone(self.repo.read_snapshot("SYN_ACCOUNT"))
+
+    def test_callback_failure_retains_verified_raw_receipt_and_is_redacted(self):
+        builder = MagicMock(side_effect=RuntimeError("PRIVATE SYNTHETIC SOURCE SHOULD NOT DISPLAY"))
+        url = self.repo.save("SYN_ACCOUNT", self.snapshot, _merge, _equity_trade, build_verticals=builder)
+        self.assertEqual(url, self.repo.page_url("SYN_ACCOUNT"))
+        self.assertEqual(self.repo.read_snapshot("SYN_ACCOUNT")["rows"], self.rows)
+        self.assertEqual(self.repo.canonical_snapshot["rows"], self.rows)
+        self.assertIn("VERTICAL BLOTTER BACKUP FAILED", self.repo.vertical_error)
+        self.assertNotIn("PRIVATE SYNTHETIC", self.repo.vertical_error)
+        self.assertIsNone(self.repo.vertical_payload)
+        self.assertIsNone(self.repo.read_vertical_cache("SYN_ACCOUNT"))
+        self.repo.save("SYN_ACCOUNT", self.snapshot, _merge, _equity_trade, build_verticals=_build_vertical_cache)
+        self.assertEqual(self.repo.vertical_error, "")
+        self.assertIsNotNone(self.repo.vertical_payload)
+
+    def test_derived_upload_failure_does_not_hide_raw_success(self):
+        request = self.repo._request
+        def fail_derived(path, *, payload=None, ref=BRANCH):
+            if path.endswith("vertical_blotter.csv") and payload is not None:
+                raise ArchiveError("Synthetic derived upload failed")
+            return request(path, payload=payload, ref=ref)
+        with patch.object(self.repo, "_request", side_effect=fail_derived):
+            url = self.repo.save("SYN_ACCOUNT", self.snapshot, _merge, _equity_trade,
+                                 build_verticals=_build_vertical_cache)
+        self.assertEqual(url, self.repo.page_url("SYN_ACCOUNT"))
+        self.assertEqual(self.repo.read_snapshot("SYN_ACCOUNT")["rows"], self.rows)
+        self.assertTrue(self.repo.vertical_error)
+        self.assertIsNone(self.repo.vertical_payload)
+        # A standalone retry completes the report without touching raw history.
+        raw_before = self.repo.text(self.repo.paths("SYN_ACCOUNT")[0])
+        self.publish()
+        self.assertEqual(self.repo.text(self.repo.paths("SYN_ACCOUNT")[0]), raw_before)
+        self.assertEqual(self.repo.vertical_error, "")
+
+    def test_missing_or_wrong_immutable_upload_receipt_is_a_derived_failure(self):
+        for missing_commit in (True, False):
+            with self.subTest(missing_commit=missing_commit):
+                repo = PrivateGitHubInMemory(self.config)
+                request = repo._request
+                def invalid_receipt(path, *, payload=None, ref=BRANCH):
+                    if "vertical_blotter" in path:
+                        if payload is not None and missing_commit:
+                            return None
+                        if payload is None and ref != BRANCH:
+                            return None
+                    return request(path, payload=payload, ref=ref)
+                with patch.object(repo, "_request", side_effect=invalid_receipt):
+                    url = repo.save("SYN_ACCOUNT", self.snapshot, _merge, _equity_trade,
+                                    build_verticals=_build_vertical_cache)
+                self.assertEqual(url, repo.page_url("SYN_ACCOUNT"))
+                self.assertTrue(repo.vertical_error)
+                self.assertIsNone(repo.vertical_payload)
+
+    def test_raw_verification_or_raw_mirror_failure_still_raises(self):
+        for suffix in ("history.json", "trades.txt"):
+            with self.subTest(suffix=suffix):
+                repo = PrivateGitHubInMemory(self.config)
+                request = repo._request
+                builder = MagicMock(side_effect=AssertionError("Must not build before raw receipt"))
+                def invalid_raw(path, *, payload=None, ref=BRANCH):
+                    if path.endswith(suffix) and payload is not None:
+                        return None
+                    return request(path, payload=payload, ref=ref)
+                with patch.object(repo, "_request", side_effect=invalid_raw):
+                    with self.assertRaises(ArchiveError):
+                        repo.save("SYN_ACCOUNT", self.snapshot, _merge, _equity_trade, build_verticals=builder)
+                builder.assert_not_called()
+                self.assertIsNone(repo.canonical_snapshot)
+
+    def test_canonical_cas_retry_builds_from_remote_older_rows_and_corrections(self):
+        remote = PrivateGitHubInMemory(self.config, self.repo.store)
+        old_rows = [tx(2, "2023-01-10", "BUY", "OLD", 1, 20), tx(1, "2024-06-10", "BUY", "SYN", 2, 9)]
+        request = self.repo._request
+        raw_path, _ = self.repo.paths("SYN_ACCOUNT")
+        conflicted = False
+        def race(path, *, payload=None, ref=BRANCH):
+            nonlocal conflicted
+            if path == raw_path and payload is not None and not conflicted:
+                conflicted = True
+                remote.save("SYN_ACCOUNT", {**self.snapshot, "rows": old_rows,
+                                           "covered_from": "2023-01-10"}, _merge, _equity_trade)
+            return request(path, payload=payload, ref=ref)
+        builder = MagicMock(side_effect=_build_vertical_cache)
+        with patch.object(self.repo, "_request", side_effect=race), patch("src.acquisition_private_blotter.time.sleep"):
+            self.repo.save("SYN_ACCOUNT", self.snapshot, _merge, _equity_trade, build_verticals=builder)
+        self.assertTrue(conflicted)
+        self.assertEqual(builder.call_count, 1)
+        canonical = self.repo.canonical_snapshot
+        self.assertEqual({row["transactionId"] for row in canonical["rows"]}, {1, 2})
+        self.assertEqual(canonical["covered_from"], "2023-01-10")
+        self.assertEqual(next(row for row in canonical["rows"] if row["transactionId"] == 1)["brokerage"]["price"], 10)
+        self.assertEqual(builder.call_args.args[0], canonical["rows"])
+        self.assertEqual(self.repo.vertical_payload["source_fingerprint"],
+                         _build_vertical_cache(canonical["rows"])["source_fingerprint"])
+
+    def test_warm_restart_uses_durable_cache_and_unchanged_rerun_has_no_network(self):
+        current = datetime(2026, 10, 27, tzinfo=ET).timestamp()
+        self.repo.save("SYN_ACCOUNT", {**self.snapshot, "synced_at": current}, _merge, _equity_trade,
+                       build_verticals=_build_vertical_cache)
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        broker = MagicMock(is_offline=False)
+        with patch("src.acquisition_ui._build_vertical_cache", side_effect=AssertionError("Warm cache must be reused")), patch.object(
+            self.repo, "_request", wraps=self.repo._request
+        ) as requests:
+            snapshots, errors = self.sync(vault, broker, current)
+            self.assertFalse(errors)
+            self.assertEqual(snapshots["SYN_ACCOUNT"]["rows"], self.rows)
+            self.assertIn(("SYN_ACCESS", "SYN_ACCOUNT"), vault["vertical_cache_saved"])
+            self.assertTrue(requests.called)
+            requests.reset_mock()
+            self.sync(vault, broker, current)
+            requests.assert_not_called()
+        broker.get_transactions.assert_not_called()
+
+    def test_corrupt_warm_cache_rebuilds_without_refetching_source_history(self):
+        current = datetime(2026, 10, 27, tzinfo=ET).timestamp()
+        self.repo.save("SYN_ACCOUNT", {**self.snapshot, "synced_at": current}, _merge, _equity_trade,
+                       build_verticals=_build_vertical_cache)
+        self.inject("corrupted derived JSON")
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        broker = MagicMock(is_offline=False)
+        with patch("src.acquisition_ui._build_vertical_cache", wraps=_build_vertical_cache) as build:
+            snapshots, errors = self.sync(vault, broker, current)
+        self.assertFalse(errors)
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(snapshots["SYN_ACCOUNT"]["rows"], self.rows)
+        self.assertEqual(self.repo.read_snapshot("SYN_ACCOUNT")["rows"], self.rows)
+        self.assertIsNotNone(self.repo.read_vertical_cache("SYN_ACCOUNT"))
+        self.assertFalse(vault["vertical_cache_error"])
+        broker.get_transactions.assert_not_called()
+
+    def test_empty_recent_sync_persists_advanced_checkpoint_without_full_refetch(self):
+        current = datetime(2026, 10, 27, tzinfo=ET).timestamp()
+        self.repo.save("SYN_ACCOUNT", {**self.snapshot, "covered_through": "2026-10-26", "synced_at": 1},
+                       _merge, _equity_trade, build_verticals=_build_vertical_cache)
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        broker = MagicMock(is_offline=False)
+        broker.get_transactions.return_value = []
+        snapshots, errors = self.sync(vault, broker, current)
+        self.assertFalse(errors)
+        broker.get_transactions.assert_called_once_with("SYN_ACCOUNT", start_date=date(2026, 10, 19),
+                                                        end_date=date(2026, 10, 27), sort_order="ASC")
+        self.assertEqual(snapshots["SYN_ACCOUNT"]["rows"], self.rows)
+        raw = self.repo.read_snapshot("SYN_ACCOUNT")
+        self.assertEqual(raw["covered_through"], "2026-10-27")
+        self.assertEqual(raw["synced_at"], current)
+        self.assertEqual(self.repo.read_vertical_cache("SYN_ACCOUNT")["covered_through"], "2026-10-27")
+
+    def test_sync_keeps_raw_receipt_and_visible_separate_derived_failure_with_retry_throttle(self):
+        current = datetime(2026, 10, 27, tzinfo=ET).timestamp()
+        self.repo.save("SYN_ACCOUNT", {**self.snapshot, "synced_at": current}, _merge, _equity_trade)
+        vault = {"lock": threading.RLock(), "accounts": {}, "lots": {}}
+        broker = MagicMock(is_offline=False)
+        request = self.repo._request
+        def fail_csv(path, *, payload=None, ref=BRANCH):
+            if path.endswith("vertical_blotter.csv") and payload is not None:
+                raise ArchiveError("Synthetic derived upload failed")
+            return request(path, payload=payload, ref=ref)
+        with patch.object(self.repo, "_request", side_effect=fail_csv) as requests:
+            snapshots, errors = self.sync(vault, broker, current)
+            self.assertFalse(errors)
+            scope = ("SYN_ACCESS", "SYN_ACCOUNT")
+            self.assertEqual(snapshots["SYN_ACCOUNT"]["rows"], self.rows)
+            self.assertIn("VERTICAL BLOTTER BACKUP FAILED", vault["vertical_cache_error"][scope])
+            self.assertEqual(vault["blotter_url"][scope], self.repo.page_url("SYN_ACCOUNT", "E*TRADE Account"))
+            self.assertEqual(vault["blotter_retry_at"][scope], current + 300)
+            requests.reset_mock()
+            self.sync(vault, broker, current)
+            requests.assert_not_called()
+        broker.get_transactions.assert_not_called()
 
 
 if __name__ == "__main__":

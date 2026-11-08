@@ -1,7 +1,7 @@
 """Focused Acquisition read-only FIFO/cache/source regression tests."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 import json
 import shutil
@@ -775,6 +775,389 @@ class AcquisitionVerticalHistoryTests(unittest.TestCase):
         self.assertEqual((events,review), ([],[]))
 
 
+class AcquisitionVerticalBlotterTests(unittest.TestCase):
+    @staticmethod
+    def event(identifier, phase="OPENED", *, qty=1, net=2, fee=1.3, multiplier=100,
+              stamp="2026-10-01T10:00:00", cash="premium", **extra):
+        if cash == "premium":
+            cash = ((-net if phase == "OPENED" else net) * qty * multiplier - fee
+                    if multiplier is not None and fee is not None else None)
+            cash_basis = "PREMIUM + FEES" if cash is not None else "UNAVAILABLE"
+        else:
+            cash_basis = "RECORDED CASH" if cash is not None else "UNAVAILABLE"
+        row = {"ticker":"SYN","account":"raj","root":"SYN","expiry":date(2027,1,15),
+               "type":"CALL","long":100,"short":105,"qty":qty,"net":net,"event":phase,
+               "when":datetime.fromisoformat(stamp).replace(tzinfo=ZoneInfo("America/New_York")),
+               "multiplier":multiplier,"currency":("USD","USD"),"subtype":"",
+               "ids":[identifier+"-L",identifier+"-S"],"match":"ORDER",
+               "fee":fee,"cash":cash,"cash_basis":cash_basis}
+        row.update(extra)
+        return row
+
+    @staticmethod
+    def blotter(events, review=None):
+        from src.acquisition_ui import _vertical_blotter
+        return _vertical_blotter(events, review or [])
+
+    def test_debit_credit_call_put_profit_loss_and_zero_premium_closes_use_signed_cash(self):
+        for side,long,short,opening,closing in (("CALL",100,105,2,3),("PUT",105,100,2,3),
+                                                ("CALL",105,100,-2,-.5),("PUT",100,105,-2,-.5),
+                                                ("CALL",100,105,2,0)):
+            with self.subTest(side=side,opening=opening,closing=closing):
+                rows = self.blotter([self.event("o",qty=2,net=opening,fee=2.6,type=side,long=long,short=short),
+                    self.event("c","CLOSED",qty=2,net=closing,fee=2.6,type=side,long=long,short=short,
+                               stamp="2026-10-02T10:00:00")])
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["status"], "CLOSED")
+                self.assertAlmostEqual(rows[0]["pnl"], (closing-opening)*200-5.2)
+                self.assertEqual(rows[0]["fees"], 5.2)
+                self.assertEqual((rows[0]["open_net"],rows[0]["close_net"]),(opening,closing))
+
+    def test_recorded_cash_includes_fees_and_never_subtracts_them_twice(self):
+        rows = self.blotter([self.event("o",cash=-202.75,fee=2.75,multiplier=None),
+                            self.event("c","CLOSED",cash=305.5,fee=4.5,multiplier=None,
+                                       stamp="2026-10-02T10:00:00")])
+        self.assertEqual(rows[0]["pnl"], 102.75)
+        self.assertEqual(rows[0]["fees"], 7.25)
+        self.assertEqual(rows[0]["currency"], "USD")
+        self.assertIn("RECORDED CASH", rows[0]["basis"])
+
+    def test_fifo_splits_each_close_across_original_opening_lots_and_conserves_fees(self):
+        events = [self.event("a",qty=2,net=2,fee=2.6),
+                  self.event("b",net=3,stamp="2026-10-02T10:00:00"),
+                  self.event("c","CLOSED",net=4,stamp="2026-10-03T10:00:00"),
+                  self.event("d","CLOSED",qty=2,net=5,fee=2.6,stamp="2026-10-04T10:00:00")]
+        rows = self.blotter(list(reversed(events)))
+        self.assertEqual([row["status"] for row in rows], ["CLOSED"]*3)
+        first = next(row for row in rows if row["close_ids"] == ["c-L","c-S"])
+        self.assertEqual((first["open_ids"],first["qty"],first["pnl"]),(["a-L","a-S"],1,197.4))
+        later = [row for row in rows if row["close_ids"] == ["d-L","d-S"]]
+        self.assertEqual([(row["open_ids"],row["qty"],row["pnl"]) for row in later],
+                         [(["a-L","a-S"],1,297.4),(["b-L","b-S"],1,197.4)])
+        self.assertAlmostEqual(sum(row["fees"] for row in rows), 7.8)
+
+    def test_partial_close_retains_open_quantity_and_overclose_retains_unmatched_quantity(self):
+        rows = self.blotter([self.event("o",qty=3,fee=3.9),
+                            self.event("c","CLOSED",net=3,stamp="2026-10-02T10:00:00")])
+        closed = next(row for row in rows if row["status"] == "CLOSED")
+        pending = next(row for row in rows if row["status"] == "OPEN")
+        self.assertEqual((closed["qty"],closed["pnl"],closed["fees"]),(1,97.4,2.6))
+        self.assertEqual((pending["qty"],pending["pnl"],pending["fees"]),(2,None,2.6))
+        rows = self.blotter([self.event("o"),self.event("c","CLOSED",qty=2,fee=2.6,net=3,
+                                                       stamp="2026-10-02T10:00:00")])
+        unmatched = next(row for row in rows if row["status"] == "UNMATCHED CLOSE")
+        self.assertEqual((unmatched["qty"],unmatched["pnl"],unmatched["fees"]),(1,None,1.3))
+        self.assertEqual(sum(row["qty"] for row in rows), 2)
+
+    def test_missing_opening_never_becomes_a_zero_cost_profit_or_a_flat_position(self):
+        rows = self.blotter([self.event("c","CLOSED",net=3)])
+        self.assertEqual(rows[0]["status"], "UNMATCHED CLOSE")
+        self.assertIsNone(rows[0]["pnl"])
+        self.assertIsNone(rows[0]["opened"])
+        self.assertEqual(rows[0]["open_ids"], [])
+        rows = self.blotter([self.event("o")])
+        self.assertEqual((rows[0]["status"],rows[0]["pnl"]),("OPEN",None))
+
+    def test_exact_account_root_contract_multiplier_currency_and_context_isolation(self):
+        for changed in ({"account":"other"},{"root":"SYN1"},{"type":"PUT"},
+                        {"expiry":date(2027,2,19)},{"long":101},{"short":110},
+                        {"multiplier":10},{"multiplier":None},{"currency":("CAD","CAD")},
+                        {"subtype":"ADJUSTED"},{"contract_context":{"deliverable":"OTHER"}}):
+            with self.subTest(changed=changed):
+                rows = self.blotter([self.event("o"),self.event("c","CLOSED",net=3,
+                    stamp="2026-10-02T10:00:00",**changed)])
+                self.assertEqual({row["status"] for row in rows}, {"OPEN","UNMATCHED CLOSE"})
+                self.assertTrue(all(row["pnl"] is None for row in rows))
+
+    def test_unknown_cash_currency_or_fees_remain_unknown_without_discarding_recorded_cash(self):
+        for currency in (("",""),("USD","CAD")):
+            with self.subTest(currency=currency):
+                rows = self.blotter([self.event("o",currency=currency),
+                    self.event("c","CLOSED",net=3,currency=currency,stamp="2026-10-02T10:00:00")])
+                self.assertEqual(rows[0]["status"], "CLOSED")
+                self.assertIsNone(rows[0]["pnl"])
+                self.assertIn("currency", rows[0]["basis"])
+        rows = self.blotter([self.event("o",multiplier=None),
+            self.event("c","CLOSED",net=3,multiplier=None,stamp="2026-10-02T10:00:00")])
+        self.assertIsNone(rows[0]["pnl"])
+        rows = self.blotter([self.event("o",cash=-200,fee=None),
+            self.event("c","CLOSED",cash=300,fee=None,stamp="2026-10-02T10:00:00")])
+        self.assertEqual(rows[0]["pnl"], 100)
+        self.assertIsNone(rows[0]["fees"])
+
+    def test_known_nonstandard_multiplier_is_used_by_cash_basis_without_a_100_assumption(self):
+        rows = self.blotter([self.event("o",multiplier=10),
+            self.event("c","CLOSED",net=3,multiplier=10,stamp="2026-10-02T10:00:00")])
+        self.assertEqual(rows[0]["pnl"], 7.4)
+
+    def test_inferred_pairing_survives_matching_and_cannot_become_order_verified(self):
+        for phase in ("OPENED","CLOSED"):
+            with self.subTest(phase=phase):
+                events = [self.event("o"),self.event("c","CLOSED",net=3,stamp="2026-10-02T10:00:00")]
+                next(event for event in events if event["event"] == phase)["match"] = "TIME // INFERRED"
+                rows = self.blotter(events)
+                self.assertEqual(rows[0]["match"], "TIME // INFERRED")
+                self.assertIn("inferred", rows[0]["basis"])
+
+    def test_equal_timestamp_open_and_close_do_not_establish_execution_sequence(self):
+        events = [self.event("o"),self.event("c","CLOSED",net=3)]
+        for sequence in (events,list(reversed(events))):
+            rows = self.blotter(sequence)
+            self.assertEqual({row["status"] for row in rows}, {"OPEN","UNMATCHED CLOSE"})
+            self.assertTrue(all(row["pnl"] is None for row in rows))
+
+    def test_intervening_leg_change_quarantines_future_matches_but_preserves_prior_realized_slices(self):
+        events = [self.event("o",qty=2,fee=2.6),
+                  self.event("a","CLOSED",net=3,stamp="2026-10-02T10:00:00"),
+                  self.event("b","CLOSED",net=4,stamp="2026-10-04T10:00:00")]
+        review = [{"ticker":"SYN","account":"raj","root":"SYN","type":"CALL",
+                   "expiry":date(2027,1,15),"strike":105,"qty":1,"action":"BTC",
+                   "when":datetime(2026,10,3,10,tzinfo=ZoneInfo("America/New_York")),
+                   "reason":"Unpaired roll leg"}]
+        rows = self.blotter(events, review)
+        closed = [row for row in rows if row["status"] == "CLOSED"]
+        self.assertEqual([(row["qty"],row["pnl"]) for row in closed], [(1,97.4)])
+        self.assertEqual(sum(row["status"] == "REVIEW" for row in rows), 3)
+        self.assertTrue(all(row["pnl"] is None for row in rows if row["status"] == "REVIEW"))
+
+    def test_unrelated_review_legs_do_not_block_other_accounts_strikes_types_or_expiries(self):
+        events = [self.event("o"),self.event("c","CLOSED",net=3,stamp="2026-10-02T10:00:00")]
+        for change in ({"account":"other"},{"ticker":"OTHER"},{"root":"OTHER"},
+                       {"type":"PUT"},{"strike":110},{"expiry":date(2027,2,19)},
+                       {"currency":("CAD","CAD")},{"multiplier":10},{"subtype":"OTHER"}):
+            with self.subTest(change=change):
+                leg = {"ticker":"SYN","account":"raj","root":"SYN","type":"CALL",
+                       "expiry":date(2027,1,15),"strike":100,"when":None,"reason":"Needs review",**change}
+                rows = self.blotter(events,[leg])
+                self.assertEqual([row["pnl"] for row in rows if row["status"] == "CLOSED"], [97.4])
+
+    def test_missing_account_or_review_context_cannot_rule_out_a_lifecycle_interruption(self):
+        for account in ("raj",""):
+            with self.subTest(account=account):
+                events = [self.event("o",account=account),self.event("c","CLOSED",net=3,account=account,
+                    stamp="2026-10-02T10:00:00")]
+                rows = self.blotter(events,[{"ticker":"SYN","account":"raj","root":"",
+                    "type":"CALL","expiry":date(2027,1,15),"strike":100,"when":None,
+                    "reason":"Contract context unavailable"}])
+                self.assertFalse(any(row["status"] == "CLOSED" for row in rows))
+                self.assertTrue(all(row["pnl"] is None for row in rows))
+
+    def test_undated_review_or_assignment_expiration_prevents_assumed_lifecycle_completion(self):
+        events = [self.event("o"),self.event("c","CLOSED",net=3,stamp="2026-10-04T10:00:00")]
+        for reason,when in (("Missing execution date",None),
+                            ("Assignment",datetime(2026,10,3,10,tzinfo=ZoneInfo("America/New_York"))),
+                            ("Expiration",datetime(2026,10,3,10,tzinfo=ZoneInfo("America/New_York")))):
+            with self.subTest(reason=reason):
+                rows = self.blotter(events,[{"ticker":"SYN","account":"raj","type":"CALL",
+                    "expiry":date(2027,1,15),"strike":100,"when":when,"reason":reason}])
+                self.assertFalse(any(row["status"] == "CLOSED" for row in rows))
+                self.assertTrue(all(row["pnl"] is None for row in rows))
+
+    def test_equal_time_opening_lots_with_different_cash_basis_are_not_arbitrarily_ordered(self):
+        rows = self.blotter([self.event("a",net=2),self.event("b",net=3),
+                            self.event("c","CLOSED",net=4,stamp="2026-10-02T10:00:00")])
+        self.assertTrue(all(row["status"] == "REVIEW" and row["pnl"] is None for row in rows))
+
+    def test_equal_time_closes_with_different_cash_are_not_arbitrarily_assigned_fifo_lots(self):
+        rows = self.blotter([self.event("a",net=2),
+                            self.event("b",net=3,stamp="2026-10-02T10:00:00"),
+                            self.event("c","CLOSED",net=4,stamp="2026-10-03T10:00:00"),
+                            self.event("d","CLOSED",net=5,stamp="2026-10-03T10:00:00")])
+        self.assertTrue(all(row["status"] == "REVIEW" and row["pnl"] is None for row in rows))
+
+    def test_rows_are_json_native_and_inputs_unchanged(self):
+        from copy import deepcopy
+        import json
+        events = [self.event("o"),self.event("c","CLOSED",net=3,stamp="2026-10-02T10:00:00")]
+        before = deepcopy(events)
+        rows = self.blotter(events)
+        self.assertEqual(json.loads(json.dumps(rows,allow_nan=False)), rows)
+        self.assertEqual(events, before)
+        self.assertTrue(rows[0]["opened"].startswith("2026-10-01T10:00:00"))
+        self.assertEqual(rows[0]["expiry"], "2027-01-15")
+        self.assertEqual(self.blotter([]), [])
+
+
+class AcquisitionVerticalCacheTests(unittest.TestCase):
+    @staticmethod
+    def rows():
+        make = AcquisitionVerticalHistoryTests.option_tx
+        rows = [make(1,"BTO",100,3),make(2,"STO",105,1),
+                make(3,"STC",100,5,order=1002,stamp="2026-10-02T10:01:02"),
+                make(4,"BTC",105,2,order=1002,stamp="2026-10-02T10:01:02")]
+        for row,amount in zip(rows,(-300.65,99.35,499.35,-200.65)):
+            row["brokerage"]["fee"] = .65
+            row["amount"] = amount
+        return rows
+
+    @staticmethod
+    def vault():
+        import threading
+        return {"lock":threading.RLock()}
+
+    def test_unchanged_source_uses_one_parser_and_matcher_run_including_reordered_rows(self):
+        import src.acquisition_ui as acq
+        rows, vault = self.rows(), self.vault()
+        with (patch.object(acq,"_history_vault",return_value=vault),
+              patch.object(acq,"_vertical_history",wraps=acq._vertical_history) as parser,
+              patch.object(acq,"_vertical_blotter",wraps=acq._vertical_blotter) as matcher):
+            first = acq._cached_verticals(rows,"access","raj")
+            self.assertIs(first, acq._cached_verticals(rows,"access","raj"))
+            self.assertIs(first, acq._cached_verticals(list(reversed(rows)),"access","raj"))
+            self.assertEqual((parser.call_count,matcher.call_count),(1,1))
+            self.assertEqual(first["blotter"][0]["pnl"], 97.4)
+
+    def test_cash_fee_quantity_id_and_algorithm_corrections_invalidate_the_cache(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        vault = self.vault()
+        with (patch.object(acq,"_history_vault",return_value=vault),
+              patch.object(acq,"_vertical_history",wraps=acq._vertical_history) as parser):
+            original = acq._cached_verticals(self.rows(),"access","raj")
+            for field in ("amount","fee","quantity","transactionId"):
+                with self.subTest(field=field):
+                    rows = deepcopy(self.rows())
+                    target = rows[0] if field in {"amount","transactionId"} else rows[0]["brokerage"]
+                    target[field] += 1
+                    changed = acq._cached_verticals(rows,"access","raj")
+                    self.assertNotEqual(original["source_fingerprint"], changed["source_fingerprint"])
+            self.assertEqual(parser.call_count, 5)
+            previous = acq._cached_verticals(self.rows(),"access","raj")
+            with patch.object(acq,"_VERTICAL_CACHE_VERSION",acq._VERTICAL_CACHE_VERSION+1):
+                changed = acq._cached_verticals(self.rows(),"access","raj")
+            self.assertNotEqual(previous["algorithm_version"], changed["algorithm_version"])
+            self.assertEqual(parser.call_count, 7)
+
+    def test_process_cache_is_access_and_account_isolated(self):
+        import src.acquisition_ui as acq
+        with (patch.object(acq,"_history_vault",return_value=self.vault()),
+              patch.object(acq,"_vertical_history",wraps=acq._vertical_history) as parser):
+            first = acq._cached_verticals(self.rows(),"access","raj")
+            other_account = acq._cached_verticals(self.rows(),"access","other")
+            other_access = acq._cached_verticals(self.rows(),"other-access","raj")
+            self.assertIsNot(first, other_account)
+            self.assertIsNot(first, other_access)
+            self.assertIs(first, acq._cached_verticals(self.rows(),"access","raj"))
+            self.assertEqual(parser.call_count, 3)
+
+    def test_result_checksum_rejects_corrupt_derived_rows_and_rebuilds(self):
+        import src.acquisition_ui as acq
+        rows, vault = self.rows(), self.vault()
+        with patch.object(acq,"_history_vault",return_value=vault):
+            first = acq._cached_verticals(rows,"access","raj")
+            first["blotter"][0]["pnl"] = 999999
+            self.assertFalse(acq._valid_vertical_cache(first,first["source_fingerprint"]))
+            with patch.object(acq,"_vertical_history",wraps=acq._vertical_history) as parser:
+                repaired = acq._cached_verticals(rows,"access","raj")
+            self.assertEqual(parser.call_count, 1)
+            self.assertEqual(repaired["blotter"][0]["pnl"], 97.4)
+
+    def test_json_roundtrip_reuses_valid_snapshot_and_restores_event_dates_without_recalculation(self):
+        import src.acquisition_ui as acq
+        rows, vault = self.rows(), self.vault()
+        payload = json.loads(json.dumps(acq._build_vertical_cache(rows),allow_nan=False))
+        vault["vertical_cache"] = {("access","raj"):payload}
+        with (patch.object(acq,"_history_vault",return_value=vault),
+              patch.object(acq,"_vertical_history",side_effect=AssertionError("Warm snapshot must be reused")),
+              patch.object(acq,"_vertical_blotter",side_effect=AssertionError("Warm snapshot must be reused"))):
+            self.assertIs(acq._cached_verticals(rows,"access","raj"), payload)
+        events = acq._vertical_event_rows(payload,"events")
+        self.assertIsInstance(events[0]["when"], datetime)
+        self.assertIsInstance(events[0]["expiry"], date)
+        self.assertIsInstance(payload["events"][0]["when"], str)
+        self.assertEqual(payload["blotter"][0]["pnl"], 97.4)
+
+    def test_last_transaction_correction_replaces_original_cash_without_double_counting(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        rows = self.rows()
+        corrected = deepcopy(rows[0])
+        corrected["amount"] = -350.65
+        corrected["brokerage"]["price"] = 3.5
+        payload = acq._build_vertical_cache(rows+[corrected])
+        self.assertEqual(len(payload["events"]), 2)
+        self.assertEqual(payload["blotter"][0]["pnl"], 47.4)
+        self.assertEqual(payload["blotter"][0]["open_ids"], ["1","2"])
+
+
+class AcquisitionVerticalCashMetadataTests(unittest.TestCase):
+    def parse(self, rows):
+        from src.acquisition_ui import _vertical_history, _vertical_blotter
+        events, review = _vertical_history(rows)
+        return events, review, _vertical_blotter(events,review)
+
+    def test_explicit_cash_fees_and_contract_identity_survive_event_aggregation(self):
+        events, review, rows = self.parse(AcquisitionVerticalCacheTests.rows())
+        self.assertEqual(review, [])
+        self.assertAlmostEqual(events[0]["cash"], -201.3)
+        self.assertEqual(events[0]["fee"], 1.3)
+        self.assertEqual((events[0]["account"],events[0]["root"],events[0]["multiplier"]),("raj","SYN",100))
+        self.assertEqual(events[0]["currency"], ("USD","USD"))
+        self.assertEqual(events[0]["ids"], ["1","2"])
+        self.assertEqual(rows[0]["pnl"], 97.4)
+
+    def test_recorded_net_cash_needs_neither_guessed_multiplier_nor_missing_fee_defaults(self):
+        for field in ("optionMultiplier","fee"):
+            with self.subTest(missing=field):
+                raw = AcquisitionVerticalCacheTests.rows()
+                for item in raw:
+                    item["brokerage"].pop(field)
+                events, review, rows = self.parse(raw)
+                self.assertEqual(review, [])
+                self.assertTrue(all(event["cash_basis"] == "RECORDED CASH" for event in events))
+                self.assertEqual(rows[0]["pnl"], 97.4)
+                if field == "fee":
+                    self.assertIsNone(rows[0]["fees"])
+
+    def test_premium_cash_fallback_requires_explicit_multiplier_and_fees(self):
+        raw = AcquisitionVerticalCacheTests.rows()
+        for item in raw:
+            item.pop("amount")
+        events, review, rows = self.parse(raw)
+        self.assertEqual(review, [])
+        self.assertTrue(all(event["cash_basis"] == "PREMIUM + FEES" for event in events))
+        self.assertEqual(rows[0]["pnl"], 97.4)
+        for item in raw:
+            item["brokerage"].pop("optionMultiplier")
+        events, review, rows = self.parse(raw)
+        self.assertEqual(review, [])
+        self.assertTrue(all(event["cash"] is None for event in events))
+        self.assertIsNone(rows[0]["pnl"])
+
+    def test_signed_fee_refunds_increase_premium_derived_cash_and_remain_negative_fees(self):
+        raw = AcquisitionVerticalCacheTests.rows()
+        for item in raw:
+            item.pop("amount")
+            item["brokerage"]["fee"] = -.65
+        events, review, rows = self.parse(raw)
+        self.assertEqual(review, [])
+        self.assertEqual(events[0]["fee"], -1.3)
+        self.assertAlmostEqual(events[0]["cash"], -198.7)
+        self.assertEqual(rows[0]["fees"], -2.6)
+        self.assertEqual(rows[0]["pnl"], 102.6)
+
+    def test_inconsistent_recorded_amount_does_not_override_verified_premium_fee_math(self):
+        raw = AcquisitionVerticalCacheTests.rows()
+        raw[0]["amount"] -= 50
+        events, review, rows = self.parse(raw)
+        self.assertEqual(review, [])
+        self.assertIsNone(events[0]["cash"])
+        self.assertEqual(events[0]["cash_basis"], "UNAVAILABLE")
+        self.assertIsNone(rows[0]["pnl"])
+
+    def test_assignment_review_retains_contract_and_account_for_lifecycle_quarantine(self):
+        raw = AcquisitionVerticalCacheTests.rows()
+        assignment = AcquisitionVerticalHistoryTests.option_tx(5,"ASSIGNMENT",100,0,order=0,
+                                                               stamp="2026-10-01T15:01:02")
+        events, review, rows = self.parse(raw+[assignment])
+        self.assertEqual(len(events), 2)
+        self.assertEqual(len(review), 1)
+        self.assertEqual((review[0]["account"],review[0]["ticker"],review[0]["expiry"],review[0]["strike"]),
+                         ("raj","SYN",date(2027,1,15),100))
+        self.assertFalse(any(row["status"] == "CLOSED" for row in rows))
+        self.assertTrue(all(row["pnl"] is None for row in rows))
+
+
 class AcquisitionVerticalCopyTests(unittest.TestCase):
     _control = staticmethod(AcquisitionCopySelectionTests._control)
     _check = AcquisitionCopySelectionTests._check
@@ -782,7 +1165,7 @@ class AcquisitionVerticalCopyTests(unittest.TestCase):
     vertical_mode = "VERTICALS // OPENED + CLOSED"
 
     @staticmethod
-    def _app():
+    def _app(history_extension=""):
         return AcquisitionCopySelectionTests._app('''
 def option(identifier, action, symbol, strike, price, order, stamp="2026-10-01T10:01:02", side="CALL"):
     row = tx(identifier,stamp,action,symbol,1,price,"OPTN")
@@ -802,7 +1185,7 @@ history["raj"].extend([
 history["other"].extend([
     option(201,"STC","OTH",50,2,2001), option(202,"BTC","OTH",55,.5,2001),
 ])
-''')
+''' + history_extension)
 
     def _mode(self, app, mode=None):
         return self._control(app,"selectbox","COPY RECORDS").set_value(mode or self.vertical_mode).run()
@@ -911,6 +1294,109 @@ history["other"].extend([
         self.assertEqual(len(text.splitlines()), 1)
         self.assertEqual(app.session_state["fixture_download"]["file_name"],"acquisition_verticals.txt")
         self.assertFalse(any("Open Shares" in frame.value.columns for frame in app.dataframe))
+
+    def test_realized_cash_table_shows_partial_close_and_remaining_open_without_double_fees(self):
+        app = self._app('''
+for row in history["raj"]:
+    identifier = row.get("transactionId") if isinstance(row,dict) else None
+    if identifier in (101,102,103,104):
+        row["brokerage"]["fee"] = 1.95 if identifier in (101,102) else .65
+        row["amount"] = {101:-901.95,102:298.05,103:399.35,104:-250.65}[identifier]
+        if identifier in (101,102):
+            row["brokerage"]["quantity"] = 3
+''')
+        self._mode(app)
+        self._tickers(app).set_value(["SYN"]).run()
+        text = self._text(app)
+        self.assertEqual(len(text.splitlines()), 2)
+        table = next(frame.value for frame in app.dataframe if "Realized P&L" in frame.value.columns)
+        closed = table[table["Status"] == "CLOSED"].iloc[0]
+        remaining = table[table["Status"] == "OPEN"].iloc[0]
+        self.assertEqual((closed["Contracts"],closed["Realized P&L"],closed["Fees"],closed["Ccy"]),(1,-52.6,2.6,"USD"))
+        self.assertEqual((remaining["Contracts"],remaining["Fees"]),(2,2.6))
+        import pandas as pd
+        self.assertTrue(pd.isna(remaining["Realized P&L"]))
+        self.assertTrue(any("USD -52.60" in caption.value for caption in app.caption))
+        payload = app.session_state["fixture_vault"]["vertical_cache"][("copy-fixture","raj")]
+        self._tickers(app).set_value([]).run()
+        self.assertEqual(self._text(app), "")
+        self.assertTrue(app.session_state["fixture_download"]["disabled"])
+        self.assertFalse(any("Realized P&L" in frame.value.columns for frame in app.dataframe))
+        self._tickers(app).set_value(["SYN"]).run()
+        self.assertIs(payload, app.session_state["fixture_vault"]["vertical_cache"][("copy-fixture","raj")])
+        self.assertEqual(self._text(app), text)
+        self.assertEqual(app.session_state["fixture_lot_calls"], [("raj",700)])
+
+    def test_malformed_option_date_stays_reviewed_without_breaking_blotter_date_formats(self):
+        app = self._app('''
+for row in history["raj"]:
+    if isinstance(row,dict) and row.get("transactionId") == 107:
+        row["transactionDate"] = "invalid"
+''')
+        self._mode(app)
+        self._tickers(app).set_value(["REVIEW","SYN"]).run()
+        self._check(app)
+        table = next(frame.value for frame in app.dataframe if "Realized P&L" in frame.value.columns)
+        self.assertTrue(all(table["Ticker"] == "SYN"))
+        review = next(frame.value for frame in app.dataframe if "Reason" in frame.value.columns)
+        self.assertEqual(review["Date"].tolist(), ["UNKNOWN"])
+        self.assertEqual(app.session_state["fixture_transaction_calls"], [])
+        self.assertEqual(app.session_state["fixture_archive_calls"], [])
+
+
+class AcquisitionPnlCacheValidationTests(unittest.TestCase):
+    def test_two_digit_history_expiry_matches_four_digit_contract_and_review_context(self):
+        from src.acquisition_ui import _build_vertical_cache
+        raw = AcquisitionVerticalCacheTests.rows()
+        for item in raw[:2]:
+            item["brokerage"]["product"]["expiryYear"] = 27
+        payload = _build_vertical_cache(raw)
+        self.assertEqual({event["expiry"] for event in payload["events"]}, {"2027-01-15"})
+        self.assertEqual(payload["blotter"][0]["pnl"], 97.4)
+        assignment = AcquisitionVerticalHistoryTests.option_tx(5,"ASSIGNMENT",100,0,order=0,
+                                                               stamp="2026-10-01T15:01:02",expiry=(27,1,15))
+        payload = _build_vertical_cache(raw + [assignment])
+        self.assertEqual(payload["review"][0]["expiry"], "2027-01-15")
+        self.assertTrue(all(row["pnl"] is None for row in payload["blotter"]))
+        for item in raw:
+            item["brokerage"]["product"]["expiryYear"] = True
+        payload = _build_vertical_cache(raw)
+        self.assertEqual(payload["events"], [])
+        self.assertEqual(len(payload["review"]), 4)
+
+    def test_malformed_cached_numbers_are_rejected_before_rendering(self):
+        from src.acquisition_ui import _build_vertical_cache, _vertical_result_fingerprint, _valid_vertical_cache
+        from copy import deepcopy
+        valid = _build_vertical_cache(AcquisitionVerticalCacheTests.rows())
+        for key, field, value in (("events", "net", "invalid"), ("blotter", "long", "invalid"),
+                                  ("blotter", "pnl", True)):
+            with self.subTest(key=key, field=field):
+                broken = deepcopy(valid)
+                broken[key][0][field] = value
+                broken["result_fingerprint"] = _vertical_result_fingerprint(broken)
+                self.assertFalse(_valid_vertical_cache(broken, broken["source_fingerprint"]))
+
+    def test_boolean_multiplier_cannot_supply_a_cash_pnl_basis(self):
+        from src.acquisition_ui import _vertical_history
+        option = AcquisitionVerticalHistoryTests.option_tx
+        events, review = _vertical_history([
+            option(1, "BTO", 100, 3, multiplier=True),
+            option(2, "STO", 105, 1, multiplier=True),
+        ])
+        self.assertEqual(events, [])
+        self.assertEqual(len(review), 2)
+
+    def test_structurally_corrupt_cache_is_rebuilt_even_with_a_valid_result_checksum(self):
+        from src.acquisition_ui import _build_vertical_cache, _vertical_result_fingerprint, _valid_vertical_cache
+        from copy import deepcopy
+        valid = _build_vertical_cache([])
+        self.assertTrue(_valid_vertical_cache(valid, valid["source_fingerprint"]))
+        for key, row in (("events", {}), ("review", {}), ("blotter", {})):
+            with self.subTest(key=key):
+                broken = deepcopy(valid)
+                broken[key] = [row]
+                broken["result_fingerprint"] = _vertical_result_fingerprint(broken)
+                self.assertFalse(_valid_vertical_cache(broken, broken["source_fingerprint"]))
 
 
 if __name__ == "__main__":

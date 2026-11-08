@@ -12,8 +12,10 @@ The selected repository MUST be private at each actual publish.
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -34,6 +36,10 @@ PRIVATE_REPO = "G-enterpriseGroup/Portfolio"
 BRANCH = "acquisition-history-data"
 PREFIX = "acquisition/history/"
 _MAX_RESPONSE_BYTES = 18_000_000
+_VERTICAL_COLUMNS = (
+    "ticker", "type", "expiry", "long", "short", "qty", "status", "opened", "closed",
+    "open_net", "close_net", "fees", "pnl", "currency", "match", "basis", "open_ids", "close_ids",
+)
 
 
 def _json(value: Any) -> str:
@@ -147,6 +153,12 @@ class PrivateTradeBlotter:
         # changed broker nicknames; it never exposes the full broker key.
         folder = PREFIX + "by-account/" + label + " -- " + self._stem(account_key)[:16] + "/"
         return folder + "history.json", folder + "trades.txt"
+
+    def vertical_paths(self, account: str, account_name: str = "", last_four: str = "") -> tuple[str, str]:
+        history, _ = (self.named_paths(account, account_name, last_four) if account_name
+                      else self.paths(account))
+        folder = history.rsplit("/", 1)[0] + "/"
+        return folder + "vertical_blotter.json", folder + "vertical_blotter.csv"
 
     def page_url(self, account_key: str, account_name: str = "", last_four: str = "") -> str:
         _, txt = (self.named_paths(account_key, account_name, last_four) if account_name
@@ -317,6 +329,89 @@ class PrivateTradeBlotter:
             "synced_at": float(snapshot.get("synced_at") or 0),
         }
 
+    @staticmethod
+    def _validate_vertical_cache(payload: Any, account: str) -> dict[str, Any]:
+        try:
+            from datetime import date
+            if (not isinstance(payload, dict) or payload["account"] != account or
+                    type(payload["schema_version"]) is not int or payload["schema_version"] != 1 or
+                    type(payload["algorithm_version"]) is not int or payload["algorithm_version"] < 1 or
+                    not isinstance(payload["source_fingerprint"], str) or
+                    not re.fullmatch(r"[0-9a-fA-F]{64}", payload["source_fingerprint"]) or
+                    not all(isinstance(payload[key], list) and all(isinstance(row, dict) for row in payload[key])
+                            for key in ("events", "review", "blotter"))):
+                raise ValueError("Invalid vertical cache envelope")
+            if "result_fingerprint" in payload and (
+                    not isinstance(payload["result_fingerprint"], str) or
+                    not re.fullmatch(r"[0-9a-fA-F]{64}", payload["result_fingerprint"])):
+                raise ValueError("Invalid result fingerprint")
+            date.fromisoformat(payload["covered_from"])
+            date.fromisoformat(payload["covered_through"])
+            if payload["covered_from"] > payload["covered_through"]:
+                raise ValueError("Invalid coverage")
+            # Do not silently turn dates, tuples, non-string keys or NaN into
+            # a different persisted cache than the builder actually produced.
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            if json.loads(encoded) != payload:
+                raise ValueError("Non-native JSON cache")
+            if "result_fingerprint" in payload:
+                result = {key: payload[key] for key in ("events", "review", "blotter")}
+                digest = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":"),
+                                                   allow_nan=False).encode()).hexdigest()
+                if payload["result_fingerprint"] != digest:
+                    raise ValueError("Vertical results changed without a matching fingerprint")
+            return payload
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise ArchiveError("Private GitHub vertical cache is invalid; rebuild it from source history.") from exc
+
+    def read_vertical_cache(self, account: str, *, preverified: bool = False) -> dict[str, Any] | None:
+        """Read a derived cache only; raw history is always restored separately."""
+        if not preverified:
+            self._verify_private()
+        path, _ = self.vertical_paths(account)
+        _, raw = self._unpack(self._request(path))
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise ArchiveError("Private GitHub vertical cache is invalid; rebuild it from source history.") from exc
+        return self._validate_vertical_cache(payload, account)
+
+    def save_vertical_cache(
+        self, account: str, payload: dict[str, Any], *, covered_from: str, covered_through: str,
+        account_name: str = "", last_four: str = "", preverified: bool = False,
+    ) -> dict[str, Any]:
+        """Publish a rebuildable report without changing the source history."""
+        self.vertical_error = ""
+        self.vertical_payload = None
+        if not preverified:
+            self._verify_private()
+        if not isinstance(payload, dict) or payload.get("account", account) != account:
+            raise ArchiveError("Private GitHub vertical cache belongs to a different account.")
+        envelope = self._validate_vertical_cache({
+            **payload, "account": account, "covered_from": covered_from, "covered_through": covered_through,
+        }, account)
+        canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(_VERTICAL_COLUMNS)
+        for row in envelope["blotter"]:
+            writer.writerow(
+                json.dumps(row[key], separators=(",", ":"), allow_nan=False)
+                if isinstance(row.get(key), (list, dict)) else row.get(key)
+                for key in _VERTICAL_COLUMNS
+            )
+        readable = output.getvalue()
+        paths = [self.vertical_paths(account)]
+        if account_name:
+            paths.append(self.vertical_paths(account, account_name, last_four))
+        for json_path, csv_path in paths:
+            self._write_text(json_path, canonical)
+            self._write_text(csv_path, readable)
+        self.vertical_payload = envelope
+        return envelope
+
     def _write_text(self, path: str, content: str) -> None:
         for attempt in range(3):
             existing_sha, previous = self._unpack(self._request(path))
@@ -347,12 +442,16 @@ class PrivateTradeBlotter:
         self, account: str, snapshot: dict[str, Any],
         merge: Callable[[list[dict[str, Any]], list[dict[str, Any]]], list[dict[str, Any]]],
         parse_trade: Callable[[dict[str, Any]], dict[str, Any] | None],
+        *, build_verticals: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
     ) -> str:
         """Save a canonical plaintext full ledger, then a human-readable blotter.
 
         Never discard old trades when the local worker has stale/partial history.
         Keep the canonical JSON as the durable source for future correction merges.
         """
+        self.vertical_error = ""
+        self.vertical_payload = None
+        self.canonical_snapshot = None
         self._verify_private()  # Mandatory; no plaintext write to public repos.
         json_path, text_path = self.paths(account)
         for attempt in range(4):
@@ -406,8 +505,21 @@ class PrivateTradeBlotter:
                 )
                 self._write_text(named_json, canonical)
                 self._write_text(named_txt, readable)
-                return self.page_url(account, name, str(snapshot.get("account_last_four") or ""))
-            return self.page_url(account)
+            url = self.page_url(account, name, str(snapshot.get("account_last_four") or ""))
+            self.canonical_snapshot = joined
+            if build_verticals is not None:
+                # Build from the verified canonical merge, including older or
+                # corrected rows another worker preserved remotely.
+                try:
+                    self.save_vertical_cache(
+                        account, build_verticals(joined["rows"]),
+                        covered_from=joined["covered_from"], covered_through=joined["covered_through"],
+                        account_name=name, last_four=str(snapshot.get("account_last_four") or ""),
+                        preverified=True,
+                    )
+                except Exception:
+                    self.vertical_error = "VERTICAL BLOTTER BACKUP FAILED // source history remains saved; retry later."
+            return url
         raise ArchiveError("Private GitHub trade history was not saved.")
 
 
