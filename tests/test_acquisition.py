@@ -1345,6 +1345,25 @@ for row in history["raj"]:
 
 
 class AcquisitionPnlCacheValidationTests(unittest.TestCase):
+    def test_two_digit_history_expiry_matches_four_digit_contract_and_review_context(self):
+        from src.acquisition_ui import _build_vertical_cache
+        raw = AcquisitionVerticalCacheTests.rows()
+        for item in raw[:2]:
+            item["brokerage"]["product"]["expiryYear"] = 27
+        payload = _build_vertical_cache(raw)
+        self.assertEqual({event["expiry"] for event in payload["events"]}, {"2027-01-15"})
+        self.assertEqual(payload["blotter"][0]["pnl"], 97.4)
+        assignment = AcquisitionVerticalHistoryTests.option_tx(5,"ASSIGNMENT",100,0,order=0,
+                                                               stamp="2026-10-01T15:01:02",expiry=(27,1,15))
+        payload = _build_vertical_cache(raw + [assignment])
+        self.assertEqual(payload["review"][0]["expiry"], "2027-01-15")
+        self.assertTrue(all(row["pnl"] is None for row in payload["blotter"]))
+        for item in raw:
+            item["brokerage"]["product"]["expiryYear"] = True
+        payload = _build_vertical_cache(raw)
+        self.assertEqual(payload["events"], [])
+        self.assertEqual(len(payload["review"]), 4)
+
     def test_malformed_cached_numbers_are_rejected_before_rendering(self):
         from src.acquisition_ui import _build_vertical_cache, _vertical_result_fingerprint, _valid_vertical_cache
         from copy import deepcopy

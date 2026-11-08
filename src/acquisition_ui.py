@@ -733,6 +733,14 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
     blocked = set()
     blocked_orders = set()
     review = []
+    def expiry(product):
+        values = [_find(product, field) for field in ("expiryYear", "expiryMonth", "expiryDay")]
+        if any(isinstance(value, bool) for value in values):
+            raise ValueError("Invalid option expiration")
+        year, month, day = map(int, values)
+        # Transaction history can contain OSI-style two-digit years even
+        # though the documented Product schema specifies four digits.
+        return date(year + 2000 if 0 <= year < 100 else year, month, day)
     rows = {_identity(tx): tx for tx in transactions if isinstance(tx, dict)}
     for tx in rows.values():
         product = _find(tx, "product") or _find(tx, "productId") or {}
@@ -756,7 +764,7 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
         # Preserve contract context even for an assignment/unpaired leg, so it
         # can interrupt an otherwise misleading later round-trip P&L match.
         try:
-            leg["expiry"] = date(*(int(_find(product, field)) for field in ("expiryYear", "expiryMonth", "expiryDay")))
+            leg["expiry"] = expiry(product)
             leg["strike"] = float(_find(product, "strikePrice"))
         except (TypeError, ValueError, OverflowError):
             pass
@@ -783,7 +791,7 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
             if len(found) != 1:
                 raise ValueError("Explicit buy/sell TO OPEN or TO CLOSE is missing or conflicting")
             leg["action"] = found.pop()
-            leg["expiry"] = date(*(int(_find(product, field)) for field in ("expiryYear", "expiryMonth", "expiryDay")))
+            leg["expiry"] = expiry(product)
             raw_numbers = (_find(product, "strikePrice"), _find(broker, "quantity"), _find(broker, "price"))
             if any(isinstance(value, bool) for value in raw_numbers):
                 raise ValueError("Invalid option execution numbers")
