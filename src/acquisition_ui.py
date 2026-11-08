@@ -1282,7 +1282,8 @@ def _vertical_blotter_frame(report: list[dict[str, Any]], *, today: date | None 
             "Ticker": row["ticker"], "Spread (L / S)": f'{row["type"]} {quote(row["long"])} / {quote(row["short"])}',
             "Expiry": expiry.strftime("%m/%d/%Y") if expiry else "—",
             "Opened": day(row["opened"]), "Closed": day(row["closed"]), "Contracts": row["qty"],
-            "Entry / Exit": quote(row["open_net"]) + " / " + quote(row["close_net"]),
+            "Entry Cost": round(row["entry_cost"], 2) if row.get("entry_cost") is not None else None,
+            "Exit Cash": round(row["exit_cash"], 2) if row.get("exit_cash") is not None else None,
             "Fees": round(row["fees"], 2) if row["fees"] is not None else None,
             "Realized P&L": (round(row["pnl"], 2) if row["pnl"] is not None
                              and row["status"] in {"CLOSED", "EXPIRED"} else None),
@@ -1299,7 +1300,402 @@ def _style_vertical_blotter(frame: pd.DataFrame):
         return ("color:#4af6c3" if pd.notna(value) and value > 0 else
                 "color:#ff433d" if pd.notna(value) and value < 0 else "color:#fb8b1e")
     return frame.style.format({"Realized P&L": signed, "Fees": "{:,.2f}",
+                               "Entry Cost": "{:,.2f}", "Exit Cash": "{:,.2f}",
                                "Contracts": "{:,.0f}"}, na_rep="").map(color, subset=["Realized P&L"])
+
+
+_VERTICAL_FILTER_FIELDS = {
+    "Ticker": ("ticker", "choice"), "Spread (L / S)": ("spread", "text"),
+    "Expiry": ("expiry", "date"), "Opened": ("opened", "date"), "Closed": ("closed", "date"),
+    "Contracts": ("qty", "number"), "Entry Cost": ("entry_cost", "number"),
+    "Exit Cash": ("exit_cash", "number"), "Fees": ("fees", "number"),
+    "Realized P&L": ("pnl", "number"), "Ccy": ("currency", "choice"), "Status": ("display_status", "choice"),
+    "Type": ("type", "choice"), "Long Strike": ("long", "number"), "Short Strike": ("short", "number"),
+    "Entry Premium": ("open_net", "number"), "Exit Premium": ("close_net", "number"),
+    "Entry Cash": ("entry_cash", "number"), "Evidence": ("match", "choice"),
+    "Lifecycle Status": ("status", "choice"), "Basis": ("basis", "text"),
+    "Opening IDs": ("open_ids", "text"), "Closing IDs": ("close_ids", "text"),
+}
+
+
+def _vertical_filter_number(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _vertical_filter_records(payload: dict[str, Any], *, today: date | None = None) -> list[dict[str, Any]]:
+    """Enrich presentation copies using existing event cash, never recompute lifecycle P&L."""
+    today = today or datetime.now(_ET).date()
+    number = _vertical_filter_number
+    def identities(value):
+        if not isinstance(value, (list, tuple)) or not value:
+            return None
+        values = tuple(sorted(str(item) for item in value if item is not None))
+        return values if len(values) == len(value) == len(set(values)) else None
+    def instant(value):
+        try:
+            value = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+            return (value if value.tzinfo else value.replace(tzinfo=_ET)).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
+    def day(value):
+        try:
+            return value.isoformat() if isinstance(value, date) else date.fromisoformat(value).isoformat()
+        except (TypeError, ValueError):
+            return None
+    def compatible(source, row):
+        currencies = source.get("currency") or ("", "")
+        if isinstance(currencies, str):
+            currencies = (currencies, currencies)
+        return (all(source.get(key) == row.get(key) for key in ("ticker", "type"))
+                and day(source.get("expiry")) == day(row.get("expiry")) is not None
+                and len(currencies) == 2 and all(value == (row.get("currency") or "") for value in currencies)
+                and all(number(source.get(key)) == number(row.get(key)) is not None for key in ("long", "short")))
+    events = defaultdict(list)
+    source_ids = defaultdict(int)
+    for event in payload.get("events", []):
+        key = identities(event.get("ids"))
+        if key:
+            events[key].append(event)
+            for identifier in key:
+                source_ids[identifier] += 1
+    proof = defaultdict(list)
+    for leg in payload.get("review", []):
+        if leg.get("id") is not None:
+            proof[str(leg["id"])].append(leg)
+            source_ids[str(leg["id"])] += 1
+    def event_cash(row, opening):
+        key = identities(row.get("open_ids" if opening else "close_ids"))
+        matches = events.get(key, [])
+        if len(matches) != 1 or any(source_ids[identifier] != 1 for identifier in key):
+            return None
+        event = matches[0]
+        quantity, total, cash = number(row.get("qty")), number(event.get("qty")), number(event.get("cash"))
+        if (not compatible(event, row) or event.get("event") != ("OPENED" if opening else "CLOSED")
+                or instant(event.get("when")) is None
+                or instant(event.get("when")) != instant(row.get("opened" if opening else "closed"))
+                or quantity is None or total is None or quantity <= 0 or total < quantity
+                or not quantity.is_integer() or not total.is_integer() or cash is None):
+            return None
+        allocated = number(cash * (quantity / total))
+        return round(allocated, 8) if allocated is not None else None
+    def expiry_cash(row):
+        key = identities(row.get("close_ids"))
+        if not key or any(len(proof.get(identifier, [])) != 1 or source_ids[identifier] != 1 for identifier in key):
+            return None
+        legs = [proof[identifier][0] for identifier in key]
+        quantities = {-1: [], 1: []}
+        for leg in legs:
+            signed, quantity = number(leg.get("signed_qty")), number(leg.get("qty"))
+            currencies = leg.get("currency") or ()
+            if (leg.get("lifecycle") != "EXPIRATION" or leg.get("ticker") != row.get("ticker")
+                    or leg.get("type") != row.get("type") or day(leg.get("expiry")) != day(row.get("expiry"))
+                    or number(leg.get("cash")) != 0 or number(leg.get("price")) != 0
+                    or signed is None or signed == 0 or quantity != abs(signed) or not signed.is_integer()
+                    or len(currencies) != 2 or any(value != row.get("currency") for value in currencies)
+                    or instant(leg.get("when")) is None):
+                return None
+            side = -1 if signed < 0 else 1
+            if number(leg.get("strike")) != number(row.get("long" if side < 0 else "short")):
+                return None
+            quantities[side].append(quantity)
+        long_qty, short_qty = math.fsum(quantities[-1]), math.fsum(quantities[1])
+        quantity = number(row.get("qty"))
+        if (not long_qty or long_qty != short_qty or quantity is None or quantity <= 0 or quantity > long_qty
+                or max(instant(leg["when"]) for leg in legs) != instant(row.get("closed"))):
+            return None
+        return 0.0
+    result = []
+    for original in payload.get("blotter", []):
+        if number(original.get("long")) is None or number(original.get("short")) is None:
+            continue
+        row = dict(original)
+        row["open_ids"], row["close_ids"] = list(original.get("open_ids") or []), list(original.get("close_ids") or [])
+        row["entry_cash"] = event_cash(row, True)
+        row["entry_cost"] = -row["entry_cash"] if row["entry_cash"] is not None else None
+        row["exit_cash"] = expiry_cash(row) if row.get("status") == "EXPIRED" else event_cash(row, False)
+        row["pnl"] = number(row.get("pnl")) if row.get("status") in {"CLOSED", "EXPIRED"} else None
+        status = str(row.get("status") or "UNKNOWN")
+        expiry = day(row.get("expiry"))
+        if expiry and expiry < today.isoformat() and status in {"OPEN", "REVIEW"} and not row.get("closed"):
+            status = "EXPIRED // " + ("UNVERIFIED" if status == "OPEN" else "REVIEW")
+        if row.get("match") == "TIME // INFERRED":
+            status += " // INFERRED"
+        row["display_status"] = status
+        row["spread"] = f'{row.get("type", "")} {number(row["long"]):g} / {number(row["short"]):g}'
+        result.append(row)
+    return result
+
+
+def _filter_vertical_records(records: list[dict[str, Any]], filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply validated AND rules to native values; a missing number is never zero."""
+    fields = {**_VERTICAL_FILTER_FIELDS, **{key: (key, kind) for key, kind in _VERTICAL_FILTER_FIELDS.values()}}
+    def typed(value, kind):
+        if value is None or value == "":
+            return None
+        if kind == "number":
+            return _vertical_filter_number(value)
+        if kind == "date":
+            try:
+                if isinstance(value, datetime):
+                    return (value.astimezone(_ET) if value.tzinfo else value).date()
+                if isinstance(value, date):
+                    return value
+                parsed = datetime.fromisoformat(str(value))
+                return (parsed.astimezone(_ET) if parsed.tzinfo else parsed).date()
+            except (TypeError, ValueError):
+                return None
+        text = (" ".join(str(item) for item in value) if isinstance(value, (list, tuple)) else str(value)).strip()
+        return text.casefold() if text else None
+    prepared = []
+    if not isinstance(filters, (list, tuple)):
+        raise ValueError("Filters must be a list of column rules")
+    for rule in filters:
+        if not isinstance(rule, dict) or not isinstance(rule.get("field"), str) or rule["field"] not in fields:
+            raise ValueError("Choose a valid blotter filter column")
+        key, kind = fields[rule["field"]]
+        op = rule.get("op")
+        if not isinstance(op, str) or op not in {"in", "contains", "eq", "ne", "between", "gte", "lte", "is_known", "is_missing"}:
+            raise ValueError("Choose a valid blotter filter operation")
+        if op in {"is_known", "is_missing"}:
+            prepared.append((key, kind, op, None))
+            continue
+        def required(value):
+            parsed = typed(value, kind)
+            if parsed is None:
+                raise ValueError("Filter values must be valid finite numbers, dates or text")
+            return parsed
+        if op == "in":
+            values = rule.get("values")
+            if not isinstance(values, (list, tuple, set)):
+                raise ValueError("Selection filters require a list of values")
+            value = {required(item) for item in values}
+        elif op == "between":
+            if kind not in {"number", "date"}:
+                raise ValueError("Ranges apply to numeric or date columns")
+            low, high = rule.get("min"), rule.get("max")
+            value = (required(low) if low is not None else None, required(high) if high is not None else None)
+            if value == (None, None) or (all(item is not None for item in value) and value[0] > value[1]):
+                raise ValueError("Enter an ordered filter range")
+        else:
+            if op == "contains" and kind not in {"text", "choice"}:
+                raise ValueError("Text matching requires a text column")
+            value = required(rule.get("value"))
+        prepared.append((key, kind, op, value))
+    def matches(row):
+        for key, kind, op, expected in prepared:
+            value = typed(row.get(key), kind)
+            if op == "is_missing":
+                passed = value is None
+            elif op == "is_known":
+                passed = value is not None
+            elif value is None:
+                passed = False
+            elif op == "in": passed = value in expected
+            elif op == "contains": passed = expected in value
+            elif op == "eq": passed = value == expected
+            elif op == "ne": passed = value != expected
+            elif op == "gte": passed = value >= expected
+            elif op == "lte": passed = value <= expected
+            else: passed = (expected[0] is None or value >= expected[0]) and (expected[1] is None or value <= expected[1])
+            if not passed:
+                return False
+        return True
+    return [row for row in records if matches(row)]
+
+
+def _vertical_filtered_totals(records: list[dict[str, Any]]) -> dict[str, Any]:
+    fields = ("entry_cash", "entry_cost", "exit_cash", "fees", "pnl")
+    number = _vertical_filter_number
+    def subtotal(rows, currency):
+        result = {"rows":len(rows), "contracts":math.fsum(number(row.get("qty")) or 0 for row in rows), "known":{}, "missing":{}}
+        for field in fields:
+            values = [number(row.get(field)) if field != "pnl" or row.get("status") in {"CLOSED", "EXPIRED"} else None for row in rows]
+            known = [value for value in values if value is not None]
+            result["known"][field], result["missing"][field] = len(known), len(values)-len(known)
+            result[field] = math.fsum(known) if known and currency != "UNKNOWN" else None
+            if field == "pnl":
+                for name, predicate in (("gains",lambda value:value > 0),("losses",lambda value:value < 0)):
+                    result[name] = math.fsum(value for value in known if predicate(value)) if known and currency != "UNKNOWN" else None
+                    result["known"][name], result["missing"][name] = len(known), len(values)-len(known)
+        return result
+    currencies = defaultdict(list)
+    for row in records:
+        currencies[str(row.get("currency") or "UNKNOWN")].append(row)
+    groups = []
+    for currency, rows in sorted(currencies.items()):
+        group = {"currency":currency, **subtotal(rows,currency), "evidence":[]}
+        evidence = defaultdict(list)
+        for row in rows:
+            evidence[str(row.get("match") or "UNKNOWN")].append(row)
+        for match, members in sorted(evidence.items()):
+            group["evidence"].append({"match":match, "currency":currency, **subtotal(members,currency)})
+        groups.append(group)
+    return {"rows":len(records), "contracts":math.fsum(number(row.get("qty")) or 0 for row in records), "groups":groups}
+
+
+
+def _remember_blotter_tickers(scope: str, widget_key: str) -> None:
+    preferences = st.session_state["_acquisition_blotter_preferences"][scope]
+    values = list(st.session_state[widget_key])
+    if "ALL TICKERS" in values:
+        values = ([value for value in values if value != "ALL TICKERS"]
+                  if preferences["tickers"] is None and len(values) > 1 else None)
+    preferences["tickers"] = values
+    st.session_state[widget_key] = ["ALL TICKERS"] if values is None else values
+
+
+def _reset_blotter_filters(scope: str, ticker_key: str) -> None:
+    preferences = st.session_state["_acquisition_blotter_preferences"][scope]
+    preferences.update(tickers=None, rules=[], error=None, revision=preferences["revision"] + 1)
+    st.session_state[ticker_key] = ["ALL TICKERS"]
+
+
+def _save_blotter_column(scope: str, label: str, keys: dict[str, str], records: list[dict[str, Any]], clear: bool = False) -> None:
+    preferences = st.session_state["_acquisition_blotter_preferences"][scope]
+    rules = [rule for rule in preferences["rules"] if rule["field"] != label]
+    if not clear:
+        presence = st.session_state[keys["presence"]]
+        if presence == "MISSING ONLY":
+            rules.append({"field": label, "op": "is_missing"})
+        else:
+            if presence == "KNOWN ONLY":
+                rules.append({"field": label, "op": "is_known"})
+            kind = _VERTICAL_FILTER_FIELDS[label][1]
+            if kind == "choice" and st.session_state[keys["selection"]] == "SELECT VALUES":
+                rules.append({"field": label, "op": "in", "values": list(st.session_state[keys["values"]])})
+            elif kind in {"number", "date"}:
+                low, high = (st.session_state[keys[name]] for name in ("min", "max"))
+                if low is not None or high is not None:
+                    rules.append({"field": label, "op": "between", "min": low.isoformat() if isinstance(low, date) else low,
+                                  "max": high.isoformat() if isinstance(high, date) else high})
+            elif kind == "text" and st.session_state[keys["value"]] != "":
+                rules.append({"field": label, "op": {"CONTAINS": "contains", "EQUALS": "eq", "DOES NOT EQUAL": "ne"}[
+                    st.session_state[keys["operation"]]], "value": st.session_state[keys["value"]]})
+    try:
+        _filter_vertical_records(records, rules)
+    except ValueError as exc:
+        preferences["error"] = str(exc)
+        return
+    preferences.update(rules=rules, error=None, revision=preferences["revision"] + 1)
+
+
+@st.fragment
+def _render_vertical_blotter(payload: dict[str, Any] | None, vault_key: str, account: str,
+                              covered_from: date | None, covered_through: date | None,
+                              cache_message: str = "", cache_error: str = "") -> None:
+    """Filter cached lifecycle copies locally; this fragment never reads broker/archive data."""
+    st.html('<div class="acq-section">VERTICAL SPREAD BLOTTER // REALIZED P&amp;L</div>')
+    coverage = (f"{covered_from:%m/%d/%Y} – {covered_through:%m/%d/%Y}"
+                if covered_from and covered_through else "NO RETAINED HISTORY")
+    st.caption("ALL RETAINED SOURCE HISTORY // " + coverage + " // Older records unavailable to this archive are excluded.")
+    records = _vertical_filter_records(payload or {})
+    scope = hashlib.sha256(json.dumps([str(vault_key), str(account)]).encode()).hexdigest()[:16]
+    preferences = st.session_state.setdefault("_acquisition_blotter_preferences", {}).setdefault(
+        scope, {"tickers": None, "rules": [], "revision": 0, "error": None},
+    )
+    ticker_key = "acquisition_blotter_tickers_" + scope
+    symbols = sorted({row["ticker"] for row in records})
+    selected = preferences["tickers"]
+    st.session_state[ticker_key] = (["ALL TICKERS"] if selected is None else [value for value in selected if value in symbols])
+    ticker_col, filter_col, reset_col = st.columns([4.4, 1.7, 1.7], gap="small", vertical_alignment="bottom")
+    with ticker_col:
+        st.multiselect("BLOTTER TICKERS", ["ALL TICKERS", *symbols], key=ticker_key,
+                       on_change=_remember_blotter_tickers, args=(scope, ticker_key),
+                       help="ALL TICKERS includes all retained spreads. Clear the selection to show none.")
+    with filter_col:
+        with st.popover("COLUMN FILTERS", width="stretch"):
+            label = st.selectbox("FILTER COLUMN", list(_VERTICAL_FILTER_FIELDS),
+                                 index=list(_VERTICAL_FILTER_FIELDS).index("Realized P&L"), key="acquisition_blotter_column_" + scope)
+            field, kind = _VERTICAL_FILTER_FIELDS[label]
+            active = [rule for rule in preferences["rules"] if rule["field"] == label]
+            prefix = f"acquisition_blotter_rule_{scope}_{label}_{preferences['revision']}_"
+            keys = {name: prefix + name for name in ("presence", "selection", "values", "min", "max", "operation", "value")}
+            presence = next(("MISSING ONLY" if rule["op"] == "is_missing" else "KNOWN ONLY"
+                             for rule in active if rule["op"] in {"is_missing", "is_known"}), "ANY")
+            with st.form(prefix + "form", border=False):
+                st.selectbox("VALUE STATUS", ["ANY", "KNOWN ONLY", "MISSING ONLY"],
+                             index=["ANY", "KNOWN ONLY", "MISSING ONLY"].index(presence), key=keys["presence"])
+                if kind == "choice":
+                    choice = next((rule for rule in active if rule["op"] == "in"), None)
+                    st.selectbox("MATCH", ["ALL VALUES", "SELECT VALUES"], index=int(choice is not None), key=keys["selection"])
+                    options = sorted({str(row[field]) for row in records if row.get(field) is not None and row[field] != ""})
+                    st.multiselect("VALUES", options, default=[value for value in (choice or {}).get("values", []) if value in options], key=keys["values"])
+                elif kind in {"number", "date"}:
+                    bounds = next((rule for rule in active if rule["op"] == "between"), {})
+                    low, high = bounds.get("min"), bounds.get("max")
+                    low_col, high_col = st.columns(2, gap="small")
+                    for column, name, value in ((low_col, "min", low), (high_col, "max", high)):
+                        with column:
+                            if kind == "number":
+                                st.number_input("MINIMUM" if name == "min" else "MAXIMUM", value=float(value) if value is not None else None,
+                                                step=1.0, format="%.4f", key=keys[name])
+                            else:
+                                st.date_input("FROM" if name == "min" else "THROUGH", value=date.fromisoformat(value) if value else None,
+                                              min_value=date(1900, 1, 1), max_value=date(2200, 12, 31), format="MM/DD/YYYY", key=keys[name])
+                else:
+                    text_rule = next((rule for rule in active if rule["op"] in {"contains", "eq", "ne"}), {})
+                    operations = ["CONTAINS", "EQUALS", "DOES NOT EQUAL"]
+                    operation = {"contains": 0, "eq": 1, "ne": 2}.get(text_rule.get("op"), 0)
+                    st.selectbox("MATCH", operations, index=operation, key=keys["operation"])
+                    st.text_input("VALUE", value=text_rule.get("value", ""), key=keys["value"])
+                apply_col, clear_col = st.columns(2, gap="small")
+                with apply_col:
+                    st.form_submit_button("APPLY COLUMN", on_click=_save_blotter_column, args=(scope, label, keys, records), width="stretch")
+                with clear_col:
+                    st.form_submit_button("CLEAR COLUMN", on_click=_save_blotter_column, args=(scope, label, keys, records, True), width="stretch")
+            st.caption("Columns combine with AND. Blank bounds leave that side open; zero is a real value.")
+            if preferences["rules"]:
+                st.caption("ACTIVE COLUMNS // " + " · ".join(dict.fromkeys(rule["field"] for rule in preferences["rules"])))
+    with reset_col:
+        st.button("RESET FILTERS", key="acquisition_blotter_reset_" + scope,
+                  on_click=_reset_blotter_filters, args=(scope, ticker_key), width="stretch")
+    if preferences.get("error"):
+        st.error(preferences["error"])
+    rules = list(preferences["rules"])
+    if preferences["tickers"] is not None:
+        rules.append({"field": "Ticker", "op": "in", "values": preferences["tickers"]})
+    filtered = _filter_vertical_records(records, rules)
+    totals = _vertical_filtered_totals(filtered)
+    st.html(f'<div class="acq-status" style="font-size:12px!important">GRAND TOTALS // {totals["rows"]:,} OF {len(records):,} ROWS // {totals["contracts"]:g} CONTRACTS</div>')
+    def money(value, signed=False):
+        return "—" if value is None else (f"{value:+,.2f}" if signed and value else f"{value:,.2f}")
+    for group in totals["groups"]:
+        currency = html.escape(group["currency"])
+        def colored(value):
+            color = "#4af6c3" if value is not None and value > 0 else "#ff433d" if value is not None and value < 0 else "#fb8b1e"
+            return '<span style="color:' + color + '">' + money(value, True) + '</span>'
+        st.html('<div class="acq-status" style="font-size:12px!important">' + currency + (' // INCLUDES INFERRED' if any(item["match"] != "ORDER" for item in group["evidence"]) else '')
+                + ' // NET ' + colored(group["pnl"])
+                + ' // GAINS ' + colored(group["gains"]) + ' // LOSSES ' + colored(group["losses"])
+                + ' // NET ENTRY COST ' + money(group["entry_cost"]) + ' // EXIT CASH ' + money(group["exit_cash"])
+                + ' // FEES ' + money(group["fees"]) + '</div>')
+        missing = ", ".join(f'{label} {group["missing"][key]}' for key, label in
+                            (("pnl", "P&L"), ("entry_cost", "entry cost"), ("exit_cash", "exit cash"), ("fees", "fees"))
+                            if group["missing"][key])
+        evidence = " | ".join(f'{"ORDER-MATCHED" if item["match"] == "ORDER" else item["match"]}: {item["rows"]} rows, net {money(item["pnl"], True)}'
+                              for item in group["evidence"])
+        st.caption(f'{group["currency"]} // P&L known {group["known"]["pnl"]}/{group["rows"]}'
+                   + (" // MISSING " + missing if missing else "") + " // " + evidence)
+    if filtered:
+        widths = {"Ticker": 60, "Spread (L / S)": 140, "Expiry": 100, "Opened": 100, "Closed": 100,
+                  "Contracts": 85, "Entry Cost": 95, "Exit Cash": 95, "Fees": 60, "Realized P&L": 115, "Ccy": 50, "Status": 205}
+        st.dataframe(_style_vertical_blotter(_vertical_blotter_frame(filtered)), hide_index=True, width="stretch", row_height=32,
+                     column_config={label: st.column_config.Column(width=width) for label, width in widths.items()})
+    else:
+        st.info("NO PAIRED VERTICAL BLOTTER RECORDS MATCH THESE FILTERS. FINANCIAL TOTALS —")
+    st.caption("GREEN + = gain; RED − = loss; blank P&L = unknown. Net cash includes fees; negative Entry Cost is a credit. "
+               "EXPIRED uses broker-confirmed expiry and its record date; past-date open/review quantities remain unverified. "
+               "INFERRED marks timestamp-only pairing; open quantities have no live valuation.")
+    if cache_error:
+        st.warning("VERTICAL GITHUB CACHE PENDING // " + cache_error)
+    elif cache_message:
+        st.caption(cache_message)
 
 
 def render_acquisition(
@@ -1347,6 +1743,15 @@ def render_acquisition(
         with st.spinner("Reading cached share history / syncing only new transactions..."):
             snapshots, errors = _sync_history(client, vault_key, accounts, force=sync)
         vault = _history_vault()
+        saved = snapshots.get(chosen)
+        vertical_payload = _cached_verticals(saved["rows"], vault_key, chosen) if saved else None
+        private_scope = (str(vault_key), str(chosen))
+        cache_message = ("PRIVATE GITHUB BLOTTER SAVED // VERSIONED REPORT + RAW HISTORY" if vertical_payload and
+                         vault.get("vertical_cache_saved", {}).get(private_scope) == vertical_payload["source_fingerprint"] else
+                         "VERTICAL BLOTTER CACHED IN THIS PROCESS // PRIVATE GITHUB REPORT NOT YET VERIFIED SAVED")
+        _render_vertical_blotter(vertical_payload, vault_key, chosen,
+                                 saved.get("covered_from") if saved else None, saved.get("covered_through") if saved else None,
+                                 cache_message if saved else "", vault.get("vertical_cache_error", {}).get(private_scope, ""))
         if not vault.get("archive_configured"):
             st.warning(
                 "GITHUB ARCHIVE NOT ACTIVE // " +
@@ -1375,7 +1780,6 @@ def render_acquisition(
             )
         if account_errors:
             st.warning("HISTORY / ARCHIVE SYNC INCOMPLETE // " + "; ".join(account_errors))
-        saved = snapshots.get(chosen)
         if not saved:
             st.info("NO CACHED TRANSACTIONS FOR THIS ACCOUNT. CONNECT E*TRADE AND SYNC.")
             return
@@ -1442,9 +1846,8 @@ def render_acquisition(
                 "COPY RECORDS", ["BOUGHT + SOLD", "OPEN LOTS // FIFO", vertical_mode], key=mode_key,
                 on_change=_remember_copy_preference, args=(scope, "mode", mode_key),
             )
-        vertical_payload = _cached_verticals(saved["rows"], vault_key, chosen) if mode == vertical_mode else None
         verticals, review = ((_vertical_event_rows(vertical_payload, "events"), _vertical_event_rows(vertical_payload, "review"))
-                             if vertical_payload else ([], []))
+                             if mode == vertical_mode and vertical_payload else ([], []))
         if vertical_payload:
             consumed_expirations = {str(identity) for row in vertical_payload["blotter"] if row["status"] == "EXPIRED"
                                     for identity in row["close_ids"]}
@@ -1466,35 +1869,6 @@ def render_acquisition(
         if mode == vertical_mode:
             matched = [row for row in verticals if row["ticker"] in selected]
             text = _vertical_text(matched)
-            report = [row for row in vertical_payload["blotter"] if row["ticker"] in selected
-                      and row["long"] is not None and row["short"] is not None]
-            st.html('<div class="acq-section">VERTICAL SPREAD BLOTTER // REALIZED P&L</div>')
-            st.caption(
-                "GREEN + = gain; RED − = loss; blank P&L = unknown. P&L uses exact-spread FIFO and net cash including fees. "
-                "EXPIRED uses broker-confirmed expiry and its record date; past-date open/review quantities remain unverified. "
-                "INFERRED marks timestamp-only pairing; open quantities have no live valuation."
-            )
-            if report:
-                st.dataframe(_style_vertical_blotter(_vertical_blotter_frame(report)),
-                             hide_index=True, width="stretch", row_height=32)
-                totals = defaultdict(list)
-                for row in report:
-                    if row["status"] in {"CLOSED", "EXPIRED"} and row["pnl"] is not None:
-                        totals[(row["currency"], row["match"])].append(row["pnl"])
-                if totals:
-                    st.caption("REALIZED TOTALS // " + " | ".join(
-                        f'{currency} {math.fsum(values):+,.2f} ({"INFERRED FIFO" if evidence != "ORDER" else "ORDER-MATCHED FIFO"})'
-                        for (currency, evidence), values in sorted(totals.items())))
-            else:
-                st.info("NO PAIRED VERTICAL BLOTTER RECORDS FOR THE SELECTED TICKERS.")
-            private_scope = (str(vault_key), str(chosen))
-            cache_error = vault.get("vertical_cache_error", {}).get(private_scope)
-            if cache_error:
-                st.warning("VERTICAL GITHUB CACHE PENDING // " + cache_error)
-            elif vault.get("vertical_cache_saved", {}).get(private_scope) == vertical_payload["source_fingerprint"]:
-                st.caption("PRIVATE GITHUB BLOTTER SAVED // VERSIONED REPORT + RAW HISTORY // REFRESH REUSES CACHE; SYNC READS RECENT OVERLAP ONLY")
-            else:
-                st.caption("VERTICAL BLOTTER CACHED IN THIS PROCESS // PRIVATE GITHUB REPORT NOT YET VERIFIED SAVED")
             st.caption(
                 "OPENED = BTO + STO; CLOSED = STC + BTC. Same underlying, expiration, type and balanced contracts. "
                 "LONG / SHORT identify the original sides. ORDER = shared broker order; TIME // INFERRED = exact intraday time only. "
