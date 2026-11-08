@@ -60,7 +60,7 @@ from src.vertical_options import (
     smart_fill_ladder,
     validate_vertical,
 )
-from src.vertical_options_store import VerticalResultStore, indicative_fill_score
+from src.vertical_options_store import VerticalResultStore, filterable_verticals_html, indicative_fill_score
 from src.risk_sizing_ui_v9 import _select_true_cash
 
 
@@ -1790,6 +1790,24 @@ def _qualified_store_xlsx(store: VerticalResultStore, *, source: str, loaded_at:
         )
 
 
+def _qualified_store_html(store: VerticalResultStore, *, source: str, loaded_at: float,
+                          pricing_mode: str, column_filters=None, year=None,
+                          sort_by="YEAR + FILL", direction="ASC",
+                          contract_open_interest=None) -> str:
+    """Build an offline copy of every retained spread only when downloaded."""
+    store.prune_before(_minimum_expiry_date())
+    lookup = contract_open_interest or {}
+    # iter_ranked's SQLite cursor owns a consistent read snapshot. Holding the
+    # store lock through compression would stall interactive sort-index creation.
+    return filterable_verticals_html(
+        store, source=source, loaded_at=loaded_at, pricing_mode=pricing_mode,
+        column_filters=column_filters, year=year, sort_by=sort_by, direction=direction,
+        contract_open_interest=lambda candidate: {
+            leg: lookup.get(_leg_quote_key(candidate, leg + "_")) for leg in ("buy", "sell")
+        },
+    )
+
+
 # ==============================
 # ISOLATED NORMAL / SMART FILL MODE (NO BROKER SIDE EFFECTS)
 # ==============================
@@ -2526,8 +2544,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     sort_by=sort_filter, direction=sort_direction,
                     max_distance=max_distance, column_filters=query_filters, year=active_year,
                 )
-                with st.container(width=440):
-                    exports = st.columns(2, gap="small")
+                contract_open_interest = _table_open_interest(result)
+                with st.container(width=660):
+                    exports = st.columns(3, gap="small")
                     export_options = dict(
                         source=result["source"], loaded_at=result["loaded_at"],
                         target=effective_target, max_cost=active_max_cost,
@@ -2546,11 +2565,25 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                             mime=mime, key=f"vo_export_qualified_{'excel' if extension == 'xlsx' else 'csv'}",
                             on_click="ignore", use_container_width=True,
                         )
+                    exports[2].download_button(
+                        "EXPORT HTML // ALL",
+                        data=partial(
+                            _qualified_store_html, candidates,
+                            source=result["source"], loaded_at=result["loaded_at"],
+                            pricing_mode=result.get("pricing_mode", "NORMAL"),
+                            column_filters={key: dict(value) if isinstance(value, dict) else list(value)
+                                            for key, value in query_filters.items()},
+                            year=active_year, sort_by=sort_filter, direction=sort_direction,
+                            contract_open_interest=dict(contract_open_interest),
+                        ),
+                        file_name=f'{result["symbol"]}_vo_vertical_all.html', mime="text/html",
+                        key="vo_export_qualified_html", on_click="ignore", use_container_width=True,
+                        help="Download every retained qualifying spread, with the current filters and sort as a starting view. Open the HTML offline and clear filters to explore the full snapshot; no broker connection is used.",
+                    )
                 if not matching_count:
                     st.info("No spreads match these filters. Clear a column filter.")
                 # The table has one continuous scroll range. Load only its
                 # requested viewport so large scans do not exhaust server memory.
-                contract_open_interest = _table_open_interest(result)
                 displayed = [_spread_table_row(
                     row, annual_ids, tv_exchange=result.get("tv_exchange", ""),
                     contract_open_interest=contract_open_interest,
