@@ -273,5 +273,197 @@ class AcquisitionTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
 
+class AcquisitionCopySelectionTests(unittest.TestCase):
+    @staticmethod
+    def _app():
+        from streamlit.testing.v1 import AppTest
+        return AppTest.from_string('''
+from datetime import date, datetime
+import threading
+import time
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
+import streamlit as st
+import src.acquisition_ui as acq
+
+def tx(identifier, stamp, action, symbol, quantity, price, security="EQ"):
+    return {"transactionId":identifier,
+            "transactionDate":int(datetime.fromisoformat(stamp).replace(tzinfo=ZoneInfo("America/New_York")).timestamp()*1000),
+            "brokerage":{"transactionType":action,"product":{"symbol":symbol,"securityType":security},
+                         "quantity":quantity,"price":price}}
+def position(symbol, quantity, **extra):
+    return {"Product":{"symbol":symbol,"securityType":"EQ"},"quantity":quantity,**extra}
+accounts = [{"accountIdKey":"raj","accountName":"Raj Singh","accountId":"10005474"},
+            {"accountIdKey":"other","accountName":"Other","accountId":"10001234"}]
+history = {
+    "raj":[tx(1,"2025-01-05","BUY","APH",10,100),
+           tx(2,"2025-02-05","SELL","APH",10,120),
+           tx(3,"2025-03-05","BUY","MSFT",10,200),
+           tx(4,"2025-04-05","SELL","MSFT",4,210),
+           tx(5,"2025-05-05","BUY","DUP",1,55),
+           tx(6,"2025-05-05","BUY","DUP",1,55),
+           tx(7,"2025-06-05","BUY","VTI",2.5,37.12345678,"ETF"),
+           tx(8,"2025-07-05","BUY","OPTION",1,3,"OPTN"),
+           tx(9,"2025-07-05","SELL_SHORT","SHORT",1,30),
+           tx(10,"2025-07-06","BUY_TO_COVER","SHORT",1,29),
+           tx(11,"2025-07-05","BUY","BADPRICE",1,float("nan")),
+           tx(12,"2025-07-05","BUY","ZERO",1,0),
+           tx(13,"2025-07-05","BUY","BADQTY",float("inf"),1),
+           tx(14,"2025-07-05","BUY","BAD SYMBOL",1,1),
+           {"transactionId":15,"transactionDate":"invalid"},None],
+    "other":[tx(21,"2025-01-01","BUY","APH",2,900),
+             tx(22,"2025-02-01","SELL","APH",2,910),
+             tx(23,"2025-03-01","BUY","ONLY",1,50),
+             tx(24,"2025-04-01","SELL","ONLY",1,51)],
+}
+if "fixture_vault" not in st.session_state:
+    st.session_state["fixture_vault"] = {
+        "lock":threading.RLock(),"lots":{},
+        "accounts":{(access,key):{"rows":rows,"covered_from":date(2023,1,1),
+                    "covered_through":date.today(),"synced_at":time.time()}
+                    for access in ("copy-fixture","copy-fixture-2") for key,rows in history.items()}}
+st.session_state.setdefault("etrade_accounts", accounts)
+st.session_state.setdefault("fixture_portfolio_calls", [])
+st.session_state.setdefault("fixture_lot_calls", [])
+st.session_state.setdefault("fixture_transaction_calls", [])
+st.session_state.setdefault("fixture_archive_calls", [])
+class Broker:
+    is_offline = False
+    def get_portfolio(self, account, **kwargs):
+        st.session_state["fixture_portfolio_calls"].append(account)
+        return ([position("MSFT",6),position("DUP",2),position("VTI",2.5),
+                 position("HTD",3,positionId=700)] if account=="raj" else [])
+    def get_position_lots(self, account, identifier):
+        st.session_state["fixture_lot_calls"].append((account,identifier))
+        return {"PositionLot":[{"remainingQty":3,"price":22.47,"acquiredDate":20230712}]}
+    def get_transactions(self, account, **kwargs):
+        st.session_state["fixture_transaction_calls"].append(account)
+        raise AssertionError("Copy controls must use cached transactions")
+    def __getattr__(self, name):
+        raise AssertionError("Unexpected broker action: "+name)
+def archive(*args, **kwargs):
+    st.session_state["fixture_archive_calls"].append("unexpected archive access")
+    raise AssertionError("Copy controls must not read or write archives")
+def download(label, data, **kwargs):
+    st.session_state["fixture_download"] = {"text":data,**kwargs}
+    return False
+def clipboard(*, data, **kwargs):
+    st.session_state["fixture_clipboard"] = data
+with (patch.object(acq,"_history_vault",return_value=st.session_state["fixture_vault"]),
+      patch.object(acq,"_archive_client",return_value=None),
+      patch.object(acq,"GitHubAcquisitionArchive",side_effect=archive),
+      patch.object(acq,"PrivateTradeBlotter",side_effect=archive),
+      patch.object(acq.st,"download_button",side_effect=download),
+      patch.object(acq,"_acq_copy",side_effect=clipboard)):
+    if not st.session_state.get("fixture_hide_acquisition"):
+        acq.render_acquisition(Broker(),vault_key=st.session_state.get("fixture_access","copy-fixture"))
+    else:
+        st.write("Another terminal tab")
+''', default_timeout=15).run()
+
+    def _check(self, app):
+        self.assertFalse(app.exception, [error.message for error in app.exception])
+        self.assertEqual(app.session_state["fixture_transaction_calls"], [])
+        self.assertEqual(app.session_state["fixture_archive_calls"], [])
+
+    @staticmethod
+    def _control(app, kind, label):
+        return next(widget for widget in getattr(app, kind) if widget.label == label)
+
+    def _text(self, app):
+        self._check(app)
+        value = self._control(app, "text_area", "PINE SCRIPT TEXT").value
+        self.assertEqual(app.session_state["fixture_clipboard"], value)
+        self.assertEqual(app.session_state["fixture_download"]["text"], value)
+        return value
+
+    def test_closed_aph_and_partial_sales_use_original_trades_without_changing_fifo_table(self):
+        app = self._app()
+        self._check(app)
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
+        tickers = self._control(app,"multiselect","TICKERS TO INCLUDE")
+        self.assertEqual(set(tickers.options), {"APH","DUP","HTD","MSFT","VTI"})
+        self.assertEqual(set(tickers.value), {"DUP","HTD","MSFT","VTI"})
+        before = app.dataframe[0].value.copy(deep=True)
+        tickers.set_value(["APH","MSFT","DUP"]).run()
+        self.assertEqual(self._text(app),
+                         "APH 01.05.2025 100 10 B\nAPH 02.05.2025 120 10 S\n"
+                         "MSFT 03.05.2025 200 10 B\nMSFT 04.05.2025 210 4 S\n"
+                         "DUP 05.05.2025 55 1 B\nDUP 05.05.2025 55 1 B")
+        self.assertTrue(before.equals(app.dataframe[0].value))
+        msft = before[before["Ticker"] == "MSFT"]
+        self.assertEqual(msft["Open Shares"].tolist(), [6])
+        self.assertEqual(app.session_state["fixture_download"]["file_name"], "acquisition_bought_sold.txt")
+
+    def test_history_omits_malformed_options_shorts_and_never_invents_broker_lot_buys(self):
+        app = self._app()
+        self._control(app,"multiselect","TICKERS TO INCLUDE").set_value(["HTD","VTI"]).run()
+        self.assertEqual(self._text(app), "VTI 06.05.2025 37.12345678 2.5 B")
+        self.assertTrue(any("NO RECORDED BUY/SELL TRADES // HTD" in caption.value for caption in app.caption))
+        self.assertEqual(app.session_state["fixture_lot_calls"], [("raj",700)])
+
+    def test_open_mode_preserves_reconciled_and_broker_recovered_lots_for_selected_tickers(self):
+        app = self._app()
+        self._control(app,"multiselect","TICKERS TO INCLUDE").set_value(["HTD","MSFT","APH"]).run()
+        self._control(app,"selectbox","COPY RECORDS").set_value("OPEN LOTS // FIFO").run()
+        self.assertEqual(self._text(app),
+                         "HTD 07.12.2023 22.47 3 B\nMSFT 03.05.2025 200 6 B")
+        self.assertEqual(app.session_state["fixture_lot_calls"], [("raj",700)])
+        self.assertEqual(app.session_state["fixture_download"]["file_name"], "acquisition_open_fifo.txt")
+        self.assertGreater(len(app.session_state["fixture_portfolio_calls"]), 1)
+
+    def test_closed_only_account_can_select_history_without_current_holdings(self):
+        app = self._app()
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
+        tickers = self._control(app,"multiselect","TICKERS TO INCLUDE")
+        self.assertEqual(tickers.options, ["APH","ONLY"])
+        self.assertEqual(tickers.value, [])
+        self.assertEqual(self._text(app), "")
+        tickers.set_value(["APH"]).run()
+        self.assertEqual(self._text(app), "APH 01.01.2025 900 2 B\nAPH 02.01.2025 910 2 S")
+        self.assertEqual(len(app.dataframe), 0)
+
+    def test_account_preferences_and_explicit_empty_selection_survive_widget_cleanup(self):
+        app = self._app()
+        self._control(app,"selectbox","COPY RECORDS").set_value("OPEN LOTS // FIFO").run()
+        self._control(app,"multiselect","TICKERS TO INCLUDE").set_value([]).run()
+        self.assertEqual(self._text(app), "")
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
+        self._control(app,"multiselect","TICKERS TO INCLUDE").set_value(["ONLY"]).run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("raj").run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"OPEN LOTS // FIFO")
+        self.assertEqual(self._control(app,"multiselect","TICKERS TO INCLUDE").value, [])
+        app.session_state["fixture_hide_acquisition"] = True
+        app.run()
+        self._check(app)
+        app.session_state["fixture_hide_acquisition"] = False
+        app.run()
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"OPEN LOTS // FIFO")
+        self.assertEqual(self._control(app,"multiselect","TICKERS TO INCLUDE").value, [])
+        self.assertEqual(self._text(app), "")
+        self.assertTrue(app.session_state["fixture_download"]["disabled"])
+        self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
+        self.assertEqual(self._control(app,"multiselect","TICKERS TO INCLUDE").value, ["ONLY"])
+        self.assertEqual(self._text(app), "ONLY 03.01.2025 50 1 B\nONLY 04.01.2025 51 1 S")
+
+    def test_copy_preferences_are_isolated_by_terminal_access_identity(self):
+        app = self._app()
+        self._control(app,"multiselect","TICKERS TO INCLUDE").set_value(["APH"]).run()
+        self._control(app,"selectbox","COPY RECORDS").set_value("OPEN LOTS // FIFO").run()
+        app.session_state["fixture_access"] = "copy-fixture-2"
+        app.run()
+        self._check(app)
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
+        self.assertEqual(set(self._control(app,"multiselect","TICKERS TO INCLUDE").value),
+                         {"DUP","HTD","MSFT","VTI"})
+        self._control(app,"multiselect","TICKERS TO INCLUDE").set_value([]).run()
+        app.session_state["fixture_access"] = "copy-fixture"
+        app.run()
+        self._check(app)
+        self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"OPEN LOTS // FIFO")
+        self.assertEqual(self._control(app,"multiselect","TICKERS TO INCLUDE").value, ["APH"])
+
+
 if __name__ == "__main__":
     unittest.main()

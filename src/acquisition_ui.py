@@ -25,7 +25,7 @@ import streamlit as st
 from src.etrade_client import normalize_position
 from src.performance_ui import _find, _instrument, _trade_record, _when
 from src.acquisition_history_github import ArchiveConfig, ArchiveError, GitHubAcquisitionArchive, REPO, BRANCH
-from src.acquisition_private_blotter import PrivateTradeBlotter
+from src.acquisition_private_blotter import PrivateTradeBlotter, share_blotter
 
 
 _ET = ZoneInfo("America/New_York")
@@ -652,6 +652,13 @@ def _default_account(accounts: list[dict[str, Any]]) -> str:
     return str(accounts[0]["accountIdKey"])
 
 
+def _remember_copy_preference(scope: str, setting: str, widget_key: str) -> None:
+    value = st.session_state[widget_key]
+    st.session_state["_acquisition_copy_preferences"][scope][setting] = (
+        list(value) if setting == "tickers" else value
+    )
+
+
 def render_acquisition(
     client: Any,
     *,
@@ -746,7 +753,6 @@ def render_acquisition(
         valid, gaps = _recover_broker_lots(
             client, vault_key, chosen, portfolio, valid, gaps, force=sync,
         )
-        text = _pine_rows(valid)
         covered = saved["covered_from"]
         through = saved["covered_through"]
         st.html(
@@ -769,20 +775,58 @@ def render_acquisition(
             st.info("NO VERIFIED OPEN EQUITY LOTS FOUND IN THIS ACCOUNT.")
         if gaps:
             st.warning(
-                "UNVERIFIED LOTS EXCLUDED FROM EXPORT. Older than two years, transfers, "
+                "UNVERIFIED OPEN LOTS EXCLUDED FROM FIFO EXPORT. Older than two years, transfers, "
                 "splits, reinvestments, or missing API records can cause gaps. "
                 "Do not rely on FIFO for these positions until older history is reconciled."
             )
             st.dataframe(pd.DataFrame(gaps), hide_index=True, width="stretch", row_height=32)
         st.html('<div class="acq-section">COPY INTO TRADINGVIEW PINE SCRIPT</div>')
-        st.caption(
-            "FORMAT // TICKER MM.DD.YYYY COST QTY B  |  FIFO from transactions when complete; "
-            "E*TRADE LOT = broker-reported surviving lot where older history is missing "
-            "(specific-lot selection may differ from FIFO). Closed sales are omitted."
+        history_lines = share_blotter(saved["rows"], _equity_trade).splitlines()
+        history_symbols = {line.partition(" ")[0] for line in history_lines}
+        holding_symbols = sorted(_shares_held(portfolio))
+        choices = sorted(set(holding_symbols) | history_symbols)
+        scope = hashlib.sha256(json.dumps([str(vault_key), str(chosen)]).encode()).hexdigest()[:16]
+        preferences = st.session_state.setdefault("_acquisition_copy_preferences", {}).setdefault(
+            scope, {"tickers": holding_symbols, "mode": "BOUGHT + SOLD"},
         )
+        ticker_key = "acquisition_copy_tickers_" + scope
+        mode_key = "acquisition_copy_mode_" + scope
+        st.session_state[ticker_key] = [ticker for ticker in preferences["tickers"] if ticker in choices]
+        st.session_state[mode_key] = preferences["mode"]
+        mode_col, ticker_col = st.columns([2, 5], gap="small", vertical_alignment="bottom")
+        with mode_col:
+            mode = st.selectbox(
+                "COPY RECORDS", ["BOUGHT + SOLD", "OPEN LOTS // FIFO"], key=mode_key,
+                on_change=_remember_copy_preference, args=(scope, "mode", mode_key),
+            )
+        with ticker_col:
+            selected = set(st.multiselect(
+                "TICKERS TO INCLUDE", choices, key=ticker_key,
+                on_change=_remember_copy_preference, args=(scope, "tickers", ticker_key),
+                help="Choose current holdings or tickers from this account's cached buy/sell history, including fully sold positions.",
+            ))
+        if mode == "BOUGHT + SOLD":
+            text = "\n".join(line for line in history_lines if line.partition(" ")[0] in selected)
+            st.caption(
+                "FORMAT // TICKER MM.DD.YYYY PRICE QTY B/S  |  B = BOUGHT; S = SOLD. "
+                "Original recorded trades, including closed positions; limited to the cached history window above."
+            )
+            missing = sorted(selected - history_symbols)
+            if missing:
+                st.caption(
+                    "NO RECORDED BUY/SELL TRADES // " + ", ".join(missing)
+                    + ". Use OPEN LOTS // FIFO for verified surviving lots available above."
+                )
+        else:
+            text = _pine_rows([lot for lot in valid if lot["ticker"] in selected])
+            st.caption(
+                "FORMAT // TICKER MM.DD.YYYY COST QTY B  |  FIFO from transactions when complete; "
+                "E*TRADE LOT = broker-reported surviving lot where older history is missing "
+                "(specific-lot selection may differ from FIFO). Closed sales are omitted."
+            )
         visible_text = st.text_area(
             "PINE SCRIPT TEXT", value=text,
-            height=min(360, max(88, 22 * max(1, len(valid)))),
+            height=min(360, max(88, 22 * max(1, len(text.splitlines())))),
             key=f"acquisition_export_{chosen}_{hashlib.sha256(text.encode()).hexdigest()[:12]}",
             label_visibility="collapsed",
         )
@@ -790,7 +834,8 @@ def render_acquisition(
             [1.15, 1.15, 2.2, 5.5], gap="small", vertical_alignment="center",
         )
         with download_col:
-            st.download_button("DOWNLOAD .TXT", text or "", file_name="acquisition_open_fifo.txt",
+            st.download_button("DOWNLOAD .TXT", text or "",
+                               file_name="acquisition_bought_sold.txt" if mode == "BOUGHT + SOLD" else "acquisition_open_fifo.txt",
                                mime="text/plain", disabled=not bool(text), key="acquisition_download")
         with copy_col:
             _acq_copy(data=visible_text, key="acquisition_copy_pine_button")
