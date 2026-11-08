@@ -34,7 +34,7 @@ _HISTORY_DAYS = 729   # E*TRADE rejects start dates older than two years
 _OVERLAP_DAYS = 7     # late-posted/corrected executions
 _SYNC_SECONDS = 12 * 3600
 _SHARE_TYPES = {"EQ", "EQUITY", "ETF", "STOCK", "COMMON", "COMMON_STOCK"}
-_VERTICAL_CACHE_VERSION = 1
+_VERTICAL_CACHE_VERSION = 2
 _CSS = """
 <style>
 .st-key-acquisition_root {gap:4px!important;padding:0!important;margin:0!important;font-family:"Courier New",monospace}
@@ -774,12 +774,17 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
             if any(str(_find(tx, field) or "").lower() in {"true", "1", "yes", "y"}
                    for field in ("reversalFlag", "isReversal", "reversed")):
                 raise ValueError("Reversed option transaction requires review")
+            disposition = {re.sub(r"[^A-Z]", "", str(_find(source, field) or "").upper())
+                           for source in (broker, tx) for field in ("transactionType", "transactionShortDesc")}
+            is_expiry = bool(disposition & {"OPTIONEXPIRED", "OPTIONEXPIRATION", "EXPIRATION", "EXPIRED"})
             found = set()
             for source in (broker, tx):
                 for field in ("orderAction", "transactionType", "transactionShortDesc", "description", "transactionDescription"):
                     raw = str(_find(source, field) or "").upper()
-                    if field in {"transactionType", "transactionShortDesc"} and re.search(r"\b(?:EXERCIS\w*|ASSIGN\w*|EXPIR\w*)", raw):
+                    if field in {"transactionType", "transactionShortDesc"} and re.search(r"\b(?:EXERCIS\w*|ASSIGN\w*)", raw):
                         raise ValueError("Exercise, assignment or expiration is not a paired cash close")
+                    if field in {"transactionType", "transactionShortDesc"} and re.search(r"\bEXPIR\w*", raw) and not is_expiry:
+                        raise ValueError("Ambiguous option expiration requires review")
                     if re.search(r"\b(?:REVERSE\w*|REVERSAL|CANCEL\w*)\b", raw):
                         raise ValueError("Reversed or canceled option transaction requires review")
                     action = aliases.get(re.sub(r"[^A-Z]", "", raw))
@@ -788,9 +793,11 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                     for phrase in re.findall(r"\b(?:BUY|BOUGHT|SELL|SOLD)[ _-]+(?:TO[ _-]+)?(?:OPEN|CLOSE)\b", raw):
                         if action := aliases.get(re.sub(r"[^A-Z]", "", phrase)):
                             found.add(action)
-            if len(found) != 1:
+            if is_expiry and found:
+                raise ValueError("Expiration conflicts with an opening or closing trade action")
+            if not is_expiry and len(found) != 1:
                 raise ValueError("Explicit buy/sell TO OPEN or TO CLOSE is missing or conflicting")
-            leg["action"] = found.pop()
+            leg["action"] = "EXPIRATION" if is_expiry else found.pop()
             leg["expiry"] = expiry(product)
             raw_numbers = (_find(product, "strikePrice"), _find(broker, "quantity"), _find(broker, "price"))
             if any(isinstance(value, bool) for value in raw_numbers):
@@ -832,7 +839,7 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                     raise ValueError("Invalid contract multiplier")
             currency = tuple(str(_find(broker, field) or _find(broker, "currency") or "").upper()
                              for field in ("settlementCurrency", "paymentCurrency"))
-            if not order and any(stamp.time().replace(tzinfo=None) == datetime.min.time()
+            if not is_expiry and not order and any(stamp.time().replace(tzinfo=None) == datetime.min.time()
                                  for stamp in (when, when.astimezone(timezone.utc))):
                 raise ValueError("No shared order reference or precise intraday execution time")
             phase = "OPENED" if leg["action"] in {"BTO", "STO"} else "CLOSED"
@@ -858,6 +865,15 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                        multiplier=multiplier, currency=currency, fee=fee, cash=cash,
                        cash_basis=cash_basis, id=_identity(tx),
                        subtype=str(_find(product, "securitySubType") or ""))
+            if is_expiry:
+                if (recorded_number("amount") != 0 or price != 0 or fee not in (None, 0)
+                        or (_find(tx, "fee") is not None and fee is None)
+                        or not currency[0] or currency[0] != currency[1] or when.date() < leg["expiry"]):
+                    raise ValueError("Expiration requires explicit zero cash, zero premium and a date at or after contract expiry")
+                leg.update(lifecycle="EXPIRATION", signed_qty=quantity, cash=0.0, cash_basis="RECORDED CASH",
+                           reason="Broker-recorded expiration; requires exact remaining two-leg allocation")
+                review.append(leg)
+                continue
             groups[(bucket, ticker, root, leg["expiry"], leg["type"], multiplier, currency,
                     str(_find(product, "securitySubType") or ""), phase)].append(leg)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -926,14 +942,14 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
     def total(values):
         try:
             return number(math.fsum(values))
-        except (OverflowError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return None
 
     def iso(value):
         return value.isoformat() if isinstance(value, (date, datetime)) else str(value) if value else None
 
     def ids(event):
-        return sorted(str(value) for value in event.get("ids", []) if value is not None)
+        return sorted(str(value) for value in event.get("ids", [event["id"]] if event.get("id") is not None else []) if value is not None)
 
     def currencies(event):
         value = event.get("currency") or ("", "")
@@ -982,7 +998,7 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
         close_fee = allocated(closing, "fee", quantity) if closing else 0.0
         fees = total((open_fee, close_fee)) if (opening or closing) and open_fee is not None and close_fee is not None else None
         pnl = None
-        if opening and closing and status == "CLOSED":
+        if opening and closing and status in {"CLOSED", "EXPIRED"}:
             open_cash, close_cash = allocated(opening, "cash", quantity), allocated(closing, "cash", quantity)
             if not currency(event):
                 basis += "; currency unavailable or settlement/payment currency differs"
@@ -994,7 +1010,7 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
         inferred = any(item and item.get("match") == "TIME // INFERRED" for item in (event, opening, closing))
         if inferred:
             basis += "; timestamp pairing is inferred"
-        return {"ticker": str(event.get("ticker") or "UNKNOWN"), "type": str(event.get("type") or ""),
+        result = {"ticker": str(event.get("ticker") or "UNKNOWN"), "type": str(event.get("type") or ""),
                 "expiry": iso(event.get("expiry")), "long": number(event.get("long")), "short": number(event.get("short")),
                 "qty": number(quantity), "status": status,
                 "opened": iso(stamp(opening.get("when"))) if opening else None,
@@ -1005,13 +1021,18 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
                 "pnl": round(pnl, 8) if pnl is not None else None, "currency": currency(event),
                 "match": "TIME // INFERRED" if inferred else "ORDER", "basis": basis,
                 "open_ids": ids(opening) if opening else [], "close_ids": ids(closing) if closing else []}
+        sources[id(result)] = event
+        return result
 
+    sources = {}
+    expiry_proof = [leg for leg in review if leg.get("lifecycle") == "EXPIRATION"]
+    ordinary_review = [leg for leg in review if leg.get("lifecycle") != "EXPIRATION"]
     barriers = {}
     simultaneous = defaultdict(list)
     for event in events:
         key = identity(event)
         if key not in barriers:
-            relevant = [leg for leg in review if related(leg, event)]
+            relevant = [leg for leg in ordinary_review if related(leg, event)]
             barriers[key] = (min((stamp(leg.get("when")) or datetime.min.replace(tzinfo=_ET)) for leg in relevant)
                              if relevant else None)
         if event.get("event") in {"OPENED", "CLOSED"}:
@@ -1022,6 +1043,7 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
             barriers[key] = min(barriers[key], when) if barriers[key] else when
 
     lots = defaultdict(deque)
+    expiry_conflicts = set()
     output = []
     ordered = sorted(events, key=lambda event: (stamp(event.get("when")) or datetime.min.replace(tzinfo=_ET),
                                                 event.get("event") == "OPENED", ids(event)))
@@ -1031,6 +1053,11 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
         closing = event if event.get("event") == "CLOSED" else None
         if when is None or not quantity or quantity <= 0 or not quantity.is_integer() or not (opening or closing):
             output.append(row(event, quantity, "REVIEW", opening, closing, "Invalid spread event; no FIFO match"))
+            continue
+        if closing and any(related(leg, event) and leg.get("expiry") and when.date() > leg["expiry"] for leg in expiry_proof):
+            expiry_conflicts.add(key)
+            output.append(row(event, quantity, "REVIEW", closing=closing,
+                              basis="A close dated after recorded contract expiration cannot consume FIFO inventory"))
             continue
         if barriers[key] is not None and when >= barriers[key]:
             output.append(row(event, quantity, "REVIEW", opening, closing,
@@ -1051,13 +1078,71 @@ def _vertical_blotter(events: list[dict[str, Any]], review: list[dict[str, Any]]
         if remaining:
             output.append(row(event, remaining, "UNMATCHED CLOSE", closing=event,
                               basis="Opening spread is unavailable in retained history; no realized P&L"))
+    # An expiration record disposes of one contract, not an arbitrary spread.
+    # Anchor both signed legs to a unique remaining spread before consuming it.
+    expiry_groups = defaultdict(list)
+    for index, leg in enumerate(expiry_proof):
+        candidates = []
+        signed = number(leg.get("signed_qty"))
+        for key, queue in lots.items():
+            if not queue:
+                continue
+            event = queue[0]["event"]
+            if related(leg, event) and signed is not None and (
+                    (signed < 0 and number(leg.get("strike")) == number(event.get("long"))) or
+                    (signed > 0 and number(leg.get("strike")) == number(event.get("short")))):
+                candidates.append(key)
+        if len(candidates) == 1:
+            expiry_groups[candidates[0]].append((index, leg))
+    consumed = set()
+    for key, evidence in sorted(expiry_groups.items(), key=lambda item: max(stamp(leg.get("when")) for _, leg in item[1])):
+        when = max(stamp(leg.get("when")) for _, leg in evidence)
+        queue = lots[key]
+        if not queue or barriers[key] is not None or key in expiry_conflicts or when is None:
+            continue
+        longs = [(index, leg) for index, leg in evidence if number(leg.get("signed_qty")) < 0]
+        shorts = [(index, leg) for index, leg in evidence if number(leg.get("signed_qty")) > 0]
+        long_qty = total(number(leg.get("qty")) for _, leg in longs)
+        short_qty = total(number(leg.get("qty")) for _, leg in shorts)
+        if (not longs or not shorts or not long_qty or long_qty != short_qty
+                or long_qty > sum(lot["remaining"] for lot in queue)
+                or any(stamp(lot["event"]["when"]) >= when or stamp(lot["event"]["when"]).date() > lot["event"]["expiry"] for lot in queue)):
+            continue
+        event = queue[0]["event"]
+        closing = {**event, "when":when,"event":"EXPIRED","qty":long_qty,"net":0.0,"cash":0.0,
+                   "fee":total(number(leg.get("fee")) for _, leg in evidence) if all(number(leg.get("fee")) is not None for _, leg in evidence) else None,
+                   "ids":sorted(str(leg["id"]) for _, leg in evidence),"cash_basis":"BROKER ZERO-CASH EXPIRATION"}
+        remaining = long_qty
+        while remaining:
+            lot = queue[0]
+            matched = min(remaining, lot["remaining"])
+            output.append(row(closing, matched, "EXPIRED", lot["event"], closing,
+                              "Exact-contract FIFO; both signed legs have broker-confirmed zero-cash expiration; closed date is broker evidence date"))
+            lot["remaining"] -= matched
+            remaining -= matched
+            if lot["remaining"] == 0:
+                queue.popleft()
+        consumed.update(index for index, _ in evidence)
+    unresolved = [leg for index, leg in enumerate(expiry_proof) if index not in consumed]
     for key, queue in lots.items():
         for lot in queue:
-            interrupted = barriers[key] is not None
+            interrupted = barriers[key] is not None or any(related(leg, lot["event"]) for leg in unresolved)
             output.append(row(lot["event"], lot["remaining"], "REVIEW" if interrupted else "OPEN", opening=lot["event"],
                               basis=("Unpaired leg activity interrupts the remaining FIFO quantity; no realized P&L" if interrupted else
                                      "Remaining recorded FIFO opening quantity; no realized P&L")))
+    for item in output:
+        terminal = item["status"] in {"CLOSED", "EXPIRED"}
+        evidence = expiry_proof if item["status"] == "CLOSED" else unresolved
+        closed = stamp(item["closed"])
+        if terminal and any(related(leg, sources[id(item)]) and (
+                (closed.date() > leg["expiry"] if item["status"] == "CLOSED" and leg.get("expiry") else
+                 stamp(leg.get("when")) is None or closed >= stamp(leg["when"]))) for leg in evidence):
+            item.update(status="REVIEW", pnl=None,
+                        basis="Expiration evidence conflicts with a later or unresolved lifecycle allocation; no realized P&L")
+    resolved_ids = {identifier for item in output if item["status"] == "EXPIRED" for identifier in item["close_ids"]}
     for leg in review:
+        if leg.get("lifecycle") == "EXPIRATION" and str(leg.get("id")) in resolved_ids:
+            continue
         action = leg.get("action")
         event = {**leg, "long": leg.get("strike") if action in {"BTO", "STC"} else None,
                  "short": leg.get("strike") if action in {"STO", "BTC"} else None}
@@ -1176,6 +1261,45 @@ def _vertical_event_rows(payload: dict[str, Any], key: str) -> list[dict[str, An
         row["expiry"] = date.fromisoformat(row["expiry"]) if row.get("expiry") else None
         rows.append(row)
     return rows
+
+
+def _vertical_blotter_frame(report: list[dict[str, Any]], *, today: date | None = None) -> pd.DataFrame:
+    """Present lifecycle rows without treating a passed date as realized cash."""
+    today = today or datetime.now(_ET).date()
+    rows = []
+    for row in report:
+        expiry = date.fromisoformat(row["expiry"]) if row["expiry"] else None
+        status = row["status"]
+        if expiry and expiry < today and status in {"OPEN", "REVIEW"} and not row["closed"]:
+            status = "EXPIRED // " + ("UNVERIFIED" if status == "OPEN" else "REVIEW")
+        if row["match"] != "ORDER":
+            status += " // INFERRED"
+        def quote(value):
+            return "—" if value is None else f"{value:g}"
+        def day(value):
+            return datetime.fromisoformat(value).strftime("%m/%d/%Y") if value else "—"
+        rows.append({
+            "Ticker": row["ticker"], "Spread (L / S)": f'{row["type"]} {quote(row["long"])} / {quote(row["short"])}',
+            "Expiry": expiry.strftime("%m/%d/%Y") if expiry else "—",
+            "Opened": day(row["opened"]), "Closed": day(row["closed"]), "Contracts": row["qty"],
+            "Entry / Exit": quote(row["open_net"]) + " / " + quote(row["close_net"]),
+            "Fees": round(row["fees"], 2) if row["fees"] is not None else None,
+            "Realized P&L": (round(row["pnl"], 2) if row["pnl"] is not None
+                             and row["status"] in {"CLOSED", "EXPIRED"} else None),
+            "Ccy": row["currency"] or "UNKNOWN", "Status": status,
+        })
+    return pd.DataFrame(rows)
+
+
+def _style_vertical_blotter(frame: pd.DataFrame):
+    """Keep numeric sort/download values while formatting this blotter only."""
+    def signed(value):
+        return f"{value:+,.2f}" if value else "0.00"
+    def color(value):
+        return ("color:#4af6c3" if pd.notna(value) and value > 0 else
+                "color:#ff433d" if pd.notna(value) and value < 0 else "color:#fb8b1e")
+    return frame.style.format({"Realized P&L": signed, "Fees": "{:,.2f}",
+                               "Contracts": "{:,.0f}"}, na_rep="").map(color, subset=["Realized P&L"])
 
 
 def render_acquisition(
@@ -1321,6 +1445,11 @@ def render_acquisition(
         vertical_payload = _cached_verticals(saved["rows"], vault_key, chosen) if mode == vertical_mode else None
         verticals, review = ((_vertical_event_rows(vertical_payload, "events"), _vertical_event_rows(vertical_payload, "review"))
                              if vertical_payload else ([], []))
+        if vertical_payload:
+            consumed_expirations = {str(identity) for row in vertical_payload["blotter"] if row["status"] == "EXPIRED"
+                                    for identity in row["close_ids"]}
+            review = [leg for leg in review if not (leg.get("lifecycle") == "EXPIRATION"
+                      and str(leg.get("id")) in consumed_expirations)]
         setting = "vertical_tickers" if mode == vertical_mode else "tickers"
         if mode == vertical_mode:
             choices = sorted({row["ticker"] for row in verticals + review})
@@ -1341,33 +1470,20 @@ def render_acquisition(
                       and row["long"] is not None and row["short"] is not None]
             st.html('<div class="acq-section">VERTICAL SPREAD BLOTTER // REALIZED P&L</div>')
             st.caption(
-                "LONG / SHORT strikes retain the original sides. ENTRY / EXIT are signed net premiums per share before fees. "
-                "P&L matches closed contracts to prior exact-spread openings by FIFO using recorded net cash, or known multiplier and fees. "
-                "Cash already includes fees; charges are not subtracted twice. Missing basis, unmatched closes and interrupted leg histories remain unvalued. "
-                "INFERRED identifies timestamp-only pairing; remaining openings have no unrealized valuation."
+                "GREEN + = gain; RED − = loss; blank P&L = unknown. P&L uses exact-spread FIFO and net cash including fees. "
+                "EXPIRED uses broker-confirmed expiry and its record date; past-date open/review quantities remain unverified. "
+                "INFERRED marks timestamp-only pairing; open quantities have no live valuation."
             )
             if report:
-                def quote(value):
-                    return "—" if value is None else f"{value:g}"
-                def day(value):
-                    return datetime.fromisoformat(value).strftime("%m/%d/%Y") if value else "—"
-                st.dataframe(pd.DataFrame([{
-                    "Ticker": row["ticker"], "Spread (L / S)": f'{row["type"]} {quote(row["long"])} / {quote(row["short"])}',
-                    "Expiry": date.fromisoformat(row["expiry"]).strftime("%m/%d/%Y") if row["expiry"] else "—",
-                    "Opened": day(row["opened"]), "Closed": day(row["closed"]), "Contracts": row["qty"],
-                    "Entry / Exit": quote(row["open_net"]) + " / " + quote(row["close_net"]),
-                    "Fees": round(row["fees"], 2) if row["fees"] is not None else None,
-                    "Realized P&L": round(row["pnl"], 2) if row["pnl"] is not None else None,
-                    "Ccy": row["currency"] or "UNKNOWN",
-                    "Status": row["status"] + (" // INFERRED" if row["match"] != "ORDER" else ""),
-                } for row in report]), hide_index=True, width="stretch", row_height=32)
+                st.dataframe(_style_vertical_blotter(_vertical_blotter_frame(report)),
+                             hide_index=True, width="stretch", row_height=32)
                 totals = defaultdict(list)
                 for row in report:
-                    if row["status"] == "CLOSED" and row["pnl"] is not None:
+                    if row["status"] in {"CLOSED", "EXPIRED"} and row["pnl"] is not None:
                         totals[(row["currency"], row["match"])].append(row["pnl"])
                 if totals:
                     st.caption("REALIZED TOTALS // " + " | ".join(
-                        f'{currency} {math.fsum(values):,.2f} ({"INFERRED FIFO" if evidence != "ORDER" else "ORDER-MATCHED FIFO"})'
+                        f'{currency} {math.fsum(values):+,.2f} ({"INFERRED FIFO" if evidence != "ORDER" else "ORDER-MATCHED FIFO"})'
                         for (currency, evidence), values in sorted(totals.items())))
             else:
                 st.info("NO PAIRED VERTICAL BLOTTER RECORDS FOR THE SELECTED TICKERS.")

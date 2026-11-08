@@ -696,7 +696,7 @@ class PrivateVerticalCacheTests(unittest.TestCase):
     def test_stale_source_or_algorithm_is_never_accepted_by_owner(self):
         valid = self.publish()
         self.assertTrue(_valid_vertical_cache(valid, valid["source_fingerprint"]))
-        for changed in ({**valid, "source_fingerprint": "0" * 64}, {**valid, "algorithm_version": 2}):
+        for changed in ({**valid, "source_fingerprint": "0" * 64}, {**valid, "algorithm_version": valid["algorithm_version"] + 1}):
             self.inject(changed)
             restored = self.repo.read_vertical_cache("SYN_ACCOUNT")
             self.assertFalse(_valid_vertical_cache(restored, valid["source_fingerprint"]))
