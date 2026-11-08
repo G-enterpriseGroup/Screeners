@@ -44,6 +44,8 @@ _CSS = """
 /* Acquisition-only alignment: labels, account selector and action are content-sized. */
 .st-key-acquisition_root [data-testid="stHorizontalBlock"] {align-items:flex-end;gap:.55rem}
 .st-key-acquisition_root [data-testid="stSelectbox"] {margin:0!important}
+.st-key-acquisition_root [data-testid="stMultiSelect"] [data-tag],
+.st-key-acquisition_root [data-testid="stMultiSelect"] [data-tag] * {color:#000!important;-webkit-text-fill-color:#000!important}
 .st-key-acquisition_root [data-testid="stButton"] button {min-height:2.65rem;border-radius:0!important;font:800 .79rem "Courier New",monospace}
 .st-key-acquisition_root [data-testid="stAlert"] {border-radius:0!important}
 .st-key-acquisition_root [data-testid="stAlert"] p {font:800 .71rem/1.35 "Courier New",monospace}
