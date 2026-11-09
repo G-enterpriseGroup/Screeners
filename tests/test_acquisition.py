@@ -2463,6 +2463,44 @@ class AcquisitionOptionSettlementEvidenceTests(unittest.TestCase):
                 self.assertEqual([row["transactionId"] for row in retained],[101,1])
                 self.assertEqual(aliases,{})
 
+    def test_nontrade_or_reversal_in_any_alias_action_or_description_preserves_the_review_barrier(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        for location in ("top","brokerage"):
+            for field in ("transactionType","orderAction","transactionShortDesc","description","transactionDescription"):
+                for action in ("Option Assignment","Option Exercised","Option Expired","Reversal","Canceled"):
+                    with self.subTest(location=location,field=field,action=action):
+                        settled = self.settled_rows()
+                        pending = self.provisional(settled[0],101)
+                        target = pending if location=="top" else pending["brokerage"]
+                        target[field] = action + (" OPENING" if field=="description" else "")
+                        raw = [pending,*settled]
+                        before = deepcopy(raw)
+                        retained,aliases = acq._settled_option_rows(raw,self.aliases)
+                        self.assertEqual(retained,raw)
+                        self.assertEqual(aliases,{})
+                        events,review = acq._vertical_history(raw)
+                        self.assertTrue(review)
+                        self.assertFalse(any(row["pnl"] is not None for row in acq._vertical_blotter(events,review)))
+                        self.assertEqual(raw,before)
+
+    def test_ordinary_contract_expires_date_descriptions_preserve_opening_and_closing_aliases(self):
+        import src.acquisition_ui as acq
+        settled = self.settled_rows()
+        pending = [self.provisional(row,100+row["transactionId"]) for row in settled]
+        for row in [*pending,*settled]:
+            phase = "OPENING" if row["transactionId"] in {1,2,101,102} else "CLOSING"
+            text = "CALL SYN EXPIRES 01/15/2027 " + phase
+            row["description"] = text
+            row["brokerage"]["transactionDescription"] = text
+        retained,aliases = acq._settled_option_rows([*pending,*settled],self.aliases)
+        self.assertEqual([row["transactionId"] for row in retained],[1,2,3,4])
+        self.assertEqual(aliases,{str(index):[str(index+100)] for index in range(1,5)})
+        events,review = acq._vertical_history([*pending,*settled])
+        self.assertEqual(review,[])
+        self.assertEqual(len(events),2)
+        self.assertEqual(acq._vertical_blotter(events,review)[0]["pnl"],97.4)
+
     def test_prior_algorithm_two_report_is_rebuilt_from_existing_raw_history(self):
         import src.acquisition_ui as acq
         rows, vault = self.settled_rows(), AcquisitionVerticalCacheTests.vault()
@@ -2698,6 +2736,30 @@ class AcquisitionOptionDetailEvidenceTests(unittest.TestCase):
                 self.assertEqual(review,[])
                 self.assertEqual([(event["event"],event["match"]) for event in events],
                                  [("OPENED","TIME // INFERRED"),("CLOSED","TIME // INFERRED")])
+
+    def test_same_source_stale_no_order_proof_cannot_erase_stronger_confirmed_order(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        def proven(row,order):
+            output = deepcopy(row)
+            output["_acquisition_option_detail"] = {"base_digest":acq._option_source_digest(output),
+                "payload_json":json.dumps(self.response(output,order))}
+            return output
+        source = self.rows()[0]
+        known,stale = proven(source,9001),proven(source,None)
+        before = deepcopy((known,stale))
+        merged = acq._merge([known],[stale])[0]
+        self.assertEqual(acq._option_detail_order(merged),"9001")
+        self.assertEqual({key:value for key,value in merged.items() if key!="_acquisition_option_detail"},source)
+        self.assertEqual((known,stale),before)
+        self.assertEqual(acq._option_detail_order(acq._merge([known],[proven(source,9002)])[0]),"9002")
+        corrected = deepcopy(source)
+        corrected["amount"] -= 1
+        fresh = proven(corrected,None)
+        merged = acq._merge([known],[fresh])[0]
+        self.assertEqual(merged,fresh)
+        self.assertEqual(acq._option_detail_order(merged),"")
+        self.assertNotEqual(acq._option_source_digest(merged),acq._option_source_digest(known))
 
     def test_old_detail_failure_cannot_starve_newer_proof_or_new_incoming_executions(self):
         from copy import deepcopy

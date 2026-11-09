@@ -181,7 +181,9 @@ def _merge(old: list[dict[str, Any]], recent: list[dict[str, Any]]) -> list[dict
             continue
         previous = rows.get(_identity(row))
         if (previous and _option_source_digest(previous) == _option_source_digest(row)
-                and not _cached_option_detail(row) and _cached_option_detail(previous)):
+                and (not _cached_option_detail(row)
+                     or (_option_detail_order(previous) and not _option_detail_order(row)))
+                and _cached_option_detail(previous)):
             row = {**row, "_acquisition_option_detail": previous["_acquisition_option_detail"]}
         rows[_identity(row)] = row
     return sorted(rows.values(), key=lambda tx: (_when(tx) or datetime.min.replace(tzinfo=_ET), _identity(tx)))
@@ -962,13 +964,17 @@ def _settled_option_rows(transactions, aliases):
             if any(str(_find(tx, field) or "").lower() in {"true", "1", "yes", "y"}
                    for field in ("reversalFlag", "isReversal", "reversed", "optionsAdjustedFlag")):
                 continue
+            if any(re.search(r"REVERSE|REVERSAL|CANCEL|EXERCIS|ASSIGN|" +
+                             (r"EXPIRED|EXPIRATION" if field in {"description", "transactionDescription"} else r"EXPIR"),
+                             re.sub(r"[^A-Z]", "", str(source.get(field) or "").upper()))
+                   for source in (tx, broker)
+                   for field in ("transactionType", "orderAction", "transactionShortDesc", "description", "transactionDescription")):
+                continue
             actions = {aliases[normalized] for source in (broker, tx)
                        for field in ("orderAction", "transactionType", "transactionShortDesc")
                        if (normalized := re.sub(r"[^A-Z]", "", str(_find(source, field) or "").upper())) in aliases}
             raw = re.sub(r"[^A-Z]", "", str(tx.get("transactionType") or broker.get("transactionType") or "").upper())
             description = str(tx.get("description") or "").upper()
-            if re.search(r"\b(?:REVERSE\w*|REVERSAL|CANCEL\w*|EXERCIS\w*|ASSIGN\w*)\b", description):
-                continue
             if len(actions) == 1 and posted > 0 and settlement > 0:
                 action = next(iter(actions))
                 target = settled
