@@ -2730,7 +2730,11 @@ class AcquisitionOptionDetailEvidenceTests(unittest.TestCase):
                 self.assertEqual(raw,before)
                 self.assertEqual(len(output),len(raw))
                 self.assertEqual(acq._option_detail_order(output[2]),"9002")
-                self.assertNotIn("_acquisition_option_detail",output[3])
+                if isinstance(bad,dict):
+                    self.assertEqual(output[3]["_acquisition_option_detail"]["rejection"],"DETAIL_MISMATCH")
+                    self.assertNotIn("payload_json",output[3]["_acquisition_option_detail"])
+                else:
+                    self.assertNotIn("_acquisition_option_detail",output[3])
                 self.assertEqual([row["amount"] for row in output],[row["amount"] for row in raw])
                 events,review = acq._vertical_history(output)
                 self.assertEqual(review,[])
@@ -2815,6 +2819,50 @@ class AcquisitionOptionDetailEvidenceTests(unittest.TestCase):
             acq._sync_history(client,"access",[{"accountIdKey":"raj"}],now=datetime(2026,11,9,tzinfo=ZoneInfo("America/New_York")))
             self.assertEqual(client.get_transaction_details.call_count,2)
             client.get_transactions.assert_not_called()
+
+    def test_mismatched_detail_is_persisted_as_opaque_diagnostic_without_proof_cash_or_checkpoint_changes(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        before = deepcopy(raw)
+        bad = self.response(raw[2],9002)
+        bad["TransactionDetailsResponse"]["amount"] = 999999
+        vault = AcquisitionVerticalCacheTests.vault()
+        scope = ("access","raj")
+        saved = {"rows":raw,"covered_from":date(2026,10,1),"covered_through":date(2026,11,9),"synced_at":1000}
+        vault.update(accounts={scope:saved},archive_loaded={scope},archive_dirty={scope:False})
+        client = SimpleNamespace(is_offline=False,get_transactions=Mock(side_effect=AssertionError("Warm source must not rescan")),
+                                 get_transaction_details=Mock(return_value=bad))
+        archive = SimpleNamespace(save=Mock(side_effect=lambda account,snapshot,merge:snapshot))
+        with (patch.object(acq,"_history_vault",return_value=vault),patch.object(acq,"_archive_client",return_value=archive),
+              patch.object(acq.ArchiveConfig,"from_runtime",return_value=None),patch.object(acq.time,"time",return_value=1000)):
+            for _ in range(2):
+                snapshots,errors = acq._sync_history(client,"access",[{"accountIdKey":"raj"}],
+                    now=datetime(2026,11,9,tzinfo=ZoneInfo("America/New_York")))
+        self.assertEqual(errors,{})
+        client.get_transactions.assert_not_called()
+        client.get_transaction_details.assert_called_once_with("raj","3",store_id=0)
+        archive.save.assert_called_once()
+        published = archive.save.call_args.args[1]
+        self.assertEqual((published["covered_from"],published["covered_through"],published["synced_at"]),
+                         ("2026-10-01","2026-11-09",1000))
+        enriched = published["rows"][2]
+        metadata = enriched["_acquisition_option_detail"]
+        self.assertEqual(metadata["rejection"],"DETAIL_MISMATCH")
+        self.assertEqual(json.loads(metadata["rejected_payload_json"]),bad)
+        self.assertNotIn("payload_json",metadata)
+        self.assertIsNone(acq._cached_option_detail(enriched))
+        self.assertEqual(acq._option_detail_order(enriched),"")
+        self.assertEqual(acq._option_source_digest(enriched),acq._option_source_digest(raw[2]))
+        self.assertEqual(acq._find(enriched,"amount"),499.35)
+        self.assertEqual(acq._build_vertical_cache(published["rows"])["blotter"][0]["pnl"],97.4)
+        self.assertEqual(snapshots["raj"]["rows"],published["rows"])
+        self.assertFalse(vault["archive_dirty"][scope])
+        self.assertTrue(vault["option_detail_error"][scope])
+        self.assertEqual(vault["option_detail_retry_at"][scope],2800)
+        self.assertEqual(raw,before)
 
     def test_malformed_brokerage_and_boolean_execution_dates_are_ineligible_without_detail_requests(self):
         from copy import deepcopy
