@@ -921,6 +921,9 @@ def _hydrate_option_details(client, account, rows, *, force=False):
             store = tx.get("storeId", 0)
             response = getter(account, identifier, store_id=store)
             if not _option_detail_matches(tx, response):
+                output[index] = {**tx, "_acquisition_option_detail": {
+                    "base_digest": _option_source_digest(tx), "rejected_payload_json": json.dumps(response, sort_keys=True),
+                    "rejection": "DETAIL_MISMATCH"}}
                 return output, "Option order verification returned a different or incomplete execution; cash history retained."
             # Opaque JSON prevents recursive legacy field lookup from consuming proof fields.
             output[index] = {**tx, "_acquisition_option_detail": {
