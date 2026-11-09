@@ -237,8 +237,8 @@ class PhoneParityTests(unittest.TestCase):
     def test_offline_html_delegates_complete_snapshot_without_deferred_ui_calls(self):
         from src.vertical_options_store import VerticalResultStore
         _, rows = quoted_spread()
-        expiries = [date.today() + timedelta(days=6), date.today() + timedelta(days=30),
-                    date.today() + timedelta(days=60)]
+        today = date(2026, 1, 1)
+        expiries = [today + timedelta(days=6), today + timedelta(days=30), today + timedelta(days=60)]
         for owner in (desktop, phone):
             with self.subTest(owner=owner.__name__):
                 store = VerticalResultStore("SPY", 100, None, None, "NORMAL")
@@ -256,7 +256,8 @@ class PhoneParityTests(unittest.TestCase):
                     captured["oi"] = options["contract_open_interest"](candidate)
                     return "<!doctype html>synthetic complete snapshot"
                 ui = MagicMock()
-                with (patch.object(owner, "st", ui),
+                with (patch.object(owner, "_minimum_expiry_date", return_value=today + timedelta(days=7)),
+                      patch.object(owner, "st", ui),
                       patch.object(owner, "_table_open_interest", side_effect=AssertionError("UI access")),
                       patch.object(owner, "_chain") as chain,
                       patch.object(owner, "_rank_cached_vertical_chains") as rank,
