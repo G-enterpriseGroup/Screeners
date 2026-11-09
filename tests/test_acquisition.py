@@ -2350,5 +2350,457 @@ class AcquisitionVerticalExpirationTests(unittest.TestCase):
         self.assertEqual({tuple(row["open_ids"]) for row in rows if row["opened"]}, {("1","2"),("11","12")})
 
 
+class AcquisitionOptionSettlementEvidenceTests(unittest.TestCase):
+    aliases = {action:action for action in ("BTO","STO","STC","BTC")}
+
+    @staticmethod
+    def settled_rows():
+        rows = AcquisitionVerticalCacheTests.rows()
+        for row in rows:
+            row["brokerage"].pop("orderNo",None)
+            row["brokerage"]["quantity"] = 1 if row["brokerage"]["transactionType"] in {"BTO","BTC"} else -1
+            row["postDate"] = row["transactionDate"] + 86400000
+            row["brokerage"]["settlementDate"] = row["postDate"]
+        return rows
+
+    @staticmethod
+    def provisional(row,identifier):
+        from copy import deepcopy
+        row = deepcopy(row)
+        action = row["brokerage"]["transactionType"]
+        row["transactionId"] = identifier
+        row["transactionDate"] -= 1000
+        row["postDate"] = 0
+        row["brokerage"]["settlementDate"] = 0
+        row["brokerage"]["fee"] = 0
+        row["transactionType"] = row["brokerage"]["transactionType"] = "Bought" if action in {"BTO","BTC"} else "Sold"
+        row["description"] = "SYN OPTION " + ("OPENING" if action in {"BTO","STO"} else "CLOSING")
+        return row
+
+    def test_reciprocal_unique_posted_aliases_preserve_raw_rows_cash_and_superseded_ids(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        settled = self.settled_rows()
+        pending = [self.provisional(row,100+row["transactionId"]) for row in settled]
+        raw = pending + settled
+        before = deepcopy(raw)
+        retained, aliases = acq._settled_option_rows(raw,self.aliases)
+        self.assertEqual([row["transactionId"] for row in retained],[1,2,3,4])
+        self.assertEqual(aliases,{str(index):[str(index+100)] for index in range(1,5)})
+        events, review = acq._vertical_history(raw)
+        self.assertEqual(review,[])
+        self.assertEqual([event["ids"] for event in events],[["1","2"],["3","4"]])
+        self.assertEqual([event["superseded_ids"] for event in events],[["101","102"],["103","104"]])
+        self.assertTrue(all(event["match"] == "TIME // INFERRED" for event in events))
+        self.assertEqual(acq._vertical_blotter(events,review)[0]["pnl"],97.4)
+        self.assertEqual(raw,before)
+
+    def test_alias_matching_requires_unique_reciprocal_cardinality_and_distinct_transaction_ids(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        settled = self.settled_rows()[0]
+        pending = self.provisional(settled,101)
+        for rows in ([pending,settled,{**deepcopy(settled),"transactionId":11}],
+                     [pending,{**deepcopy(pending),"transactionId":102},settled],
+                     [{**deepcopy(pending),"transactionId":1},settled]):
+            with self.subTest(ids=[row["transactionId"] for row in rows]):
+                retained, aliases = acq._settled_option_rows(rows,self.aliases)
+                self.assertEqual(retained,rows)
+                self.assertEqual(aliases,{})
+
+    def test_aliases_never_discard_economically_different_or_cross_contract_pending_rows(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        settled = self.settled_rows()[0]
+        for target,key,value in (("tx","accountIdKey","other"),("tx","amount",-301.65),
+                                 ("tx","transactionDate",settled["transactionDate"]-86400000),
+                                 ("broker","quantity",2),("broker","price",3.01),
+                                 ("broker","currency","CAD"),("broker","optionMultiplier",10),
+                                 ("broker","orderNo",900),("product","strikePrice",110),
+                                 ("product","callPut","PUT"),("product","expiryDay",22),
+                                 ("product","optionRootSymbol","OTHER")):
+            with self.subTest(target=target,key=key):
+                pending = self.provisional(settled,101)
+                obj = pending if target=="tx" else pending["brokerage"] if target=="broker" else pending["brokerage"]["product"]
+                obj[key] = value
+                raw = [pending,deepcopy(settled)]
+                retained, aliases = acq._settled_option_rows(raw,self.aliases)
+                self.assertEqual(retained,raw)
+                self.assertEqual(aliases,{})
+
+    def test_malformed_generic_or_nontrade_records_remain_visible_and_block_unsafe_lifecycle_profit(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        settled = self.settled_rows()
+        for change in ({"description":"SYN OPTION"},{"description":"CANCELED SYN OPTION OPENING"},
+                       {"description":"EXERCISED SYN OPTION OPENING"},{"reversalFlag":True},
+                       {"postDate":True},{"amount":None}):
+            with self.subTest(change=change):
+                pending = self.provisional(settled[0],101)
+                pending.update(change)
+                rows = [pending,*deepcopy(settled)]
+                retained, aliases = acq._settled_option_rows(rows,self.aliases)
+                self.assertEqual(retained,rows)
+                self.assertEqual(aliases,{})
+                events, review = acq._vertical_history(rows)
+                self.assertTrue(review)
+                self.assertFalse(any(row["pnl"] is not None for row in acq._vertical_blotter(events,review)))
+
+    def test_pending_alias_with_conflicting_osi_or_contract_context_cannot_supersede_a_settled_row(self):
+        import src.acquisition_ui as acq
+        for field,original,conflict in (("osiKey","SYN---270115C00100000","OTHER---270115C00100000"),
+                                       ("osiSymbol","SYN---270115C00100000","SYN---270115C00105000"),
+                                       ("contract_context",{"deliverable":"standard"},{"deliverable":"adjusted"})):
+            with self.subTest(field=field):
+                settled = self.settled_rows()[0]
+                settled[field] = original
+                pending = self.provisional(settled,101)
+                retained,aliases = acq._settled_option_rows([pending,settled],self.aliases)
+                self.assertEqual([row["transactionId"] for row in retained],[1])
+                self.assertEqual(aliases,{"1":["101"]})
+                pending[field] = conflict
+                retained,aliases = acq._settled_option_rows([pending,settled],self.aliases)
+                self.assertEqual([row["transactionId"] for row in retained],[101,1])
+                self.assertEqual(aliases,{})
+
+    def test_prior_algorithm_two_report_is_rebuilt_from_existing_raw_history(self):
+        import src.acquisition_ui as acq
+        rows, vault = self.settled_rows(), AcquisitionVerticalCacheTests.vault()
+        old = acq._build_vertical_cache(rows)
+        old["algorithm_version"] = 2
+        vault["vertical_cache"] = {("access","raj"):old}
+        with (patch.object(acq,"_history_vault",return_value=vault),
+              patch.object(acq,"_vertical_history",wraps=acq._vertical_history) as parser):
+            rebuilt = acq._cached_verticals(rows,"access","raj")
+            self.assertEqual(parser.call_count,1)
+            self.assertEqual(rebuilt["algorithm_version"],3)
+            self.assertIsNot(rebuilt,old)
+            self.assertEqual(rebuilt["blotter"][0]["pnl"],97.4)
+
+
+class AcquisitionOptionDetailEvidenceTests(unittest.TestCase):
+    rows = staticmethod(AcquisitionOptionSettlementEvidenceTests.settled_rows)
+
+    @staticmethod
+    def response(tx,order=9001,wrapped=True):
+        from copy import deepcopy
+        detail = deepcopy(tx)
+        detail.pop("_acquisition_option_detail",None)
+        if order is not None:
+            detail["brokerage"]["orderNo"] = order
+        return {"TransactionDetailsResponse":detail} if wrapped else detail
+
+    @classmethod
+    def broker(cls,rows):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        by_id = {str(row["transactionId"]):row for row in rows}
+        return SimpleNamespace(is_offline=False,get_transaction_details=Mock(
+            side_effect=lambda account,identifier,**kwargs:cls.response(by_id[str(identifier)],9001 if int(identifier)<3 else 9002)))
+
+    def test_broker_details_upgrade_actual_shared_order_without_changing_source_cash_or_fields(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        raw[0]["storeId"] = 7
+        before = deepcopy(raw)
+        client = self.broker(raw)
+        hydrated,error = acq._hydrate_option_details(client,"raj",raw)
+        self.assertEqual(error,"")
+        self.assertEqual(raw,before)
+        self.assertEqual(client.get_transaction_details.call_count,4)
+        client.get_transaction_details.assert_any_call("raj","1",store_id=7)
+        client.get_transaction_details.assert_any_call("raj","2",store_id=0)
+        for original,verified in zip(raw,hydrated):
+            self.assertEqual({k:v for k,v in verified.items() if k!="_acquisition_option_detail"},original)
+            self.assertIsInstance(verified["_acquisition_option_detail"]["payload_json"],str)
+            self.assertEqual(acq._option_source_digest(verified),acq._option_source_digest(original))
+        events,review = acq._vertical_history(hydrated)
+        self.assertEqual(review,[])
+        self.assertEqual([(event["match"],event["order"]) for event in events],[("ORDER","9001"),("ORDER","9002")])
+        self.assertEqual(acq._vertical_blotter(events,review)[0]["pnl"],97.4)
+
+    def test_strict_detail_identity_action_and_economics_reject_mismatched_broker_responses(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        source = self.rows()[0]
+        self.assertTrue(acq._option_detail_matches(source,self.response(source)))
+        self.assertTrue(acq._option_detail_matches(source,self.response(source,wrapped=False)))
+        for target,key,value in (("tx","transactionId",999),("tx","accountIdKey","other"),
+                                 ("tx","transactionDate",source["transactionDate"]+1000),
+                                 ("tx","amount",-301.65),("tx","reversalFlag",True),
+                                 ("broker","quantity",-1),("broker","price",3.01),
+                                 ("broker","optionMultiplier",10),
+                                 ("broker","currency","CAD"),("broker","transactionType","STO"),
+                                 ("broker","orderAction","STO"),("broker","transactionType","Option Exercised"),
+                                 ("product","symbol","OTHER"),("product","callPut","PUT"),
+                                 ("product","strikePrice",101),("product","expiryDay",22),
+                                 ("product","optionRootSymbol","OTHER"),("product","securityType","EQ")):
+            with self.subTest(target=target,key=key,value=value):
+                detail = self.response(source,wrapped=False)
+                obj = detail if target=="tx" else detail["brokerage"] if target=="broker" else detail["brokerage"]["product"]
+                obj[key] = value
+                self.assertFalse(acq._option_detail_matches(source,{"TransactionDetailsResponse":detail}))
+        for field in ("transactionId","accountIdKey","transactionDate","amount"):
+            detail = self.response(source,wrapped=False)
+            detail.pop(field)
+            self.assertFalse(acq._option_detail_matches(source,detail))
+        for response in (None,[],{"TransactionDetailsResponse":[]},{}):
+            self.assertFalse(acq._option_detail_matches(source,response))
+        normalized_year = self.response(source,wrapped=False)
+        normalized_year["brokerage"]["product"]["expiryYear"] = 27
+        self.assertTrue(acq._option_detail_matches(source,normalized_year))
+        self.assertNotIn("_acquisition_option_detail",source)
+
+    def test_same_execution_can_have_generic_detail_action_or_revised_fee_without_overwriting_cash(self):
+        import src.acquisition_ui as acq
+        source = self.rows()[0]
+        for action in (None,"Bought","BUY"):
+            with self.subTest(action=action):
+                detail = self.response(source,wrapped=False)
+                detail["brokerage"].pop("transactionType")
+                if action is not None:
+                    detail["brokerage"]["transactionType"] = action
+                detail["brokerage"]["fee"] = 0
+                self.assertTrue(acq._option_detail_matches(source,detail))
+        for action in ("Sold","SELL"):
+            detail = self.response(source,wrapped=False)
+            detail["brokerage"]["transactionType"] = action
+            self.assertFalse(acq._option_detail_matches(source,detail))
+        self.assertEqual((source["amount"],source["brokerage"]["fee"]),(-300.65,.65))
+
+    def test_every_raw_and_detail_action_field_rejects_nontrade_or_opposite_generic_direction(self):
+        import src.acquisition_ui as acq
+        for side in ("raw","detail"):
+            for location in ("top","brokerage"):
+                for field in ("transactionType","orderAction","transactionShortDesc"):
+                    for action in ("Option Assignment","Option Expired","Option Exercised","Sold"):
+                        with self.subTest(side=side,location=location,field=field,action=action):
+                            raw = self.rows()[0]
+                            detail = self.response(raw,wrapped=False)
+                            target = raw if side=="raw" else detail
+                            if location=="brokerage":
+                                target = target["brokerage"]
+                            target[field] = action
+                            self.assertFalse(acq._option_detail_matches(raw,detail))
+
+    def test_conflicting_supplied_osi_identity_cannot_prove_an_order(self):
+        import src.acquisition_ui as acq
+        source = self.rows()[0]
+        source["osiKey"] = "SYN---270115C00100000"
+        source["brokerage"]["product"]["productId"] = {"symbol":"SYN---270115C00100000"}
+        self.assertTrue(acq._option_detail_matches(source,self.response(source)))
+        for target in ("osiKey","productId"):
+            detail = self.response(source,wrapped=False)
+            if target=="osiKey":
+                detail["osiKey"] = "OTHER---270115C00100000"
+            else:
+                detail["brokerage"]["product"]["productId"]["symbol"] = "SYN---270115C00105000"
+            self.assertFalse(acq._option_detail_matches(source,detail))
+
+    def test_persisted_matching_proof_skips_network_after_json_reload_and_force_when_order_is_known(self):
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        client = self.broker(raw)
+        hydrated,error = acq._hydrate_option_details(client,"raj",raw)
+        restored = json.loads(json.dumps(hydrated))
+        client.get_transaction_details.reset_mock()
+        again,error = acq._hydrate_option_details(client,"raj",restored)
+        self.assertEqual(error,"")
+        self.assertEqual(again,restored)
+        acq._hydrate_option_details(client,"raj",restored,force=True)
+        client.get_transaction_details.assert_not_called()
+        self.assertEqual(acq._option_detail_order(restored[0]),"9001")
+
+    def test_partial_order_proof_preserves_time_pair_until_every_leg_is_confirmed_and_conflicts_stay_reviewed(self):
+        import src.acquisition_ui as acq
+        for orders,expected in (((9001,None),"TIME // INFERRED"),((9001,9001),"ORDER"),((9001,9002),None)):
+            with self.subTest(orders=orders):
+                rows = self.rows()[:2]
+                for row,order in zip(rows,orders):
+                    if order is not None:
+                        row["_acquisition_option_detail"] = {"base_digest":acq._option_source_digest(row),
+                            "payload_json":json.dumps(self.response(row,order))}
+                events,review = acq._vertical_history(rows)
+                if expected is None:
+                    self.assertEqual(events,[])
+                    self.assertEqual(len(review),2)
+                else:
+                    self.assertEqual(review,[])
+                    self.assertEqual(len(events),1)
+                    self.assertEqual(events[0]["match"],expected)
+
+    def test_missing_zero_boolean_or_non_numeric_order_never_upgrades_inference_and_does_not_eagerly_retry(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        for order in (None,0,"0",True,"-1","bad"):
+            with self.subTest(order=order):
+                raw = self.rows()[:2]
+                client = SimpleNamespace(is_offline=False,get_transaction_details=Mock(
+                    side_effect=lambda account,identifier,**kwargs:self.response(raw[int(identifier)-1],order)))
+                hydrated,error = acq._hydrate_option_details(client,"raj",raw)
+                self.assertEqual(error,"")
+                self.assertEqual(acq._option_detail_order(hydrated[0]),"")
+                events,review = acq._vertical_history(hydrated)
+                self.assertEqual(review,[])
+                self.assertEqual(events[0]["match"],"TIME // INFERRED")
+                client.get_transaction_details.reset_mock()
+                acq._hydrate_option_details(client,"raj",hydrated)
+                client.get_transaction_details.assert_not_called()
+                acq._hydrate_option_details(client,"raj",hydrated,force=True)
+                self.assertEqual(client.get_transaction_details.call_count,2)
+
+    def test_source_correction_invalidates_only_changed_proof_and_merge_keeps_unchanged_evidence(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        hydrated,error = acq._hydrate_option_details(self.broker(raw),"raj",raw)
+        merged = acq._merge(hydrated,deepcopy(raw))
+        self.assertEqual(merged,hydrated)
+        for target,key,value in (("tx","amount",-301.65),("tx","transactionId",51),
+                                 ("tx","accountIdKey","other"),("broker","fee",.75),
+                                 ("broker","quantity",2)):
+            with self.subTest(target=target,key=key):
+                corrected = deepcopy(hydrated[0])
+                (corrected if target=="tx" else corrected["brokerage"])[key] = value
+                self.assertEqual(acq._option_detail_order(corrected),"")
+        corrected = deepcopy(raw)
+        corrected[0]["amount"] -= 1
+        merged = acq._merge(hydrated,corrected)
+        self.assertNotIn("_acquisition_option_detail",merged[0])
+        self.assertEqual(merged[1:],hydrated[1:])
+        client = self.broker(corrected)
+        updated,error = acq._hydrate_option_details(client,"raj",merged)
+        self.assertEqual(error,"")
+        client.get_transaction_details.assert_called_once_with("raj","1",store_id=0)
+        self.assertEqual(acq._option_detail_order(updated[0]),"9001")
+
+    def test_partial_hydration_failure_preserves_success_and_raw_cash_without_partial_false_order_pair(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        before = deepcopy(raw)
+        for bad in (ETradeError("temporary"),{"TransactionDetailsResponse":{}}):
+            with self.subTest(bad=type(bad).__name__):
+                client = SimpleNamespace(is_offline=False,get_transaction_details=Mock(
+                    side_effect=[self.response(raw[2],9002),bad]))
+                output,error = acq._hydrate_option_details(client,"raj",raw)
+                self.assertTrue(error)
+                self.assertEqual(raw,before)
+                self.assertEqual(len(output),len(raw))
+                self.assertEqual(acq._option_detail_order(output[2]),"9002")
+                self.assertNotIn("_acquisition_option_detail",output[3])
+                self.assertEqual([row["amount"] for row in output],[row["amount"] for row in raw])
+                events,review = acq._vertical_history(output)
+                self.assertEqual(review,[])
+                self.assertEqual([(event["event"],event["match"]) for event in events],
+                                 [("OPENED","TIME // INFERRED"),("CLOSED","TIME // INFERRED")])
+
+    def test_old_detail_failure_cannot_starve_newer_proof_or_new_incoming_executions(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        recent = self.rows()
+        old = deepcopy(recent[0])
+        old.update(transactionId=77,transactionDate=int(datetime(2020,4,1,tzinfo=ZoneInfo("America/New_York")).timestamp()*1000))
+        raw = [old,*recent]
+        before = deepcopy(raw)
+        def response(account,identifier,**kwargs):
+            if identifier=="77":
+                raise ETradeError("Broker no longer exposes this detail")
+            source = next(row for row in raw if str(row["transactionId"])==identifier)
+            return self.response(source,9001 if int(identifier)<3 else 9002)
+        client = SimpleNamespace(is_offline=False,get_transaction_details=Mock(side_effect=response))
+        output,error = acq._hydrate_option_details(client,"raj",raw)
+        self.assertTrue(error)
+        self.assertEqual(raw,before)
+        self.assertEqual([row["transactionId"] for row in output],[77,1,2,3,4])
+        self.assertEqual([call.args[1] for call in client.get_transaction_details.call_args_list],["3","4","1","2","77"])
+        self.assertNotIn("_acquisition_option_detail",output[0])
+        self.assertEqual([acq._option_detail_order(row) for row in output[1:]],["9001","9001","9002","9002"])
+        incoming = deepcopy(recent[0])
+        incoming.update(transactionId=5,transactionDate=recent[-1]["transactionDate"]+86400000)
+        raw.append(incoming)
+        client.get_transaction_details.reset_mock()
+        refreshed,error = acq._hydrate_option_details(client,"raj",[*output,incoming])
+        self.assertTrue(error)
+        self.assertEqual([call.args[1] for call in client.get_transaction_details.call_args_list],["5","77"])
+        self.assertEqual([row["transactionId"] for row in refreshed],[77,1,2,3,4,5])
+        self.assertEqual(acq._option_detail_order(refreshed[-1]),"9002")
+
+    def test_sync_retries_failed_detail_reads_after_backoff_without_another_history_scan(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        vault = AcquisitionVerticalCacheTests.vault()
+        vault["accounts"] = {("access","raj"):{"rows":raw,"covered_from":date(2026,10,1),
+                            "covered_through":date(2026,11,9),"synced_at":1000}}
+        client = SimpleNamespace(is_offline=False,get_transactions=Mock(side_effect=AssertionError("Warm history must not rescan")),
+                                 get_transaction_details=Mock(side_effect=ETradeError("temporary")))
+        with (patch.object(acq,"_history_vault",return_value=vault),patch.object(acq,"_archive_client",return_value=None),
+              patch.object(acq.time,"time",return_value=1000) as clock):
+            for _ in range(2):
+                acq._sync_history(client,"access",[{"accountIdKey":"raj"}],now=datetime(2026,11,9,tzinfo=ZoneInfo("America/New_York")))
+            self.assertEqual(client.get_transaction_details.call_count,1)
+            self.assertTrue(vault["option_detail_error"][("access","raj")])
+            self.assertEqual(vault["accounts"][("access","raj")]["rows"],raw)
+            clock.return_value = 2801
+            acq._sync_history(client,"access",[{"accountIdKey":"raj"}],now=datetime(2026,11,9,tzinfo=ZoneInfo("America/New_York")))
+            self.assertEqual(client.get_transaction_details.call_count,2)
+            client.get_transactions.assert_not_called()
+
+    def test_malformed_brokerage_and_boolean_execution_dates_are_ineligible_without_detail_requests(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        valid = self.rows()[0]
+        boolean_date = {**deepcopy(valid),"transactionDate":True}
+        malformed = {**deepcopy(valid),"brokerage":[deepcopy(valid["brokerage"])]}
+        rows = [None,[],{"brokerage":"invalid"},boolean_date,malformed]
+        client = SimpleNamespace(is_offline=False,get_transaction_details=Mock(side_effect=AssertionError("Invalid source must not fetch")))
+        for row in rows:
+            self.assertFalse(acq._needs_option_detail(row))
+        output,error = acq._hydrate_option_details(client,"raj",rows)
+        self.assertEqual((output,error),(rows,""))
+        client.get_transaction_details.assert_not_called()
+
+
+class AcquisitionTransactionDetailTransportTests(unittest.TestCase):
+    def test_fixed_get_details_path_quoted_account_store_and_dictionary_response(self):
+        from unittest.mock import Mock
+        client = object.__new__(ETradeClient)
+        response = {"TransactionDetailsResponse":{"brokerage":{"orderNo":900}}}
+        client._get = Mock(return_value=response)
+        self.assertIs(client.get_transaction_details(" A/B +?# "," 00123 ",store_id=7),response)
+        client._get.assert_called_once_with("/v1/accounts/A%2FB%20%2B%3F%23/transactions/00123",{"storeId":7})
+        client._get.reset_mock()
+        client.get_transaction_details("account",123)
+        client._get.assert_called_once_with("/v1/accounts/account/transactions/123",{"storeId":0})
+        client._get = Mock(return_value=[])
+        with self.assertRaises(ETradeError):
+            client.get_transaction_details("account",123)
+
+    def test_invalid_detail_identifiers_and_store_values_never_make_transport_calls(self):
+        from unittest.mock import Mock
+        client = object.__new__(ETradeClient)
+        client._get = Mock()
+        cases = [("",123,0),(None,123,0),("account",True,0),("account",0,0),
+                 ("account","000",0),("account","-1",0),("account","1.0",0),
+                 ("account","../123",0),("account","123?x=1",0),
+                 ("account","https://example.invalid/123",0),("account","١",0),
+                 ("account",123,True),("account",123,-1),("account",123,"0"),("account",123,0.0)]
+        for account,identifier,store in cases:
+            with self.subTest(account=account,identifier=identifier,store=store):
+                with self.assertRaises(ETradeError):
+                    client.get_transaction_details(account,identifier,store_id=store)
+                client._get.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

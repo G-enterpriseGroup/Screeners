@@ -280,6 +280,31 @@ class ETradeClient:
             marker = next_marker
         return transactions
 
+    def get_transaction_details(
+        self,
+        account_id_key: str,
+        transaction_id: str | int,
+        *,
+        store_id: int = 0,
+    ) -> dict[str, Any]:
+        """Read one transaction's broker details, including its order reference."""
+        account_id_key = str(account_id_key or "").strip()
+        identifier = str(transaction_id or "").strip()
+        if not account_id_key:
+            raise ETradeError("A valid E*TRADE account is required for transaction details.")
+        if (isinstance(transaction_id, bool) or not identifier.isascii()
+                or not identifier.isdigit() or not any(char != "0" for char in identifier)):
+            raise ETradeError("A positive numeric transaction ID is required for transaction details.")
+        if isinstance(store_id, bool) or not isinstance(store_id, int) or store_id < 0:
+            raise ETradeError("Transaction store_id must be a nonnegative integer.")
+        data = self._get(
+            f"/v1/accounts/{quote(account_id_key, safe='')}/transactions/{quote(identifier, safe='')}",
+            {"storeId": store_id},
+        )
+        if not isinstance(data, dict):
+            raise ETradeError("E*TRADE did not return transaction details as an object.")
+        return data
+
     def get_quote(self, symbol: str) -> dict[str, Any]:
         symbol = str(symbol).strip().upper()
         if not symbol:

@@ -36,7 +36,7 @@ _HISTORY_DAYS = 729   # E*TRADE rejects start dates older than two years
 _OVERLAP_DAYS = 7     # late-posted/corrected executions
 _SYNC_SECONDS = 12 * 3600
 _SHARE_TYPES = {"EQ", "EQUITY", "ETF", "STOCK", "COMMON", "COMMON_STOCK"}
-_VERTICAL_CACHE_VERSION = 2
+_VERTICAL_CACHE_VERSION = 3
 _ACQ_VERTICAL_TABLE = components.declare_component(
     "raj_acquisition_vertical_blotter_v1",
     path=str(Path(__file__).parent / "components" / "acquisition_vertical_blotter_v1"),
@@ -168,9 +168,22 @@ def _identity(tx: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(tx, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _option_source_digest(tx):
+    return hashlib.sha256(json.dumps({key: value for key, value in tx.items()
+                                     if key != "_acquisition_option_detail"},
+                                    sort_keys=True, default=str).encode()).hexdigest()
+
+
 def _merge(old: list[dict[str, Any]], recent: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = {_identity(row): row for row in old if isinstance(row, dict)}
-    rows.update({_identity(row): row for row in recent if isinstance(row, dict)})
+    for row in recent:
+        if not isinstance(row, dict):
+            continue
+        previous = rows.get(_identity(row))
+        if (previous and _option_source_digest(previous) == _option_source_digest(row)
+                and not _cached_option_detail(row) and _cached_option_detail(previous)):
+            row = {**row, "_acquisition_option_detail": previous["_acquisition_option_detail"]}
+        rows[_identity(row)] = row
     return sorted(rows.values(), key=lambda tx: (_when(tx) or datetime.min.replace(tzinfo=_ET), _identity(tx)))
 
 
@@ -225,7 +238,12 @@ def _sync_history(
             scope = (str(vault_key), key)
             saved = vault["accounts"].get(scope)
             retry = vault.get("blotter_retry_at", {}).get(scope, 0)
+            detail_work = (saved is not None and _option_detail_getter(client) is not None
+                           and not bool(getattr(client, "is_offline", False))
+                           and time.time() >= vault.get("option_detail_retry_at", {}).get(scope, 0)
+                           and any(_needs_option_detail(row) for row in saved["rows"]))
             private_work |= (scope not in vault.get("private_loaded", set()) or force or
+                             detail_work or
                              (saved is not None and (time.time() >= retry) and (
                                  scope not in vault.get("archive_loaded", set()) or
                                  time.time() - float(saved.get("synced_at", 0)) >= _SYNC_SECONDS or
@@ -346,6 +364,20 @@ def _sync_history(
                     vault.setdefault("archive_dirty", {})[scope] = True
                 except Exception as exc:
                     errors[key] = str(exc)[:240]
+
+            detail_retry = vault.setdefault("option_detail_retry_at", {}).get(scope, 0)
+            if live and private_ready and saved is not None and (force or time.time() >= detail_retry):
+                detailed, detail_error = _hydrate_option_details(client, key, saved["rows"], force=force)
+                if detailed != saved["rows"]:
+                    saved = {**saved, "rows": detailed}
+                    vault["accounts"][scope] = saved
+                    vault.setdefault("archive_dirty", {})[scope] = True
+                if detail_error:
+                    vault["option_detail_retry_at"][scope] = time.time() + 1800
+                    vault.setdefault("option_detail_error", {})[scope] = detail_error
+                else:
+                    vault["option_detail_retry_at"].pop(scope, None)
+                    vault.setdefault("option_detail_error", {}).pop(scope, None)
 
             dirty = vault.setdefault("archive_dirty", {}).get(scope, False)
             next_retry = vault.setdefault("archive_retry_at", {}).get(scope, 0)
@@ -727,19 +759,257 @@ def _remember_copy_preference(scope: str, setting: str, widget_key: str) -> None
     )
 
 
+_OPTION_ACTION_ALIASES = {
+    "BUYOPEN": "BTO", "BUYTOOPEN": "BTO", "BOUGHTTOOPEN": "BTO", "BTO": "BTO",
+    "SELLOPEN": "STO", "SELLTOOPEN": "STO", "SOLDTOOPEN": "STO", "STO": "STO",
+    "SELLCLOSE": "STC", "SELLTOCLOSE": "STC", "SOLDTOCLOSE": "STC", "STC": "STC",
+    "BUYCLOSE": "BTC", "BUYTOCLOSE": "BTC", "BOUGHTTOCLOSE": "BTC", "BTC": "BTC",
+    "SELLSHORT": "STO", "SOLDSHORT": "STO", "BUYTOCOVER": "BTC", "BOUGHTTOCOVER": "BTC",
+}
+
+
+def _option_detail_matches(tx, response):
+    """A detail lookup may prove an order only for the exact source execution."""
+    try:
+        detail = response.get("TransactionDetailsResponse", response)
+        if not isinstance(detail, dict) or str(detail.get("transactionId")) != str(tx.get("transactionId")):
+            return False
+        account = str(_find(tx, "accountId", "accountIdKey") or "")
+        if not account or str(_find(detail, "accountId", "accountIdKey") or "") != account:
+            return False
+        when, other = _when({"transactionDate": tx.get("transactionDate")}), _when({"transactionDate": detail.get("transactionDate")})
+        if when is None or other is None or when != other:
+            return False
+        broker, confirmed = _find(tx, "brokerage") or {}, _find(detail, "brokerage") or {}
+        product, actual = _find(broker, "product") or {}, _find(confirmed, "product") or {}
+        if not isinstance(product, dict) or not isinstance(actual, dict):
+            return False
+        for field in ("symbol", "securityType", "callPut", "optionRootSymbol", "rootSymbol", "securitySubType"):
+            value = str(product.get(field) or "").strip().upper()
+            if (field in {"symbol", "securityType", "callPut"} or value) and value != str(actual.get(field) or "").strip().upper():
+                return False
+        for field in ("expiryYear", "expiryMonth", "expiryDay", "strikePrice"):
+            values = [product.get(field), actual.get(field)]
+            if any(value is None or isinstance(value, bool) for value in values):
+                return False
+            values = list(map(float, values))
+            if field == "expiryYear":
+                values = [value + 2000 if 0 <= value < 100 else value for value in values]
+            if not all(math.isfinite(value) for value in values) or values[0] != values[1]:
+                return False
+        for field in ("quantity", "price", "amount", "optionMultiplier", "multiplier"):
+            left, right = _find(tx, field), _find(detail, field)
+            if left is None and field not in {"quantity", "price", "amount"}:
+                continue
+            if left is None or right is None or isinstance(left, bool) or isinstance(right, bool):
+                return False
+            left, right = float(left), float(right)
+            if not math.isfinite(left) or not math.isfinite(right) or left != right:
+                return False
+        for field in ("settlementCurrency", "paymentCurrency"):
+            value = str(_find(broker, field) or _find(broker, "currency") or "").upper()
+            if not value or value != str(_find(confirmed, field) or _find(confirmed, "currency") or "").upper():
+                return False
+        def actions(row):
+            broker = _find(row, "brokerage") or row
+            names = {re.sub(r"[^A-Z]", "", str(source.get(field) or "").upper())
+                     for source in (row, broker) for field in ("transactionType", "orderAction", "transactionShortDesc")}
+            if any(re.search(r"REVERSE|REVERSAL|CANCEL|EXERCIS|ASSIGN|EXPIR", name) for name in names):
+                return set()
+            return {_OPTION_ACTION_ALIASES[name] for name in names if name in _OPTION_ACTION_ALIASES}
+        source_actions, detail_actions = actions(tx), actions(detail)
+        if len(source_actions) != 1 or (detail_actions and detail_actions != source_actions):
+            return False
+        for source in (tx, broker, detail, confirmed):
+            for field in ("transactionType", "orderAction", "transactionShortDesc"):
+                raw = re.sub(r"[^A-Z]", "", str(source.get(field) or "").upper())
+                if re.search(r"REVERSE|REVERSAL|CANCEL|EXERCIS|ASSIGN|EXPIR", raw):
+                    return False
+                if raw in {"BUY", "BOUGHT", "SELL", "SOLD"} and ((raw in {"BUY", "BOUGHT"}) != (next(iter(source_actions)) in {"BTO", "BTC"})):
+                    return False
+        for source, contract in ((tx, product), (detail, actual)):
+            root = str(_find(contract, "optionRootSymbol", "rootSymbol") or contract.get("symbol") or "").upper()
+            year = int(contract["expiryYear"])
+            expiry = date(year + 2000 if 0 <= year < 100 else year, int(contract["expiryMonth"]), int(contract["expiryDay"]))
+            for value in (_find(source, "osiKey"), _find(source, "osiSymbol"),
+                          _find(_find(contract, "productId") or {}, "symbol")):
+                osi = str(value or "").upper().replace(" ", "")
+                if osi in {"", root, str(contract.get("symbol") or "").upper()}:
+                    continue
+                identity = re.fullmatch(r"([A-Z][A-Z0-9.]*?)-{0,5}(\d{6})([CP])(\d{8})", osi)
+                if (identity is None or identity[1] != root or identity[2] != expiry.strftime("%y%m%d")
+                        or identity[3] != str(contract["callPut"])[0].upper()
+                        or int(identity[4]) / 1000 != float(contract["strikePrice"])):
+                    return False
+        for field in ("contract_context", "optionsAdjustedFlag"):
+            if tx.get(field) is not None and detail.get(field) is not None and tx[field] != detail[field]:
+                return False
+        for field in ("reversalFlag", "isReversal", "reversed", "optionsAdjustedFlag"):
+            if any(str(_find(row, field) or "").lower() in {"true", "1", "yes", "y"} for row in (tx, detail)):
+                return False
+        return True
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def _cached_option_detail(tx):
+    metadata = tx.get("_acquisition_option_detail")
+    try:
+        if not isinstance(metadata, dict) or metadata.get("base_digest") != _option_source_digest(tx):
+            return None
+        response = json.loads(metadata["payload_json"])
+        return response if _option_detail_matches(tx, response) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _option_detail_order(tx):
+    response = _cached_option_detail(tx)
+    if response is None:
+        return ""
+    detail = response.get("TransactionDetailsResponse", response)
+    value = _find(_find(detail, "brokerage") or detail, "orderNo", "orderId", "orderNumber")
+    order = str(value or "").strip()
+    return order if not isinstance(value, bool) and re.fullmatch(r"[0-9]+", order) and int(order) > 0 else ""
+
+
+def _needs_option_detail(tx, force=False):
+    if not isinstance(tx, dict) or isinstance(tx.get("transactionDate"), bool):
+        return False
+    product = _find(tx, "product") or {}
+    broker = _find(tx, "brokerage") or tx
+    if not isinstance(product, dict) or not isinstance(broker, dict):
+        return False
+    if str(_find(product, "securityType", "typeCode") or "").upper() not in {"OPTN", "OPTION", "OPTIONS", "EQUITY_OPTION"}:
+        return False
+    names = {re.sub(r"[^A-Z]", "", str(source.get(field) or "").upper())
+             for source in (tx, broker) for field in ("transactionType", "orderAction", "transactionShortDesc")}
+    order = str(_find(broker, "orderNo", "orderId", "orderNumber") or "").strip()
+    identifier, store = str(tx.get("transactionId") or ""), tx.get("storeId", 0)
+    return (any(name in _OPTION_ACTION_ALIASES for name in names)
+            and not any(re.search(r"REVERSE|REVERSAL|CANCEL|EXERCIS|ASSIGN|EXPIR", name) for name in names)
+            and (not order or re.fullmatch(r"0+(?:\.0+)?", order) is not None)
+            and not (_cached_option_detail(tx) is not None and (not force or _option_detail_order(tx)))
+            and re.fullmatch(r"[0-9]+", identifier) is not None and int(identifier) > 0
+            and not isinstance(store, bool) and isinstance(store, int) and store >= 0)
+
+
+def _option_detail_getter(client):
+    try:
+        getter = getattr(client, "get_transaction_details", None)
+        return getter if callable(getter) else None
+    except (AttributeError, AssertionError):
+        return None
+
+
+def _hydrate_option_details(client, account, rows, *, force=False):
+    """Read and retain order evidence once; filters never enter this sync path."""
+    getter = _option_detail_getter(client)
+    if getter is None or bool(getattr(client, "is_offline", False)):
+        return rows, ""
+    output = list(rows)
+    # Retained older executions may have aged out of the broker detail window.
+    # Verify recent activity first so one such failure cannot starve new trades.
+    ordered = sorted(enumerate(rows), key=lambda item: _when(item[1]) or datetime.min.replace(tzinfo=_ET), reverse=True)
+    for index, tx in ordered:
+        if not _needs_option_detail(tx, force):
+            continue
+        identifier = str(tx.get("transactionId") or "")
+        try:
+            store = tx.get("storeId", 0)
+            response = getter(account, identifier, store_id=store)
+            if not _option_detail_matches(tx, response):
+                return output, "Option order verification returned a different or incomplete execution; cash history retained."
+            # Opaque JSON prevents recursive legacy field lookup from consuming proof fields.
+            output[index] = {**tx, "_acquisition_option_detail": {
+                "base_digest": _option_source_digest(tx), "payload_json": json.dumps(response, sort_keys=True)}}
+        except Exception:
+            return output, "Option order verification is temporarily unavailable; cached cash history and prior evidence retained."
+    return output, ""
+
+
+def _settled_option_rows(transactions, aliases):
+    """Prefer a unique settled execution over its provisional cash-identical alias.
+
+    Keep the raw ledger intact. Pending fees/timestamps/IDs can change on posting;
+    contract, account, trade day, direction, signed quantity, price and cash cannot.
+    """
+    pending, settled = defaultdict(list), defaultdict(list)
+    for tx in transactions:
+        try:
+            product = _find(tx, "product") or _find(tx, "productId") or {}
+            if not isinstance(product, dict) or str(_find(product, "securityType", "typeCode") or "").upper() not in {
+                    "OPTN", "OPTION", "OPTIONS", "EQUITY_OPTION"}:
+                continue
+            broker = _find(tx, "brokerage") or tx
+            if not isinstance(broker, dict):
+                continue
+            when = _when({"transactionDate": _find(tx, "transactionDate")})
+            account = str(_find(tx, "accountId", "accountIdKey") or "").strip()
+            numbers = [_find(broker, "quantity"), _find(broker, "price"), _find(tx, "amount"),
+                       _find(tx, "postDate"), _find(broker, "settlementDate")]
+            if any(value is None or isinstance(value, bool) for value in numbers):
+                continue
+            quantity, price, cash, posted, settlement = map(float, numbers)
+            if (not account or when is None or not all(math.isfinite(value) for value in (
+                    quantity, price, cash, posted, settlement)) or not quantity or not abs(quantity).is_integer()
+                    or price < 0 or posted < 0 or settlement < 0):
+                continue
+            currency = tuple(str(_find(broker, field) or _find(broker, "currency") or "").upper()
+                             for field in ("settlementCurrency", "paymentCurrency"))
+            if not all(currency) or currency[0] != currency[1]:
+                continue
+            if any(str(_find(tx, field) or "").lower() in {"true", "1", "yes", "y"}
+                   for field in ("reversalFlag", "isReversal", "reversed", "optionsAdjustedFlag")):
+                continue
+            actions = {aliases[normalized] for source in (broker, tx)
+                       for field in ("orderAction", "transactionType", "transactionShortDesc")
+                       if (normalized := re.sub(r"[^A-Z]", "", str(_find(source, field) or "").upper())) in aliases}
+            raw = re.sub(r"[^A-Z]", "", str(tx.get("transactionType") or broker.get("transactionType") or "").upper())
+            description = str(tx.get("description") or "").upper()
+            if re.search(r"\b(?:REVERSE\w*|REVERSAL|CANCEL\w*|EXERCIS\w*|ASSIGN\w*)\b", description):
+                continue
+            if len(actions) == 1 and posted > 0 and settlement > 0:
+                action = next(iter(actions))
+                target = settled
+            elif not actions and raw in {"BOUGHT", "BUY", "SOLD", "SELL"} and posted == settlement == 0:
+                phase = re.search(r"\b(OPENING|CLOSING)\s*$", description)
+                if not phase:
+                    continue
+                buying = raw in {"BOUGHT", "BUY"}
+                action = ("BTO" if buying else "STO") if phase[1] == "OPENING" else ("BTC" if buying else "STC")
+                target = pending
+            else:
+                continue
+            if (quantity > 0) != (action in {"BTO", "BTC"}):
+                continue
+            # Product JSON retains every supplied root/adjustment/context field.
+            key = (account, when.date(), json.dumps(product, sort_keys=True, default=str),
+                   action, quantity, price, cash, currency,
+                   str(_find(broker, "optionMultiplier", "multiplier") or ""),
+                   str(_find(broker, "orderNo", "orderId", "orderNumber") or ""),
+                   tuple(str(_find(tx, field) or "").upper().replace(" ", "") for field in ("osiKey", "osiSymbol")),
+                   json.dumps(tx.get("contract_context"), sort_keys=True, default=str))
+            target[key].append(tx)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    superseded, provenance = set(), {}
+    for key, candidates in pending.items():
+        matches = settled.get(key, [])
+        if len(candidates) == len(matches) == 1 and _identity(candidates[0]) != _identity(matches[0]):
+            identifier = _identity(candidates[0])
+            superseded.add(identifier)
+            provenance[_identity(matches[0])] = [identifier]
+    return [tx for tx in transactions if _identity(tx) not in superseded], provenance
+
+
 def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Pair recorded option executions; never infer a position's lifetime P&L.
 
     A shared order is preferred. An exact intraday timestamp is weaker evidence
     and is explicitly labeled inferred; a shared date/expiration is insufficient.
     """
-    aliases = {
-        "BUYOPEN": "BTO", "BUYTOOPEN": "BTO", "BOUGHTTOOPEN": "BTO", "BTO": "BTO",
-        "SELLOPEN": "STO", "SELLTOOPEN": "STO", "SOLDTOOPEN": "STO", "STO": "STO",
-        "SELLCLOSE": "STC", "SELLTOCLOSE": "STC", "SOLDTOCLOSE": "STC", "STC": "STC",
-        "BUYCLOSE": "BTC", "BUYTOCLOSE": "BTC", "BOUGHTTOCLOSE": "BTC", "BTC": "BTC",
-        "SELLSHORT": "STO", "SOLDSHORT": "STO", "BUYTOCOVER": "BTC", "BOUGHTTOCOVER": "BTC",
-    }
+    aliases = _OPTION_ACTION_ALIASES
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     blocked = set()
     blocked_orders = set()
@@ -753,7 +1023,21 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
         # though the documented Product schema specifies four digits.
         return date(year + 2000 if 0 <= year < 100 else year, month, day)
     rows = {_identity(tx): tx for tx in transactions if isinstance(tx, dict)}
-    for tx in rows.values():
+    executions, superseded = _settled_option_rows(list(rows.values()), aliases)
+    # A partial detail lookup must not split a previously valid timestamp pair.
+    cohorts = defaultdict(list)
+    for tx in executions:
+        product = _find(tx, "product") or {}
+        if str(_find(product, "securityType", "typeCode") or "").upper() in {"OPTN", "OPTION", "OPTIONS", "EQUITY_OPTION"}:
+            broker = _find(tx, "brokerage") or tx
+            raw_order = str(_find(broker, "orderNo", "orderId", "orderNumber") or "").strip()
+            if re.fullmatch(r"0+(?:\.0+)?", raw_order):
+                raw_order = ""
+            cohorts[(str(_find(tx, "accountId", "accountIdKey") or ""),
+                     _when({"transactionDate": _find(tx, "transactionDate")}))].append((tx, raw_order, _option_detail_order(tx)))
+    ready_orders = {_identity(tx): proof for cohort in cohorts.values() if all(raw or proof for _, raw, proof in cohort)
+                    for tx, _, proof in cohort if proof}
+    for tx in executions:
         product = _find(tx, "product") or _find(tx, "productId") or {}
         if not isinstance(product, dict):
             continue
@@ -766,6 +1050,9 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
         order = str(_find(broker, "orderNo", "orderId", "orderNumber") or "").strip()
         if re.fullmatch(r"0+(?:\.0+)?", order):
             order = ""
+        detail_order = _option_detail_order(tx)
+        if not order:
+            order = ready_orders.get(_identity(tx), "")
         account = str(_find(tx, "accountId", "accountIdKey") or "")
         bucket = (account, when.date() if when else None, order) if order else (account, when)
         leg = {"ticker": ticker, "when": when, "expiry": None,
@@ -782,6 +1069,8 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
         try:
             if isinstance(_find(tx, "transactionDate"), bool) or isinstance(_find(broker, "orderNo", "orderId", "orderNumber"), bool):
                 raise ValueError("Invalid execution date or order reference")
+            if detail_order and order and detail_order != order:
+                raise ValueError("Transaction list and broker detail order references conflict")
             if any(str(_find(tx, field) or "").lower() in {"true", "1", "yes", "y"}
                    for field in ("reversalFlag", "isReversal", "reversed")):
                 raise ValueError("Reversed option transaction requires review")
@@ -874,7 +1163,7 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                 cash, cash_basis = None, "UNAVAILABLE"
             leg.update(price=price, bucket=bucket, event=phase, root=root,
                        multiplier=multiplier, currency=currency, fee=fee, cash=cash,
-                       cash_basis=cash_basis, id=_identity(tx),
+                       cash_basis=cash_basis, id=_identity(tx), superseded_ids=superseded.get(_identity(tx), []),
                        subtype=str(_find(product, "securitySubType") or ""))
             if is_expiry:
                 if (recorded_number("amount") != 0 or price != 0 or fee not in (None, 0)
@@ -923,6 +1212,7 @@ def _vertical_history(transactions: list[dict[str, Any]]) -> tuple[list[dict[str
                        "account": account, "root": legs[0]["root"], "multiplier": legs[0]["multiplier"],
                        "currency": legs[0]["currency"], "subtype": legs[0]["subtype"],
                        "ids": sorted(leg["id"] for leg in legs),
+                       "superseded_ids": sorted(identifier for leg in legs for identifier in leg["superseded_ids"]),
                        "fee": math.fsum(leg["fee"] for leg in legs) if all(leg["fee"] is not None for leg in legs) else None,
                        "cash": math.fsum(leg["cash"] for leg in legs) if all(leg["cash"] is not None for leg in legs) else None,
                        "cash_basis": ("RECORDED CASH" if all(leg["cash_basis"] == "RECORDED CASH" for leg in legs)
@@ -1843,6 +2133,9 @@ def render_acquisition(
                                  saved.get("covered_from") if saved else None, saved.get("covered_through") if saved else None,
                                  cache_message if saved else "", vault.get("vertical_cache_error", {}).get(private_scope, ""),
                                  synced_at=saved.get("synced_at") if saved else None)
+        detail_error = vault.get("option_detail_error", {}).get(private_scope)
+        if detail_error:
+            st.warning("BROKER ORDER EVIDENCE PENDING // " + detail_error)
         if not vault.get("archive_configured"):
             st.warning(
                 "GITHUB ARCHIVE NOT ACTIVE // " +
