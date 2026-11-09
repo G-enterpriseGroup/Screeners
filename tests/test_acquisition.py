@@ -2590,6 +2590,58 @@ class AcquisitionOptionDetailEvidenceTests(unittest.TestCase):
         self.assertTrue(acq._option_detail_matches(source,normalized_year))
         self.assertNotIn("_acquisition_option_detail",source)
 
+    def test_uppercase_detail_containers_with_omitted_option_discriminator_prove_order_and_preserve_cash(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import src.acquisition_ui as acq
+        raw = self.rows()
+        before = deepcopy(raw)
+        responses = {}
+        for row in raw:
+            detail = self.response(row,9001 if row["transactionId"]<3 else 9002,wrapped=False)
+            broker = detail.pop("brokerage")
+            product = broker.pop("product")
+            product.pop("securityType")
+            broker["Product"] = product
+            detail["Brokerage"] = broker
+            responses[str(row["transactionId"])] = {"TransactionDetailsResponse":detail}
+            self.assertTrue(acq._option_detail_matches(row,responses[str(row["transactionId"])]))
+        client = SimpleNamespace(is_offline=False,get_transaction_details=Mock(
+            side_effect=lambda account,identifier,**kwargs:responses[identifier]))
+        hydrated,error = acq._hydrate_option_details(client,"raj",raw)
+        self.assertEqual(error,"")
+        self.assertEqual(raw,before)
+        self.assertEqual([acq._option_detail_order(row) for row in hydrated],["9001","9001","9002","9002"])
+        events,review = acq._vertical_history(hydrated)
+        self.assertEqual(review,[])
+        self.assertTrue(all(event["match"]=="ORDER" for event in events))
+        self.assertEqual(acq._vertical_blotter(events,review)[0]["pnl"],97.4)
+
+    def test_missing_detail_discriminator_never_excuses_incomplete_identity_or_contradictory_supplied_type(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        source = self.rows()[0]
+        detail = self.response(source,wrapped=False)
+        broker = detail.pop("brokerage")
+        product = broker.pop("product")
+        product.pop("securityType")
+        broker["Product"] = product
+        detail["Brokerage"] = broker
+        for field in ("symbol","callPut","expiryYear","expiryMonth","expiryDay","strikePrice"):
+            with self.subTest(missing=field):
+                incomplete = deepcopy(detail)
+                incomplete["Brokerage"]["Product"].pop(field)
+                self.assertFalse(acq._option_detail_matches(source,incomplete))
+        for value in ("EQ","BOND","INVALID","",None):
+            with self.subTest(securityType=value):
+                contradictory = deepcopy(detail)
+                contradictory["Brokerage"]["Product"]["securityType"] = value
+                self.assertFalse(acq._option_detail_matches(source,contradictory))
+        non_option_source = deepcopy(source)
+        non_option_source["brokerage"]["product"]["securityType"] = "EQ"
+        self.assertFalse(acq._option_detail_matches(non_option_source,detail))
+
     def test_same_execution_can_have_generic_detail_action_or_revised_fee_without_overwriting_cash(self):
         import src.acquisition_ui as acq
         source = self.rows()[0]

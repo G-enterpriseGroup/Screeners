@@ -788,6 +788,10 @@ def _option_detail_matches(tx, response):
             return False
         for field in ("symbol", "securityType", "callPut", "optionRootSymbol", "rootSymbol", "securitySubType"):
             value = str(product.get(field) or "").strip().upper()
+            if field == "securityType" and field not in actual:
+                if value not in {"OPTN", "OPTION", "OPTIONS", "EQUITY_OPTION"}:
+                    return False
+                continue
             if (field in {"symbol", "securityType", "callPut"} or value) and value != str(actual.get(field) or "").strip().upper():
                 return False
         for field in ("expiryYear", "expiryMonth", "expiryDay", "strikePrice"):
