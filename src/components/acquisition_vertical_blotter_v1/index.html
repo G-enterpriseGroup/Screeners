@@ -1,0 +1,384 @@
+<!doctype html>
+<!-- Acquisition-only cached vertical lifecycle presentation. No broker, archive, or financial calculations. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#000;color:#fb8b1e;font-family:"Courier New",monospace;overflow:hidden}
+button,input,select{font:inherit;border-radius:0}
+button{cursor:pointer}
+button:disabled{cursor:default;opacity:.5}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #fff;outline-offset:-2px}
+input,select{background:#000;color:#fff;border:1px solid #b87621;padding:5px;min-width:0;caret-color:#fff}
+[hidden]{display:none!important}
+#blotter{position:relative;width:100%;padding-bottom:2px}
+#grand-summary{border:1px solid #b87621;background:#080808}
+.grand-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 12px;padding:7px 8px;border-bottom:1px solid #5f431c}
+.grand-line:last-child{border-bottom:0}
+.grand-label,.grand-value{font-size:17px;line-height:1.25;font-weight:900;font-variant-numeric:tabular-nums}
+.grand-note{font-size:11px;line-height:1.25;color:#b87621}
+#toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;padding:5px 0;font-size:12px;line-height:1.25}
+#page-controls{display:flex;align-items:center;gap:5px}
+#page-controls button,.panel-actions button{border:1px solid #b87621;background:#080808;color:#fb8b1e;padding:4px 7px;font-size:12px;line-height:1.25;font-weight:900}
+#page-controls button:hover,.panel-actions button:hover{background:#fb8b1e;color:#000}
+#update-status{font-size:12px;line-height:1.3;color:#fb8b1e}
+#update-status[data-error="true"]{color:#ff433d}
+#update-status:empty{display:none}
+#table-viewport{width:100%;overflow:auto;border:1px solid #5f431c;scrollbar-color:#fb8b1e #111;overscroll-behavior:contain}
+#vertical-table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-variant-numeric:tabular-nums}
+#vertical-table th,#vertical-table td{padding:0 6px;border-right:1px solid #5f431c;border-bottom:1px solid #5f431c;text-align:left;vertical-align:middle}
+#vertical-table th:last-child,#vertical-table td:last-child{border-right:0}
+#vertical-table thead th{position:sticky;top:0;z-index:2;height:52px;background:#fb8b1e;color:#000;padding:0}
+.header-controls{display:flex;align-items:stretch;height:52px;min-width:0}
+.header-filter{display:flex;align-items:center;justify-content:space-between;gap:3px;flex:1;min-width:0;border:0;background:transparent;color:#000;padding:4px;font:900 12px/1.2 "Courier New",monospace;text-align:left}
+.header-label{min-width:0;overflow-wrap:anywhere}
+.filter-icon{flex:none;font-size:11px}
+.header-sort{flex:none;width:18px;border:0;border-left:1px solid #c96c0c;background:transparent;color:#000;padding:0;font:900 12px "Courier New",monospace}
+.header-filter:hover,.header-filter.active,.header-sort:hover,.header-sort.active{background:#c96c0c}
+#vertical-table tbody tr{height:34px}
+#vertical-table tbody td{height:34px;background:#000;font-size:14px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#vertical-table tbody td[data-kind="number"],#vertical-table tfoot td[data-kind="number"]{text-align:right}
+#vertical-table tbody td[data-field="Status"]{white-space:normal;font-size:12px;line-height:14px;overflow-wrap:anywhere}
+#vertical-table tbody tr:hover td{background:#171006}
+#vertical-table tfoot td{position:sticky;z-index:3;height:58px;background:#100b02;border-top:2px solid #fb8b1e;font-size:13px;line-height:1.25;font-weight:900;white-space:normal;overflow-wrap:anywhere}
+#vertical-table tfoot .pnl-value{font-size:18px;line-height:1.15;white-space:nowrap}
+.footer-note{display:block;margin-top:3px;color:#b87621;font-size:10px;line-height:1.2;font-weight:700}
+#vertical-table tfoot td[data-field="Status"]{font-size:10px;font-weight:700}
+#empty-row td{height:48px!important;color:#b87621;font-size:13px!important;white-space:normal!important}
+.positive{color:#4af6c3!important}.negative{color:#ff433d!important}.neutral{color:#fb8b1e!important}
+#blotter[aria-busy="true"] #table-viewport{opacity:.72}
+#filter-panel{position:absolute;z-index:10;width:min(310px,calc(100% - 8px));max-height:390px;overflow-y:auto;padding:9px;border:1px solid #fb8b1e;background:#080808;box-shadow:0 4px 16px #000;font-size:13px;color:#fb8b1e}
+#filter-title{margin:0 0 7px;font-size:14px;font-weight:900;line-height:1.25}
+.filter-field{display:flex;flex-direction:column;gap:4px;margin:7px 0;font-size:12px;font-weight:900}
+.filter-field input,.filter-field select{width:100%;font-size:14px;height:32px}
+.filter-bounds{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.panel-actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:7px 0 0}
+#choice-list{max-height:165px;overflow:auto;border:1px solid #5f431c;margin-top:6px;scrollbar-color:#fb8b1e #111}
+.choice-item{display:flex;align-items:center;gap:6px;min-height:27px;padding:4px;cursor:pointer;font-size:13px;line-height:1.25;overflow-wrap:anywhere}
+.choice-item:hover{background:#211305}
+.choice-item input{accent-color:#fb8b1e;flex:none;margin:0;width:15px;height:15px}
+.choice-empty,.panel-help{color:#b87621;font-size:11px;line-height:1.3;padding:5px 0}
+#panel-error{color:#ff433d;font-size:12px;line-height:1.3;margin-top:6px}
+#panel-error:empty{display:none}
+@media(max-width:600px){.grand-label,.grand-value{font-size:16px}#toolbar{font-size:11px}.grand-line{padding:6px}}
+</style>
+</head>
+<body>
+<main id="blotter" aria-label="Acquisition vertical spread blotter" aria-busy="false">
+  <section id="grand-summary" aria-label="Realized P&L grand totals"></section>
+  <div id="toolbar">
+    <span id="row-count" role="status" aria-live="polite"></span>
+    <div id="page-controls"><button type="button" id="previous-page" data-action="previous">PREVIOUS</button><span id="page-label"></span><button type="button" id="next-page" data-action="next">NEXT</button></div>
+  </div>
+  <div id="update-status" role="status" aria-live="polite"></div>
+  <div id="table-viewport" role="region" aria-label="Vertical spread columns; scroll horizontally for every column" tabindex="0">
+    <table id="vertical-table" aria-label="Filtered vertical spread lifecycle records"><colgroup id="columns"></colgroup><thead><tr id="headers"></tr></thead><tbody id="rows"></tbody><tfoot id="totals"></tfoot></table>
+  </div>
+  <section id="filter-panel" role="dialog" aria-label="Vertical blotter column filter" hidden></section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const root=document.getElementById("blotter"),summary=document.getElementById("grand-summary"),rowCount=document.getElementById("row-count"),
+    viewport=document.getElementById("table-viewport"),table=document.getElementById("vertical-table"),cols=document.getElementById("columns"),
+    headers=document.getElementById("headers"),body=document.getElementById("rows"),footer=document.getElementById("totals"),
+    panel=document.getElementById("filter-panel"),status=document.getElementById("update-status"),previous=document.getElementById("previous-page"),
+    next=document.getElementById("next-page"),pageLabel=document.getElementById("page-label");
+  const MONEY=new Set(["Entry Cost","Exit Cash","Fees","Realized P&L"]);
+  const FOOTER_KEYS={"Contracts":"contracts","Entry Cost":"entry_cost","Exit Cash":"exit_cash","Fees":"fees","Realized P&L":"pnl"};
+  const ROW_HEIGHT=34,HEADER_HEIGHT=52,FOOTER_HEIGHT=58;
+  let model=null,scope="",context="",ackRevision=0,pending=null,columns=[],rules=[],sort=null,page=0,pageSize=100;
+  let columnSignature="",renderSignature="",openField="",draft=null,restoreField="",lastHeight=-1,heightQueued=false;
+
+  function post(type,data){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},data),"*");}
+  function node(tag,text,className){const item=document.createElement(tag);if(text!==undefined)item.textContent=String(text);if(className)item.className=className;return item;}
+  function finite(value){return typeof value==="number"&&Number.isFinite(value);}
+  function number(value,signed=false){
+    if(!finite(value))return "—";
+    const absolute=Math.abs(value).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+    return value<0?"-"+absolute:signed&&value>0?"+"+absolute:absolute;
+  }
+  function color(value){return finite(value)&&value>0?"positive":finite(value)&&value<0?"negative":"neutral";}
+  function quantity(value){return finite(value)?value.toLocaleString("en-US",{maximumFractionDigits:8}):"—";}
+  function formatted(group,key){
+    if(group.display&&typeof group.display[key]==="string")return group.display[key];
+    return key==="contracts"?quantity(group[key]):number(group[key],["pnl","gains","losses"].includes(key));
+  }
+  function display(value,column){
+    if(value===null||value===undefined)return "";
+    if(column.kind==="number")return MONEY.has(column.label)?number(value,column.label==="Realized P&L"):quantity(value);
+    return String(value);
+  }
+  function copyRules(value){return Array.isArray(value)?value.filter(item=>item&&typeof item==="object"&&!Array.isArray(item)).map(item=>Object.assign({},item,Array.isArray(item.values)?{values:[...item.values]}:{})):[];}
+  function normalizedSort(value){return value&&typeof value.field==="string"&&["asc","desc"].includes(value.direction)?{field:value.field,direction:value.direction}:null;}
+  function groups(){return model&&model.totals&&Array.isArray(model.totals.groups)?model.totals.groups:[];}
+  function known(group,key){return group.known&&Number.isFinite(group.known[key])?group.known[key]:0;}
+  function missing(group,key){return group.missing&&Number.isFinite(group.missing[key])?group.missing[key]:0;}
+  function evidence(group){return Array.isArray(group.evidence)?group.evidence:[];}
+  function inferred(group){return evidence(group).some(item=>item.match!=="ORDER");}
+  function knownText(group,key){return known(group,key)+" / "+(group.rows||0)+" known";}
+  function evidenceText(group){return evidence(group).map(item=>(item.match==="ORDER"?"ORDER-MATCHED":String(item.match||"UNKNOWN"))+": "+item.rows+" rows, net "+formatted(item,"pnl")).join(" | ");}
+  function setStatus(message,error=false){status.textContent=message||"";status.dataset.error=String(error);status.setAttribute("role",error?"alert":"status");}
+  function syncHeight(){
+    if(heightQueued)return;heightQueued=true;
+    window.requestAnimationFrame(()=>{
+      heightQueued=false;
+      if(model)layoutTable();
+      const rect=root.getBoundingClientRect();
+      let height=Math.max(root.scrollHeight,rect.height);
+      if(!panel.hidden)height=Math.max(height,panel.getBoundingClientRect().bottom-rect.top+3);
+      height=Math.max(1,Math.ceil(height));
+      if(height!==lastHeight){lastHeight=height;post("streamlit:setFrameHeight",{height});}
+    });
+  }
+  function button(text,action,handler){const item=node("button",text);item.type="button";item.dataset.action=action;item.addEventListener("click",handler);return item;}
+  function updateControls(){
+    root.setAttribute("aria-busy",String(Boolean(pending)));
+    const lastPage=Math.max(0,Math.ceil((model?model.total_filtered:0)/pageSize)-1);
+    previous.disabled=Boolean(pending)||page===0;next.disabled=Boolean(pending)||page>=lastPage;
+    for(const item of headers.querySelectorAll("button"))item.disabled=Boolean(pending);
+    for(const item of panel.querySelectorAll("button,input,select"))item.disabled=Boolean(pending);
+    for(const column of columns){
+      const th=[...headers.children].find(item=>item.dataset.field===column.label);if(!th)continue;
+      const active=rules.some(rule=>rule.field===column.label),sorting=sort&&sort.field===column.label;
+      const filter=th.querySelector(".header-filter"),sortingButton=th.querySelector(".header-sort");
+      filter.classList.toggle("active",active);filter.setAttribute("aria-pressed",String(active));
+      filter.querySelector(".filter-icon").textContent=active?"●":"▾";
+      sortingButton.classList.toggle("active",Boolean(sorting));sortingButton.textContent=sorting?(sort.direction==="asc"?"↑":"↓"):"↕";
+      sortingButton.title="Sort "+column.label+(sorting?" ("+sort.direction+")":"");
+      th.setAttribute("aria-sort",sorting?(sort.direction==="asc"?"ascending":"descending"):"none");
+    }
+  }
+  function submit(filters,nextSort=sort,nextPage=0){
+    if(!model||pending)return;
+    closePanel(false);pending={revision:ackRevision+1};
+    setStatus("UPDATING FILTERED ROWS AND TOTALS…");updateControls();syncHeight();
+    post("streamlit:setComponentValue",{dataType:"json",value:{scope,context,revision:pending.revision,filters:copyRules(filters),sort:normalizedSort(nextSort),page:nextPage}});
+  }
+  function buildColumns(){
+    cols.replaceChildren();headers.replaceChildren();
+    for(const column of columns){
+      const col=node("col");cols.appendChild(col);
+      const th=node("th");th.scope="col";th.dataset.field=column.label;
+      const controls=node("div",undefined,"header-controls");
+      const filter=button("","filter",()=>openPanel(column.label));filter.className="header-filter";filter.dataset.field=column.label;
+      filter.title="Filter "+column.label;filter.setAttribute("aria-label","Filter "+column.label);filter.setAttribute("aria-haspopup","dialog");
+      filter.append(node("span",column.label,"header-label"),node("span","▾","filter-icon"));
+      const sorting=button("↕","sort",()=>{
+        const current=sort&&sort.field===column.label?sort.direction:null;
+        submit(rules,current==="desc"?null:{field:column.label,direction:current==="asc"?"desc":"asc"},0);
+      });
+      sorting.className="header-sort";sorting.dataset.field=column.label;sorting.setAttribute("aria-label","Sort "+column.label);
+      controls.append(filter,sorting);th.appendChild(controls);headers.appendChild(th);
+    }
+  }
+  function resizeColumns(){
+    let total=0;
+    columns.forEach((column,index)=>{
+      let width=finite(column.width)?Math.max(50,column.width):100;
+      if(column.kind==="number"||column.kind==="date"){
+        for(const row of (model.rows||[]).slice(0,pageSize))width=Math.max(width,display(row[column.label],column).length*8.5+14);
+        const key=FOOTER_KEYS[column.label];
+        if(key)for(const group of groups())width=Math.max(width,formatted(group,key).length*(key==="pnl"?11:8.5)+14);
+      }
+      width=Math.ceil(width);cols.children[index].style.width=width+"px";total+=width;
+    });
+    table.style.minWidth=total+"px";
+  }
+  function renderSummary(){
+    summary.replaceChildren();
+    const values=groups();
+    if(!values.length){const line=node("div",undefined,"grand-line");line.append(node("strong","REALIZED P&L GRAND TOTAL","grand-label"),node("strong","—","grand-value neutral"));summary.appendChild(line);return;}
+    for(const group of values){
+      const line=node("div",undefined,"grand-line");line.dataset.currency=String(group.currency||"UNKNOWN");
+      line.append(node("strong","REALIZED P&L GRAND TOTAL // "+String(group.currency||"UNKNOWN"),"grand-label"),node("strong",formatted(group,"pnl"),"grand-value "+color(group.pnl)));
+      const note=knownText(group,"pnl")+(inferred(group)?" // INCLUDES INFERRED":"")+" // GAINS "+formatted(group,"gains")+" // LOSSES "+formatted(group,"losses");
+      const detail=node("span",note,"grand-note");detail.title=evidenceText(group);line.appendChild(detail);summary.appendChild(line);
+    }
+  }
+  function renderRows(){
+    body.replaceChildren();
+    const rows=Array.isArray(model.rows)?model.rows.slice(0,pageSize):[];
+    if(!rows.length){const tr=node("tr");tr.id="empty-row";const td=node("td","NO PAIRED VERTICAL BLOTTER RECORDS MATCH THESE FILTERS.");td.colSpan=columns.length;tr.appendChild(td);body.appendChild(tr);return;}
+    for(const row of rows){
+      const tr=node("tr");
+      for(const column of columns){
+        const value=row[column.label],text=display(value,column),td=node("td",text);
+        td.dataset.field=column.label;td.dataset.kind=column.kind;td.title=text||"Unknown";
+        if(column.label==="Realized P&L")td.className=color(value);
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+  }
+  function renderFooter(){
+    footer.replaceChildren();
+    const values=groups();
+    if(!values.length){
+      const tr=node("tr");
+      for(const column of columns){const td=node("td",column.label==="Ticker"?"GRAND TOTAL":column.label==="Realized P&L"?"—":"");td.dataset.field=column.label;td.style.bottom="0px";if(column.label==="Realized P&L")td.className="pnl-value neutral";tr.appendChild(td);}
+      footer.appendChild(tr);return;
+    }
+    values.forEach((group,groupIndex)=>{
+      const tr=node("tr");tr.dataset.currency=String(group.currency||"UNKNOWN");
+      columns.forEach((column,index)=>{
+        if(index>0&&index<5)return;
+        const td=node("td");td.dataset.field=column.label;td.dataset.kind=column.kind;td.style.bottom="0px";
+        if(index===0){
+          td.colSpan=Math.min(5,columns.length);td.append(node("span","GRAND TOTAL // "+String(group.currency||"UNKNOWN")+(inferred(group)?" // INCLUDES INFERRED":"")));
+          td.appendChild(node("span",group.rows+" FILTERED ROWS // "+evidenceText(group),"footer-note"));
+        }else if(FOOTER_KEYS[column.label]){
+          const key=FOOTER_KEYS[column.label],value=group[key];
+          const span=node("span",formatted(group,key),key==="pnl"?"pnl-value "+color(value):"");
+          td.appendChild(span);
+          if(key!=="contracts")td.appendChild(node("span",knownText(group,key),"footer-note"));
+        }else if(column.label==="Ccy")td.textContent=String(group.currency||"UNKNOWN");
+        else if(column.label==="Status")td.textContent="MISSING // P&L "+missing(group,"pnl")+" / COST "+missing(group,"entry_cost")+" / EXIT "+missing(group,"exit_cash")+" / FEES "+missing(group,"fees");
+        td.title=td.textContent;tr.appendChild(td);
+      });
+      footer.appendChild(tr);
+    });
+  }
+  function renderTable(){
+    renderSummary();renderRows();renderFooter();resizeColumns();
+    const total=Math.max(0,Number(model.total_filtered)||0),source=Math.max(0,Number(model.total_source)||0);
+    const start=total?page*pageSize+1:0,end=Math.min(total,(page+1)*pageSize);
+    rowCount.textContent=start.toLocaleString("en-US")+"–"+end.toLocaleString("en-US")+" OF "+total.toLocaleString("en-US")+" FILTERED ROWS // "+source.toLocaleString("en-US")+" RETAINED";
+    pageLabel.textContent="PAGE "+(page+1)+" / "+Math.max(1,Math.ceil(total/pageSize));
+    layoutTable();updateControls();syncHeight();
+  }
+  function layoutTable(){
+    let bottom=0;
+    for(const row of [...footer.children].reverse()){
+      for(const cell of row.children)cell.style.bottom=bottom+"px";
+      bottom+=Math.max(1,Math.ceil(row.getBoundingClientRect().height)||FOOTER_HEIGHT);
+    }
+    const count=Array.isArray(model.rows)?Math.min(pageSize,model.rows.length):0;
+    viewport.style.maxHeight=(HEADER_HEIGHT+(count?Math.min(12,count)*ROW_HEIGHT:48)+bottom+4)+"px";
+  }
+  function currentButton(){return [...headers.querySelectorAll(".header-filter")].find(item=>item.dataset.field===openField);}
+  function placePanel(){
+    if(panel.hidden)return;
+    const anchor=currentButton();if(!anchor){closePanel(false);return;}
+    const rect=root.getBoundingClientRect(),anchorRect=anchor.getBoundingClientRect(),panelRect=panel.getBoundingClientRect();
+    panel.style.left=Math.max(4,Math.min(anchorRect.left-rect.left,rect.width-panelRect.width-4))+"px";
+    panel.style.top=(anchorRect.bottom-rect.top+2)+"px";syncHeight();
+  }
+  function closePanel(restore=true){
+    const anchor=currentButton();panel.hidden=true;openField="";draft=null;
+    if(restore&&anchor&&!anchor.disabled)anchor.focus();syncHeight();
+  }
+  function field(label,input){const wrapper=node("label",undefined,"filter-field");wrapper.append(node("span",label),input);return wrapper;}
+  function presenceControl(active){
+    const select=node("select");select.dataset.control="presence";select.setAttribute("aria-label",openField+" value status");
+    for(const value of ["ANY","KNOWN ONLY","MISSING ONLY"]){const option=node("option",value);option.value=value;select.appendChild(option);}
+    select.value=active.some(rule=>rule.op==="is_missing")?"MISSING ONLY":active.some(rule=>rule.op==="is_known")?"KNOWN ONLY":"ANY";
+    panel.appendChild(field("VALUE STATUS",select));
+  }
+  function validDate(value){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;
+    const parsed=new Date(value+"T12:00:00Z");return !Number.isNaN(parsed.getTime())&&parsed.toISOString().slice(0,10)===value;
+  }
+  function renderChoices(){
+    const list=panel.querySelector("#choice-list");if(!list||!draft)return;list.replaceChildren();
+    const search=panel.querySelector('[data-control="search"]').value.toLocaleLowerCase();
+    const values=draft.choices.filter(value=>value.toLocaleLowerCase().includes(search));
+    for(const value of values){
+      const label=node("label",undefined,"choice-item"),input=node("input");input.type="checkbox";input.checked=draft.mode==="all"||draft.selected.has(value);input.dataset.choice=value;
+      input.setAttribute("aria-label",openField+" "+value);input.addEventListener("change",()=>{
+        if(draft.mode==="all"){draft.mode="some";draft.selected=new Set(draft.choices);}
+        if(input.checked)draft.selected.add(value);else draft.selected.delete(value);
+      });
+      label.append(input,node("span",value));list.appendChild(label);
+    }
+    if(!values.length)list.appendChild(node("div","NO MATCHING CHOICES","choice-empty"));
+    syncHeight();
+  }
+  function commitPanel(){
+    if(!draft||pending)return;
+    const selectedField=openField,kind=draft.kind,nextRules=rules.filter(rule=>rule.field!==selectedField),presence=panel.querySelector('[data-control="presence"]').value;
+    const error=panel.querySelector("#panel-error");error.textContent="";
+    if(presence==="MISSING ONLY")nextRules.push({field:selectedField,op:"is_missing"});
+    else{
+      if(presence==="KNOWN ONLY")nextRules.push({field:selectedField,op:"is_known"});
+      if(kind==="choice"&&draft.mode!=="all")nextRules.push({field:selectedField,op:"in",values:[...draft.selected]});
+      else if(kind==="number"||kind==="date"){
+        const bounds={};
+        for(const bound of ["min","max"]){
+          const input=panel.querySelector('[data-bound="'+bound+'"]'),text=input.value.trim();
+          if((input.validity&&input.validity.badInput)||(text!==""&&(kind==="number"?!Number.isFinite(Number(text)):!validDate(text)))){
+            error.textContent="Enter a valid "+(kind==="number"?"finite number":"date")+" or leave the bound blank.";syncHeight();input.focus();return;
+          }
+          bounds[bound]=text===""?null:kind==="number"?Number(text):text;
+        }
+        if(bounds.min!==null&&bounds.max!==null&&bounds.min>bounds.max){error.textContent="MINIMUM / FROM must not exceed MAXIMUM / THROUGH.";syncHeight();return;}
+        if(bounds.min!==null||bounds.max!==null)nextRules.push({field:selectedField,op:"between",min:bounds.min,max:bounds.max});
+      }else if(kind==="text"){
+        const input=panel.querySelector('[data-control="text"]');if(input.value.trim()!=="")nextRules.push({field:selectedField,op:"contains",value:input.value});
+      }
+    }
+    restoreField=selectedField;submit(nextRules,sort,0);
+  }
+  function openPanel(label){
+    if(pending)return;
+    if(openField===label&&!panel.hidden){closePanel();return;}
+    const column=columns.find(item=>item.label===label);if(!column)return;
+    openField=label;const active=rules.filter(rule=>rule.field===label);panel.replaceChildren();panel.hidden=false;
+    const title=node("h2","FILTER "+label);title.id="filter-title";panel.appendChild(title);
+    draft={kind:column.kind,choices:[],mode:"all",selected:new Set()};presenceControl(active);
+    if(column.kind==="choice"){
+      draft.choices=[...new Set((Array.isArray(column.choices)?column.choices:[]).filter(value=>value!==null&&value!==undefined).map(String))];
+      const selected=active.find(rule=>rule.op==="in");draft.mode=selected?"some":"all";draft.selected=new Set(selected&&Array.isArray(selected.values)?selected.values.map(String):[]);
+      const search=node("input");search.type="search";search.dataset.control="search";search.placeholder="SEARCH VALUES";search.setAttribute("aria-label",label+" search choices");search.addEventListener("input",renderChoices);panel.appendChild(field("VALUES",search));
+      const actions=node("div",undefined,"panel-actions");actions.append(button("ALL","all-values",()=>{draft.mode="all";draft.selected=new Set();renderChoices();}),button("SELECT NONE","no-values",()=>{draft.mode="some";draft.selected=new Set();renderChoices();}));panel.appendChild(actions);
+      const list=node("div");list.id="choice-list";panel.appendChild(list);renderChoices();
+    }else if(column.kind==="number"||column.kind==="date"){
+      const range=active.find(rule=>rule.op==="between")||{},bounds=node("div",undefined,"filter-bounds");
+      for(const bound of ["min","max"]){
+        const input=node("input");input.type=column.kind==="date"?"date":"number";input.dataset.bound=bound;input.step="any";input.inputMode=column.kind==="number"?"decimal":"text";
+        input.value=range[bound]===null||range[bound]===undefined?"":String(range[bound]);input.setAttribute("aria-label",label+" "+bound);
+        bounds.appendChild(field(column.kind==="date"?(bound==="min"?"FROM":"THROUGH"):bound.toUpperCase(),input));
+      }
+      panel.append(bounds,node("div","Blank bounds are open. Zero is a value; missing values remain unknown.","panel-help"));
+    }else{
+      const text=active.find(rule=>rule.op==="contains"),input=node("input");input.type="text";input.dataset.control="text";input.value=text?String(text.value):"";input.setAttribute("aria-label",label+" contains");panel.appendChild(field("CONTAINS",input));
+    }
+    const error=node("div");error.id="panel-error";error.setAttribute("role","alert");panel.appendChild(error);
+    const actions=node("div",undefined,"panel-actions");actions.append(button("APPLY / DONE","apply",commitPanel),button("CLEAR COLUMN","clear-column",()=>{const field=openField;restoreField=field;submit(rules.filter(rule=>rule.field!==field),sort,0);}),button("CANCEL","cancel",()=>closePanel()));panel.appendChild(actions);
+    panel.appendChild(node("div","Header columns combine with AND. Changes apply only when submitted.","panel-help"));
+    placePanel();updateControls();const input=panel.querySelector("input,select");if(input)input.focus();syncHeight();
+  }
+  function render(args){
+    if(!args||typeof args.scope!=="string"||typeof args.context!=="string"||!Array.isArray(args.columns))return;
+    const incomingAck=Number.isInteger(args.ack_revision)&&args.ack_revision>=0?args.ack_revision:0;
+    const changed=args.scope!==scope||args.context!==context;
+    if(!changed&&incomingAck<ackRevision)return;
+    if(!changed&&pending&&incomingAck<pending.revision)return;
+    if(changed){closePanel(false);pending=null;ackRevision=0;renderSignature="";columnSignature="";restoreField="";}
+    scope=args.scope;context=args.context;ackRevision=incomingAck;
+    if(pending&&incomingAck>=pending.revision)pending=null;
+    const signature=JSON.stringify(args);
+    if(!changed&&signature===renderSignature){updateControls();syncHeight();return;}
+    renderSignature=signature;model=args;rules=copyRules(args.header_rules);sort=normalizedSort(args.sort);
+    page=Number.isInteger(args.page)&&args.page>=0?args.page:0;pageSize=Number.isInteger(args.page_size)&&args.page_size>0?Math.min(100,args.page_size):100;
+    columns=args.columns.filter(item=>item&&typeof item.label==="string"&&["choice","text","date","number"].includes(item.kind));
+    const signatureColumns=JSON.stringify(columns.map(column=>({label:column.label,kind:column.kind,width:column.width})));
+    if(signatureColumns!==columnSignature){columnSignature=signatureColumns;buildColumns();}
+    viewport.scrollTop=0;setStatus(typeof args.error==="string"?args.error:"",Boolean(args.error));renderTable();
+    if(!panel.hidden)placePanel();
+    if(restoreField){const anchor=[...headers.querySelectorAll(".header-filter")].find(item=>item.dataset.field===restoreField);if(anchor&&!anchor.disabled)anchor.focus();restoreField="";}
+  }
+  previous.addEventListener("click",()=>{if(page>0)submit(rules,sort,page-1);});
+  next.addEventListener("click",()=>{if(model&&(page+1)*pageSize<model.total_filtered)submit(rules,sort,page+1);});
+  panel.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();commitPanel();}else if(event.key==="Escape"){event.preventDefault();closePanel();}});
+  document.addEventListener("mousedown",event=>{if(!panel.hidden&&!panel.contains(event.target)&&!headers.contains(event.target))closePanel(false);});
+  window.addEventListener("message",event=>{if(event.source===window.parent&&event.data&&event.data.type==="streamlit:render")render(event.data.args);});
+  window.addEventListener("resize",()=>{placePanel();syncHeight();});viewport.addEventListener("scroll",placePanel,{passive:true});
+  if(typeof ResizeObserver!=="undefined")new ResizeObserver(()=>{placePanel();syncHeight();}).observe(root);
+  post("streamlit:componentReady",{apiVersion:1});syncHeight();
+})();
+</script>
+</body>
+</html>

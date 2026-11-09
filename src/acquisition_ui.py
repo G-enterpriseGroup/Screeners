@@ -14,6 +14,7 @@ import hashlib
 import html
 import json
 import math
+from pathlib import Path
 import re
 import threading
 import time
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.etrade_client import normalize_position
 from src.performance_ui import _find, _instrument, _trade_record, _when
@@ -35,6 +37,15 @@ _OVERLAP_DAYS = 7     # late-posted/corrected executions
 _SYNC_SECONDS = 12 * 3600
 _SHARE_TYPES = {"EQ", "EQUITY", "ETF", "STOCK", "COMMON", "COMMON_STOCK"}
 _VERTICAL_CACHE_VERSION = 2
+_ACQ_VERTICAL_TABLE = components.declare_component(
+    "raj_acquisition_vertical_blotter_v1",
+    path=str(Path(__file__).parent / "components" / "acquisition_vertical_blotter_v1"),
+)
+_VERTICAL_TABLE_WIDTHS = {
+    "Ticker": 80, "Spread (L / S)": 150, "Expiry": 110, "Opened": 110, "Closed": 110,
+    "Contracts": 115, "Entry Cost": 110, "Exit Cash": 110, "Fees": 80,
+    "Realized P&L": 145, "Ccy": 75, "Status": 245,
+}
 _CSS = """
 <style>
 .st-key-acquisition_root {gap:4px!important;padding:0!important;margin:0!important;font-family:"Courier New",monospace}
@@ -1547,12 +1558,14 @@ def _remember_blotter_tickers(scope: str, widget_key: str) -> None:
         values = ([value for value in values if value != "ALL TICKERS"]
                   if preferences["tickers"] is None and len(values) > 1 else None)
     preferences["tickers"] = values
+    preferences["header_page"] = 0
     st.session_state[widget_key] = ["ALL TICKERS"] if values is None else values
 
 
 def _reset_blotter_filters(scope: str, ticker_key: str) -> None:
     preferences = st.session_state["_acquisition_blotter_preferences"][scope]
     preferences.update(tickers=None, rules=[], error=None, revision=preferences["revision"] + 1)
+    preferences.update(header_rules=[], header_sort=None, header_page=0, header_error=None)
     st.session_state[ticker_key] = ["ALL TICKERS"]
 
 
@@ -1582,23 +1595,93 @@ def _save_blotter_column(scope: str, label: str, keys: dict[str, str], records: 
     except ValueError as exc:
         preferences["error"] = str(exc)
         return
-    preferences.update(rules=rules, error=None, revision=preferences["revision"] + 1)
+    preferences.update(rules=rules, error=None, revision=preferences["revision"] + 1, header_page=0)
+
+
+def _blotter_component_context(source_fingerprint: str, preferences: dict[str, Any]) -> str:
+    state = {"source": source_fingerprint, "tickers": preferences["tickers"],
+             "rules": preferences["rules"], "revision": preferences["revision"]}
+    return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+
+
+def _sort_vertical_records(records: list[dict[str, Any]], sort: dict[str, str] | None) -> list[dict[str, Any]]:
+    if sort is None:
+        return list(records)
+    if (not isinstance(sort, dict) or not isinstance(sort.get("field"), str)
+            or sort["field"] not in _VERTICAL_TABLE_WIDTHS
+            or not isinstance(sort.get("direction"), str) or sort["direction"] not in {"asc", "desc"}):
+        raise ValueError("Choose a valid blotter sort column and direction")
+    key, kind = _VERTICAL_FILTER_FIELDS[sort["field"]]
+    def value(row):
+        raw = row.get(key)
+        if raw is None or raw == "":
+            return None
+        if kind == "number":
+            return _vertical_filter_number(raw)
+        if kind == "date":
+            try:
+                parsed = datetime.fromisoformat(str(raw))
+                return (parsed if parsed.tzinfo else parsed.replace(tzinfo=_ET)).timestamp()
+            except (TypeError, ValueError, OverflowError, OSError):
+                return None
+        return str(raw).casefold()
+    known, missing = [], []
+    for row in records:
+        parsed = value(row)
+        (missing if parsed is None else known).append(row if parsed is None else (parsed, row))
+    return [row for _, row in sorted(known, key=lambda item: item[0], reverse=sort["direction"] == "desc")] + missing
+
+
+def _apply_blotter_table_event(scope: str, widget_key: str, records: list[dict[str, Any]], source_fingerprint: str) -> None:
+    """Accept view controls only; broker records and financial totals stay server-owned."""
+    preferences = st.session_state["_acquisition_blotter_preferences"][scope]
+    event = st.session_state.get(widget_key)
+    if (not isinstance(event, dict) or event.get("scope") != scope
+            or event.get("context") != _blotter_component_context(source_fingerprint, preferences)
+            or type(event.get("revision")) is not int
+            or event["revision"] != preferences.get("header_revision", 0) + 1):
+        return
+    try:
+        if set(event) != {"scope", "context", "revision", "filters", "sort", "page"}:
+            raise ValueError("The table accepts filter, sort and page controls only")
+        rules = event["filters"]
+        if (not isinstance(rules, list) or len(rules) > 24
+                or any(not isinstance(rule, dict) or not isinstance(rule.get("field"), str)
+                       or rule["field"] not in _VERTICAL_TABLE_WIDTHS for rule in rules)):
+            raise ValueError("Choose valid table column filters")
+        _filter_vertical_records(records, rules)
+        _sort_vertical_records([], event["sort"])
+        if type(event["page"]) is not int or event["page"] < 0:
+            raise ValueError("Choose a valid table page")
+        preferences.update(header_rules=rules, header_sort=event["sort"], header_page=event["page"], header_error=None)
+    except (ValueError, TypeError) as exc:
+        preferences["header_error"] = str(exc)
+    preferences["header_revision"] = event["revision"]
 
 
 @st.fragment
 def _render_vertical_blotter(payload: dict[str, Any] | None, vault_key: str, account: str,
                               covered_from: date | None, covered_through: date | None,
-                              cache_message: str = "", cache_error: str = "") -> None:
+                              cache_message: str = "", cache_error: str = "", synced_at: float | None = None) -> None:
     """Filter cached lifecycle copies locally; this fragment never reads broker/archive data."""
     st.html('<div class="acq-section">VERTICAL SPREAD BLOTTER // REALIZED P&amp;L</div>')
     coverage = (f"{covered_from:%m/%d/%Y} – {covered_through:%m/%d/%Y}"
                 if covered_from and covered_through else "NO RETAINED HISTORY")
     st.caption("ALL RETAINED SOURCE HISTORY // " + coverage + " // Older records unavailable to this archive are excluded.")
+    try:
+        timestamp = _vertical_filter_number(synced_at)
+        last_sync = datetime.fromtimestamp(timestamp, _ET).strftime("%m/%d/%Y %I:%M %p ET") if timestamp and timestamp > 0 else "UNKNOWN"
+    except (ValueError, OverflowError, OSError):
+        last_sync = "UNKNOWN"
+    st.caption("SOURCE // E*TRADE TRANSACTIONS · CACHED SPREAD CASH REPORT // LAST SUCCESSFUL HISTORY SYNC " + last_sync)
     records = _vertical_filter_records(payload or {})
     scope = hashlib.sha256(json.dumps([str(vault_key), str(account)]).encode()).hexdigest()[:16]
     preferences = st.session_state.setdefault("_acquisition_blotter_preferences", {}).setdefault(
         scope, {"tickers": None, "rules": [], "revision": 0, "error": None},
     )
+    for name, default in (("header_rules", []), ("header_sort", None), ("header_page", 0),
+                          ("header_revision", 0), ("header_error", None)):
+        preferences.setdefault(name, default)
     ticker_key = "acquisition_blotter_tickers_" + scope
     symbols = sorted({row["ticker"] for row in records})
     selected = preferences["tickers"]
@@ -1658,37 +1741,44 @@ def _render_vertical_blotter(payload: dict[str, Any] | None, vault_key: str, acc
     if preferences.get("error"):
         st.error(preferences["error"])
     rules = list(preferences["rules"])
+    rules.extend(preferences["header_rules"])
     if preferences["tickers"] is not None:
         rules.append({"field": "Ticker", "op": "in", "values": preferences["tickers"]})
-    filtered = _filter_vertical_records(records, rules)
+    filtered = _sort_vertical_records(_filter_vertical_records(records, rules), preferences["header_sort"])
     totals = _vertical_filtered_totals(filtered)
-    st.html(f'<div class="acq-status" style="font-size:12px!important">GRAND TOTALS // {totals["rows"]:,} OF {len(records):,} ROWS // {totals["contracts"]:g} CONTRACTS</div>')
-    def money(value, signed=False):
-        return "—" if value is None else (f"{value:+,.2f}" if signed and value else f"{value:,.2f}")
     for group in totals["groups"]:
-        currency = html.escape(group["currency"])
-        def colored(value):
-            color = "#4af6c3" if value is not None and value > 0 else "#ff433d" if value is not None and value < 0 else "#fb8b1e"
-            return '<span style="color:' + color + '">' + money(value, True) + '</span>'
-        st.html('<div class="acq-status" style="font-size:12px!important">' + currency + (' // INCLUDES INFERRED' if any(item["match"] != "ORDER" for item in group["evidence"]) else '')
-                + ' // NET ' + colored(group["pnl"])
-                + ' // GAINS ' + colored(group["gains"]) + ' // LOSSES ' + colored(group["losses"])
-                + ' // NET ENTRY COST ' + money(group["entry_cost"]) + ' // EXIT CASH ' + money(group["exit_cash"])
-                + ' // FEES ' + money(group["fees"]) + '</div>')
-        missing = ", ".join(f'{label} {group["missing"][key]}' for key, label in
-                            (("pnl", "P&L"), ("entry_cost", "entry cost"), ("exit_cash", "exit cash"), ("fees", "fees"))
-                            if group["missing"][key])
-        evidence = " | ".join(f'{"ORDER-MATCHED" if item["match"] == "ORDER" else item["match"]}: {item["rows"]} rows, net {money(item["pnl"], True)}'
-                              for item in group["evidence"])
-        st.caption(f'{group["currency"]} // P&L known {group["known"]["pnl"]}/{group["rows"]}'
-                   + (" // MISSING " + missing if missing else "") + " // " + evidence)
-    if filtered:
-        widths = {"Ticker": 60, "Spread (L / S)": 140, "Expiry": 100, "Opened": 100, "Closed": 100,
-                  "Contracts": 85, "Entry Cost": 95, "Exit Cash": 95, "Fees": 60, "Realized P&L": 115, "Ccy": 50, "Status": 205}
-        st.dataframe(_style_vertical_blotter(_vertical_blotter_frame(filtered)), hide_index=True, width="stretch", row_height=32,
-                     column_config={label: st.column_config.Column(width=width) for label, width in widths.items()})
-    else:
-        st.info("NO PAIRED VERTICAL BLOTTER RECORDS MATCH THESE FILTERS. FINANCIAL TOTALS —")
+        for subtotal in [group, *group["evidence"]]:
+            subtotal["display"] = {
+                key: ("—" if subtotal[key] is None else
+                      f'{subtotal[key]:+,.2f}' if key in {"pnl", "gains", "losses"} and subtotal[key] else
+                      f'{subtotal[key]:,.8f}'.rstrip("0").rstrip(".") if key == "contracts" else
+                      f'{subtotal[key]:,.2f}')
+                for key in ("pnl", "gains", "losses", "entry_cost", "exit_cash", "fees", "contracts")
+            }
+    page_size = 100
+    preferences["header_page"] = min(preferences["header_page"], max(0, (len(filtered) - 1) // page_size))
+    offset = preferences["header_page"] * page_size
+    frame = (_vertical_blotter_frame(filtered) if filtered else pd.DataFrame(columns=list(_VERTICAL_TABLE_WIDTHS)))
+    displayed = frame.iloc[offset:offset + page_size].astype(object)
+    displayed = displayed.where(pd.notna(displayed), None).to_dict("records")
+    columns = []
+    for label, width in _VERTICAL_TABLE_WIDTHS.items():
+        field, kind = _VERTICAL_FILTER_FIELDS[label]
+        choices = sorted({str(row[field]) for row in records if row.get(field) is not None and row[field] != ""}) if kind == "choice" else []
+        columns.append({"label": label, "kind": kind, "width": width, "choices": choices})
+    source_fingerprint = str((payload or {}).get("source_fingerprint") or "")
+    table_key = "acquisition_blotter_table_" + scope
+    _ACQ_VERTICAL_TABLE(
+        scope=scope, context=_blotter_component_context(source_fingerprint, preferences),
+        columns=columns, rows=displayed, header_rules=preferences["header_rules"], sort=preferences["header_sort"],
+        page=preferences["header_page"], page_size=page_size, total_filtered=len(filtered), total_source=len(records),
+        totals=totals, ack_revision=preferences["header_revision"], error=preferences["header_error"] or "",
+        key=table_key, default=None,
+        on_change=lambda: _apply_blotter_table_event(scope, table_key, records, source_fingerprint),
+    )
+    st.download_button("DOWNLOAD FILTERED .CSV", data=frame.to_csv(index=False),
+                       file_name="acquisition_vertical_pnl.csv", mime="text/csv", disabled=frame.empty,
+                       key="acquisition_blotter_csv_" + scope, on_click="ignore")
     st.caption("GREEN + = gain; RED − = loss; blank P&L = unknown. Net cash includes fees; negative Entry Cost is a credit. "
                "EXPIRED uses broker-confirmed expiry and its record date; past-date open/review quantities remain unverified. "
                "INFERRED marks timestamp-only pairing; open quantities have no live valuation.")
@@ -1751,7 +1841,8 @@ def render_acquisition(
                          "VERTICAL BLOTTER CACHED IN THIS PROCESS // PRIVATE GITHUB REPORT NOT YET VERIFIED SAVED")
         _render_vertical_blotter(vertical_payload, vault_key, chosen,
                                  saved.get("covered_from") if saved else None, saved.get("covered_through") if saved else None,
-                                 cache_message if saved else "", vault.get("vertical_cache_error", {}).get(private_scope, ""))
+                                 cache_message if saved else "", vault.get("vertical_cache_error", {}).get(private_scope, ""),
+                                 synced_at=saved.get("synced_at") if saved else None)
         if not vault.get("archive_configured"):
             st.warning(
                 "GITHUB ARCHIVE NOT ACTIVE // " +

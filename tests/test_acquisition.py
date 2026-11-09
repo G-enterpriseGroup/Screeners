@@ -43,6 +43,23 @@ class FakeClient:
         return source
 
 
+def _blotter_component(app):
+    for node in app.get("component_instance"):
+        if "acquisition_vertical_blotter" in node.proto.component_name:
+            return node
+    raise AssertionError("The production Acquisition blotter component was not rendered")
+
+
+def _blotter_args(app):
+    return json.loads(_blotter_component(app).proto.json_args)
+
+
+def _blotter_table(app):
+    import pandas as pd
+    args = _blotter_args(app)
+    return pd.DataFrame(args["rows"], columns=[column["label"] for column in args["columns"]])
+
+
 class AcquisitionTests(unittest.TestCase):
     def test_fifo_partial_exit_and_pine_export(self):
         rows = [
@@ -1310,19 +1327,19 @@ for row in history["raj"]:
         text = self._text(app)
         self.assertEqual(len(text.splitlines()), 2)
         self._control(app,"multiselect","BLOTTER TICKERS").set_value(["SYN"]).run()
-        table = next(frame.value for frame in app.dataframe if "Realized P&L" in frame.value.columns)
+        table = _blotter_table(app)
         closed = table[table["Status"] == "CLOSED"].iloc[0]
         remaining = table[table["Status"] == "OPEN"].iloc[0]
         self.assertEqual((closed["Contracts"],closed["Realized P&L"],closed["Fees"],closed["Ccy"]),(1,-52.6,2.6,"USD"))
         self.assertEqual((remaining["Contracts"],remaining["Fees"]),(2,2.6))
         import pandas as pd
         self.assertTrue(pd.isna(remaining["Realized P&L"]))
-        self.assertTrue(any("ORDER-MATCHED: 2 rows, net -52.60" in caption.value for caption in app.caption))
+        self.assertEqual(_blotter_args(app)["totals"]["groups"][0]["evidence"][0]["pnl"], -52.6)
         payload = app.session_state["fixture_vault"]["vertical_cache"][("copy-fixture","raj")]
         self._tickers(app).set_value([]).run()
         self.assertEqual(self._text(app), "")
         self.assertTrue(app.session_state["fixture_download"]["disabled"])
-        unchanged = next(frame.value for frame in app.dataframe if "Realized P&L" in frame.value.columns)
+        unchanged = _blotter_table(app)
         self.assertTrue(table.equals(unchanged))
         self._tickers(app).set_value(["SYN"]).run()
         self.assertIs(payload, app.session_state["fixture_vault"]["vertical_cache"][("copy-fixture","raj")])
@@ -1339,7 +1356,7 @@ for row in history["raj"]:
         self._tickers(app).set_value(["REVIEW","SYN"]).run()
         self._control(app,"multiselect","BLOTTER TICKERS").set_value(["SYN"]).run()
         self._check(app)
-        table = next(frame.value for frame in app.dataframe if "Realized P&L" in frame.value.columns)
+        table = _blotter_table(app)
         self.assertTrue(all(table["Ticker"] == "SYN"))
         review = next(frame.value for frame in app.dataframe if "Reason" in frame.value.columns)
         self.assertEqual(review["Date"].tolist(), ["UNKNOWN"])
@@ -1369,7 +1386,7 @@ for row in history["raj"]:
 
     @staticmethod
     def _table(app):
-        return next(table.value for table in app.dataframe if "Realized P&L" in table.value.columns)
+        return _blotter_table(app)
 
     @staticmethod
     def _html(app):
@@ -1389,14 +1406,15 @@ for row in history["raj"]:
         app = self._app()
         self._check(app)
         self.assertEqual(self._control(app,"selectbox","COPY RECORDS").value,"BOUGHT + SOLD")
-        self.assertIn("Realized P&L",app.dataframe[0].value.columns)
+        elements = list(app.main)
+        self.assertLess(elements.index(_blotter_component(app)),elements.index(app.dataframe[0]))
         self.assertEqual(set(self._table(app)["Ticker"]),{"SYN","PVT"})
         self.assertEqual(self._table(app).set_index("Ticker")["Entry Cost"].to_dict(),{"SYN":201.3,"PVT":201.3})
         self.assertEqual(self._table(app).set_index("Ticker")["Exit Cash"].to_dict(),{"SYN":148.7,"PVT":298.7})
         self.assertNotIn("Entry / Exit",self._table(app).columns)
-        self.assertIn("GRAND TOTALS // 2 OF 2 ROWS",self._html(app))
-        self.assertIn("NET ENTRY COST 402.60",self._html(app))
-        self.assertIn("+44.80",self._html(app))
+        self.assertEqual((_blotter_args(app)["total_filtered"],_blotter_args(app)["total_source"]),(2,2))
+        self.assertEqual(_blotter_args(app)["totals"]["groups"][0]["entry_cost"],402.6)
+        self.assertAlmostEqual(_blotter_args(app)["totals"]["groups"][0]["pnl"],44.8)
         self.assertTrue(any("ALL RETAINED SOURCE HISTORY // 01/01/2023" in item.value for item in app.caption))
         controls = AcquisitionVerticalCopyTests()
         for mode in ("OPEN LOTS // FIFO",controls.vertical_mode,"BOUGHT + SOLD"):
@@ -1431,9 +1449,9 @@ for row in history["raj"]:
         self.assertEqual(self._table(app)["Ticker"].tolist(),["SYN"])
         self.assertEqual(controls._text(app),"")
         ticker().set_value([]).run()
-        self.assertFalse(any("Realized P&L" in table.value for table in app.dataframe))
-        self.assertIn("GRAND TOTALS // 0 OF 2 ROWS",self._html(app))
-        self.assertNotIn("+44.80",self._html(app))
+        self.assertTrue(self._table(app).empty)
+        self.assertEqual((_blotter_args(app)["total_filtered"],_blotter_args(app)["total_source"]),(0,2))
+        self.assertEqual(_blotter_args(app)["totals"]["groups"],[])
         self._control(app,"selectbox","E*TRADE ACCOUNT").set_value("other").run()
         self.assertEqual(ticker().value,["ALL TICKERS"])
         self.assertEqual(self._table(app)["Ticker"].tolist(),["OTH"])
@@ -1462,13 +1480,12 @@ for row in history["raj"]:
         self._control(app,"number_input","MINIMUM").set_value(0.0)
         self._apply(app)
         self.assertEqual(self._table(app)["Ticker"].tolist(),["PVT"])
-        self.assertIn("+97.40",self._html(app))
-        self.assertNotIn("-52.60",self._html(app))
+        self.assertEqual(_blotter_args(app)["totals"]["groups"][0]["pnl"],97.4)
         self._column(app,"Type")
         self._control(app,"selectbox","MATCH").set_value("SELECT VALUES")
         self._control(app,"multiselect","VALUES").set_value(["CALL"])
         self._apply(app)
-        self.assertFalse(any("Realized P&L" in table.value for table in app.dataframe))
+        self.assertTrue(self._table(app).empty)
         self._control(app,"button","CLEAR COLUMN").click().run()
         self.assertEqual(self._table(app)["Ticker"].tolist(),["PVT"])
         self._column(app,"Spread (L / S)")
@@ -1478,7 +1495,7 @@ for row in history["raj"]:
         self._column(app,"Opened")
         self._control(app,"date_input","FROM").set_value(date(2026,10,2))
         self._apply(app)
-        self.assertFalse(any("Realized P&L" in table.value for table in app.dataframe))
+        self.assertTrue(self._table(app).empty)
         self._control(app,"button","CLEAR COLUMN").click().run()
         self.assertEqual(self._table(app)["Ticker"].tolist(),["PVT"])
         self._column(app,"Entry Cost")
@@ -1490,26 +1507,27 @@ for row in history["raj"]:
         self._control(app,"button","RESET FILTERS").click().run()
         self.assertFalse(app.error)
         self.assertEqual(len(self._table(app)),2)
-        self.assertIn("+44.80",self._html(app))
+        self.assertAlmostEqual(_blotter_args(app)["totals"]["groups"][0]["pnl"],44.8)
 
     def test_missing_money_and_explicit_empty_choice_are_not_zero_or_all(self):
         app = AcquisitionVerticalCopyTests._app()
-        self.assertIn("NET <span style=\"color:#fb8b1e\">—",self._html(app))
-        self.assertTrue(any("P&L known 0/2" in item.value and "MISSING" in item.value for item in app.caption))
+        group = _blotter_args(app)["totals"]["groups"][0]
+        self.assertIsNone(group["pnl"])
+        self.assertEqual((group["known"]["pnl"],group["missing"]["pnl"]),(0,2))
         self._control(app,"selectbox","VALUE STATUS").set_value("MISSING ONLY")
         self._apply(app)
         self.assertEqual(len(self._table(app)),2)
         self._column(app,"Type")
         self._control(app,"selectbox","MATCH").set_value("SELECT VALUES")
         self._apply(app)
-        self.assertFalse(any("Realized P&L" in table.value for table in app.dataframe))
-        self.assertIn("GRAND TOTALS // 0 OF 2 ROWS",self._html(app))
+        self.assertTrue(self._table(app).empty)
+        self.assertEqual((_blotter_args(app)["total_filtered"],_blotter_args(app)["total_source"]),(0,2))
         self._control(app,"button","CLEAR COLUMN").click().run()
         self.assertEqual(len(self._table(app)),2)
         self._column(app,"Realized P&L")
         self._control(app,"selectbox","VALUE STATUS").set_value("KNOWN ONLY")
         self._apply(app)
-        self.assertFalse(any("Realized P&L" in table.value for table in app.dataframe))
+        self.assertTrue(self._table(app).empty)
         self._control(app,"button","RESET FILTERS").click().run()
         self.assertEqual(len(self._table(app)),2)
         self._check(app)
@@ -1517,7 +1535,6 @@ for row in history["raj"]:
 
     def test_fragment_uses_full_retained_rows_and_never_requests_broker_or_archive_data(self):
         from streamlit.testing.v1 import AppTest
-        from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
         app = AppTest.from_string('''
 from datetime import date
 from unittest.mock import patch
@@ -1532,24 +1549,27 @@ with (patch.object(acq,"_history_vault",side_effect=AssertionError("Fragment can
     acq._render_vertical_blotter(payload,"offline-fixture","raj",date(2010,1,1),date(2026,11,8))
 ''',default_timeout=15).run()
         self.assertFalse(app.exception)
-        self.assertEqual(len(self._table(app)),350)
-        self.assertIn("GRAND TOTALS // 350 OF 350 ROWS",self._html(app))
-        self.assertIn("+34,090.00",self._html(app))
+        self.assertEqual(len(self._table(app)),100)
+        args = _blotter_args(app)
+        self.assertEqual((args["total_filtered"],args["total_source"],args["page_size"]),(350,350,100))
+        self.assertEqual(args["totals"]["groups"][0]["pnl"],34090)
         self.assertTrue(any("01/01/2010" in item.value for item in app.caption))
-        table = next(table for table in app.dataframe if "Realized P&L" in table.value)
-        proto = getattr(table.proto,"arrow_data",table.proto)
-        display = convert_arrow_bytes_to_pandas_df(proto.styler.display_values)
-        self.assertEqual(display["Realized P&L"].unique().tolist(),["+97.40"])
-        self.assertEqual(json.loads(table.proto.columns)["Status"]["width"],205)
+        self.assertEqual(self._table(app)["Realized P&L"].unique().tolist(),[97.4])
+        self.assertEqual(next(column["width"] for column in args["columns"] if column["label"] == "Status"),245)
+        app.session_state["_acquisition_blotter_preferences"][args["scope"]]["header_page"] = 3
+        app.run()
+        self.assertEqual(len(self._table(app)),50)
+        self.assertEqual(self._table(app).iloc[0]["Ticker"],"R0300")
+        self.assertEqual(_blotter_args(app)["totals"]["groups"][0]["pnl"],34090)
         self._control(app,"multiselect","BLOTTER TICKERS").set_value(["R0349"]).run()
         self.assertFalse(app.exception)
         self.assertEqual(self._table(app)["Ticker"].tolist(),["R0349"])
-        self.assertIn("GRAND TOTALS // 1 OF 350 ROWS",self._html(app))
-        self.assertNotIn("+34,090.00",self._html(app))
+        self.assertEqual((_blotter_args(app)["total_filtered"],_blotter_args(app)["total_source"],_blotter_args(app)["page"]),(1,350,0))
+        self.assertEqual(_blotter_args(app)["totals"]["groups"][0]["pnl"],97.4)
         self._control(app,"button","RESET FILTERS").click().run()
         self.assertFalse(app.exception)
-        self.assertEqual(len(self._table(app)),350)
-        self.assertIn("+34,090.00",self._html(app))
+        self.assertEqual(len(self._table(app)),100)
+        self.assertEqual(_blotter_args(app)["totals"]["groups"][0]["pnl"],34090)
 
 
 class AcquisitionVerticalDisplayTests(unittest.TestCase):
@@ -1609,8 +1629,7 @@ class AcquisitionVerticalDisplayTests(unittest.TestCase):
         self.assertEqual(styled.data.sort_values("Realized P&L")["Realized P&L"].dropna().tolist(),
                          [-52.6, 0.0, 97.4])
 
-    def test_production_owner_renders_red_loss_green_gain_without_changing_copy_or_network_calls(self):
-        from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
+    def test_production_owner_sends_numeric_loss_gain_to_scoped_component_preserving_copy_and_network_calls(self):
         controls = AcquisitionVerticalCopyTests()
         app = controls._app('''
 history["raj"].extend([
@@ -1628,23 +1647,267 @@ for row in history["raj"]:
         controls._tickers(app).set_value(["SYN", "PVT"]).run()
         text = controls._text(app)
         self.assertEqual(len(text.splitlines()), 4)
-        table = next(frame for frame in app.dataframe if "Realized P&L" in frame.value.columns)
-        self.assertEqual(table.value.set_index("Ticker")["Realized P&L"].to_dict(), {"SYN": -52.6, "PVT": 97.4})
-        proto = getattr(table.proto, "arrow_data", table.proto)
-        display = convert_arrow_bytes_to_pandas_df(proto.styler.display_values).set_index("Ticker")
-        self.assertEqual(display.loc["SYN", "Realized P&L"], "-52.60")
-        self.assertEqual(display.loc["PVT", "Realized P&L"], "+97.40")
-        self.assertEqual(display["Contracts"].tolist(), ["1", "1"])
-        self.assertTrue(all(display["Fees"] == "2.60"))
-        self.assertIn("#ff433d", proto.styler.styles)
-        self.assertIn("#4af6c3", proto.styler.styles)
+        table = _blotter_table(app)
+        self.assertEqual(table.set_index("Ticker")["Realized P&L"].to_dict(), {"SYN": -52.6, "PVT": 97.4})
+        self.assertEqual(table["Contracts"].tolist(), [1, 1])
+        self.assertTrue(all(table["Fees"] == 2.6))
+        component = (Path(__file__).resolve().parents[1] / "src/components/acquisition_vertical_blotter_v1/index.html").read_text()
+        self.assertIn("#ff433d", component)
+        self.assertIn("#4af6c3", component)
         self.assertTrue(any("GREEN +" in caption.value and "blank P&L = unknown" in caption.value
                             for caption in app.caption))
         self.assertTrue(any("broker-confirmed expiry and its record date" in caption.value for caption in app.caption))
-        self.assertTrue(any("ORDER-MATCHED: 2 rows, net +44.80" in caption.value for caption in app.caption))
+        self.assertAlmostEqual(_blotter_args(app)["totals"]["groups"][0]["evidence"][0]["pnl"],44.8)
         self.assertEqual(app.session_state["fixture_download"]["text"], text)
         self.assertEqual(app.session_state["fixture_transaction_calls"], [])
         self.assertEqual(app.session_state["fixture_archive_calls"], [])
+
+
+class AcquisitionBlotterHeaderEventTests(unittest.TestCase):
+    @staticmethod
+    def preferences():
+        return {"tickers":None,"rules":[],"revision":0,"error":None,
+                "header_rules":[],"header_sort":None,"header_page":0,"header_revision":0,"header_error":None}
+
+    def state_event(self, **changes):
+        import src.acquisition_ui as acq
+        preferences = self.preferences()
+        state = {"_acquisition_blotter_preferences":{"scope-a":preferences,"scope-b":self.preferences()}}
+        event = {"scope":"scope-a","context":acq._blotter_component_context("source-a",preferences),
+                 "revision":1,"filters":[],"sort":None,"page":0}
+        event.update(changes)
+        state["table-widget"] = event
+        return state, preferences, event
+
+    @staticmethod
+    def apply(state, records, source="source-a"):
+        import src.acquisition_ui as acq
+        with (patch.object(acq.st,"session_state",state),
+              patch.object(acq,"_sync_history",side_effect=AssertionError("Header controls cannot sync")),
+              patch.object(acq,"_history_vault",side_effect=AssertionError("Header controls cannot read archives")),
+              patch.object(acq,"_cached_verticals",side_effect=AssertionError("Header controls cannot recalculate source"))):
+            acq._apply_blotter_table_event("scope-a","table-widget",records,source)
+
+    def test_valid_header_rules_sort_and_page_are_acknowledged_without_touching_native_filters_or_cash(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        records = AcquisitionVerticalFilterTests.records()
+        before = deepcopy(records)
+        rules = [{"field":"Realized P&L","op":"gte","value":0},
+                 {"field":"Entry Cost","op":"between","min":0,"max":300}]
+        state, preferences, event = self.state_event(filters=rules,sort={"field":"Realized P&L","direction":"desc"},page=2)
+        preferences["rules"] = [{"field":"Ticker","op":"in","values":["SYN"]}]
+        event["context"] = acq._blotter_component_context("source-a",preferences)
+        self.apply(state,records)
+        self.assertEqual((preferences["header_rules"],preferences["header_sort"],preferences["header_page"]),
+                         (rules,{"field":"Realized P&L","direction":"desc"},2))
+        self.assertEqual(preferences["header_revision"],1)
+        self.assertIsNone(preferences["header_error"])
+        self.assertEqual(preferences["rules"],[{"field":"Ticker","op":"in","values":["SYN"]}])
+        selected = acq._filter_vertical_records(records,preferences["rules"]+preferences["header_rules"])
+        self.assertEqual(len(selected),1)
+        self.assertEqual(acq._vertical_filtered_totals(selected)["groups"][0]["pnl"],97.4)
+        self.assertEqual(records,before)
+
+    def test_stale_scope_source_context_revision_and_boolean_revision_are_ignored(self):
+        from copy import deepcopy
+        records = AcquisitionVerticalFilterTests.records()
+        for change,source in (({"scope":"scope-b"},"source-a"),({"context":"stale"},"source-a"),
+                              ({},"source-b"),({"revision":0},"source-a"),({"revision":2},"source-a"),
+                              ({"revision":True},"source-a")):
+            with self.subTest(change=change,source=source):
+                state, preferences, event = self.state_event(**change)
+                before = deepcopy(state["_acquisition_blotter_preferences"])
+                self.apply(state,records,source)
+                self.assertEqual(state["_acquisition_blotter_preferences"],before)
+
+    def test_context_changes_for_source_native_selection_rules_or_reset_but_not_header_ack(self):
+        from copy import deepcopy
+        import src.acquisition_ui as acq
+        original = self.preferences()
+        context = acq._blotter_component_context("source-a",original)
+        for change in ({"tickers":[]},{"tickers":["SYN"]},{"rules":[{"field":"Type","op":"eq","value":"PUT"}]},{"revision":1}):
+            with self.subTest(change=change):
+                preferences = {**deepcopy(original),**change}
+                self.assertNotEqual(context,acq._blotter_component_context("source-a",preferences))
+        self.assertNotEqual(context,acq._blotter_component_context("source-b",original))
+        original.update(header_revision=5,header_page=3,header_sort={"field":"Ticker","direction":"asc"})
+        self.assertEqual(context,acq._blotter_component_context("source-a",original))
+
+    def test_rejected_current_event_is_acknowledged_with_error_and_preserves_last_valid_view(self):
+        records = AcquisitionVerticalFilterTests.records()
+        bad = [{"filters":[{"field":"Type","op":"eq","value":"CALL"}]},
+               {"filters":[{"field":"Realized P&L","op":"between","min":2,"max":1}]},
+               {"filters":[{"field":"Ticker","op":"eq","value":"SYN"}]*25},
+               {"filters":[{"field":"Realized P&L","op":"gte","value":float("inf")}]},
+               {"sort":{"field":"Type","direction":"asc"}},
+               {"sort":{"field":"Ticker","direction":"ASC"}},
+               {"sort":{"field":"Ticker","direction":[]}},
+               {"page":-1},{"page":True},{"page":.5},{"rows":[{"Realized P&L":999999}]},
+               {"totals":{"pnl":999999}}]
+        for change in bad:
+            with self.subTest(change=change):
+                state, preferences, event = self.state_event(**change)
+                preferences.update(header_rules=[{"field":"Entry Cost","op":"gte","value":0}],header_page=1)
+                self.apply(state,records)
+                self.assertEqual(preferences["header_rules"],[{"field":"Entry Cost","op":"gte","value":0}])
+                self.assertEqual(preferences["header_page"],1)
+                self.assertEqual(preferences["header_revision"],1)
+                self.assertTrue(preferences["header_error"])
+                self.assertEqual(state["_acquisition_blotter_preferences"]["scope-b"],self.preferences())
+
+    def test_fresh_valid_event_recovers_after_rejection_and_empty_in_is_not_all(self):
+        import src.acquisition_ui as acq
+        records = AcquisitionVerticalFilterTests.records()
+        state, preferences, event = self.state_event(page=-1)
+        self.apply(state,records)
+        event.update(revision=2,page=0,filters=[{"field":"Ticker","op":"in","values":[]}])
+        self.apply(state,records)
+        self.assertEqual(preferences["header_revision"],2)
+        self.assertIsNone(preferences["header_error"])
+        selected = acq._filter_vertical_records(records,preferences["header_rules"])
+        self.assertEqual(selected,[])
+        self.assertEqual(acq._vertical_filtered_totals(selected)["groups"],[])
+
+    def test_native_reset_clears_header_controls_and_invalidates_old_context_without_reusing_revision(self):
+        import src.acquisition_ui as acq
+        state, preferences, event = self.state_event()
+        preferences.update(tickers=["SYN"],rules=[{"field":"Ticker","op":"eq","value":"SYN"}],
+                           header_rules=[{"field":"Fees","op":"gte","value":1}],
+                           header_sort={"field":"Ticker","direction":"desc"},header_page=2,
+                           header_error="invalid range",header_revision=7)
+        event.update(context=acq._blotter_component_context("source-a",preferences),revision=8)
+        with patch.object(acq.st,"session_state",state):
+            acq._reset_blotter_filters("scope-a","ticker-widget")
+        self.assertEqual((preferences["tickers"],preferences["rules"],preferences["header_rules"],preferences["header_sort"],preferences["header_page"]),
+                         (None,[],[],None,0))
+        self.assertEqual(preferences["header_revision"],7)
+        self.assertIsNone(preferences["header_error"])
+        self.assertEqual(state["ticker-widget"],["ALL TICKERS"])
+        self.apply(state,AcquisitionVerticalFilterTests.records())
+        self.assertEqual(preferences["header_revision"],7)
+
+    def test_numeric_date_and_text_sort_are_stable_with_missing_values_last_in_both_directions(self):
+        import src.acquisition_ui as acq
+        records = [{"ticker":"b","pnl":None,"opened":None,"id":0},
+                   {"ticker":"A","pnl":2,"opened":"2026-02-01T10:00:00-05:00","id":1},
+                   {"ticker":"a","pnl":0,"opened":"2025-12-01T10:00:00-05:00","id":2},
+                   {"ticker":"c","pnl":2,"opened":"invalid","id":3}]
+        for direction,expected in (("asc",[2,1,3,0]),("desc",[1,3,2,0])):
+            self.assertEqual([row["id"] for row in acq._sort_vertical_records(records,{"field":"Realized P&L","direction":direction})],expected)
+        self.assertEqual([row["id"] for row in acq._sort_vertical_records(records,{"field":"Opened","direction":"asc"})],[2,1,0,3])
+        self.assertEqual([row["id"] for row in acq._sort_vertical_records(records,{"field":"Ticker","direction":"asc"})],[1,2,0,3])
+        self.assertEqual([row["id"] for row in records],[0,1,2,3])
+        self.assertEqual(acq._sort_vertical_records(records,None),records)
+        with self.assertRaises(ValueError):
+            acq._sort_vertical_records(records,{"field":"Basis","direction":"asc"})
+
+    def test_header_callback_filters_the_fragment_and_full_totals_then_native_reset_restores_all_rows(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_string('''
+from datetime import date
+from unittest.mock import patch
+import hashlib
+import json
+import streamlit as st
+import src.acquisition_ui as acq
+from tests.test_acquisition import AcquisitionVerticalCacheTests
+payload = acq._build_vertical_cache(AcquisitionVerticalCacheTests.rows())
+original = payload["blotter"][0]
+payload["blotter"] = [{**original,"ticker":f"R{index:04d}"} for index in range(350)]
+scope = hashlib.sha256(json.dumps(["header-fixture","raj"]).encode()).hexdigest()[:16]
+def apply_header():
+    preferences = st.session_state["_acquisition_blotter_preferences"][scope]
+    st.session_state["synthetic_header_event"] = {
+        "scope":scope,"context":acq._blotter_component_context(payload["source_fingerprint"],preferences),
+        "revision":preferences["header_revision"]+1,
+        "filters":[{"field":"Ticker","op":"in","values":["R0349"]}],
+        "sort":{"field":"Realized P&L","direction":"desc"},"page":0}
+    acq._apply_blotter_table_event(scope,"synthetic_header_event",acq._vertical_filter_records(payload),payload["source_fingerprint"])
+with (patch.object(acq,"_history_vault",side_effect=AssertionError("Header controls cannot read archives")),
+      patch.object(acq,"_sync_history",side_effect=AssertionError("Header controls cannot request broker data")),
+      patch.object(acq,"_cached_verticals",side_effect=AssertionError("Header controls cannot recompute source"))):
+    st.button("APPLY SYNTHETIC HEADER",on_click=apply_header)
+    acq._render_vertical_blotter(payload,"header-fixture","raj",date(2026,10,1),date(2026,11,8))
+''',default_timeout=15).run()
+        self.assertFalse(app.exception)
+        initial = _blotter_args(app)
+        self.assertEqual((len(initial["rows"]),initial["total_filtered"]),(100,350))
+        self.assertEqual(initial["totals"]["groups"][0]["pnl"],34090)
+        next(button for button in app.button if button.label == "APPLY SYNTHETIC HEADER").click().run()
+        self.assertFalse(app.exception)
+        selected = _blotter_args(app)
+        self.assertEqual((selected["ack_revision"],selected["total_filtered"],selected["total_source"]),(1,1,350))
+        self.assertEqual(selected["header_rules"],[{"field":"Ticker","op":"in","values":["R0349"]}])
+        self.assertEqual(_blotter_table(app)["Ticker"].tolist(),["R0349"])
+        self.assertEqual(selected["totals"]["groups"][0]["pnl"],97.4)
+        next(button for button in app.button if button.label == "RESET FILTERS").click().run()
+        self.assertFalse(app.exception)
+        restored = _blotter_args(app)
+        self.assertEqual((len(restored["rows"]),restored["total_filtered"],restored["ack_revision"]),(100,350,1))
+        self.assertEqual((restored["header_rules"],restored["sort"],restored["page"]),([],None,0))
+        self.assertNotEqual(restored["context"],selected["context"])
+        self.assertEqual(restored["totals"]["groups"][0]["pnl"],34090)
+
+    def test_server_totals_preserve_python_rounding_numeric_values_zero_and_unknown_per_currency_and_evidence(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_string('''
+from datetime import date
+import src.acquisition_ui as acq
+from tests.test_acquisition import AcquisitionVerticalCacheTests
+payload = acq._build_vertical_cache(AcquisitionVerticalCacheTests.rows())
+original = payload["blotter"][0]
+payload["blotter"] = [
+    {**original,"ticker":"ROUND","currency":"USD","pnl":1.125},
+    {**original,"ticker":"ZERO","currency":"USD","pnl":0,"match":"TIME // INFERRED"},
+    {**original,"ticker":"UNKNOWN","currency":"CAD","status":"OPEN","closed":None,"pnl":None,"fees":None},
+]
+acq._render_vertical_blotter(payload,"format-fixture","raj",date(2026,10,1),date(2026,11,8))
+''',default_timeout=15).run()
+        self.assertFalse(app.exception)
+        groups = {group["currency"]:group for group in _blotter_args(app)["totals"]["groups"]}
+        usd, cad = groups["USD"], groups["CAD"]
+        self.assertEqual((usd["pnl"],usd["gains"],usd["losses"]),(1.125,1.125,0))
+        self.assertEqual((usd["display"]["pnl"],usd["display"]["gains"],usd["display"]["losses"]),("+1.12","+1.12","0.00"))
+        evidence = {subtotal["match"]:subtotal for subtotal in usd["evidence"]}
+        self.assertEqual((evidence["ORDER"]["pnl"],evidence["ORDER"]["display"]["pnl"]),(1.125,"+1.12"))
+        self.assertEqual((evidence["TIME // INFERRED"]["pnl"],evidence["TIME // INFERRED"]["display"]["pnl"]),(0,"0.00"))
+        self.assertIsNone(cad["pnl"])
+        self.assertEqual(cad["display"]["pnl"],"—")
+        self.assertEqual((cad["known"]["pnl"],cad["missing"]["pnl"]),(0,1))
+        for group in groups.values():
+            for subtotal in [group,*group["evidence"]]:
+                self.assertEqual(subtotal["display"]["contracts"],str(int(subtotal["contracts"])))
+                for field in ("pnl","gains","losses","entry_cost","exit_cash","fees"):
+                    if subtotal[field] is None:
+                        self.assertEqual(subtotal["display"][field],"—")
+                    elif subtotal[field] == 0:
+                        self.assertEqual(subtotal["display"][field],"0.00")
+
+    def test_component_keeps_column_headers_rows_and_totals_in_one_accessible_table(self):
+        from html.parser import HTMLParser
+        class Structure(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.stack = []
+                self.elements = {}
+            def handle_starttag(self,tag,attributes):
+                attributes = dict(attributes)
+                if attributes.get("id"):
+                    self.elements[attributes["id"]] = (tag,attributes,tuple(self.stack))
+                if tag not in {"meta","input","br","hr","link","img","col"}:
+                    self.stack.append((tag,attributes.get("id")))
+            def handle_endtag(self,tag):
+                if self.stack and self.stack[-1][0] == tag:
+                    self.stack.pop()
+        parser = Structure()
+        parser.feed((Path(__file__).resolve().parents[1] / "src/components/acquisition_vertical_blotter_v1/index.html").read_text())
+        for identifier in ("columns","headers","rows","totals"):
+            self.assertIn(("table","vertical-table"),parser.elements[identifier][2])
+        self.assertEqual(parser.elements["totals"][0],"tfoot")
+        self.assertEqual(parser.elements["filter-panel"][1]["role"],"dialog")
+        self.assertEqual(parser.elements["grand-summary"][1]["aria-label"],"Realized P&L grand totals")
+        self.assertIn(("main","blotter"),parser.elements["filter-panel"][2])
 
 
 class AcquisitionPnlCacheValidationTests(unittest.TestCase):
