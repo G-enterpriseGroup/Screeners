@@ -440,6 +440,15 @@ _VERTICAL_OPTIONS_CSS = """
 .st-key-verti_phone_workspace .vp-help:focus-within>div{display:block;}
 .st-key-verti_phone_workspace .vp-mode-help:focus-within .vp-mode-tooltip{visibility:visible;opacity:1;}
 @media(max-width:1000px){
+[data-testid="stMain"]:has(.st-key-verti_phone_workspace){overflow-x:hidden;overscroll-behavior-x:none;}
+.st-key-verti_phone_workspace{min-width:0;max-width:100%;touch-action:pan-y pinch-zoom;}
+.st-key-verti_phone_workspace .st-key-vp_toolbar [data-testid="stColumn"]:has(.st-key-vp_mode_controls){flex:0 0 250px!important;}
+.st-key-verti_phone_workspace .st-key-vp_mode_controls{max-width:100%!important;min-width:0!important;position:relative;}
+.st-key-verti_phone_workspace .st-key-vp_mode_controls [data-testid="stHorizontalBlock"]{display:grid!important;grid-template-columns:78px 42px 114px;}
+.st-key-verti_phone_workspace .st-key-vp_mode_controls [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]{width:auto!important;}
+.st-key-verti_phone_workspace .st-key-vp_mode_controls :is([data-testid="stElementContainer"],.vp-mode-help){position:static;}
+.st-key-verti_phone_workspace .vp-mode-tooltip,
+.st-key-verti_phone_workspace .vp-mode-help--smart .vp-mode-tooltip{box-sizing:border-box;top:100%;left:auto;right:0;}
 .st-key-verti_phone_workspace [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;}
 .st-key-verti_phone_workspace [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]{width:0!important;min-width:0!important;flex-basis:0!important;}
 .st-key-verti_phone_workspace [data-testid="stButton"] button,
