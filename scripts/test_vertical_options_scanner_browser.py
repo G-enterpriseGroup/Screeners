@@ -2190,27 +2190,34 @@ def test() -> None:
             ticker.send_keys("LIVEQ", Keys.TAB)
             form = wait.until(ready_scanner_form)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
-            wait.until(lambda _: grid_page_rows(driver)["total"] > 0)
-            set_grid_tolerance(driver, 100)
-            wait.until(lambda _: grid_page_rows(driver)["total"] == 40)
-            def retain_live_nodes():
-                return driver.execute_script("""
-                    const scroll=document.getElementById('scroll');
-                    scroll.scrollIntoView({block:'center'});
-                    window.fixtureLiveRow=document.querySelector('.row');
-                    window.fixtureLiveSelect=window.fixtureLiveRow.querySelector('.select');
-                    return scroll.scrollTop;
-                """)
-            live_scroll = in_grid(driver, retain_live_nodes)
+            def live_rows_ready(_):
+                page = grid_page_rows(driver)
+                return page if page["total"] == 40 and page["rows"] and all(
+                    row["values"][0] == "LIVEQ" for row in page["rows"]
+                ) else False
+            wait.until(live_rows_ready)
+            in_grid(driver, lambda: driver.execute_script(
+                "document.getElementById('scroll').scrollIntoView({block:'center'});"))
             live_initial = grid_snapshot(driver)
-            chain_before_live = len([e for e in events(event_path) if e["event"] == "chain"])
-            accounts_before_live = len([e for e in events(event_path)
-                                       if e["event"] in {"accounts", "balance"}])
             def changed_live_bar(before):
                 snapshot = grid_snapshot(driver)
                 if not snapshot["rows"] or snapshot["rows"][0]["fillPrices"] == before["rows"][0]["fillPrices"]:
                     return False
                 return snapshot
+            # Establish the baseline after the first quote, when initial scan
+            # rendering and its acknowledgments have finished.
+            live_initial = wait.until(lambda _: changed_live_bar(live_initial))
+            def retain_live_nodes():
+                return driver.execute_script("""
+                    const scroll=document.getElementById('scroll');
+                    window.fixtureLiveRow=document.querySelector('.row');
+                    window.fixtureLiveSelect=window.fixtureLiveRow.querySelector('.select');
+                    return scroll.scrollTop;
+                """)
+            live_scroll = in_grid(driver, retain_live_nodes)
+            chain_before_live = len([e for e in events(event_path) if e["event"] == "chain"])
+            accounts_before_live = len([e for e in events(event_path)
+                                       if e["event"] in {"accounts", "balance"}])
             live_first = wait.until(lambda _: changed_live_bar(live_initial))
             live_second = wait.until(lambda _: changed_live_bar(live_first))
             visible_live_bars = in_grid(driver, lambda: driver.execute_script("""
@@ -2223,11 +2230,16 @@ def test() -> None:
             assert visible_live_bars and all("E*TRADE status REALTIME" in label
                                               for label in visible_live_bars), visible_live_bars
             assert live_second["rows"][0]["values"][:11] == live_initial["rows"][0]["values"][:11]
-            assert in_grid(driver, lambda: driver.execute_script("""
-                return window.fixtureLiveRow===document.querySelector('.row') &&
-                  window.fixtureLiveSelect===document.querySelector('.row .select') &&
-                  document.getElementById('scroll').scrollTop===arguments[0];
-            """, live_scroll)), "A quote update replaced rows or moved the viewport"
+            live_identity = in_grid(driver, lambda: driver.execute_script("""
+                return {rowConnected:window.fixtureLiveRow.isConnected,
+                  rowSame:window.fixtureLiveRow===document.querySelector('.row'),
+                  selectSame:window.fixtureLiveSelect===document.querySelector('.row .select'),
+                  scrollTop:document.getElementById('scroll').scrollTop,
+                  expectedScroll:arguments[0]};
+            """, live_scroll))
+            assert (live_identity["rowConnected"] and live_identity["rowSame"] and
+                    live_identity["selectSame"] and
+                    live_identity["scrollTop"] == live_identity["expectedScroll"]), live_identity
             live_calls = [e for e in events(event_path) if e["event"] == "live-quote" and
                           any(value.startswith("LIVEQ:") for value in e["symbols"])]
             assert len(live_calls) >= 2 and all(0 < len(e["symbols"]) <= 25 for e in live_calls), live_calls
