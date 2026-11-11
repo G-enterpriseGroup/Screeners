@@ -1218,6 +1218,94 @@ new vm.Script(fixture.script);console.log('PASS '+fixture.cases.length+' complet
             with self.subTest(target=invalid), self.assertRaises(ValueError):
                 _default_column_filters(expirations, invalid)
 
+    def test_both_scroller_protocols_replay_staged_filters_without_old_mode_selections(self):
+        import json
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable for scroller protocol verification")
+        harness = r'''
+const vm=require('vm'),assert=require('assert');
+const fixtures=JSON.parse(require('fs').readFileSync(0,'utf8'));
+for(const fixture of fixtures){
+ const declarations=fixture.match(/let scope=[\s\S]*?(?=function post\()/)[0];
+ const constants=fixture.match(/const (HEAD|KEYS|FILTER_KEYS|NUMERIC)=[^\n]+/g).join('\n');
+ const functions=fixture.slice(fixture.indexOf('function normalizedFilters('),fixture.indexOf('function updateFilterHeaders('));
+ const closePanel=fixture.slice(fixture.indexOf('function closePanel('),fixture.indexOf('function updateTargetAvailability('));
+ const listener=fixture.slice(fixture.indexOf('window.addEventListener("message"'),fixture.indexOf('\n});',fixture.indexOf('window.addEventListener("message"'))+4);
+ const stubs=`
+let receive,messages=[];
+const window={addEventListener:(_,callback)=>receive=callback};
+const panel={hidden:true},scroll={scrollTop:0,style:{},setAttribute:()=>{}},space={style:{}},empty={style:{}},ROW_HEIGHT=43;
+function post(type,props){if(type==='streamlit:setComponentValue')messages.push(props.value);}
+function updateTargetAvailability(){} function updateFilterHeaders(){} function syncHeight(){}
+function syncNumericInputs(){} function renderPanel(){} function paint(){} function sizeRows(){}
+`;
+ const checks=`
+function same(actual,expected){assert.equal(JSON.stringify(actual),JSON.stringify(expected));}
+function render(scope,ack,filters,filter_scope='snapshot-a',sort_view='BEST PER YEAR',sort_by='YEAR + FILL'){
+ receive({data:{type:'streamlit:render',args:{scope,filter_scope,sort_view,sort_by,sort_key:'all',rows:[],total_rows:0,
+ column_filters:filters,filter_choices:{},filter_ack_revision:ack,selected_ids:[],ack_revision:0}}});
+}
+render('normal',0,{expiry:['2029-01-19']});
+selected=new Set(['old-selected']);pendingSelection=new Set(selected);pendingRevision=revision=4;pendingViewport=200;
+changeFilters({cost:{max:250}},-1);
+assert.equal(messages.length,0);assert.equal(pendingTypedFilter,true);
+render('smart',0,{expiry:['2029-01-19']});
+assert.equal(messages.length,1);same(messages.at(-1).column_filters,{cost:{max:250}});
+assert.equal(messages.at(-1).filter_scope,'snapshot-a');assert.equal(messages.at(-1).scope,'smart');
+same(messages.at(-1).selected_ids,[]);assert.equal(messages.at(-1).revision,0);
+assert(!Object.hasOwn(messages.at(-1),'viewport_offset'));assert.equal(pendingSelection,null);
+render('normal',0,{expiry:['2029-01-19']});
+assert.equal(messages.length,2);same(columnFilters,{cost:{max:250}});
+render('normal',1,{cost:{max:250}});
+assert.equal(pendingFilters,null);assert.equal(messages.length,2);
+changeFilters({cost:{max:200}},-1);
+render('normal',0,{}); // Old acknowledgement cannot replace the later typed cap.
+same(columnFilters,{cost:{max:200}});assert.equal(pendingTypedFilter,true);
+render('smart',1,{cost:{max:250}});
+assert.equal(messages.length,3);same(messages.at(-1).column_filters,{cost:{max:200}});
+assert.equal(messages.at(-1).filter_revision,2);same(messages.at(-1).selected_ids,[]);
+render('smart',2,{cost:{max:200}});
+assert.equal(pendingFilters,null);assert.equal(messages.length,3);
+changeFilters({},-1);
+render('normal',2,{cost:{max:200}});
+same(messages.at(-1).column_filters,{});assert.equal(messages.at(-1).filter_revision,3);
+render('normal',3,{});assert.equal(pendingFilters,null);
+changeFilters({side:[]},-1);
+render('smart',3,{});
+same(messages.at(-1).column_filters,{side:[]});assert.equal(messages.at(-1).filter_revision,4);
+render('smart',4,{side:[]});assert.equal(pendingFilters,null);
+sortBy='COST';sortDirection='DESC';changeFilters({cost:{max:150}},-1);
+render('smart',4,{side:[]},'snapshot-a','ALL QUALIFIED','FILL + TARGET');
+assert.equal(sortBy,'FILL + TARGET'); // The visible view retains its own sort.
+render('normal',4,{side:[]},'snapshot-a','ALL QUALIFIED','FILL + TARGET');
+assert.equal(messages.at(-1).sort_view,'BEST PER YEAR');
+assert.equal(messages.at(-1).sort_by,'COST');assert.equal(messages.at(-1).sort_direction,'DESC');
+render('normal',5,{cost:{max:150}},'snapshot-a','ALL QUALIFIED','FILL + TARGET');
+assert.equal(pendingFilters,null);assert.equal(pendingSort,null);assert.equal(sortBy,'FILL + TARGET');
+changeFilters({cost:{max:75}},-1);
+const count=messages.length;
+render('fresh-normal',0,{expiry:['2030-01-18']},'snapshot-b');
+same(columnFilters,{expiry:['2030-01-18']});assert.equal(filterRevision,0);
+assert.equal(pendingFilters,null);assert.equal(pendingTypedFilter,false);assert.equal(messages.length,count);
+`;
+ vm.runInNewContext(stubs+constants+'\n'+declarations+'\n'+functions+'\n'+closePanel+'\n'+listener+'\n'+checks,
+ {assert,setTimeout,clearTimeout});
+ new vm.Script(fixture.split('<script>')[1].split('</script>')[0]);
+}
+console.log('PASS both production scroller filter protocols');
+'''
+        root = Path(__file__).resolve().parents[1]
+        fixtures = [(root / "src/components" / f"{prefix}_spread_scroller_v1/index.html").read_text()
+                    for prefix in ("vo", "vp")]
+        result = subprocess.run([node, "-e", harness], input=json.dumps(fixtures),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS both production scroller", result.stdout)
+
     def test_renderer_column_filters_refresh_pricing_and_memory_in_one_update(self):
         from uuid import uuid4
         from streamlit.testing.v1 import AppTest
@@ -1330,7 +1418,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertEqual(app.session_state["vo_scan_result"]["raw_scan_id"], 1)
         self.assertEqual(app.session_state["vo_scan_result"]["pricing_mode"], "SMART FILL")
         self.assertEqual(args["column_filters"], filters)
-        self.assertEqual(args["filter_ack_revision"], 0)
+        self.assertEqual(args["filter_ack_revision"], 1)
         self.assertNotIn("fixture_scan_calls", app.session_state)
 
         next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
@@ -1656,6 +1744,11 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
             client.preview_order.assert_not_called()
             client.place_order.assert_not_called()
             with patch.object(vo.time, "time", return_value=original_time + 301):
+                historical = vo._continue_vertical_scan(result, client, lambda: None)
+                self.assertTrue(historical["scan_complete"])
+                self.assertEqual(historical["loaded_at"], original_time)
+                # Historical cached ranking is allowed; acquiring missing chains is not.
+                state["_vo_chain_cache"]["E*TRADE:QQQ"]["scan_complete"] = False
                 with self.assertRaisesRegex(ValueError, "EXPIRED"):
                     vo._continue_vertical_scan(result, client, lambda: None)
             self.assertEqual(get_chain.call_count, 3)

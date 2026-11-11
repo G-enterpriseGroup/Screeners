@@ -106,13 +106,13 @@ const KEYS=["ticker","side","expiry","buy","sell","buy_last","sell_last","cost",
 const FILTER_KEYS=[...KEYS,"fill_scale"]; // Display-only desktop column; preserve canonical data keys.
 const NUMERIC=new Set(["buy","sell","buy_last","sell_last","cost","breakeven","ratio","profit","fill_scale"]);
 const table=document.getElementById("table"),head=document.getElementById("head"),scroll=document.getElementById("scroll"),space=document.getElementById("space"),visible=document.getElementById("visible"),empty=document.getElementById("empty"),panel=document.getElementById("filter-panel");
-let scope="",sortKey="",rows=[],selected=new Set(),pendingSelection=null;
+let scope="",filterScope="",sortKey="",rows=[],selected=new Set(),pendingSelection=null;
 let totalRows=0,rowOffset=0,viewportTimer=null,pendingViewport=null;
 let start=-1,end=-1,revision=0,pendingRevision=0,acknowledgedRevision=0;
 let columnFilters={},filterChoices={},pendingFilters=null,filterRevision=0,pendingFilterRevision=0,acknowledgedFilterRevision=0;
 let openKey="",searchTerm="",filterTimer=null,pendingTypedFilter=false;
 const SORT_FIELDS={ticker:"TICKER",side:"TYPE",fill_scale:"FILL EST",expiry:"EXPIRATION",buy:"BUY STRIKE",sell:"SELL STRIKE",buy_last:"BUY LAST",sell_last:"SELL LAST",cost:"COST",breakeven:"BREAKEVEN",ratio:"R:R",profit:"MAX PROFIT",basis:"FILL QUALITY"};
-let sortBy="FILL + TARGET",sortDirection="ASC",sortable=false,hasTarget=false;
+let sortBy="FILL + TARGET",sortDirection="ASC",sortView="",pendingSort=null,sortable=false,hasTarget=false;
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
 function syncHeight(){
  head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";
@@ -167,8 +167,9 @@ function sameFilters(left,right){return JSON.stringify(normalizedFilters(left))=
 function emitValue(){
  if(filterTimer!==null){clearTimeout(filterTimer);filterTimer=null;}
  pendingTypedFilter=false;
- const value={scope,selected_ids:[...selected],revision,
-  column_filters:normalizedFilters(columnFilters),filter_revision:filterRevision,sort_by:sortBy,sort_direction:sortDirection};
+ const value={scope,filter_scope:filterScope,selected_ids:[...selected],revision,
+  column_filters:normalizedFilters(columnFilters),filter_revision:filterRevision,
+  sort_by:pendingSort?.by??sortBy,sort_direction:pendingSort?.direction??sortDirection,sort_view:pendingSort?.view??sortView};
  if(pendingViewport!==null){value.viewport_offset=pendingViewport;value.viewport_sort_key=sortKey;}
  post("streamlit:setComponentValue",{value,dataType:"json"});
 }
@@ -178,6 +179,7 @@ function changeFilters(next,delay=0){
  if(!hasTarget&&sortBy==="TARGET DISTANCE")sortBy="FILL + TARGET";
  filterRevision=Math.max(filterRevision,acknowledgedFilterRevision)+1;
  pendingFilterRevision=filterRevision;pendingFilters=normalizedFilters(columnFilters);
+ pendingSort={by:sortBy,direction:sortDirection,view:sortView};
  updateFilterHeaders();
  if(filterTimer!==null)clearTimeout(filterTimer);
  if(delay===-1){filterTimer=null;pendingTypedFilter=true;return;}
@@ -541,11 +543,12 @@ window.addEventListener("message",event=>{
  if(!event.data||event.data.type!=="streamlit:render")return;
  const args=event.data.args||{};
  const newScope=String(args.scope||""),newSort=String(args.sort_key||"");
+ const newFilterScope=String(args.filter_scope||newScope),filterScopeChanged=newFilterScope!==filterScope;
  const hasFilterAck=Number.isInteger(args.filter_ack_revision)&&args.filter_ack_revision>=0;
  const serverFilterRevision=hasFilterAck?args.filter_ack_revision:0;
- if(newScope===scope&&hasFilterAck&&serverFilterRevision<acknowledgedFilterRevision)return;
+ if(!filterScopeChanged&&hasFilterAck&&serverFilterRevision<acknowledgedFilterRevision)return;
  const needsReset=newScope!==scope||newSort!==sortKey,scopeChanged=newScope!==scope;
- scope=newScope;sortKey=newSort;rows=Array.isArray(args.rows)?args.rows:[];
+ scope=newScope;filterScope=newFilterScope;sortKey=newSort;rows=Array.isArray(args.rows)?args.rows:[];
  totalRows=Number.isInteger(args.total_rows)&&args.total_rows>=0?args.total_rows:rows.length;
  rowOffset=Number.isInteger(args.row_offset)&&args.row_offset>=0?args.row_offset:0;
  if(needsReset){
@@ -555,24 +558,31 @@ window.addEventListener("message",event=>{
  const priorFilters=columnFilters,priorChoices=filterChoices;
  const serverFilters=normalizedFilters(args.column_filters);
  sortable=Boolean(args.sortable);
- if(scopeChanged||!pendingFilters){sortBy=String(args.sort_by||"FILL + TARGET");sortDirection=args.sort_direction==="DESC"?"DESC":"ASC";}
+ const newSortView=String(args.sort_view||"");
+ if(filterScopeChanged||!pendingFilters||newSortView!==sortView){sortBy=String(args.sort_by||"FILL + TARGET");sortDirection=args.sort_direction==="DESC"?"DESC":"ASC";}
+ sortView=newSortView;
  filterChoices=normalizedChoices(args.filter_choices);
  let replayPending=false;
- if(scopeChanged){
+ if(filterScopeChanged){
   if(filterTimer!==null){clearTimeout(filterTimer);filterTimer=null;}
-  closePanel(false);columnFilters=serverFilters;pendingFilters=null;pendingFilterRevision=0;
+  pendingTypedFilter=false;
+  closePanel(false);columnFilters=serverFilters;pendingFilters=null;pendingSort=null;pendingFilterRevision=0;
   acknowledgedFilterRevision=serverFilterRevision;filterRevision=serverFilterRevision;
  }else if(!pendingFilters){
   columnFilters=serverFilters;
   acknowledgedFilterRevision=Math.max(acknowledgedFilterRevision,serverFilterRevision);
   filterRevision=Math.max(filterRevision,serverFilterRevision);
  }else if(hasFilterAck&&serverFilterRevision>=pendingFilterRevision){
-  columnFilters=serverFilters;pendingFilters=null;pendingFilterRevision=0;
+  columnFilters=serverFilters;pendingFilters=null;pendingSort=null;pendingFilterRevision=0;
   acknowledgedFilterRevision=serverFilterRevision;filterRevision=Math.max(filterRevision,serverFilterRevision);
  }else if(!hasFilterAck&&sameFilters(serverFilters,pendingFilters)){
-  columnFilters=serverFilters;pendingFilters=null;pendingFilterRevision=0;
+  columnFilters=serverFilters;pendingFilters=null;pendingSort=null;pendingFilterRevision=0;
  }else if(hasFilterAck&&serverFilterRevision>acknowledgedFilterRevision){
   acknowledgedFilterRevision=serverFilterRevision;replayPending=true;
+ }
+ if(scopeChanged&&!filterScopeChanged){
+  closePanel(false);
+  if(pendingFilters)replayPending=true;
  }
  const serverSelection=new Set(Array.isArray(args.selected_ids)?args.selected_ids:[]);
  const hasAck=Number.isInteger(args.ack_revision)&&args.ack_revision>=0;
