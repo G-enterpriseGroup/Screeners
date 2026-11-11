@@ -53,6 +53,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 from src.vertical_options_ui import render_vertical_options
 import src.vertical_options_ui as vo
+from src.etrade_data_cache import session_namespace
 # Reproduce a late browser reply without another user click to recover it.
 original_preference_component = getattr(vo, "_fixture_original_preference_component", vo._PRICING_PREFERENCE_COMPONENT)
 vo._fixture_original_preference_component = original_preference_component
@@ -82,8 +83,34 @@ def record(event, **details):
 
 class StubETrade:
     is_offline = False
+    _namespace = session_namespace({"oauth_token": "DUMMY-SCANNER-TEST-TOKEN"})
 
     def get_quote(self, symbol):
+        if ":" in symbol:
+            requests = symbol.split(",")
+            previous = [json.loads(line) for line in LOG.read_text().splitlines()] if LOG.exists() else []
+            revision = 1 + sum(item["event"] == "live-quote" and
+                               any(value.startswith("LIVEQ:") for value in item["symbols"])
+                               for item in previous)
+            record("live-quote", symbols=requests)
+            quotes = []
+            for contract in requests:
+                root, year, month, day, side, strike = contract.split(":")
+                strike = float(strike)
+                last = (((151 if root == "MASSIVE" else 115) - strike) / 5 + 1
+                        if side == "CALL" else (strike - (49 if root == "MASSIVE" else 85)) / 5 + 1)
+                bid = .01 if root == "MODEZ" else last - (.01 if root == "MASSIVE" else .02)
+                ask = last + 10 if root == "MODEZ" else last + .01 if root == "MASSIVE" else last + .02 + .002 * (strike - 90)
+                move = .01 * revision * (strike - 100) if root == "LIVEQ" else 0
+                quotes.append({
+                    "Product": {"symbol": root, "securityType": "OPTN", "expiryYear": int(year),
+                                "expiryMonth": int(month), "expiryDay": int(day),
+                                "callPut": side, "strikePrice": strike},
+                    "All": {"bid": bid + move, "ask": ask + move,
+                            "osiKey": f"{root:-<6}{int(year) % 100:02d}{int(month):02d}{int(day):02d}{side[0]}{round(strike * 1000):08d}"},
+                    "dateTimeUTC": int(time.time()), "quoteStatus": "REALTIME",
+                })
+            return {"QuoteResponse": {"QuoteData": quotes}}
         record("quote", symbol=symbol)
         return {"QuoteResponse": {"QuoteData": [{
             "symbol": symbol, "companyName": "SPDR Test Fund",
@@ -167,6 +194,15 @@ st.html(_TYPING_CARET_CSS)
 st.html(_LAYOUT_GUARDRAIL_CSS)
 # Simulate the exact stale manually entered debit from a pre-fix session.
 st.session_state.setdefault("vo_limit_price", 4.35)
+# Synthetic authorization for the feature-local read-only quote poll guard.
+st.session_state.setdefault("etrade_access_unlocked", True)
+st.session_state.setdefault("etrade_access_token", {
+    "oauth_token": "DUMMY-SCANNER-TEST-TOKEN", "oauth_token_secret": "DUMMY-TEST-SECRET",
+    "issued_at": time.time(),
+})
+st.session_state.setdefault("etrade_last_activity_at", time.time())
+st.session_state["terminal_tab_state"] = {
+    "active": "FIXTURE AWAY" if st.session_state.get("fixture_away") else "VERTICAL OPTIONS"}
 from src.gex_cboe import cboe_results
 if not os.environ.get("VO_SCANNER_SKIP_GEX_SEED"):
     for ticker in ("SPY", "QQQ"):
@@ -2146,6 +2182,78 @@ def test() -> None:
                 for row in grid_page_rows(driver)["rows"])
             assert not any(e["event"] == "place" for e in events(event_path))
             print("Empty SMART universe keeps editable filters and restores NORMAL matches PASS", flush=True)
+
+            # Only visible exact contracts are refreshed. Live bars must not
+            # change the scanned debit/ratio, replace rows, or interrupt typing.
+            ticker = active_ticker(driver)
+            ticker.send_keys(SELECT_ALL, "a")
+            ticker.send_keys("LIVEQ", Keys.TAB)
+            form = wait.until(ready_scanner_form)
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            def live_rows_ready(_):
+                page = grid_page_rows(driver)
+                return page if page["total"] == 40 and page["rows"] and all(
+                    row["values"][0] == "LIVEQ" for row in page["rows"]
+                ) else False
+            wait.until(live_rows_ready)
+            in_grid(driver, lambda: driver.execute_script(
+                "document.getElementById('scroll').scrollIntoView({block:'center'});"))
+            live_initial = grid_snapshot(driver)
+            def changed_live_bar(before):
+                snapshot = grid_snapshot(driver)
+                if not snapshot["rows"] or snapshot["rows"][0]["fillPrices"] == before["rows"][0]["fillPrices"]:
+                    return False
+                return snapshot
+            # Establish the baseline after the first quote, when initial scan
+            # rendering and its acknowledgments have finished.
+            live_initial = wait.until(lambda _: changed_live_bar(live_initial))
+            def retain_live_nodes():
+                return driver.execute_script("""
+                    const scroll=document.getElementById('scroll');
+                    window.fixtureLiveRow=document.querySelector('.row');
+                    window.fixtureLiveSelect=window.fixtureLiveRow.querySelector('.select');
+                    return scroll.scrollTop;
+                """)
+            live_scroll = in_grid(driver, retain_live_nodes)
+            chain_before_live = len([e for e in events(event_path) if e["event"] == "chain"])
+            accounts_before_live = len([e for e in events(event_path)
+                                       if e["event"] in {"accounts", "balance"}])
+            live_first = wait.until(lambda _: changed_live_bar(live_initial))
+            live_second = wait.until(lambda _: changed_live_bar(live_first))
+            visible_live_bars = in_grid(driver, lambda: driver.execute_script("""
+                const clip=document.getElementById('scroll').getBoundingClientRect();
+                return [...document.querySelectorAll('.fill-scale')].filter(cell=>{
+                  const box=cell.getBoundingClientRect();
+                  return box.top<clip.bottom&&box.bottom>clip.top&&box.left<innerWidth&&box.right>0;
+                }).map(cell=>cell.getAttribute('aria-label'));
+            """))
+            assert visible_live_bars and all("E*TRADE status REALTIME" in label
+                                              for label in visible_live_bars), visible_live_bars
+            assert live_second["rows"][0]["values"][:11] == live_initial["rows"][0]["values"][:11]
+            live_identity = in_grid(driver, lambda: driver.execute_script("""
+                return {rowConnected:window.fixtureLiveRow.isConnected,
+                  rowSame:window.fixtureLiveRow===document.querySelector('.row'),
+                  selectSame:window.fixtureLiveSelect===document.querySelector('.row .select'),
+                  scrollTop:document.getElementById('scroll').scrollTop,
+                  expectedScroll:arguments[0]};
+            """, live_scroll))
+            assert (live_identity["rowConnected"] and live_identity["rowSame"] and
+                    live_identity["selectSame"] and
+                    live_identity["scrollTop"] == live_identity["expectedScroll"]), live_identity
+            live_calls = [e for e in events(event_path) if e["event"] == "live-quote" and
+                          any(value.startswith("LIVEQ:") for value in e["symbols"])]
+            assert len(live_calls) >= 2 and all(0 < len(e["symbols"]) <= 25 for e in live_calls), live_calls
+            assert len([e for e in events(event_path)
+                        if e["event"] in {"accounts", "balance"}]) == accounts_before_live
+            in_grid(driver, stage_debit_budget)
+            paused_count = len([e for e in events(event_path) if e["event"] == "live-quote"])
+            time.sleep(11)
+            assert in_grid(driver, read_budget) == "10000"
+            assert len([e for e in events(event_path) if e["event"] == "live-quote"]) == paused_count
+            assert len([e for e in events(event_path) if e["event"] == "chain"]) == chain_before_live
+            assert not any(e["event"] == "place" for e in events(event_path))
+            grid_menu_action(driver, "cost", "DONE")
+            print("Visible batched quotes update bars twice, preserve row/debit/ratio/scroll and pause during typing PASS", flush=True)
 
             # A user-edited threshold must reach the actual candidate scan,
             # while the next scan still opens on BEST PER YEAR. This fixture
