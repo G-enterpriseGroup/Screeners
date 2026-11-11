@@ -113,11 +113,160 @@ let columnFilters={},filterChoices={},pendingFilters=null,filterRevision=0,pendi
 let openKey="",searchTerm="",filterTimer=null,pendingTypedFilter=false;
 const SORT_FIELDS={ticker:"TICKER",side:"TYPE",fill_scale:"FILL EST",expiry:"EXPIRATION",buy:"BUY STRIKE",sell:"SELL STRIKE",buy_last:"BUY LAST",sell_last:"SELL LAST",cost:"COST",breakeven:"BREAKEVEN",ratio:"R:R",profit:"MAX PROFIT",basis:"FILL QUALITY"};
 let sortBy="FILL + TARGET",sortDirection="ASC",sortView="",pendingSort=null,sortable=false,hasTarget=false;
+let quoteEnabled=false,quoteTimer=null,quoteInFlight=null,quoteRevision=0,quoteAcknowledgedRevision=0,quoteNextAt=0;
+let quoteChannel=null,quoteChannelName="",quoteBridgeReady=false,quoteSampler=null;
+let quoteContext="",quoteIntersecting=typeof IntersectionObserver==="undefined",quoteIntersection=null;
+let liveMarkets=new Map();
 function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
 function syncHeight(){
  head.style.paddingRight=(scroll.offsetWidth-scroll.clientWidth)+"px";
  const panelBottom=panel.hidden?0:Number.parseFloat(panel.style.top||"0")+panel.offsetHeight;
  post("streamlit:setFrameHeight",{height:Math.max(table.offsetHeight,panelBottom)});
+}
+function clearQuoteTimer(){if(quoteTimer!==null){clearTimeout(quoteTimer);quoteTimer=null;}}
+function visibleQuoteIDs(){
+ const clip=scroll.getBoundingClientRect(),bounds=quoteIntersection||clip;
+ const top=Math.max(0,clip.top,bounds.top),bottom=Math.min(window.innerHeight,clip.bottom,bounds.bottom);
+ const left=Math.max(0,clip.left),right=Math.min(window.innerWidth,clip.right);
+ const ids=[];
+ for(const line of visible.querySelectorAll(".row")){
+  const cell=line.querySelector(".fill-scale");if(!cell)continue;
+  const box=cell.getBoundingClientRect(),row=rows[Number(line.dataset.index)-rowOffset];
+  if(box.bottom<=top||box.top>=bottom||box.right<=left||box.left>=right||box.width<=0||box.height<=0)continue;
+  if(row&&typeof row.id==="string"&&!ids.includes(row.id))ids.push(row.id);
+  if(ids.length===20)break;
+ }
+ return ids;
+}
+function scheduleQuote(delay=10000){
+ clearQuoteTimer();
+ if(!quoteEnabled||!quoteBridgeReady||document.hidden||!quoteIntersecting)return;
+ quoteTimer=setTimeout(pollQuotes,Math.max(0,delay));
+}
+function wakeQuotes(){
+ const delay=quoteInFlight?Math.max(0,30000-(Date.now()-quoteInFlight.sentAt)):Math.max(0,quoteNextAt-Date.now());
+ scheduleQuote(delay);
+}
+function pollQuotes(freshIntersection=false){
+ quoteTimer=null;
+ if(!quoteEnabled||!quoteBridgeReady||document.hidden||!quoteIntersecting)return;
+ if(liveMarkets.size)patchLiveQuotes();
+ if(quoteInFlight){
+  const remaining=30000-(Date.now()-quoteInFlight.sentAt);
+  if(remaining>0){scheduleQuote(remaining);return;}
+  quoteInFlight=null;quoteNextAt=Date.now()+30000;scheduleQuote(30000);return;
+ }
+ if(!panel.hidden||pendingFilters||pendingSelection||pendingViewport!==null){scheduleQuote();return;}
+ if(Date.now()<quoteNextAt){scheduleQuote(quoteNextAt-Date.now());return;}
+ if(!freshIntersection&&typeof IntersectionObserver!=="undefined"){
+  if(quoteSampler)return;
+  const context=quoteContext;
+  const sampler=new IntersectionObserver(entries=>{
+   sampler.disconnect();if(quoteSampler!==sampler)return;quoteSampler=null;
+   const entry=entries[entries.length-1];quoteIntersecting=Boolean(entry&&entry.isIntersecting);
+   quoteIntersection=entry?.intersectionRect||null;clearQuoteTimer();
+   if(context===quoteContext)pollQuotes(true);else wakeQuotes();
+  });
+  quoteSampler=sampler;sampler.observe(scroll);return;
+ }
+ const ids=visibleQuoteIDs();if(!ids.length){scheduleQuote();return;}
+ quoteRevision+=1;quoteInFlight={revision:quoteRevision,context:quoteContext,sentAt:Date.now()};
+ quoteNextAt=Date.now()+10000;
+ quoteChannel.postMessage({kind:"quote_tick",scope,quote_sort_key:sortKey,
+  quote_revision:quoteRevision,quote_ids:ids});
+ scheduleQuote(30000);
+}
+function receiveLiveQuote(message){
+ if(!quoteEnabled||!message||message.scope!==scope||message.quote_sort_key!==sortKey)return;
+ if(message.kind==="quote_ready"){
+  quoteBridgeReady=message.enabled===true;
+  if(!quoteBridgeReady){
+   quoteInFlight=null;liveMarkets=new Map([...liveMarkets].map(([id,market])=>[id,{...market,stale:true}]));patchLiveQuotes();
+  }
+  wakeQuotes();return;
+ }
+ if(message.kind!=="quote_update"||!quoteBridgeReady)return;
+ const update=message.update;if(!update||typeof update!=="object")return;
+ const ack=update.revision;
+ if(!Number.isSafeInteger(ack)||ack<quoteAcknowledgedRevision)return;
+ quoteRevision=Math.max(quoteRevision,ack);quoteAcknowledgedRevision=ack;
+ if(quoteInFlight&&quoteInFlight.context===quoteContext&&ack>=quoteInFlight.revision){
+  const retry=Number(update.retry_seconds);
+  quoteNextAt=Math.max(quoteNextAt,Date.now()+Math.max(10,Number.isFinite(retry)?retry:10)*1000);
+  quoteInFlight=null;
+ }
+ const allowed=new Set(rows.map(row=>row.id)),markets=update.markets;
+ if(markets&&typeof markets==="object"&&!Array.isArray(markets)){
+  liveMarkets=new Map(Object.entries(markets).filter(([id,market])=>allowed.has(id)&&market&&typeof market==="object"));
+  patchLiveQuotes();
+ }
+ wakeQuotes();
+}
+function configureLiveQuotes(args){
+ const context=String(args.scope||"")+"|"+String(args.sort_key||""),nextName=String(args.live_quote_channel||"");
+ if(context!==quoteContext){
+  if(quoteSampler){quoteSampler.disconnect();quoteSampler=null;}
+  quoteContext=context;quoteBridgeReady=false;quoteInFlight=null;quoteNextAt=0;liveMarkets=new Map();
+ }
+ quoteEnabled=args.live_quotes_enabled===true&&typeof BroadcastChannel!=="undefined"&&Boolean(nextName);
+ if(nextName!==quoteChannelName||!quoteEnabled||(quoteEnabled&&!quoteChannel)){
+  if(quoteSampler){quoteSampler.disconnect();quoteSampler=null;}
+  if(nextName!==quoteChannelName){quoteRevision=0;quoteAcknowledgedRevision=0;}
+  if(quoteChannel)quoteChannel.close();quoteChannel=null;quoteChannelName=nextName;
+  quoteBridgeReady=false;quoteInFlight=null;liveMarkets=new Map();
+  if(quoteEnabled){quoteChannel=new BroadcastChannel(nextName);quoteChannel.onmessage=event=>receiveLiveQuote(event.data);}
+ }
+ if(quoteChannel)quoteChannel.postMessage({kind:"quote_client_ready",scope:String(args.scope||""),quote_sort_key:String(args.sort_key||"")});
+ wakeQuotes();
+}
+function renderFillScale(cell,row){
+ const live=liveMarkets.get(row.id),market=live||row.fill_market||{};
+ const number=value=>value===null||value===undefined||value===""?NaN:Number(value);
+ const bid=number(market.bid),mid=number(market.mid),ask=number(market.ask);
+ const debit=number(row.fill_market?.debit),estimate=number(market.estimate);
+ const quoted=Number.isFinite(bid)&&Number.isFinite(ask)&&ask>bid;
+ const position=quoted&&Number.isFinite(debit);
+ const ruler=document.createElement("div");ruler.className="fill-ruler";
+ const labels=document.createElement("div");labels.className="fill-labels";
+ for(const [word,value] of [["BID",bid],["MID",mid],["ASK",ask]]){
+  const tag=document.createElement("span"),price=Number.isFinite(value)?value.toFixed(2):"—";
+  tag.textContent=price;tag.setAttribute("aria-label",word+" "+price);labels.appendChild(tag);
+ }
+ const track=document.createElement("div");track.className="fill-track";
+ const odds=document.createElement("small");odds.className="fill-estimate";
+ if(position){
+  const marker=document.createElement("i");marker.className="fill-marker";
+  marker.style.left=(100*Math.max(0,Math.min(1,(debit-bid)/(ask-bid))))+"%";track.appendChild(marker);
+ }
+ let freshness="SNAP",detail="Scan snapshot quotes.";
+ if(live){
+  const status=String(live.status||"UNKNOWN").toUpperCase(),normalized=status.replace(/[\s_-]/g,"");
+  const asOf=number(live.as_of),age=Date.now()/1000-asOf;
+  const knownTime=Number.isFinite(asOf)&&asOf>0&&age>=-60;
+  const stale=Boolean(live.stale)||!knownTime||(normalized==="REALTIME"&&age>30);
+  const badge=stale?"STALE":normalized==="REALTIME"?"RT":normalized.includes("DELAY")?"DLY":normalized.includes("CLOS")?"CLOSE":"N/A";
+  const seconds=Math.max(0,Math.floor(age));
+  const ageText=knownTime?(seconds<60?seconds+"s":seconds<3600?Math.floor(seconds/60)+"m":Math.floor(seconds/3600)+"h"):"?";
+  freshness=badge+" "+ageText;
+  detail="E*TRADE status "+status+"; "+(stale?"stale quotes; ":"")+
+   "broker quote time "+(knownTime?new Date(asOf*1000).toISOString():"unavailable")+"; age "+ageText+".";
+ }
+ if(position&&Number.isFinite(estimate))odds.textContent="DEBIT "+debit.toFixed(2)+" · ≈"+Math.round(estimate)+"% · "+freshness;
+ else{
+  odds.textContent=(Number.isFinite(debit)?"DEBIT "+debit.toFixed(2)+" · ":"")+"NO EST · "+freshness;
+  odds.classList.add("unavailable");
+ }
+ cell.removeAttribute("title");
+ cell.setAttribute("aria-label",(quoted?"Spread BID "+bid.toFixed(2)+", MID "+(Number.isFinite(mid)?mid.toFixed(2):"unavailable")+
+  ", ASK "+ask.toFixed(2):"Spread quotes unavailable")+", fixed scan debit "+(Number.isFinite(debit)?debit.toFixed(2):"unavailable")+
+  ". "+detail+" Fill estimate is a quote-position heuristic, not a calibrated probability. FILL EST filters and sorting use the scan snapshot.");
+ ruler.append(labels,track,odds);cell.classList.add("fill-scale");cell.replaceChildren(ruler);
+}
+function patchLiveQuotes(){
+ for(const line of visible.querySelectorAll(".row")){
+  const row=rows[Number(line.dataset.index)-rowOffset],cell=line.querySelector(".fill-scale");
+  if(row&&cell)renderFillScale(cell,row);
+ }
 }
 function normalizedFilters(raw){
  const clean={};
@@ -453,45 +602,7 @@ function makeRow(row,index){
   }
   const cell=document.createElement("span");cell.className="cell";cell.dataset.field=KEYS[i]||"fill_scale";
   cell.textContent=i===1&&values[i]==="CALL"?"C":i===1&&values[i]==="PUT"?"P":String(values[i]??"—");cell.title=HEAD[i+2]+": "+String(values[i]??"—");
-  if(i===12){
-   const market=row.fill_market||{};
-   const number=(value)=>value===null||value===undefined?NaN:Number(value);
-   const bid=number(market.bid),mid=number(market.mid),ask=number(market.ask);
-   const debit=number(market.debit),estimate=number(market.estimate);
-   const quoted=Number.isFinite(bid)&&Number.isFinite(ask)&&ask>bid;
-   const position=quoted&&Number.isFinite(debit);
-   const ruler=document.createElement("div");ruler.className="fill-ruler";
-   const labels=document.createElement("div");labels.className="fill-labels";
-   for(const [word,value] of [["BID",bid],["MID",mid],["ASK",ask]]){
-    const tag=document.createElement("span");
-    const price=Number.isFinite(value)?value.toFixed(2):"—";
-    tag.textContent=price;tag.setAttribute("aria-label",word+" "+price);
-    labels.appendChild(tag);
-   }
-   const track=document.createElement("div");track.className="fill-track";
-   const odds=document.createElement("small");odds.className="fill-estimate";
-   if(position){
-    const marker=document.createElement("i");marker.className="fill-marker";
-    marker.style.left=(100*Math.max(0,Math.min(1,(debit-bid)/(ask-bid))))+"%";
-    track.appendChild(marker);
-   }
-   if(position&&Number.isFinite(estimate)){
-    odds.textContent="DEBIT "+debit.toFixed(2)+" · EST ≈"+Math.round(estimate)+"%";
-   }else{
-    odds.textContent=position?"DEBIT "+debit.toFixed(2)+" · NO EST":"QUOTE N/A · NO EST";
-    odds.classList.add("unavailable");
-   }
-   // Keep the explanatory text accessible without a native hover tooltip
-   // obscuring multiple table rows (reported by Raj in the live QQQ scan).
-   cell.removeAttribute("title");
-   cell.setAttribute("aria-label",quoted?"Spread BID "+bid.toFixed(2)+
-    ", MID "+(Number.isFinite(mid)?mid.toFixed(2):"unavailable")+
-    ", ASK "+ask.toFixed(2)+", chosen debit "+(Number.isFinite(debit)?debit.toFixed(2):"unavailable")+
-    ". Fill estimate is a quote-position heuristic, not a calibrated probability.":
-    "Spread quotes unavailable; fill likelihood cannot be estimated.");
-   ruler.append(labels,track,odds);cell.classList.add("fill-scale");cell.replaceChildren(ruler);
-   line.appendChild(cell);continue;
-  }
+  if(i===12){renderFillScale(cell,row);line.appendChild(cell);continue;}
   if(i===7){
    cell.classList.add("cost");
    const debit=document.createElement("span");debit.className="debit-value";debit.textContent=cell.textContent;
@@ -529,7 +640,8 @@ function paint(force=false){
  for(let i=renderFirst;i<renderLast;i++)fragment.appendChild(makeRow(rows[i-rowOffset],i));
  visible.replaceChildren(fragment);
 }
-scroll.addEventListener("scroll",()=>paint(),{passive:true});
+scroll.addEventListener("scroll",()=>{paint();wakeQuotes();},{passive:true});
+table.addEventListener("scroll",wakeQuotes,{passive:true});
 visible.addEventListener("click",event=>{
  const button=event.target.closest("button.select");if(!button)return;
  const row=rows[Number(button.dataset.index)-rowOffset];if(!row||typeof row.id!=="string")return;
@@ -547,6 +659,7 @@ window.addEventListener("message",event=>{
  const hasFilterAck=Number.isInteger(args.filter_ack_revision)&&args.filter_ack_revision>=0;
  const serverFilterRevision=hasFilterAck?args.filter_ack_revision:0;
  if(!filterScopeChanged&&hasFilterAck&&serverFilterRevision<acknowledgedFilterRevision)return;
+ configureLiveQuotes(args);
  const needsReset=newScope!==scope||newSort!==sortKey,scopeChanged=newScope!==scope;
  scope=newScope;filterScope=newFilterScope;sortKey=newSort;rows=Array.isArray(args.rows)?args.rows:[];
  totalRows=Number.isInteger(args.total_rows)&&args.total_rows>=0?args.total_rows:rows.length;
@@ -615,6 +728,14 @@ window.addEventListener("message",event=>{
  empty.style.display=totalRows?"none":"block";
  start=-1;end=-1;paint(true);syncHeight();
 });
+document.addEventListener("visibilitychange",wakeQuotes);
+window.addEventListener("pagehide",clearQuoteTimer);
+window.addEventListener("beforeunload",()=>{if(quoteChannel)quoteChannel.close();});
+window.addEventListener("pageshow",wakeQuotes);
+if(typeof IntersectionObserver!=="undefined")new IntersectionObserver(entries=>{
+ const entry=entries[0];quoteIntersecting=Boolean(entry&&entry.isIntersecting);
+ quoteIntersection=entry?.intersectionRect||null;wakeQuotes();
+}).observe(scroll);
 new ResizeObserver(()=>syncHeight()).observe(document.getElementById("table"));
 post("streamlit:componentReady",{apiVersion:1});syncHeight();
 })();

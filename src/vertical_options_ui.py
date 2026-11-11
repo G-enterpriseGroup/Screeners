@@ -31,6 +31,7 @@ import io
 import math
 from pathlib import Path
 import re
+import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
@@ -76,6 +77,10 @@ _DEFAULT_MIN_REWARD_RISK = 2.0
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_vo_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "vo_spread_scroller_v1"),
+)
+_QUOTE_BRIDGE_COMPONENT = components.declare_component(
+    "raj_vo_quote_bridge_v1",
+    path=str(Path(__file__).parent / "components" / "vertical_quote_bridge_v1"),
 )
 _PRICING_PREFERENCE_COMPONENT = components.declare_component(
     "raj_vo_pricing_preference_v1",
@@ -1526,6 +1531,255 @@ def _table_open_interest(result: dict[str, Any]) -> dict[tuple, int | None]:
     return values
 
 
+
+# ==============================
+# VISIBLE-ROW QUOTE OVERLAY (READ-ONLY; SCAN/ORDER PRICES NEVER CHANGE)
+# ==============================
+def _live_quote_field(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return next((child for key, child in value.items() if str(key).casefold() == name.casefold()), None)
+    return None
+
+
+def _live_quote_number(value: Any, *, positive: bool = False) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and (number > 0 if positive else number >= 0) else None
+
+
+def _live_quote_osi(value: Any) -> tuple | None:
+    text = str(value or "").upper().replace(" ", "").lstrip(".")
+    match = re.fullmatch(r"([A-Z][A-Z0-9.]*?)-{0,5}(\d{6})([CP])(\d{1,8}(?:\.\d+)?)", text)
+    if not match:
+        return None
+    root, expiry, side, strike = match.groups()
+    try:
+        day = datetime.strptime(expiry, "%y%m%d").date()
+        price = float(strike) / 1000 if strike.isdigit() and len(strike) == 8 else float(strike)
+    except (ValueError, OverflowError):
+        return None
+    return (root, day.year, day.month, day.day, {"C": "CALL", "P": "PUT"}[side], round(price, 6))
+
+
+def _live_quote_leg(candidate: dict[str, Any], leg: str) -> tuple | None:
+    expiry = candidate.get("expiry")
+    strike = _live_quote_number(candidate.get(leg + "_strike"), positive=True)
+    side = candidate.get("call_put")
+    root = str(candidate.get("symbol") or "").upper()
+    if not isinstance(expiry, date) or strike is None or side not in {"CALL", "PUT"}:
+        return None
+    identity = (root, expiry.year, expiry.month, expiry.day, side, round(strike, 6))
+    osi = candidate.get(leg + "_osi")
+    if osi:
+        parsed = _live_quote_osi(osi)
+        if parsed is None or parsed[1:] != identity[1:]:
+            return None
+        identity = parsed
+    return identity if re.fullmatch(r"[A-Z][A-Z0-9.]*", identity[0]) else None
+
+
+def _live_quote_batch(payload: Any, wanted: set[tuple], now: float) -> dict[tuple, dict[str, Any]]:
+    response = _live_quote_field(payload, "QuoteResponse")
+    rows = _live_quote_field(response, "QuoteData")
+    rows = rows if isinstance(rows, list) else [rows]
+    found, duplicates = {}, set()
+    for row in rows:
+        product = _live_quote_field(row, "Product")
+        if str(_live_quote_field(product, "securityType") or "").upper() != "OPTN":
+            continue
+        try:
+            strike = _live_quote_number(_live_quote_field(product, "strikePrice"), positive=True)
+            parts = [_live_quote_number(_live_quote_field(product, field), positive=True)
+                     for field in ("expiryYear", "expiryMonth", "expiryDay")]
+            if any(part is None or not part.is_integer() for part in parts):
+                continue
+            identity = (str(_live_quote_field(product, "symbol") or "").upper(),
+                        *(int(part) for part in parts),
+                        str(_live_quote_field(product, "callPut") or "").upper(),
+                        round(strike, 6) if strike is not None else None)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if identity not in wanted:
+            continue
+        if identity in found:
+            duplicates.add(identity)
+        details = _live_quote_field(row, "All")
+        if not isinstance(details, dict):
+            details = _live_quote_field(row, "Option")
+        osi = _live_quote_field(details, "osiKey")
+        bid = _live_quote_number(_live_quote_field(details, "bid"))
+        ask = _live_quote_number(_live_quote_field(details, "ask"), positive=True)
+        stamp = _live_quote_number(_live_quote_field(row, "dateTimeUTC"), positive=True)
+        status = str(_live_quote_field(row, "quoteStatus") or "UNKNOWN").upper()
+        if (bid is None or ask is None or bid > ask or stamp is None or stamp > now + 60
+                or (osi and _live_quote_osi(osi) != identity)
+                or status == "INVALID"
+                or _live_quote_field(details, "adjustedFlag") is True):
+            duplicates.add(identity)  # A conflicting duplicate cannot rescue an invalid quote.
+            continue
+        found[identity] = {"bid": bid, "ask": ask, "as_of": stamp,
+                           "status": status}
+    return {identity: row for identity, row in found.items() if identity not in duplicates}
+
+
+def _live_quote_auth_key(client) -> str:
+    token = st.session_state.get("etrade_access_token")
+    if (not st.session_state.get("etrade_access_unlocked") or not isinstance(token, dict)
+            or not token.get("oauth_token") or not token.get("oauth_token_secret")
+            or client is None or bool(getattr(client, "is_offline", False))):
+        return ""
+    issued = _live_quote_number(token.get("issued_at"), positive=True)
+    activity = _live_quote_number(st.session_state.get("etrade_last_activity_at"), positive=True)
+    now = time.time()
+    if issued is None or activity is None or issued > now + 60 or activity > now + 60:
+        return ""
+    try:
+        issued_day = datetime.fromtimestamp(issued, ZoneInfo("America/New_York")).date()
+        midnight = datetime.combine(issued_day + timedelta(days=1), datetime.min.time(),
+                                    tzinfo=ZoneInfo("America/New_York")).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return ""
+    if now >= min(activity + 7200, midnight):
+        return ""
+    namespace = hashlib.sha256(str(token["oauth_token"]).strip().encode()).hexdigest()[:32]
+    if not isinstance(getattr(client, "_namespace", None), str) or client._namespace != namespace:
+        return ""
+    return namespace
+
+
+def _live_quote_context(scope: str, sort_key: str, rows: list[dict[str, Any]],
+                        enabled: bool, client) -> dict[str, Any]:
+    previous = st.session_state.get("_vo_live_quotes") or {}
+    auth_key = _live_quote_auth_key(client) if enabled else ""
+    same_context = (previous.get("scope") == scope and previous.get("sort_key") == sort_key
+                    and previous.get("auth_key") == auth_key)
+    candidates = {row["id"]: row for row in rows}
+    state = {**previous, "scope": scope, "sort_key": sort_key, "enabled": bool(auth_key),
+             "auth_key": auth_key,
+             "candidates": candidates,
+             "revision": int(previous.get("revision", 0)) if same_context else 0,
+             "markets": {key: value for key, value in previous.get("markets", {}).items()
+                         if same_context and key in candidates}}
+    st.session_state["_vo_live_quotes"] = state
+    return {"revision": state["revision"], "markets": state["markets"],
+            "retry_seconds": max(1, math.ceil(float(state.get("next_due", 0)) - time.time()))}
+
+
+def _refresh_live_quotes(client, component_key: str, scope: str, sort_key: str) -> None:
+    """Handle only viewport quote ticks; never touch scan prices, approvals or inactivity."""
+    update = st.session_state.get(component_key)
+    state = st.session_state.get("_vo_live_quotes") or {}
+    result = st.session_state.get("vo_scan_result") or {}
+    active = (st.session_state.get("terminal_tab_state") or {}).get("active")
+    if (not isinstance(update, dict) or update.get("kind") != "quote_tick"
+            or not state.get("enabled") or client is None or bool(getattr(client, "is_offline", False))
+            or active != "VERTICAL OPTIONS" or result.get("source") != "E*TRADE"
+            or result.get("scope") != scope or state.get("scope") != scope
+            or state.get("sort_key") != sort_key or update.get("scope") != scope
+            or update.get("quote_sort_key") != sort_key):
+        return
+    auth_key = _live_quote_auth_key(client)
+    if not auth_key or auth_key != state.get("auth_key"):
+        return
+    revision, identities = update.get("quote_revision"), update.get("quote_ids")
+    if (type(revision) is not int or revision <= int(state.get("revision", 0))
+            or not isinstance(identities, list) or not 1 <= len(identities) <= 20
+            or any(not isinstance(identity, str) for identity in identities)
+            or len(set(identities)) != len(identities)
+            or any(identity not in state["candidates"] for identity in identities)):
+        return
+    state["revision"] = revision
+    now = time.time()
+    if now < float(state.get("next_due", 0)):
+        return
+    # At most forty unique contracts and two sequential quote requests per tick.
+    state["next_due"] = now + 10
+    rows = [state["candidates"][identity] for identity in identities]
+    legs = {row["id"]: (_live_quote_leg(row, "buy"), _live_quote_leg(row, "sell")) for row in rows}
+    wanted = sorted({leg for pair in legs.values() for leg in pair if leg is not None})
+    quotes, failed = {}, False
+    for start in range(0, len(wanted), 25):
+        batch = wanted[start:start + 25]
+        symbols = ",".join(":".join(map(str, leg[:-1])) + ":" +
+                           f"{leg[-1]:.6f}".rstrip("0").rstrip(".") for leg in batch)
+        try:
+            if (_live_quote_auth_key(client) != auth_key
+                    or (st.session_state.get("terminal_tab_state") or {}).get("active") != "VERTICAL OPTIONS"
+                    or st.session_state.get("_vo_live_quotes") is not state
+                    or (st.session_state.get("vo_scan_result") or {}).get("scope") != scope):
+                return
+            params = {"force_refresh": True} if isinstance(client, CachedETradeClient) else {}
+            payload = client.get_quote(symbols, **params)
+            cache_event = st.session_state.get("_etrade_cache_last_event") or {}
+            stale = isinstance(client, CachedETradeClient) and (
+                bool(cache_event.get("stale")) or bool(st.session_state.get("_etrade_offline_mode")))
+            parsed = _live_quote_batch(payload, set(batch), now)
+            if stale:
+                failed = True
+            else:
+                quotes.update(parsed)
+            failed = failed or len(parsed) != len(batch)
+        except Exception:
+            failed = True
+    if (_live_quote_auth_key(client) != auth_key
+            or (st.session_state.get("terminal_tab_state") or {}).get("active") != "VERTICAL OPTIONS"
+            or st.session_state.get("_vo_live_quotes") is not state
+            or (st.session_state.get("vo_scan_result") or {}).get("scope") != scope):
+        return
+    for row in rows:
+        buy, sell = (quotes.get(identity) for identity in legs[row["id"]])
+        previous = state["markets"].get(row["id"])
+        if buy is None or sell is None:
+            state["markets"][row["id"]] = {**(previous or {
+                "bid": None, "mid": None, "ask": None, "estimate": None,
+                "status": "UNKNOWN", "as_of": None, "fetched_at": None}), "stale": True}
+            failed = True
+            continue
+        bid, ask = round(buy["bid"] - sell["ask"], 4), round(buy["ask"] - sell["bid"], 4)
+        stamp = min(buy["as_of"], sell["as_of"])
+        if ask <= 0 or (previous and stamp < float(previous.get("as_of") or 0)):
+            if previous:
+                state["markets"][row["id"]] = {**previous, "stale": True}
+            failed = True
+            continue
+        statuses = {buy["status"], sell["status"]}
+        status = (next(iter(statuses)) if len(statuses) == 1 else
+                  "DELAYED" if "DELAYED" in statuses else
+                  "CLOSING" if "CLOSING" in statuses else "UNKNOWN")
+        overlay = {**row, "spread_bid": bid, "spread_ask": ask}
+        state["markets"][row["id"]] = {
+            "bid": bid, "mid": round((bid + ask) / 2, 4), "ask": ask,
+            "estimate": indicative_fill_score(overlay), "status": status,
+            "as_of": stamp, "fetched_at": now, "stale": now - stamp > 30,
+        }
+    state["failures"] = min(3, int(state.get("failures", 0)) + 1) if failed else 0
+    state["next_due"] = now + (30 * 2 ** (state["failures"] - 1) if failed else 10)
+
+
+
+@st.fragment
+def _render_live_quote_bridge(client, channel: str, scope: str, sort_key: str) -> None:
+    """Quote ticks rerun only this bridge, never the cash/ticket feature renderer."""
+    state = st.session_state.get("_vo_live_quotes") or {}
+    enabled = (state.get("enabled") and state.get("scope") == scope
+               and state.get("sort_key") == sort_key
+               and _live_quote_auth_key(client) == state.get("auth_key")
+               and (st.session_state.get("terminal_tab_state") or {}).get("active") == "VERTICAL OPTIONS")
+    component_key = "vo_live_quote_bridge_" + hashlib.sha256(channel.encode()).hexdigest()[:16]
+    _QUOTE_BRIDGE_COMPONENT(
+        channel=channel, scope=scope, sort_key=sort_key, live_quotes_enabled=bool(enabled),
+        live_quote_update={"revision": int(state.get("revision", 0)),
+                           "markets": state.get("markets", {}) if enabled else {},
+                           "retry_seconds": max(1, math.ceil(float(state.get("next_due", 0)) - time.time()))},
+        on_change=lambda: _refresh_live_quotes(client, component_key, scope, sort_key),
+        key=component_key, default=None,
+    )
+
+
 def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exchange: str = "",
                       contract_open_interest: dict | None = None) -> dict[str, Any]:
     return {
@@ -2614,6 +2868,14 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     row, annual_ids, tv_exchange=result.get("tv_exchange", ""),
                     contract_open_interest=contract_open_interest,
                 ) for row in displayed_candidates]
+                component_key = "vo_spread_scroll_" + filter_scope
+                _live_quote_context(
+                    scope, view_identity, displayed_candidates,
+                    broker_live and result["source"] == "E*TRADE", client,
+                )
+                if not st.session_state.get("_vo_live_quote_channel"):
+                    st.session_state["_vo_live_quote_channel"] = secrets.token_hex(16)
+                quote_channel = "raj-vo-" + st.session_state["_vo_live_quote_channel"] + "-" + filter_scope
                 selected_update = _SPREAD_SCROLL_COMPONENT(
                     scope=scope, filter_scope=filter_scope, sort_key=view_identity, rows=displayed,
                     total_rows=matching_count, row_offset=offset,
@@ -2622,8 +2884,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     sort_by=sort_filter, sort_direction=sort_direction, sort_view=view,
                     sortable=True, has_target=effective_target is not None,
                     filter_ack_revision=int(filter_state["revision"]),
-                    key="vo_spread_scroll_" + filter_scope, default=None,
+                    live_quotes_enabled=bool(st.session_state["_vo_live_quotes"]["enabled"]),
+                    live_quote_channel=quote_channel,
+                    key=component_key, default=None,
                 )
+                _render_live_quote_bridge(client, quote_channel, scope, view_identity)
                 if isinstance(selected_update, dict):
                     pricing_scope_matches = selected_update.get("scope") == scope
                     filter_scope_matches = (selected_update.get("filter_scope") == filter_scope

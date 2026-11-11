@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><style>html,body{margin:0;height:0;overflow:hidden}</style></head><body>
+<script>
+(()=>{
+"use strict";
+let channel=null,channelName="",scope="",sortKey="",enabled=false,update=null,lastForwarded=0;
+function post(type,props){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type},props||{}),"*");}
+function publish(){
+ if(!channel)return;
+ channel.postMessage({kind:"quote_ready",scope,quote_sort_key:sortKey,enabled});
+ if(update)channel.postMessage({kind:"quote_update",scope,quote_sort_key:sortKey,update});
+}
+function receive(message){
+ if(!message||message.scope!==scope||message.quote_sort_key!==sortKey)return;
+ if(message.kind==="quote_client_ready"){publish();return;}
+ if(!enabled||message.kind!=="quote_tick"||!Number.isSafeInteger(message.quote_revision)||message.quote_revision<=lastForwarded)return;
+ const ids=message.quote_ids;
+ if(!Array.isArray(ids)||!ids.length||ids.length>20||ids.some(id=>typeof id!=="string"||!id||id.length>200)||new Set(ids).size!==ids.length)return;
+ lastForwarded=message.quote_revision;
+ post("streamlit:setComponentValue",{value:{kind:"quote_tick",scope,quote_sort_key:sortKey,
+  quote_revision:message.quote_revision,quote_ids:ids},dataType:"json"});
+}
+window.addEventListener("message",event=>{
+ if(event.data?.type!=="streamlit:render")return;
+ const args=event.data.args||{},nextName=String(args.channel||""),nextScope=String(args.scope||""),nextSort=String(args.sort_key||"");
+ if(nextScope!==scope||nextSort!==sortKey)lastForwarded=0;
+ scope=nextScope;sortKey=nextSort;enabled=args.live_quotes_enabled===true;
+ update=args.live_quote_update&&typeof args.live_quote_update==="object"?args.live_quote_update:null;
+ if(nextName!==channelName){
+  if(channel)channel.close();channel=null;channelName=nextName;
+  if(nextName&&typeof BroadcastChannel!=="undefined"){
+   channel=new BroadcastChannel(nextName);channel.onmessage=event=>receive(event.data);
+  }
+ }
+ publish();post("streamlit:setFrameHeight",{height:0});
+});
+window.addEventListener("beforeunload",()=>{if(channel)channel.close();});
+window.addEventListener("pageshow",publish);
+post("streamlit:componentReady",{apiVersion:1});post("streamlit:setFrameHeight",{height:0});
+})();
+</script></body></html>

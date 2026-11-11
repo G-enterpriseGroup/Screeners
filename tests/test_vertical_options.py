@@ -1242,6 +1242,7 @@ const panel={hidden:true},scroll={scrollTop:0,style:{},setAttribute:()=>{}},spac
 function post(type,props){if(type==='streamlit:setComponentValue')messages.push(props.value);}
 function updateTargetAvailability(){} function updateFilterHeaders(){} function syncHeight(){}
 function syncNumericInputs(){} function renderPanel(){} function paint(){} function sizeRows(){}
+function configureLiveQuotes(){}
 `;
  const checks=`
 function same(actual,expected){assert.equal(JSON.stringify(actual),JSON.stringify(expected));}
@@ -1305,6 +1306,157 @@ console.log('PASS both production scroller filter protocols');
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS both production scroller", result.stdout)
+
+    def test_live_quote_bridge_polls_visible_rows_without_mutating_table_or_user_messages(self):
+        import json
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable for live quote bridge verification")
+        harness = r'''
+const vm=require('vm'),assert=require('assert');
+const fixtures=JSON.parse(require('fs').readFileSync(0,'utf8'));
+for(const fixture of fixtures){
+ let now=1700000000000,nextTimer=0,timers=new Map(),channels=new Map();
+ function later(fn,delay=0){const id=++nextTimer;timers.set(id,{fn,at:now+Math.max(0,delay)});return id;}
+ function advance(ms){const until=now+ms;let turns=0;while(true){
+  const due=[...timers].filter(([,value])=>value.at<=until).sort((a,b)=>a[1].at-b[1].at||a[0]-b[0])[0];
+  if(!due)break;assert(++turns<2000,'Timer loop');now=due[1].at;timers.delete(due[0]);due[1].fn();
+ }now=until;}
+ class BC{constructor(name){this.name=name;this.closed=false;channels.set(name,[...(channels.get(name)||[]),this]);}
+  postMessage(data){assert(!this.closed,'Closed BroadcastChannel');for(const peer of channels.get(this.name)||[])if(peer!==this&&!peer.closed){
+   const copy=JSON.parse(JSON.stringify(data));later(()=>{if(!peer.closed)peer.onmessage?.({data:copy});});}}
+  close(){this.closed=true;}}
+ class ClockDate extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
+ function environment(){
+  const listeners={},docListeners={},posts=[],observers=[],ids={};let document,clipOverride=null,intersecting=true;
+  class Element{
+   constructor(tag,id=''){this.tagName=tag.toUpperCase();this.id=id;this.children=[];this.style={};this.dataset={};this.attributes={};this.className='';this.hidden=false;this._text='';this.scrollTop=0;this.clientHeight=86;this.clientWidth=1600;this.offsetWidth=1600;this.offsetHeight=600;
+    this.classList={add:(...names)=>{this.className=[...new Set(this.className.split(/\s+/).filter(Boolean).concat(names))].join(' ');},contains:name=>this.className.split(/\s+/).includes(name),toggle:(name,force)=>{const yes=force??!this.classList.contains(name);this.className=this.className.split(/\s+/).filter(item=>item&&item!==name).concat(yes?[name]:[]).join(' ');return yes;}};}
+   set textContent(value){this._text=String(value);this.children=[];}get textContent(){return this._text+this.children.map(child=>child.textContent).join('');}
+   appendChild(child){if(child.tagName==='FRAGMENT'){for(const item of [...child.children])this.appendChild(item);return child;}child.parentElement=this;this.children.push(child);return child;}
+   append(...children){for(const child of children)this.appendChild(child);}
+   replaceChildren(...children){this.children=[];this._text='';this.append(...children);}
+   setAttribute(key,value){this.attributes[key]=String(value);}getAttribute(key){return this.attributes[key]??null;}removeAttribute(key){delete this.attributes[key];}
+   addEventListener(name,handler){(this.listeners??={})[name]=handler;}
+   matches(selector){if(selector.startsWith('[data-')){const match=selector.match(/\[data-([^=]+)="([^"]+)"\]/);return match&&this.dataset[match[1].replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]===match[2];}const tag=selector.match(/^[a-z]+/i)?.[0];return(!tag||tag.toUpperCase()===this.tagName)&&[...selector.matchAll(/\.([\w-]+)/g)].every(match=>this.classList.contains(match[1]));}
+   querySelectorAll(selector){const output=[];for(const child of this.children){if(child.matches(selector))output.push(child);output.push(...child.querySelectorAll(selector));}return output;}
+   querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
+   closest(selector){return this.matches(selector)?this:this.parentElement?.closest(selector)||null;}
+   contains(target){return target===this||this.children.some(child=>child.contains(target));}
+   focus(){document.activeElement=this;}
+   getBoundingClientRect(){if(this.id==='scroll')return{top:43,bottom:43+this.clientHeight,left:0,right:1600,width:1600,height:this.clientHeight};
+    const row=this.closest('.row');if(row){const top=43+Number(row.dataset.index)*43-ids.scroll.scrollTop;return{top,bottom:top+43,left:1200,right:1400,width:200,height:43};}
+    return{top:0,bottom:600,left:0,right:1600,width:1600,height:600};}
+  }
+  for(const id of ['table','head','scroll','space','visible','empty','filter-panel','vp-filter-toggle'])ids[id]=new Element('div',id);
+  ids['filter-panel'].hidden=true;
+  document={hidden:false,activeElement:null,documentElement:new Element('html'),getElementById:id=>ids[id],createElement:tag=>new Element(tag),createDocumentFragment:()=>new Element('fragment'),addEventListener:(name,handler)=>{(docListeners[name]??=[]).push(handler);}};
+  const window={innerWidth:1600,innerHeight:2000,parent:{postMessage:message=>posts.push(message)},addEventListener:(name,handler)=>{(listeners[name]??=[]).push(handler);}};
+  const context={window,document,console,Date:ClockDate,URL,BroadcastChannel:BC,setTimeout:later,clearTimeout:id=>timers.delete(id),getComputedStyle:()=>({getPropertyValue:()=>43}),ResizeObserver:class{observe(){}},IntersectionObserver:class{constructor(callback){this.callback=callback;this.active=false;observers.push(this);}observe(target){this.active=true;this.target=target;if(observers.length>1)later(()=>{if(this.active)this.callback([{isIntersecting:intersecting,intersectionRect:clipOverride||target.getBoundingClientRect()}]);});}disconnect(){this.active=false;}}};
+  vm.createContext(context);
+  return{context,ids,posts,observers,document,dispatch:(name,data)=>{for(const handler of listeners[name]||[])handler(data);},visibility:hidden=>{document.hidden=hidden;for(const handler of docListeners.visibilitychange||[])handler();},intersect:(yes,bounds=null,notify=true)=>{intersecting=yes;clipOverride=bounds;if(notify)for(const observer of [...observers])if(observer.active)observer.callback([{isIntersecting:yes,intersectionRect:bounds||ids.scroll.getBoundingClientRect()}]);}};
+ }
+ const main=environment(),bridge=environment();
+ let script=fixture.main.split('<script>')[1].split('</script>')[0];
+ const at=script.lastIndexOf('})();');
+ script=script.slice(0,at)+`globalThis.api={changeFilters,closePanel,visibleQuoteIDs,state:()=>({pendingTypedFilter,filterRevision,pendingFilters,quoteInFlight,quoteRevision}),setPendingSelection:value=>{pendingSelection=value?new Set(['row-0']):null;},setPendingViewport:value=>{pendingViewport=value;}};`+script.slice(at);
+ vm.runInContext(script,main.context);
+ vm.runInContext(fixture.bridge.split('<script>')[1].split('</script>')[0],bridge.context);
+ const api=main.context.api,rows=Array.from({length:30},(_,index)=>({id:'row-'+index,values:['SPY','CALL','Jan-15-29','100','105','1.20','.20','$200','$102','1:2','$400','MID'],fill_market:{bid:1,mid:2,ask:3,debit:2,estimate:50}}));
+ let args={scope:'normal-1',filter_scope:'snapshot',sort_key:'view-1',rows,total_rows:30,row_offset:0,selected_ids:[],ack_revision:0,column_filters:{},filter_choices:{},filter_ack_revision:0,sort_by:'COST',sort_direction:'ASC',sort_view:'BEST PER YEAR',live_quotes_enabled:true,live_quote_channel:'private-test'};
+ let update={revision:0,markets:{},retry_seconds:10};
+ function renderMain(){main.dispatch('message',{data:{type:'streamlit:render',args}});}
+ function renderBridge(){bridge.dispatch('message',{data:{type:'streamlit:render',args:{channel:args.live_quote_channel,scope:args.scope,sort_key:args.sort_key,live_quotes_enabled:true,live_quote_update:update}}});}
+ function intersect(yes){main.intersect(yes);}
+ const ticks=()=>bridge.posts.filter(message=>message.type==='streamlit:setComponentValue').map(message=>message.value);
+ const mainValues=()=>main.posts.filter(message=>message.type==='streamlit:setComponentValue').map(message=>message.value);
+ renderMain();renderBridge();intersect(true);advance(0);
+ assert.equal(ticks().length,1);assert.equal(mainValues().length,0);
+ assert.deepEqual(ticks()[0].quote_ids,['row-0','row-1']);
+ assert.deepEqual(Object.keys(ticks()[0]).sort(),['kind','quote_ids','quote_revision','quote_sort_key','scope']);
+ const attacker=new BC('private-test');
+ for(const bad of [
+  {...ticks()[0]},
+  {...ticks()[0],scope:'old-scope',quote_revision:999},
+  {...ticks()[0],quote_sort_key:'old-sort',quote_revision:999},
+  {...ticks()[0],quote_revision:999,quote_ids:Array.from({length:21},(_,index)=>'row-'+index)},
+  {...ticks()[0],quote_revision:999,quote_ids:['row-0','row-0']},
+ ])attacker.postMessage(bad);
+ advance(0);assert.equal(ticks().length,1,'Bridge rejects duplicate, foreign and unbounded requests');
+ const first=main.ids.visible.children[0],select=first.querySelector('.select'),cost=first.querySelector('.cost'),cell=first.querySelector('.fill-scale'),panel=main.ids['filter-panel'];
+ const oldCost=cost.textContent,oldRows=JSON.stringify(rows),oldScroll=main.ids.scroll.scrollTop;
+ advance(10000);assert.equal(ticks().length,1,'No overlapping request');
+ update={revision:ticks()[0].quote_revision,retry_seconds:10,markets:{'row-0':{bid:1.2,mid:2.2,ask:3.2,estimate:41,status:'REALTIME',as_of:now/1000-2,fetched_at:now/1000,stale:false}}};
+ renderBridge();advance(0);
+ assert.strictEqual(main.ids.visible.children[0],first);assert.strictEqual(first.querySelector('.select'),select);assert.strictEqual(first.querySelector('.cost'),cost);assert.strictEqual(main.ids['filter-panel'],panel);
+ assert.equal(cost.textContent,oldCost);assert.equal(JSON.stringify(rows),oldRows);assert.equal(main.ids.scroll.scrollTop,oldScroll);
+ assert(cell.textContent.includes('1.20'));assert(cell.textContent.includes('DEBIT 2.00'));assert(cell.textContent.includes('RT 2s'));
+ assert(cell.getAttribute('aria-label').includes('REALTIME'));assert(cell.getAttribute('aria-label').includes('sorting use the scan snapshot'));
+ const filled=cell.textContent;
+ const oldUpdate=update;update={revision:0,markets:{'row-0':{bid:99,ask:100,status:'REALTIME',as_of:now/1000}},retry_seconds:10};renderBridge();advance(0);assert.equal(cell.textContent,filled,'Old ACK must not replace quotes');update=oldUpdate;
+ panel.hidden=false;advance(10000);assert.equal(ticks().length,1,'Open filter menu pauses polling');panel.hidden=true;
+ api.changeFilters({cost:{max:150}},-1);advance(10000);assert.equal(ticks().length,1,'Staged edit pauses polling');assert.equal(mainValues().length,0);assert.equal(api.state().pendingTypedFilter,true);
+ api.closePanel();assert.equal(mainValues().length,1);assert.equal(mainValues()[0].column_filters.cost.max,150);
+ args={...args,column_filters:{cost:{max:150}},filter_ack_revision:api.state().filterRevision};renderMain();advance(0);
+ assert.equal(ticks().length,2);assert.equal(mainValues().length,1,'Quotes never use the main widget value');
+ update={...update,revision:ticks().at(-1).quote_revision,retry_seconds:10};renderBridge();advance(0);
+ api.setPendingSelection(true);advance(10000);assert.equal(ticks().length,2);api.setPendingSelection(false);
+ api.setPendingViewport(200);advance(10000);assert.equal(ticks().length,2);api.setPendingViewport(null);
+ main.visibility(true);advance(60000);assert.equal(ticks().length,2,'Hidden documents do not poll');main.visibility(false);advance(0);assert.equal(ticks().length,3);
+ update={...update,revision:ticks().at(-1).quote_revision};renderBridge();advance(0);
+ intersect(false);advance(60000);assert.equal(ticks().length,3,'Offscreen components do not poll');intersect(true);advance(0);assert.equal(ticks().length,4);
+ // A lost reply gets a bounded timeout and recovery, never overlapping requests.
+ advance(30000);assert.equal(ticks().length,4);advance(29999);assert.equal(ticks().length,4);advance(1);assert.equal(ticks().length,5);
+ // Context changes reject old replies and retain a monotonic client nonce.
+ const oldScope=args.scope,previousNonce=ticks().at(-1).quote_revision;
+ args={...args,scope:'smart-2',sort_key:'view-2'};renderMain();renderBridge();advance(0);
+ assert(ticks().at(-1).quote_revision>previousNonce);assert.equal(ticks().at(-1).scope,'smart-2');
+ const before=cell.textContent;new BC('private-test').postMessage({kind:'quote_update',scope:oldScope,quote_sort_key:'view-1',update:{revision:999,markets:{'row-0':{bid:88,ask:90}},retry_seconds:10}});advance(0);
+ assert(!main.ids.visible.children[0].querySelector('.fill-scale').textContent.includes('88.00'));
+ // Broker time, rather than fetch time, controls the visible age and status.
+ const currentCell=main.ids.visible.children[0].querySelector('.fill-scale');
+ for(const [status,age,stale,label] of [['DELAYED',900,false,'DLY 15m'],['CLOSING',3600,false,'CLOSE 1h'],['UNKNOWN',2,false,'N/A 2s'],['REALTIME',40,false,'STALE 40s'],['REALTIME',2,true,'STALE 2s']]){
+  update={revision:ticks().at(-1).quote_revision,retry_seconds:30,markets:{'row-0':{bid:1.3,mid:2.3,ask:3.3,estimate:35,status,as_of:now/1000-age,fetched_at:now/1000,stale}}};
+  renderBridge();advance(0);assert(currentCell.textContent.includes(label),currentCell.textContent);
+ }
+ const countBeforeBackoff=ticks().length;advance(29999);assert.equal(ticks().length,countBeforeBackoff);advance(1);assert.equal(ticks().length,countBeforeBackoff+1);
+ // An unavailable bridge marks old quotes honestly; reconnecting the same
+ // channel must reopen it and resume without touching the user value channel.
+ new BC('private-test').postMessage({kind:'quote_ready',scope:args.scope,quote_sort_key:args.sort_key,enabled:false});advance(0);
+ assert(currentCell.textContent.includes('STALE'));
+ const disabledCount=ticks().length;advance(60000);assert.equal(ticks().length,disabledCount);
+ args={...args,live_quotes_enabled:false};renderMain();advance(0);
+ assert(main.ids.visible.children[0].querySelector('.fill-scale').textContent.includes('SNAP'));
+ args={...args,live_quotes_enabled:true};renderMain();renderBridge();advance(0);
+ assert(ticks().length>disabledCount,'Same-channel reconnect resumes the bridge');
+ // Parent clipping can change without crossing the persistent observer's
+ // zero threshold. Every due poll must obtain a fresh intersection sample.
+ update={...update,revision:ticks().at(-1).quote_revision,retry_seconds:10};renderBridge();advance(0);
+ main.ids.scroll.clientHeight=43*12;renderMain();
+ main.intersect(true,{top:43,bottom:86,left:0,right:1600,width:1600,height:43});
+ advance(10000);assert.equal(ticks().at(-1).quote_ids.length,1);
+ update={...update,revision:ticks().at(-1).quote_revision,retry_seconds:10};renderBridge();advance(0);
+ main.intersect(true,{top:43,bottom:559,left:0,right:1600,width:1600,height:516},false);
+ advance(10000);assert.equal(ticks().at(-1).quote_ids.length,12,'Fresh sample includes newly revealed rows without a threshold crossing');
+ assert(ticks().at(-1).quote_ids.includes('row-11'));
+ // A large viewport is still capped at twenty IDs, excluding overscan rows.
+ main.ids.scroll.clientHeight=43*30;renderMain();intersect(true);assert.equal(api.visibleQuoteIDs().length,20);
+ // Unsupported BroadcastChannel leaves ordinary snapshot rendering available.
+ const unsupported=environment();delete unsupported.context.BroadcastChannel;vm.runInContext(fixture.main.split('<script>')[1].split('</script>')[0],unsupported.context);unsupported.dispatch('message',{data:{type:'streamlit:render',args}});
+ assert(unsupported.ids.visible.children[0].querySelector('.fill-scale').textContent.includes('SNAP'));
+}
+console.log('PASS both live quote bridges, visible polling, pending edits and in-place quote cells');
+'''
+        root = Path(__file__).resolve().parents[1]
+        bridge = (root / "src/components/vertical_quote_bridge_v1/index.html").read_text()
+        fixtures = [{"main": (root / "src/components" / f"{prefix}_spread_scroller_v1/index.html").read_text(),
+                     "bridge": bridge} for prefix in ("vo", "vp")]
+        result = subprocess.run([node, "-e", harness], input=json.dumps(fixtures),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS both live quote bridges", result.stdout)
 
     def test_renderer_column_filters_refresh_pricing_and_memory_in_one_update(self):
         from uuid import uuid4

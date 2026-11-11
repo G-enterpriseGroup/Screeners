@@ -51,6 +51,217 @@ def order_ui(state, clicked=()):
     return ui
 
 
+class LiveQuoteOverlayTests(unittest.TestCase):
+    def fixture(self, feature, prefix, count=1):
+        now = time.time()
+        expiry = date.today() + timedelta(days=45)
+        rows = []
+        for index in range(count):
+            buy, sell = 100 + index * 10, 105 + index * 10
+            rows.append({"id": str(index), "symbol": "SPY", "expiry": expiry, "call_put": "CALL",
+                         "buy_strike": buy, "sell_strike": sell,
+                         "buy_osi": f"SPY---{expiry:%y%m%d}C{buy * 1000:08d}",
+                         "sell_osi": f"SPY---{expiry:%y%m%d}C{sell * 1000:08d}",
+                         "debit": 1.07, "cost": 107, "width": 5, "reward_risk": 3.67,
+                         "orderable": True, "spread_bid": .9, "spread_ask": 1.2})
+        token = {"oauth_token": "DUMMY-QUOTE-TOKEN", "oauth_token_secret": "DUMMY-QUOTE-SECRET",
+                 "issued_at": now}
+        state = {"etrade_access_unlocked": True, "etrade_access_token": token,
+                 "etrade_last_activity_at": now,
+                 "terminal_tab_state": {"active": "VERTICAL OPTIONS" if prefix == "vo" else "VERTI PHONE"},
+                 prefix + "_scan_result": {"scope": "pricing-a", "source": "E*TRADE"},
+                 prefix + "_review_bundle": {"untouched": True}, prefix + "_live_confirm": True}
+        client = MagicMock(is_offline=False)
+        from src.etrade_data_cache import session_namespace
+        client._namespace = session_namespace(token)
+        client.get_quote.side_effect = lambda symbols, **kwargs: self.payload(symbols, now)
+        return state, client, rows, now
+
+    def payload(self, symbols, now):
+        rows = []
+        for symbol in symbols.split(","):
+            root, year, month, day, side, strike = symbol.split(":")
+            expiry = date(int(year), int(month), int(day))
+            strike = float(strike)
+            premium = 3 if int(strike) % 10 == 0 else 2
+            rows.append({"Product": {"symbol": root, "securityType": "OPTN",
+                                     "expiryYear": expiry.year, "expiryMonth": expiry.month,
+                                     "expiryDay": expiry.day, "callPut": side, "strikePrice": strike},
+                         "All": {"bid": premium - .2, "ask": premium + .2,
+                                 "osiKey": f"{root}{expiry:%y%m%d}{side[0]}{int(strike * 1000):08d}"},
+                         "dateTimeUTC": now, "quoteStatus": "REALTIME"})
+        return {"QuoteResponse": {"QuoteData": rows}}
+
+    def tick(self, feature, prefix, state, client, rows, revision=1):
+        feature._live_quote_context("pricing-a", "view-a", rows, True, client)
+        state["component"] = {"kind": "quote_tick", "scope": "pricing-a",
+                              "quote_sort_key": "view-a", "quote_revision": revision,
+                              "quote_ids": [row["id"] for row in rows[:20]]}
+        feature._refresh_live_quotes(client, "component", "pricing-a", "view-a")
+        return state["_" + prefix + "_live_quotes"]
+
+    def test_both_owners_batch_only_visible_legs_without_changing_orders_or_scan(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            state, client, rows, now = self.fixture(feature, prefix, 20)
+            before, candidates = deepcopy(state), deepcopy(rows)
+            with patch.object(feature.st, "session_state", state), patch.object(feature.time, "time", return_value=now):
+                overlay = self.tick(feature, prefix, state, client, rows)
+                self.assertEqual(client.get_quote.call_count, 2)
+                self.assertEqual([len(call.args[0].split(",")) for call in client.get_quote.call_args_list], [25, 15])
+                self.assertEqual(len(overlay["markets"]), 20)
+                self.assertEqual(overlay["markets"]["0"]["status"], "REALTIME")
+                self.assertEqual(overlay["markets"]["0"]["as_of"], now)
+                self.assertAlmostEqual(overlay["markets"]["0"]["mid"], 1)
+                self.assertEqual(rows, candidates)
+                for key, value in before.items():
+                    self.assertEqual(state[key], value)
+                self.assertEqual([call[0] for call in client.mock_calls], ["get_quote", "get_quote"])
+                overlay = self.tick(feature, prefix, state, client, rows, revision=2)
+                self.assertEqual(client.get_quote.call_count, 2)
+                self.assertEqual(overlay["revision"], 2)  # Throttled ticks are acknowledged.
+                update = feature._live_quote_context("pricing-a", "view-a", rows[:1], True, client)
+                self.assertEqual(set(update["markets"]), {"0"})
+
+    def test_both_owners_reject_nonquote_stale_scope_invalid_ids_and_inactive_callbacks(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            state, client, rows, _ = self.fixture(feature, prefix)
+            with patch.object(feature.st, "session_state", state):
+                feature._live_quote_context("pricing-a", "view-a", rows, True, client)
+                valid = {"kind": "quote_tick", "scope": "pricing-a", "quote_sort_key": "view-a",
+                         "quote_revision": 1, "quote_ids": ["0"]}
+                for changes in ({"kind": "filters"}, {"scope": "old"}, {"quote_sort_key": "old"},
+                                {"quote_ids": ["missing"]}, {"quote_ids": ["0", "0"]},
+                                {"quote_ids": ["0"] * 21}, {"quote_revision": True},
+                                {"quote_ids": []}):
+                    state["component"] = {**valid, **changes}
+                    feature._refresh_live_quotes(client, "component", "pricing-a", "view-a")
+                state["component"] = valid
+                state["terminal_tab_state"]["active"] = "HOLDINGS"
+                feature._refresh_live_quotes(client, "component", "pricing-a", "view-a")
+                client.get_quote.assert_not_called()
+
+    def test_both_owners_validate_each_exact_contract_and_never_pair_by_position(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            state, _, rows, now = self.fixture(feature, prefix)
+            leg = feature._live_quote_leg(rows[0], "buy")
+            symbols = ":".join(map(str, leg))
+            payload = self.payload(symbols, now)
+            self.assertEqual(set(feature._live_quote_batch(payload, {leg}, now)), {leg})
+            for block, key, invalid in (("Product", "symbol", "QQQ"), ("Product", "securityType", "EQ"),
+                                        ("Product", "expiryYear", leg[1] + .5), ("Product", "callPut", "PUT"),
+                                        ("Product", "strikePrice", 999), ("All", "osiKey", "WRONG"),
+                                        ("All", "bid", 100), ("All", "ask", float("nan"))):
+                broken = deepcopy(payload)
+                broken["QuoteResponse"]["QuoteData"][0][block][key] = invalid
+                self.assertEqual(feature._live_quote_batch(broken, {leg}, now), {})
+            duplicate = deepcopy(payload)
+            duplicate["QuoteResponse"]["QuoteData"] *= 2
+            self.assertEqual(feature._live_quote_batch(duplicate, {leg}, now), {})
+            for key, invalid in (("quoteStatus", "INVALID"), ("dateTimeUTC", now + 61),
+                                 ("dateTimeUTC", None), ("dateTimeUTC", float("inf"))):
+                broken = deepcopy(payload)
+                broken["QuoteResponse"]["QuoteData"][0][key] = invalid
+                self.assertEqual(feature._live_quote_batch(broken, {leg}, now), {})
+            spxw = {**rows[0], "symbol": "SPX", "buy_osi": rows[0]["buy_osi"].replace("SPY", "SPXW")}
+            self.assertEqual(feature._live_quote_leg(spxw, "buy")[0], "SPXW")
+            self.assertIsNone(feature._live_quote_leg({**rows[0], "buy_osi": "SYNTHETIC-WRONG"}, "buy"))
+
+    def test_both_owners_preserve_status_older_leg_time_and_back_off_errors(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            state, client, rows, now = self.fixture(feature, prefix)
+            def delayed(symbols, **kwargs):
+                payload = self.payload(symbols, now)
+                payload["QuoteResponse"]["QuoteData"][-1].update(quoteStatus="DELAYED", dateTimeUTC=now - 900)
+                return payload
+            client.get_quote.side_effect = delayed
+            with patch.object(feature.st, "session_state", state), patch.object(feature.time, "time", return_value=now):
+                overlay = self.tick(feature, prefix, state, client, rows)
+                market = deepcopy(overlay["markets"]["0"])
+                self.assertEqual((market["status"], market["as_of"], market["stale"]), ("DELAYED", now - 900, True))
+                client.get_quote.side_effect = RuntimeError("Unavailable")
+                for revision, delay in ((2, 30), (3, 60), (4, 120)):
+                    state["_" + prefix + "_live_quotes"]["next_due"] = 0
+                    overlay = self.tick(feature, prefix, state, client, rows, revision)
+                    self.assertEqual(overlay["next_due"] - now, delay)
+                    self.assertEqual(overlay["markets"]["0"], market)
+
+    def test_both_owners_reject_cached_fallback_and_do_not_extend_auth_activity(self):
+        from src.etrade_data_cache import CachedETradeClient, session_namespace
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            state, _, rows, now = self.fixture(feature, prefix)
+            client = MagicMock(spec=CachedETradeClient)
+            client.is_offline = False
+            client._namespace = session_namespace(state["etrade_access_token"])
+            def fallback(symbols, **kwargs):
+                state["_etrade_cache_last_event"] = {"stale": True}
+                return self.payload(symbols, now)
+            client.get_quote.side_effect = fallback
+            with patch.object(feature.st, "session_state", state):
+                overlay = self.tick(feature, prefix, state, client, rows)
+                self.assertTrue(overlay["markets"]["0"]["stale"])
+                self.assertIsNone(overlay["markets"]["0"]["as_of"])
+                self.assertEqual(client.get_quote.call_args.kwargs, {"force_refresh": True})
+                self.assertEqual(state["etrade_last_activity_at"], now)
+
+    def test_both_owners_stop_on_lock_disconnect_expiry_or_changed_login(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            for condition in ("locked", "missing-token", "expired", "other-login", "wrong-namespace",
+                              "lock-during-read", "leave-during-read", "rescan-during-read"):
+                state, client, rows, now = self.fixture(feature, prefix)
+                with patch.object(feature.st, "session_state", state):
+                    feature._live_quote_context("pricing-a", "view-a", rows, True, client)
+                    state["component"] = {"kind": "quote_tick", "scope": "pricing-a", "quote_sort_key": "view-a",
+                                          "quote_revision": 1, "quote_ids": ["0"]}
+                    if condition == "locked":
+                        state["etrade_access_unlocked"] = False
+                    elif condition == "missing-token":
+                        state.pop("etrade_access_token")
+                    elif condition == "expired":
+                        state["etrade_last_activity_at"] = now - 7201
+                    elif condition == "other-login":
+                        state["etrade_access_token"]["oauth_token"] = "REPLACED-DUMMY-TOKEN"
+                    elif condition == "wrong-namespace":
+                        client._namespace = "DIFFERENT-SESSION"
+                    else:
+                        def lock(symbols, **kwargs):
+                            if condition == "lock-during-read":
+                                state["etrade_access_unlocked"] = False
+                            elif condition == "leave-during-read":
+                                state["terminal_tab_state"]["active"] = "HOLDINGS"
+                            else:
+                                state[prefix + "_scan_result"]["scope"] = "new-scan"
+                            return self.payload(symbols, now)
+                        client.get_quote.side_effect = lock
+                    feature._refresh_live_quotes(client, "component", "pricing-a", "view-a")
+                    self.assertEqual(state["_" + prefix + "_live_quotes"]["markets"], {})
+                    self.assertEqual(client.get_quote.call_count, int(condition.endswith("during-read")))
+
+    def test_both_quote_bridges_dedupe_legs_and_do_not_render_parent_broker_helpers(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            state, client, rows, now = self.fixture(feature, prefix)
+            rows.append({**rows[0], "id": "same-legs"})
+            with (patch.object(feature.st, "session_state", state),
+                  patch.object(feature, "_QUOTE_BRIDGE_COMPONENT") as bridge,
+                  patch.object(feature, "_liquid_cash_markup") as cash,
+                  patch.object(feature, "_ticker_quote_preview") as ticker,
+                  patch.object(feature, "_render_selected_order") as ticket):
+                feature._live_quote_context("pricing-a", "view-a", rows, True, client)
+                renderer = feature._render_live_quote_bridge.__wrapped__
+                renderer(client, "private-channel", "pricing-a", "view-a")
+                args = bridge.call_args.kwargs
+                self.assertTrue(args["live_quotes_enabled"])
+                state[args["key"]] = {"kind": "quote_tick", "scope": "pricing-a", "quote_sort_key": "view-a",
+                                      "quote_revision": 1, "quote_ids": ["0", "same-legs"]}
+                args["on_change"]()
+                renderer(client, "private-channel", "pricing-a", "view-a")
+                self.assertEqual(len(client.get_quote.call_args.args[0].split(",")), 2)
+                self.assertEqual(set(bridge.call_args.kwargs["live_quote_update"]["markets"]), {"0", "same-legs"})
+                self.assertEqual(state["etrade_last_activity_at"], now)
+                cash.assert_not_called()
+                ticker.assert_not_called()
+                ticket.assert_not_called()
+
+
 class PhoneIsolationTests(unittest.TestCase):
     def test_production_route_has_its_own_owner_and_preserves_desktop_dispatch(self):
         app = ast.parse((ROOT / "streamlit_app.py").read_text())
