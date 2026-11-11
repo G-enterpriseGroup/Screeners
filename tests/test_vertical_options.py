@@ -378,6 +378,90 @@ else:
         vo._chain(direct, "QQQ", date(2029, 1, 19), touch, fresh_broker_quote=True)
         self.assertNotIn("force_refresh", direct.get_option_chain.call_args.kwargs)
 
+    def test_review_validates_fixed_limit_against_fresh_exact_market(self):
+        import time
+        from copy import deepcopy
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiry = date(2029, 1, 19)
+        rows = [self._row(expiry, "CALL", 100, 4.5, bid=4, ask=5),
+                self._row(expiry, "CALL", 109, 3, bid=3, ask=3.7)]
+        for mode in ("NORMAL", "SMART FILL"):
+            candidate = scan_vertical_candidates(
+                symbol="QQQ", spot_last=100, option_rows=rows, target_breakeven=None,
+                max_cost=None, pricing_mode=mode, desktop_fast_fill=True)[0][0]
+            result = {"loaded_at": time.time(), "pricing_policy": vo.VERTICAL_PRICING_POLICY,
+                      "pricing_mode": mode, "max_cost": None, "min_reward_risk": 2}
+            before = deepcopy(candidate)
+            client, touch = MagicMock(), MagicMock()
+            with patch.object(vo, "_chain", return_value=rows) as chain:
+                vo._validate_current_vertical_limit(client, touch, candidate, result, candidate["debit"])
+                self.assertIs(chain.call_args.kwargs["fresh_broker_quote"], True)
+            self.assertEqual(candidate, before)
+            for changed in ([{**rows[0], "bid": 5, "ask": 6}, rows[1]],
+                            [{**rows[0], "bid": 2, "ask": 3}, rows[1]],
+                            rows + [rows[0]], [rows[0]]):
+                with self.subTest(mode=mode, changed=changed), patch.object(vo, "_chain", return_value=changed):
+                    with self.assertRaises(ValueError):
+                        vo._validate_current_vertical_limit(client, touch, candidate, result, candidate["debit"])
+            client.preview_order.assert_not_called()
+            client.place_order.assert_not_called()
+
+    def test_explicit_send_blocks_market_drift_and_preserves_reviewed_payload(self):
+        import time
+        from contextlib import ExitStack
+        from copy import deepcopy
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        expiry = date(2029, 1, 19)
+        rows = [self._row(expiry, "CALL", 100, 4.5, bid=4, ask=5),
+                self._row(expiry, "CALL", 109, 3, bid=3, ask=3.7)]
+        for mode in ("NORMAL", "SMART FILL"):
+            candidate = scan_vertical_candidates(
+                symbol="QQQ", spot_last=100, option_rows=rows, target_breakeven=None,
+                max_cost=None, pricing_mode=mode, desktop_fast_fill=True)[0][0]
+            for drift in (False, True):
+                with self.subTest(mode=mode, drift=drift), ExitStack() as stack:
+                    result = {"source": "E*TRADE", "loaded_at": time.time(),
+                              "pricing_policy": vo.VERTICAL_PRICING_POLICY,
+                              "pricing_mode": mode, "max_cost": None, "min_reward_risk": 2}
+                    payload = build_place_payload(build_vertical_preview_payload(
+                        symbol="QQQ", call_put="CALL", expiry=expiry, buy_strike=100,
+                        sell_strike=109, quantity=1, limit_price=candidate["debit"]), "synthetic-preview")
+                    original = deepcopy(payload)
+                    fingerprint = vo._review_fingerprint(
+                        symbol="QQQ", call_put="CALL", expiry=expiry, buy_strike=100,
+                        sell_strike=109, quantity=1, limit_price=candidate["debit"],
+                        min_reward_risk=2, order_term="GOOD_FOR_DAY", account_keys=["fixture-a"])
+                    state = {"etrade_accounts": [{"accountIdKey": "fixture-a", "accountId": "12345474"}],
+                             "vo_accounts": ["fixture-a"], "_vo_order_candidate": candidate["id"],
+                             "vo_review_bundle": {"fingerprint": fingerprint, "previewed_at": time.time(),
+                                 "previews": {"fixture-a": {"place_payload": payload, "details": {}}}}}
+                    controls = [MagicMock(), MagicMock(), MagicMock()]
+                    controls[0].number_input.return_value = 1
+                    controls[1].selectbox.return_value = "GOOD_FOR_DAY"
+                    controls[2].multiselect.return_value = ["fixture-a"]
+                    stack.enter_context(patch.object(vo.st, "session_state", state))
+                    stack.enter_context(patch.object(vo.st, "columns", return_value=controls))
+                    stack.enter_context(patch.object(vo.st, "button", side_effect=
+                        lambda *args, **kwargs: kwargs.get("key") == "vo_send"))
+                    for name in ("markdown", "caption", "warning", "info", "error", "success"):
+                        stack.enter_context(patch.object(vo.st, name))
+                    market = [{**rows[0], "bid": 5, "ask": 6}, rows[1]] if drift else rows
+                    chain = stack.enter_context(patch.object(vo, "_chain", return_value=market))
+                    client = MagicMock()
+                    client.place_order.return_value = {"PlaceOrderResponse": {"OrderIds": [{"orderId": 123}]}}
+                    vo._render_selected_order(client, lambda: None, candidate, result, True)
+                    self.assertEqual(chain.call_count, 1)
+                    self.assertIs(chain.call_args.kwargs["fresh_broker_quote"], True)
+                    if drift:
+                        client.place_order.assert_not_called()
+                    else:
+                        client.place_order.assert_called_once_with("fixture-a", original)
+                    self.assertEqual(payload, original)
+                    client.preview_order.assert_not_called()
+                    self.assertNotIn("vo_review_bundle", state)
+
     def test_preference_storage_failure_does_not_block_scanner(self):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
@@ -1102,7 +1186,7 @@ new vm.Script(fixture.script);console.log('PASS '+fixture.cases.length+' complet
             restored = {**fresh, "expirations": expiries, "rows": rows,
                         "loaded_expirations": len(expiries), "next_expiry_index": len(expiries),
                         "scan_complete": False, "failed_expirations": [expiries[0]],
-                        "result_stores": {(None, None, "NORMAL", 2.0, "desktop-quote-policy-v2"): old_store}}
+                        "result_stores": {(None, None, "NORMAL", 2.0, vo.VERTICAL_PRICING_POLICY): old_store}}
             state["_vo_chain_cache"]["E*TRADE:QQQ"] = restored
             cached = vo._scan_all_years(client, "QQQ", lambda: None)
             self.assertIs(cached, restored)
@@ -1525,6 +1609,7 @@ if not restoring and "vo_scan_result" not in st.session_state and not st.session
     st.session_state["vo_scan_result"] = {
         "symbol": "QQQ", "source": "E*TRADE", "spot": 110, "target": None,
         "max_cost": None, "min_reward_risk": 2, "pricing_mode": "NORMAL",
+        "pricing_policy": vo.VERTICAL_PRICING_POLICY,
         "raw_scan_id": 1, "scope": "initial-scope", "loaded_at": raw["loaded_at"],
         "candidates": store, "annual_ids": annual, "listed_years": 3,
         "loaded_expirations": 3, "listed_expirations": 3, "contract_count": len(raw["rows"]),
@@ -1561,6 +1646,34 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertLess(args["total_rows"], 40)
         self.assertEqual(app.session_state["vo_target_breakeven"], "101.5")
         self.assertEqual(app.session_state["_vo_manual_targets"]["QQQ"], "101.5")
+
+        # An old policy must migrate even without a mode toggle, preserving
+        # snapshot/filter identity while discarding old computed prices/reviews.
+        previous = app.session_state["vo_scan_result"]
+        old_store = previous["candidates"]
+        raw = app.session_state["_vo_chain_cache"]["E*TRADE:QQQ"]
+        raw["result_stores"] = {
+            (*policy[:-1], "desktop-quote-policy-v2"): value
+            for policy, value in raw["result_stores"].items()}
+        app.session_state["vo_scan_result"] = {**previous, "pricing_policy": "desktop-quote-policy-v2"}
+        app.session_state["vo_review_bundle"] = {"fingerprint": "legacy"}
+        app.session_state["_vo_order_candidate"] = "legacy"
+        old_scope, old_filter_scope = args["scope"], args["filter_scope"]
+        app.run()
+        self.assertFalse(app.exception)
+        args = app.session_state["fixture_component_args"]
+        migrated = app.session_state["vo_scan_result"]
+        self.assertEqual(migrated["pricing_policy"], "desktop-quote-policy-v3")
+        self.assertEqual(migrated["pricing_mode"], "NORMAL")
+        self.assertEqual(migrated["raw_scan_id"], previous["raw_scan_id"])
+        self.assertEqual(migrated["loaded_at"], previous["loaded_at"])
+        self.assertIsNot(migrated["candidates"], old_store)
+        self.assertNotEqual(args["scope"], old_scope)
+        self.assertEqual(args["filter_scope"], old_filter_scope)
+        self.assertEqual(args["column_filters"], filters)
+        self.assertNotIn("vo_review_bundle", app.session_state)
+        self.assertNotIn("_vo_order_candidate", app.session_state)
+        self.assertNotIn("fixture_scan_calls", app.session_state)
         original_scope = args["scope"]
 
         app.toggle(key="vo_smart_fill").set_value(True).run()
@@ -2318,7 +2431,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                          (2, 1.95, 2.30))
         self.assertEqual(annual, {call["id"]})
 
-    def test_desktop_fast_fill_smart_ask_and_normal_market_limit(self):
+    def test_desktop_smart_near_ask_and_normal_market_limit(self):
         from src.vertical_options import price_vertical_quote
         quoted = dict(buy_last=4.5, sell_last=3, buy_bid=4.0,
                       buy_ask=5.0, sell_bid=3.0, sell_ask=3.7,
@@ -2327,7 +2440,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                                      desktop_fast_fill=True)
         normal = price_vertical_quote(**quoted, pricing_mode="NORMAL",
                                       desktop_fast_fill=True)
-        self.assertEqual((smart["basis"], smart["debit"]), ("ASK", 2.00))
+        self.assertEqual((smart["basis"], smart["debit"]), ("SMART", 1.94))
         self.assertEqual((normal["basis"], normal["debit"]), ("LIMIT", 1.45))
         self.assertLess(normal["debit"], smart["debit"])
         self.assertGreaterEqual((9-smart["debit"])/smart["debit"], 2)
@@ -2337,6 +2450,114 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                         pricing_mode="NORMAL", desktop_fast_fill=True))
         self.assertIsNone(price_vertical_quote(**{**quoted, "buy_ask": None},
                         pricing_mode="SMART FILL", desktop_fast_fill=True))
+
+    def test_current_modes_never_round_outside_fractional_cent_markets(self):
+        from src.vertical_options import price_vertical_quote
+        data = dict(buy_last=3, sell_last=2, buy_bid=3, buy_ask=3.02,
+                    sell_bid=2, sell_ask=2.012, width=9, max_cost=None,
+                    desktop_fast_fill=True)
+        normal = price_vertical_quote(**data)
+        self.assertEqual(normal["spread_mid"], 1.004)
+        self.assertEqual(normal["debit"], 1.01)
+        # The old rounded-down MID incorrectly passed the 1:2 gate here.
+        self.assertIsNone(price_vertical_quote(**{**data, "width": 3.01}))
+        fractional_ask = {**data, "buy_bid": 3.001, "buy_ask": 3.009,
+                          "sell_bid": 2.001, "sell_ask": 2.009}
+        for mode in ("NORMAL", "SMART FILL"):
+            with self.subTest(mode=mode):
+                price = price_vertical_quote(**fractional_ask, pricing_mode=mode)
+                self.assertEqual(price["spread_ask"], 1.008)
+                self.assertEqual(price["debit"], 1.00)
+                self.assertLessEqual(price["debit"], price["spread_ask"])
+                locked = {**data, "buy_bid": 3.005, "buy_ask": 3.005,
+                          "sell_bid": 2, "sell_ask": 2}
+                self.assertIsNone(price_vertical_quote(**locked, pricing_mode=mode))
+
+    def test_smart_three_percent_band_intersects_risk_and_budget(self):
+        from src.vertical_options import price_vertical_quote, vertical_limit_bounds
+        data = dict(buy_last=4.5, sell_last=3, buy_bid=4, buy_ask=5,
+                    sell_bid=3, sell_ask=3.7, width=5.85, max_cost=None,
+                    desktop_fast_fill=True, pricing_mode="SMART FILL")
+        price = price_vertical_quote(**data)
+        self.assertEqual(price["debit"], 1.94)  # ASK2.00 fails RR; 3% discount qualifies.
+        self.assertGreaterEqual(price["debit"], .97 * price["spread_ask"])
+        self.assertGreaterEqual((data["width"] - price["debit"]) / price["debit"], 2)
+        for change in ({"width": 5.81}, {"max_cost": 193.99}, {"min_reward_risk": 3}):
+            with self.subTest(change=change):
+                self.assertIsNone(price_vertical_quote(**{**data, **change}))
+        bounds = vertical_limit_bounds(width=5.85, max_cost=195, spread_mid=1.15,
+                                       spread_ask=2, pricing_mode="SMART FILL")
+        self.assertEqual(bounds, (1.94, 1.95))
+        # Tight markets must never put SMART below MID or below NORMAL.
+        tight = {**data, "width": 9, "buy_bid": 3, "buy_ask": 3.01,
+                 "sell_bid": 2.01, "sell_ask": 2.02}
+        smart = price_vertical_quote(**tight)
+        normal = price_vertical_quote(**{**tight, "pricing_mode": "NORMAL"})
+        self.assertEqual((smart["basis"], smart["debit"]), ("ASK", 1.00))
+        self.assertGreaterEqual(smart["debit"], normal["debit"])
+
+    def test_current_mode_prices_satisfy_independent_decimal_constraints(self):
+        from decimal import Decimal
+        from src.vertical_options import price_vertical_quote
+        valid = 0
+        for buy_bid, buy_ask, sell_bid, sell_ask in (
+            (4, 5, 3, 3.7), (3.001, 3.009, 2.001, 2.009),
+            (3, 3.02, 2, 2.012), (2, 2, 1, 1), (.05, .06, .01, .02),
+            (8, 9, 2, 3), (3, 3.01, 2.01, 2.02),
+        ):
+            for width in (3.01, 5.85, 9, 25):
+                for budget in (None, 100, 193.99):
+                    prices = {}
+                    for mode in ("NORMAL", "SMART FILL"):
+                        price = price_vertical_quote(
+                            buy_last=buy_bid, sell_last=sell_bid,
+                            buy_bid=buy_bid, buy_ask=buy_ask,
+                            sell_bid=sell_bid, sell_ask=sell_ask,
+                            width=width, max_cost=budget, pricing_mode=mode,
+                            desktop_fast_fill=True)
+                        if price is None:
+                            continue
+                        valid += 1
+                        d = Decimal(str(price["debit"]))
+                        bid = Decimal(str(buy_bid)) - Decimal(str(sell_ask))
+                        ask = Decimal(str(buy_ask)) - Decimal(str(sell_bid))
+                        mid = (bid + ask) / 2
+                        self.assertEqual(d * 100, (d * 100).to_integral_value())
+                        self.assertGreaterEqual(d, mid)
+                        self.assertLessEqual(d, ask)
+                        self.assertGreaterEqual(Decimal(str(width)) - d, 2 * d)
+                        if budget is not None:
+                            self.assertLessEqual(100 * d, Decimal(str(budget)))
+                        if mode == "SMART FILL":
+                            self.assertGreaterEqual(d, Decimal('.97') * ask)
+                        prices[mode] = d
+                    if len(prices) == 2:
+                        self.assertGreaterEqual(prices["SMART FILL"], prices["NORMAL"])
+        self.assertGreater(valid, 50)
+
+    def test_call_put_current_modes_use_identical_economics_and_net_debit(self):
+        expiry = date(2029, 1, 19)
+        for mode, expected in (("NORMAL", .91), ("SMART FILL", 1.12)):
+            rows = [
+                self._row(expiry, "CALL", 100, 3, bid=2.70, ask=3.10),
+                self._row(expiry, "CALL", 105, 2, bid=1.95, ask=2.30),
+                self._row(expiry, "PUT", 95, 2, bid=1.95, ask=2.30),
+                self._row(expiry, "PUT", 100, 3, bid=2.70, ask=3.10),
+            ]
+            found, _ = scan_vertical_candidates(
+                symbol="SPY", spot_last=100, option_rows=rows, target_breakeven=None,
+                max_cost=None, pricing_mode=mode, desktop_fast_fill=True)
+            self.assertEqual(len(found), 2)
+            for candidate in found:
+                self.assertEqual(candidate["debit"], expected)
+                request = build_vertical_preview_payload(
+                    symbol=candidate["symbol"], call_put=candidate["call_put"],
+                    expiry=expiry, buy_strike=candidate["buy_strike"],
+                    sell_strike=candidate["sell_strike"], quantity=1,
+                    limit_price=candidate["debit"], client_order_id="TESTPRICING")
+                order = request["PreviewOrderRequest"]["Order"][0]
+                self.assertEqual(order["priceType"], "NET_DEBIT")
+                self.assertEqual(order["limitPrice"], expected)
 
     def test_smart_fill_improves_on_natural_ask_without_changing_normal(self):
         from src.vertical_options import price_vertical_quote, smart_fill_ladder
@@ -2417,7 +2638,7 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertIn(".vo-mode-help:hover .vo-mode-tooltip", ui)
         self.assertIn(".vo-mode-help:focus .vo-mode-tooltip", ui)
         self.assertIn("NORMAL suggests a limit between the spread midpoint", ui)
-        self.assertIn("SMART FILL uses the natural spread ASK", ui)
+        self.assertIn("SMART FILL uses ASK or a limit no more than 3% below ASK", ui)
         self.assertIn("cannot guarantee a fill", ui)
         self.assertIn('pricing_mode = _pricing_mode_flip_switch()', ui)
         self.assertIn('st.toggle(', ui)
@@ -2570,7 +2791,8 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
         self.assertIn('mode = "SMART FILL" if smart else "NORMAL"', ui)
         self.assertIn("def _reprice_cached_vertical_scan(", ui)
         self.assertIn('["GOOD_FOR_DAY"] if smart_mode', ui)
-        self.assertIn('checked_price["spread_ask"] > limit_price + .005', ui)
+        self.assertEqual(ui.count(
+            '_validate_current_vertical_limit(client, touch_session, candidate, result, limit_price)'), 2)
         self.assertIn('desktop_fast_fill=True', ui)
         self.assertIn('key="vo_preview"', ui)
         self.assertIn('key="vo_send"', ui)

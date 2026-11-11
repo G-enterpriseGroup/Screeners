@@ -76,6 +76,7 @@ _FILL_EST_SQL = (
     " ELSE NULL END"
 )
 _NUMERIC_FILTERS["fill_scale"] = _FILL_EST_SQL
+_DISPLAY_FILL_EST_SQL = f"CAST(({_FILL_EST_SQL}) + 0.5 AS INTEGER)"
 
 
 def indicative_fill_score(row: dict[str, Any]) -> float | None:
@@ -127,6 +128,7 @@ class VerticalResultStore:
         self._indexes = {}
         self._analyzed_count = -1
         self._choices_cache = None
+        self._fill_values_cache = {}
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE spreads (
@@ -225,6 +227,7 @@ class VerticalResultStore:
             self._annual = annual
             self._minimum_expiry = cutoff
             self._choices_cache = None
+            self._fill_values_cache.clear()
             return removed
 
     def add_expiration(self, expiry: date, rows: list[dict[str, Any]], calculator: Callable,
@@ -273,6 +276,7 @@ class VerticalResultStore:
             self._annual = annual
             self._completed[expiry] = len(rows)
             self._choices_cache = None
+            self._fill_values_cache.clear()
             return True
 
     # ==============================
@@ -330,7 +334,15 @@ class VerticalResultStore:
             if not isinstance(column_filters, dict):
                 raise ValueError("Invalid column filters.")
             for field, selected in column_filters.items():
-                if field in _NUMERIC_FILTERS:
+                if field == "fill_scale":
+                    if (not isinstance(selected, dict) or set(selected) != {"gt"}
+                            or isinstance(selected["gt"], bool)
+                            or not isinstance(selected["gt"], (int, float))
+                            or not math.isfinite(selected["gt"]) or not 0 <= selected["gt"] <= 100):
+                        raise ValueError("Invalid fill estimate threshold (0–100%, strictly greater than).")
+                    clauses.append(f"{_DISPLAY_FILL_EST_SQL}>?")
+                    args.append(float(selected["gt"]))
+                elif field in _NUMERIC_FILTERS:
                     allowed = ({"target", "percent", "min", "max"} if field == "breakeven"
                                else {"min", "max"})
                     if not isinstance(selected, dict) or set(selected) - allowed:
@@ -421,6 +433,27 @@ class VerticalResultStore:
                         "SELECT DISTINCT json_extract(details, '$[5]') FROM spreads ORDER BY 1") if row[0] is not None],
                 }
         return self._choices_cache
+
+    def fill_est_values(self, *, column_filters=None, max_distance=None, year=None) -> list[int]:
+        """Display-rounded values across all other active filters, never just a page."""
+        if column_filters is not None and not isinstance(column_filters, dict):
+            raise ValueError("Invalid column filters.")
+        self._where(max_distance=max_distance, column_filters=column_filters, year=year)
+        filters = {key: value for key, value in (column_filters or {}).items() if key != "fill_scale"}
+        where, args = self._where(max_distance=max_distance, column_filters=filters, year=year)
+        cache_key = (where, tuple(args))
+        with self._lock:
+            cached = self._fill_values_cache.get(cache_key)
+            if cached is None:
+                known = (" AND " if where else " WHERE ") + _DISPLAY_FILL_EST_SQL + " IS NOT NULL"
+                with self._connect() as db:
+                    cached = [row[0] for row in db.execute(
+                        f"SELECT DISTINCT {_DISPLAY_FILL_EST_SQL} AS estimate FROM spreads"
+                        + where + known + " ORDER BY estimate LIMIT 91", args)]
+                self._fill_values_cache[cache_key] = cached
+                while len(self._fill_values_cache) > 8:
+                    self._fill_values_cache.pop(next(iter(self._fill_values_cache)))
+            return list(cached)
 
     def _order(self, sort_by, direction, column_filters=None):
         if sort_by not in _SORTS or direction not in {"ASC", "DESC"}:
@@ -597,6 +630,7 @@ tr.call{background:#a3e635;color:#000}tr.put{background:#ea0101;color:#000}#stat
 <label>YEAR<select id="year"><option value="">ALL YEARS</option></select></label>
 <label>SORT<select id="sort"></select></label>
 <label>DIRECTION<select id="direction"><option>ASC</option><option>DESC</option></select></label>
+<label>FILL EST GREATER THAN<select id="fill_gt"><option value="">NO THRESHOLD</option></select></label>
 <label>TARGET $ / ±%<div class="pair"><input id="target" type="number" step="any" min="0" aria-label="Target breakeven"><input id="percent" type="number" min="0" max="100" step=".5" aria-label="Target tolerance percent" value="5"></div></label>
 <label>NUMERIC COLUMN<select id="numeric"></select></label>
 <label>MIN / MAX<div class="pair"><input id="minimum" type="number" step="any" aria-label="Column minimum"><input id="maximum" type="number" step="any" aria-label="Column maximum"></div></label>
@@ -608,7 +642,7 @@ tr.call{background:#a3e635;color:#000}tr.put{background:#ea0101;color:#000}#stat
 "use strict";
 function verticalsWorker(){
  "use strict";
- let rows=[],meta={},cachedKey="",matching=[],pending=null,timer=null,ready=false;
+ let rows=[],meta={},cachedKey="",matching=[],pending=null,timer=null,ready=false,fillValues=[];
  const numeric={buy:2,sell:3,buy_last:4,sell_last:5,buy_oi:6,sell_oi:7,debit:8,cost:9,breakeven:10,ratio:11,profit:12,fill_scale:17,width:22,buy_bid:23,buy_ask:24,sell_bid:25,sell_ask:26};
  const columns={"R:R":11,COST:9,BREAKEVEN:10,"MAX PROFIT":12,EXPIRATION:0,"BUY STRIKE":2,"SELL STRIKE":3,"BUY LAST":4,"SELL LAST":5,"SPREAD WIDTH":22,"FILL QUALITY":18,"FILL EST":17,TYPE:1,TICKER:21};
  function target(filters){return Object.hasOwn(filters.breakeven||{},"target")?filters.breakeven.target:meta.target;}
@@ -616,13 +650,19 @@ function verticalsWorker(){
  function compare(a,b){return a<b?-1:a>b?1:0;}
  function run(request){
   const state=request.state,filters=state.filters||{},aim=target(filters),sign=state.direction==="DESC"?-1:1;
+  const fillBound=filters.fill_scale;
+  if(Object.hasOwn(filters,"fill_scale")&&(!fillBound||typeof fillBound!=="object"||Array.isArray(fillBound)||
+     Object.keys(fillBound).length!==1||!Object.hasOwn(fillBound,"gt")||typeof fillBound.gt!=="number"||
+     !Number.isFinite(fillBound.gt)||fillBound.gt<0||fillBound.gt>100))throw new Error("Invalid FILL EST greater-than threshold.");
   const key=JSON.stringify([filters,state.year,state.sort_by,state.direction,state.search]);
   if(key!==cachedKey){
    const query=String(state.search||"").trim().toLowerCase(),predicates=Object.entries(filters);matching=[];
+   const available=new Set();
    for(let index=0;index<rows.length;index++){
     const row=rows[index];let keep=!state.year||row[0].slice(0,4)===String(state.year);
     for(const [field,value] of predicates){
      if(!keep)break;
+     if(field==="fill_scale")continue; // Choice recovery excludes this filter itself.
      if(["ticker","side","expiry","basis"].includes(field)){
       const cell=field==="ticker"?meta.symbol:row[{side:1,expiry:0,basis:13}[field]];
       if(!value.includes(cell))keep=false;
@@ -631,11 +671,16 @@ function verticalsWorker(){
       if(field==="breakeven"&&Object.hasOwn(bounds,"percent")){
        if(aim!==null&&aim!==undefined){const band=aim*bounds.percent/100;keep=cell>=aim-band-1e-8&&cell<=aim+band+1e-8;}
       }else if((bounds.min!==undefined&&bounds.min!==null&&(cell===null||cell<bounds.min-1e-8))||(bounds.max!==undefined&&bounds.max!==null&&(cell===null||cell>bounds.max+1e-8)))keep=false;
-     }
+     }else throw new Error("Unknown column filter: "+field);
     }
     if(keep&&query&&!((meta.symbol+" "+row.join(" ")).toLowerCase().includes(query)))keep=false;
-    if(keep)matching.push(index);
+    if(keep){
+     const score=row[17],rounded=typeof score==="number"&&Number.isFinite(score)?Math.round(score):null;
+     if(rounded!==null)available.add(rounded);
+     if(!fillBound||(rounded!==null&&rounded>fillBound.gt))matching.push(index);
+    }
    }
+   fillValues=[...available].sort((left,right)=>left-right);
    const sorting=state.sort_by;
    const terms=sorting==="YEAR + FILL"?["year",18,"distance",9,-11,0,1,2,3,19,20]:sorting==="FILL + TARGET"?[18,"distance",9,-11]:sorting==="TARGET DISTANCE"?["distance"]:[columns[sorting]??9];
    matching.sort((left,right)=>{
@@ -650,9 +695,11 @@ function verticalsWorker(){
    });cachedKey=key;
   }
   const page=Math.max(0,Math.min(Number(state.page)||0,Math.max(0,Math.ceil(matching.length/100)-1)));
-  postMessage({type:"page",revision:request.revision,page,total:matching.length,rows:matching.slice(page*100,page*100+100).map(index=>rows[index])});
+  postMessage({type:"page",revision:request.revision,page,total:matching.length,fill_values:fillValues,rows:matching.slice(page*100,page*100+100).map(index=>rows[index])});
  }
- function schedule(request){pending=request;if(timer!==null)clearTimeout(timer);timer=setTimeout(()=>{timer=null;if(ready&&pending)run(pending);},35);}
+ function schedule(request){pending=request;if(timer!==null)clearTimeout(timer);timer=setTimeout(()=>{
+  timer=null;try{if(ready&&pending)run(pending);}catch(error){postMessage({type:"error",message:String(error.message||error)});}
+ },35);}
  onmessage=async event=>{
   try{
    if(event.data.type==="init"){
@@ -677,10 +724,21 @@ function verticalsWorker(){
  $("meta").textContent=meta.count.toLocaleString()+" QUALIFYING SPREADS // "+meta.source+" // "+meta.pricing_mode+" // MIN R:R 1:"+meta.min_reward_risk+" // QUOTE SNAPSHOT "+new Date(meta.loaded_at*1000).toLocaleString();
  const header=document.createElement("tr");for(const [,name] of fields){const cell=document.createElement("th");cell.textContent=name;header.appendChild(cell);}$("head").appendChild(header);
  for(const name of ["YEAR + FILL","FILL + TARGET","R:R","COST","BREAKEVEN","TARGET DISTANCE","MAX PROFIT","EXPIRATION","BUY STRIKE","SELL STRIKE","BUY LAST","SELL LAST","SPREAD WIDTH","FILL QUALITY","FILL EST","TYPE","TICKER"])$("sort").appendChild(option(name));
- for(const [key,name] of Object.entries(numeric))$("numeric").appendChild(option(key,name));
+ for(const [key,name] of Object.entries(numeric))if(key!=="fill_scale")$("numeric").appendChild(option(key,name));
  $("sort").value=meta.sort_by;$("direction").value=meta.direction;
  const band=filters.breakeven||{};$("target").value=Object.hasOwn(band,"target")?band.target??"":meta.target??"";$("percent").value=band.percent??5;
  function rangeInputs(){const bounds=filters[$("numeric").value]||{};$("minimum").value=bounds.min??"";$("maximum").value=bounds.max??"";}
+ let availableFillValues=[];
+ function fillChoices(values){
+  availableFillValues=values;
+  const selected=filters.fill_scale?.gt,choices=[...values];
+  if(selected!==undefined&&!choices.includes(selected))choices.push(selected);
+  choices.sort((left,right)=>left-right);
+  $("fill_gt").replaceChildren(option("","NO THRESHOLD"));
+  for(const value of choices)$("fill_gt").appendChild(option(String(value),value+"%"+(values.includes(value)?"":" (saved)")));
+  $("fill_gt").value=selected===undefined?"":String(selected);
+ }
+ fillChoices([]);
  function submit(reset=true){
   if(reset)page=0;clearTimeout(debounce);revision++;const current=revision;
   $("status").textContent="Filtering…";$("previous").disabled=true;$("next").disabled=true;
@@ -690,12 +748,16 @@ function verticalsWorker(){
  function render(message){
   page=message.page;const fragment=document.createDocumentFragment();
   for(const row of message.rows){const line=document.createElement("tr");line.className=row[1]==="CALL"?"call":"put";
-   for(const [index] of fields){const cell=document.createElement("td"),value=row[index];cell.textContent=value===null?"—":typeof value==="number"?(index===6||index===7?value.toLocaleString("en-US"):index===11?"1:"+value.toFixed(2):value.toLocaleString("en-US",{maximumFractionDigits:6})):String(value);line.appendChild(cell);}fragment.appendChild(line);
+   for(const [index] of fields){const cell=document.createElement("td"),value=row[index];cell.textContent=value===null?"—":typeof value==="number"?(index===6||index===7?value.toLocaleString("en-US"):index===11?"1:"+value.toFixed(2):index===17?Math.round(value)+"%":value.toLocaleString("en-US",{maximumFractionDigits:6})):String(value);line.appendChild(cell);}fragment.appendChild(line);
   }$("body").replaceChildren(fragment);$("status").textContent=message.total.toLocaleString()+" / "+meta.count.toLocaleString()+" SPREADS // PAGE "+(page+1)+" / "+Math.max(1,Math.ceil(message.total/100));
   $("previous").disabled=page===0;$("next").disabled=(page+1)*100>=message.total;
+  fillChoices(message.fill_values||[]);
  }
  function fail(message){$("error").textContent=message;$("status").textContent="Snapshot unavailable";}
  $("numeric").addEventListener("change",rangeInputs);rangeInputs();
+ $("fill_gt").addEventListener("change",()=>{
+  const value=$("fill_gt").value;if(value==="")delete filters.fill_scale;else filters.fill_scale={gt:Number(value)};submit();
+ });
  $("apply").addEventListener("click",()=>{
   for(const id of ["minimum","maximum"])if(!$(id).validity.valid){$(id).reportValidity();return;}
   const field=$("numeric").value,bounds={};for(const [id,key] of [["minimum","min"],["maximum","max"]]){const text=$(id).value;if(text!==""&&Number.isFinite(Number(text)))bounds[key]=Number(text);}
@@ -710,7 +772,7 @@ function verticalsWorker(){
  });
  for(const id of ["year","sort","direction"])$(id).addEventListener("change",()=>submit());$("search").addEventListener("input",()=>submit());
  $("previous").addEventListener("click",()=>{page--;submit(false);});$("next").addEventListener("click",()=>{page++;submit(false);});
- $("clear").addEventListener("click",()=>{filters={breakeven:{target:null}};$("search").value="";$("side").value="ALL";$("year").value="";$("target").value="";$("percent").value=5;for(const item of $("expiry").options)item.selected=true;rangeInputs();submit();});
+ $("clear").addEventListener("click",()=>{filters={breakeven:{target:null}};$("search").value="";$("side").value="ALL";$("year").value="";$("target").value="";$("percent").value=5;for(const item of $("expiry").options)item.selected=true;rangeInputs();fillChoices(availableFillValues);submit();});
  if(typeof Worker!=="function"||typeof DecompressionStream!=="function"){fail("Open this offline snapshot in a current browser supporting Web Workers and DecompressionStream.");return;}
  try{
   const url=URL.createObjectURL(new Blob(["("+verticalsWorker.toString()+")()"],{type:"text/javascript"}));worker=new Worker(url);URL.revokeObjectURL(url);
