@@ -2043,12 +2043,17 @@ def test() -> None:
                     driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="cost"]').click()
                 field = panel.find_element(By.CSS_SELECTOR, 'input[aria-label="Debit max"]')
                 field.click()
-                field.send_keys(SELECT_ALL, "a", Keys.BACKSPACE, "10000")
+                field.send_keys(SELECT_ALL, "a")
+                field.send_keys(Keys.BACKSPACE, "10000")
+                assert field.get_attribute("value") == "10000"
             in_grid(driver, stage_debit_budget)
             for smart in (True, False, True, False):
                 visible_switch_label(driver, "vo_smart_fill").click()
                 wait.until(lambda _: driver.find_element(
                     By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected() == smart)
+                wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
+                    all(row["fillDetail"] in ({"ASK"} if smart else {"LIMIT", "MID"})
+                        for row in snapshot["rows"]) else False))
                 wait.until(lambda _: grid_page_rows(driver)["total"] == 30)
                 def read_budget():
                     panel = driver.find_element(By.ID, "filter-panel")
@@ -2057,7 +2062,7 @@ def test() -> None:
                         driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="cost"]').click()
                     return panel.find_element(By.CSS_SELECTOR,
                         'input[aria-label="Debit max"]').get_attribute("value")
-                assert in_grid(driver, read_budget) == "10000"
+                wait.until(lambda _: in_grid(driver, read_budget) == "10000")
                 rows = grid_page_rows(driver)["rows"]
                 assert all(row["values"][1] == "C" and datetime.strptime(
                     row["values"][2], "%b-%d-%y").year == chosen_year for row in rows), rows
@@ -2115,7 +2120,8 @@ def test() -> None:
             # An empty SMART universe must still receive render arguments and
             # preserve filters for the populated NORMAL universe on return.
             ticker = active_ticker(driver)
-            ticker.send_keys(SELECT_ALL, "a", "MODEZ", Keys.TAB)
+            ticker.send_keys(SELECT_ALL, "a")
+            ticker.send_keys("MODEZ", Keys.TAB)
             form = wait.until(ready_scanner_form)
             form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
             wait.until(lambda _: grid_page_rows(driver)["total"] > 0)
