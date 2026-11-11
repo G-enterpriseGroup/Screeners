@@ -119,8 +119,8 @@ class StubETrade:
                     "strikePrice": strike, "lastPrice": last,
                     "openInterest": 0 if strike == 90 else strike * 10 + (1000 if side == "P" else 0),
                     # Asymmetric quotes: natural ASK differs from Last and MID.
-                    "bid": last - (.01 if symbol == "MASSIVE" else .02),
-                    "ask": last + .01 if symbol == "MASSIVE" else last + .02 + .002 * (strike - 90),
+                    "bid": .01 if symbol == "MODEZ" else last - (.01 if symbol == "MASSIVE" else .02),
+                    "ask": last + 10 if symbol == "MODEZ" else last + .01 if symbol == "MASSIVE" else last + .02 + .002 * (strike - 90),
                     # Broker-documented dash-padded root and 8-digit strike.
                     "osiKey": f"{symbol:-<6}{expiry_code}{side}{strike * 1000:08d}",
                 }
@@ -2030,6 +2030,48 @@ def test() -> None:
             # Await the committed filter acknowledgement before hard refresh;
             # otherwise the pending frontend message may be dropped on unload.
             wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
+            # Pricing-mode changes must preserve a staged debit budget and year,
+            # without waiting for a filter acknowledgment before the switch.
+            chosen_year = max(latest_years)
+            driver.find_element(By.XPATH,
+                f'//button[starts-with(normalize-space(.), "{chosen_year} //")]').click()
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 30)
+            def stage_debit_budget():
+                panel = driver.find_element(By.ID, "filter-panel")
+                if not panel.is_displayed() or not panel.find_elements(
+                        By.CSS_SELECTOR, 'input[aria-label="Debit max"]'):
+                    driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="cost"]').click()
+                field = panel.find_element(By.CSS_SELECTOR, 'input[aria-label="Debit max"]')
+                field.click()
+                field.send_keys(SELECT_ALL, "a")
+                field.send_keys(Keys.BACKSPACE, "10000")
+                assert field.get_attribute("value") == "10000"
+            in_grid(driver, stage_debit_budget)
+            for smart in (True, False, True, False):
+                visible_switch_label(driver, "vo_smart_fill").click()
+                wait.until(lambda _: driver.find_element(
+                    By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected() == smart)
+                wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
+                    all(row["fillDetail"] in ({"ASK"} if smart else {"LIMIT", "MID"})
+                        for row in snapshot["rows"]) else False))
+                wait.until(lambda _: grid_page_rows(driver)["total"] == 30)
+                def read_budget():
+                    panel = driver.find_element(By.ID, "filter-panel")
+                    if not panel.is_displayed() or not panel.find_elements(
+                            By.CSS_SELECTOR, 'input[aria-label="Debit max"]'):
+                        driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="cost"]').click()
+                    return panel.find_element(By.CSS_SELECTOR,
+                        'input[aria-label="Debit max"]').get_attribute("value")
+                wait.until(lambda _: in_grid(driver, read_budget) == "10000")
+                rows = grid_page_rows(driver)["rows"]
+                assert all(row["values"][1] == "C" and datetime.strptime(
+                    row["values"][2], "%b-%d-%y").year == chosen_year for row in rows), rows
+                assert grid_target(driver) == "101"
+            grid_menu_action(driver, "cost", "CLEAR COLUMN")
+            driver.find_element(By.XPATH,
+                '//button[starts-with(normalize-space(.), "ALL YEARS //")]').click()
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 90)
+            print("NORMAL/SMART round-trip preserves pending debit budget, expiry, side, target and year PASS", flush=True)
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 9
             # A browser refresh restores edited filters without chain downloads.
             # Explicit rescan resets expiry/side filters and seeds ±5% from target.
@@ -2074,6 +2116,36 @@ def test() -> None:
             assert len([e for e in events(event_path) if e["event"] == "chain"]) == before_multi + 18
             assert not any(e["event"] == "place" for e in events(event_path))
             print("Latest-two-years default, complete retained universe, refresh and single-click rescan PASS", flush=True)
+
+            # An empty SMART universe must still receive render arguments and
+            # preserve filters for the populated NORMAL universe on return.
+            ticker = active_ticker(driver)
+            ticker.send_keys(SELECT_ALL, "a")
+            ticker.send_keys("MODEZ", Keys.TAB)
+            form = wait.until(ready_scanner_form)
+            form.find_element(By.XPATH, './/button[contains(., "SCAN ALL YEARS")]').click()
+            wait.until(lambda _: grid_page_rows(driver)["total"] > 0)
+            set_grid_tolerance(driver, 100)
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 40)
+            toggle_put_column_filter(driver)
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 20)
+            driver.find_element(By.XPATH,
+                f'//button[starts-with(normalize-space(.), "{chosen_year} //")]').click()
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 10)
+            in_grid(driver, stage_debit_budget)
+            visible_switch_label(driver, "vo_smart_fill").click()
+            wait.until(lambda _: in_grid(driver, lambda: driver.find_element(
+                By.ID, "scroll").get_attribute("aria-label")).endswith("; 0 results"))
+            assert in_grid(driver, read_budget) == "10000"
+            assert in_grid(driver, lambda: driver.find_element(By.ID, "empty").is_displayed())
+            visible_switch_label(driver, "vo_smart_fill").click()
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 10)
+            assert in_grid(driver, read_budget) == "10000"
+            assert all(row["values"][1] == "C" and datetime.strptime(
+                row["values"][2], "%b-%d-%y").year == chosen_year
+                for row in grid_page_rows(driver)["rows"])
+            assert not any(e["event"] == "place" for e in events(event_path))
+            print("Empty SMART universe keeps editable filters and restores NORMAL matches PASS", flush=True)
 
             # A user-edited threshold must reach the actual candidate scan,
             # while the next scan still opens on BEST PER YEAR. This fixture

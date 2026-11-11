@@ -305,6 +305,91 @@ class PhoneParityTests(unittest.TestCase):
         ui.preview_order.assert_not_called()
         ui.place_order.assert_not_called()
 
+    def test_both_modes_can_compare_stale_chains_but_cannot_review_a_stale_order(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            with self.subTest(feature=prefix):
+                _, rows = quoted_spread()
+                loaded_at = time.time() - feature._SCAN_CACHE_SECONDS - 1
+                raw = {"rows": rows, "symbol": "SPY", "spot": 100, "scan_id": 44,
+                       "loaded_at": loaded_at, "scan_complete": True, "loaded_expirations": 1}
+                filters = {"filters": {"cost": {"max": 200}}, "revision": 7}
+                state = {"_" + prefix + "_chain_cache": {"E*TRADE:SPY": raw},
+                         "_" + prefix + "_column_filters": deepcopy(filters)}
+                ui = order_ui(state)
+                client, touch = MagicMock(), MagicMock()
+                with (patch.object(feature, "st", ui), patch.object(feature, "_chain") as chain):
+                    result = {"source": "E*TRADE", "symbol": "SPY", "raw_scan_id": 44,
+                              "loaded_at": loaded_at, "target": None, "max_cost": None,
+                              "min_reward_risk": 2, "pricing_mode": "NORMAL", "scope": "old"}
+                    updated = feature._reprice_cached_vertical_scan(result, "SMART FILL")
+                    self.assertIsNotNone(updated)
+                    self.assertEqual(updated["pricing_mode"], "SMART FILL")
+                    self.assertEqual(updated["loaded_at"], loaded_at)
+                    self.assertEqual(state["_" + prefix + "_column_filters"], filters)
+                    candidate = updated["candidates"].page(limit=1)[0]
+                    self.assertTrue(candidate["orderable"])
+                    feature._render_selected_order(client, touch, candidate, updated, True)
+                    self.assertIn("MARKET SNAPSHOT EXPIRED", str(ui.warning.call_args))
+                    self.assertEqual(client.mock_calls, [])
+                    touch.assert_not_called()
+                    chain.assert_not_called()
+                    self.assertIsNone(feature._reprice_cached_vertical_scan(
+                        {**result, "raw_scan_id": 45}, "SMART FILL"))
+                    self.assertIsNone(feature._reprice_cached_vertical_scan(
+                        {**result, "source": "YFINANCE"}, "SMART FILL"))
+
+    def test_historical_cached_ranking_finishes_in_bounded_passes_without_market_reads(self):
+        from datetime import timedelta
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            with self.subTest(feature=prefix):
+                _, quoted_rows = quoted_spread()
+                expiries = [quoted_rows[0]["expiry"] + timedelta(days=7 * index) for index in range(3)]
+                rows = [{**row, "expiry": expiry} for expiry in expiries for row in quoted_rows]
+                loaded_at = time.time() - feature._SCAN_CACHE_SECONDS - 1
+                raw = {"rows": rows, "symbol": "SPY", "spot": 100, "scan_id": 44,
+                       "loaded_at": loaded_at, "scan_complete": True, "loaded_expirations": 3,
+                       "expirations": expiries, "next_expiry_index": 3, "errors": [],
+                       "failed_expirations": []}
+                state = {"_" + prefix + "_chain_cache": {"E*TRADE:SPY": raw}}
+                ui = order_ui(state)
+                client, touch = MagicMock(is_offline=False), MagicMock()
+                with (patch.object(feature, "st", ui), patch.object(feature, "_SCAN_RANK_SECONDS", 0),
+                      patch.object(feature, "_scan_all_years", side_effect=AssertionError("Network acquisition")) as scan,
+                      patch.object(feature, "_chain", side_effect=AssertionError("Broker chain")) as chain):
+                    result = {"source": "E*TRADE", "symbol": "SPY", "raw_scan_id": 44,
+                              "loaded_at": loaded_at, "target": None, "max_cost": None,
+                              "min_reward_risk": 2, "pricing_mode": "NORMAL", "scope": "old"}
+                    updated = feature._reprice_cached_vertical_scan(result, "SMART FILL")
+                    self.assertEqual(updated["ranked_expirations"], 1)
+                    self.assertFalse(updated["scan_complete"])
+                    scope = updated["scope"]
+                    for expected_expirations in (2, 3):
+                        updated = feature._continue_vertical_scan(updated, client, touch)
+                        self.assertEqual(updated["ranked_expirations"], expected_expirations)
+                        self.assertEqual(updated["loaded_at"], loaded_at)
+                        self.assertEqual(updated["scope"], scope)
+                    self.assertTrue(updated["scan_complete"])
+                    self.assertEqual({row["expiry"] for row in updated["candidates"].iter_rows()}, set(expiries))
+                    candidate = updated["candidates"].page(limit=1)[0]
+                    feature._render_selected_order(client, touch, candidate, updated, True)
+                    self.assertIn("MARKET SNAPSHOT EXPIRED", str(ui.warning.call_args))
+                    # Only already acquired complete chains can bypass the acquisition gate.
+                    raw["scan_complete"] = False
+                    with self.assertRaisesRegex(ValueError, "EXPIRED OR SOURCE CHANGED"):
+                        feature._continue_vertical_scan(updated, client, touch)
+                    raw["loaded_at"] = time.time()
+                    with self.assertRaisesRegex(ValueError, "EXPIRED OR SOURCE CHANGED"):
+                        feature._continue_vertical_scan(updated, MagicMock(is_offline=True), touch)
+                    raw["scan_complete"] = True
+                    raw["failed_expirations"] = [expiries[0]]
+                    raw["loaded_at"] = loaded_at
+                    with self.assertRaisesRegex(ValueError, "EXPIRED OR SOURCE CHANGED"):
+                        feature._continue_vertical_scan(updated, client, touch)
+                    self.assertEqual(client.mock_calls, [])
+                    scan.assert_not_called()
+                    chain.assert_not_called()
+                    touch.assert_not_called()
+
     def test_explicit_mode_wins_over_late_preferences_and_sort_memories_are_separate(self):
         state = {"vp_smart_fill": True, "_vp_pricing_mode_preference": "NORMAL",
                  "_vp_presentation": {"vp_best_pair_sort": "COST", "vp_best_pair_direction": "DESC",
@@ -791,6 +876,9 @@ def snapshot(scan_id):
             "scan_complete":True,"result_stores":{}}
 def component(**args):
     st.session_state["fixture_args"] = args
+    st.session_state["fixture_component_path"] = tuple(st._main._active_dg._cursor.delta_path)
+    if st.session_state.get("fixture_persist_update"):
+        return st.session_state.get("fixture_update")
     return st.session_state.pop("fixture_update", None)
 def scan(client, symbol, touch, *, refresh=False):
     raw = st.session_state["_FEATURE_PREFIX_chain_cache"]["E*TRADE:QQQ"]
@@ -848,6 +936,7 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 app = AppTest.from_string(source, default_timeout=15).run()
                 self.assertFalse(app.exception)
                 args = app.session_state["fixture_args"]
+                initial_filter_scope, initial_component_key = args["filter_scope"], args["key"]
                 result_key = prefix + "_scan_result"
                 filter_key = "_" + prefix + "_column_filters"
                 self.assertEqual([field.label for field in app.text_input],
@@ -927,6 +1016,9 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 app.toggle(key=prefix + "_smart_fill").set_value(True).run()
                 self.assertFalse(app.exception)
                 self.assertEqual(app.session_state["fixture_args"]["column_filters"], expected_edited)
+                self.assertEqual(app.session_state["fixture_args"]["filter_ack_revision"], 4)
+                self.assertEqual(app.session_state["fixture_args"]["filter_scope"], initial_filter_scope)
+                self.assertEqual(app.session_state["fixture_args"]["key"], initial_component_key)
                 self.assertNotIn("fixture_scan_calls", app.session_state)
                 self.assertTrue(all(cap is None for cap in app.session_state["fixture_rank_caps"]))
 
@@ -935,7 +1027,8 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 without_max = {**edited, "cost": {"min": 75}}
                 expected_without_max = {**expected_edited, "cost": {"min": 75}}
                 app.session_state["fixture_update"] = {
-                    "scope": args["scope"], "column_filters": without_max, "filter_revision": 1,
+                    "scope": args["scope"], "column_filters": without_max,
+                    "filter_revision": args["filter_ack_revision"] + 1,
                     "selected_ids": [selected_id], "revision": 1}
                 app.run()
                 self.assertIsNone(app.session_state["fixture_order_cap"])
@@ -983,6 +1076,203 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                 self.assertEqual((args["sort_by"], args["sort_direction"]), ("COST", "DESC"))
                 self.assertEqual(app.session_state["fixture_rank_caps"], ranks_before_sort)
                 self.assertEqual(app.session_state["fixture_scan_calls"], scans_before_sort)
+
+                # A delayed BEST sort updates only that view after switching to ALL.
+                component_path = app.session_state["fixture_component_path"]
+                app.radio[0].set_value("ALL QUALIFIED").run()
+                self.assertEqual(app.session_state["fixture_component_path"], component_path)
+                args = app.session_state["fixture_args"]
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "filter_scope": args["filter_scope"],
+                    "column_filters": args["column_filters"],
+                    "filter_revision": args["filter_ack_revision"] + 1,
+                    "sort_view": "BEST PER YEAR", "sort_by": "MAX PROFIT", "sort_direction": "DESC"}
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["sort_by"], "FILL + TARGET")
+                app.radio[0].set_value("BEST PER YEAR").run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual((args["sort_by"], args["sort_direction"]), ("MAX PROFIT", "DESC"))
+
+                # Streamlit keeps a component's last value until the browser emits
+                # another one. Returning to NORMAL must not revive an old selection.
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                app.toggle(key=prefix + "_smart_fill").set_value(False).run()
+                args = app.session_state["fixture_args"]
+                original_normal_scope = args["scope"]
+                selected_id = app.session_state[result_key]["candidates"].page(limit=1)[0]["id"]
+                app.session_state["fixture_persist_update"] = True
+                app.session_state["fixture_update"] = {
+                    "scope": original_normal_scope, "filter_scope": args["filter_scope"],
+                    "column_filters": args["column_filters"], "filter_revision": args["filter_ack_revision"],
+                    "selected_ids": [selected_id], "revision": 1}
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["selected_ids"], [selected_id])
+                old_pricing_revision = app.session_state[result_key]["pricing_revision"]
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                self.assertFalse(app.exception)
+                smart_scope = app.session_state["fixture_args"]["scope"]
+                self.assertEqual(app.session_state["fixture_args"]["selected_ids"], [])
+                app.toggle(key=prefix + "_smart_fill").set_value(False).run()
+                app.run()  # The same old payload is still returned on this rerun.
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["selected_ids"], [])
+                self.assertEqual(args["ack_revision"], 0)
+                self.assertNotIn(args["scope"], (original_normal_scope, smart_scope))
+                self.assertEqual(app.session_state[result_key]["pricing_revision"], old_pricing_revision + 2)
+                app.session_state["fixture_persist_update"] = False
+                del app.session_state["fixture_update"]
+
+                # A mode change must accept a pending filter from the same snapshot,
+                # while dropping that old mode's selection and viewport request.
+                self.assertNotEqual(args["filter_scope"], initial_filter_scope)
+                year_button = next(button for button in app.button
+                                   if button.label[:4].isdigit() and " // " in button.label)
+                selected_year = int(year_button.label[:4])
+                year_button.click().run()
+                args = app.session_state["fixture_args"]
+                old_scope = args["scope"]
+                component_path = app.session_state["fixture_component_path"]
+                current_filter_scope, component_key = args["filter_scope"], args["key"]
+                current_revision = args["filter_ack_revision"]
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertNotEqual(args["scope"], old_scope)
+                self.assertEqual(args["filter_scope"], current_filter_scope)
+                self.assertEqual(args["key"], component_key)
+                self.assertEqual(args["filter_ack_revision"], current_revision)
+                self.assertTrue(any(button.label.startswith(str(selected_year) + " // ")
+                                    and button.proto.type == "primary" for button in app.button))
+                app.session_state["fixture_update"] = {
+                    "scope": old_scope, "filter_scope": current_filter_scope,
+                    "column_filters": {"side": []}, "filter_revision": current_revision + 1,
+                    "selected_ids": [selected_id], "revision": 99,
+                    "viewport_offset": 1, "viewport_sort_key": args["sort_key"]}
+                app.run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"], {"side": []})
+                self.assertEqual(args["total_rows"], 0)
+                self.assertEqual(app.session_state["fixture_component_path"], component_path)
+                self.assertEqual(args["selected_ids"], [])
+                self.assertEqual(args["ack_revision"], 0)
+                self.assertEqual(args["row_offset"], 0)
+                self.assertTrue(any(button.label == f"{selected_year} // 0" and
+                                    button.proto.type == "primary" for button in app.button))
+                self.assertTrue(any(button.label.startswith("ALL YEARS // ") for button in app.button))
+
+                # Even a genuinely empty repriced universe keeps the filters usable.
+                from src.vertical_options_store import VerticalResultStore
+                empty_result = dict(app.session_state[result_key])
+                empty_result["candidates"] = VerticalResultStore("QQQ", 100, None, None, "SMART FILL")
+                empty_result["annual_ids"] = set()
+                app.session_state[result_key] = empty_result
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["key"], component_key)
+                self.assertEqual(app.session_state["fixture_component_path"], component_path)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], {"side": []})
+                self.assertEqual(app.session_state["fixture_args"]["total_rows"], 0)
+                app.toggle(key=prefix + "_smart_fill").set_value(False).run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"], {"side": []})
+                self.assertTrue(any(button.label == f"{selected_year} // 0" and
+                                    button.proto.type == "primary" for button in app.button))
+                next(button for button in app.button if button.label.startswith("ALL YEARS // ")).click().run()
+                args = app.session_state["fixture_args"]
+                app.session_state["fixture_update"] = {
+                    "scope": args["scope"], "filter_scope": current_filter_scope,
+                    "column_filters": {}, "filter_revision": args["filter_ack_revision"] + 1}
+                app.run()
+                self.assertFalse(app.exception)
+                args = app.session_state["fixture_args"]
+                self.assertEqual(args["column_filters"], {})
+                self.assertGreater(args["total_rows"], 0)
+                acknowledged_revision = args["filter_ack_revision"]
+                for rejected_scope, rejected_revision in ((current_filter_scope, acknowledged_revision - 1),
+                                                          (initial_filter_scope, acknowledged_revision + 100)):
+                    app.session_state["fixture_update"] = {
+                        "scope": args["scope"], "filter_scope": rejected_scope,
+                        "column_filters": {"side": []}, "filter_revision": rejected_revision}
+                    app.run()
+                    self.assertFalse(app.exception)
+                    self.assertEqual(app.session_state["fixture_args"]["column_filters"], {})
+                    self.assertEqual(app.session_state["fixture_args"]["filter_ack_revision"], acknowledged_revision)
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                app.toggle(key=prefix + "_smart_fill").set_value(False).run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], {})
+                self.assertEqual(app.session_state["fixture_args"]["filter_ack_revision"], acknowledged_revision)
+                self.assertEqual(app.session_state["fixture_scan_calls"], scans_before_sort)
+
+                # Historical mode comparison preserves filters without refreshing quote age.
+                component_path = app.session_state["fixture_component_path"]
+                import time
+                expired_at = time.time() - desktop._SCAN_CACHE_SECONDS - 1
+                expired_result = dict(app.session_state[result_key])
+                expired_result["loaded_at"] = expired_at
+                app.session_state[result_key] = expired_result
+                raw_cache = app.session_state["_" + prefix + "_chain_cache"]
+                raw_cache["E*TRADE:QQQ"]["loaded_at"] = expired_at
+                app.session_state[prefix + "_review_bundle"] = {"old": True}
+                app.session_state[prefix + "_live_confirm"] = True
+                app.session_state["_" + prefix + "_auto_scan_error"] = "Old ranking failure"
+                app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state["fixture_args"]["column_filters"], {})
+                self.assertEqual(app.session_state["fixture_args"]["filter_ack_revision"], acknowledged_revision)
+                self.assertEqual(app.session_state[result_key]["loaded_at"], expired_at)
+                self.assertEqual(app.session_state["fixture_component_path"], component_path)
+                self.assertTrue(any("STALE SNAPSHOT" in warning.value for warning in app.warning))
+                self.assertNotIn(prefix + "_review_bundle", app.session_state)
+                self.assertNotIn(prefix + "_live_confirm", app.session_state)
+                self.assertNotIn("_" + prefix + "_auto_scan_error", app.session_state)
+                self.assertEqual(app.session_state["fixture_scan_calls"], scans_before_sort)
+
+                # A mode with no qualifying dates postpones automatic defaults until
+                # another mode has choices; an explicit CLEAR during the empty view wins.
+                for explicit_clear in (False, True):
+                    raw = dict(app.session_state["_" + prefix + "_chain_cache"]["E*TRADE:QQQ"])
+                    raw.update(scan_id=raw["scan_id"] + 1, loaded_at=time.time(), result_stores={})
+                    app.session_state["_" + prefix + "_chain_cache"] = {"E*TRADE:QQQ": raw}
+                    result = dict(app.session_state[result_key])
+                    result.update(raw_scan_id=raw["scan_id"], loaded_at=raw["loaded_at"],
+                                  scope="empty-snapshot-" + str(raw["scan_id"]),
+                                  candidates=VerticalResultStore("QQQ", 100, None, None, "SMART FILL"),
+                                  annual_ids=set())
+                    app.session_state[result_key] = result
+                    app.run()
+                    self.assertFalse(app.exception)
+                    self.assertTrue(app.session_state[filter_key]["defaults_pending"])
+                    empty_component_path = app.session_state["fixture_component_path"]
+                    args = app.session_state["fixture_args"]
+                    self.assertEqual(args["total_rows"], 0)
+                    if explicit_clear:
+                        app.session_state["fixture_update"] = {
+                            "scope": args["scope"], "filter_scope": args["filter_scope"],
+                            "column_filters": {}, "filter_revision": 1}
+                        app.run()
+                        self.assertFalse(app.exception)
+                        self.assertFalse(app.session_state[filter_key].get("defaults_pending"))
+                    app.toggle(key=prefix + "_smart_fill").set_value(False).run()
+                    self.assertFalse(app.exception)
+                    args = app.session_state["fixture_args"]
+                    available = app.session_state[result_key]["candidates"].column_filter_choices()["expiry"]
+                    default = (desktop if prefix == "vo" else phone)._default_column_filters(available)
+                    self.assertEqual(args["column_filters"], {} if explicit_clear else default)
+                    self.assertEqual(app.session_state["fixture_component_path"], empty_component_path)
+                    self.assertEqual(args["filter_ack_revision"], 1 if explicit_clear else 0)
+                    self.assertFalse(app.session_state[filter_key].get("defaults_pending"))
+                    self.assertGreater(args["total_rows"], 0)
+                    app.toggle(key=prefix + "_smart_fill").set_value(True).run()
+                    self.assertFalse(app.exception)
+                    self.assertEqual(app.session_state["fixture_args"]["column_filters"],
+                                     {} if explicit_clear else default)
 
                 # Capped legacy snapshots require an explicit rescan and cannot resume or trade.
                 legacy = dict(app.session_state[result_key])

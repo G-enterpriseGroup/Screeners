@@ -1347,12 +1347,15 @@ def _continue_vertical_scan(result: dict[str, Any], client, touch_session) -> di
     """Advance this snapshot only; preserve views, filters and checked identities."""
     raw = (st.session_state.get("_vo_chain_cache") or {}).get(f'{result["source"]}:{result["symbol"]}')
     source = "E*TRADE" if client is not None and not bool(getattr(client, "is_offline", False)) else "PUBLIC"
-    if (source != result["source"] or not isinstance(raw, dict)
-            or raw.get("scan_id") != result.get("raw_scan_id")
-            or time.time() - raw["loaded_at"] >= _SCAN_CACHE_SECONDS):
+    if not isinstance(raw, dict) or raw.get("scan_id") != result.get("raw_scan_id"):
+        raise ValueError("QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED // Press SCAN ALL YEARS again.")
+    ranking_only = bool(raw.get("scan_complete")) and not raw.get("failed_expirations")
+    if not ranking_only and (source != result["source"]
+                             or time.time() - raw["loaded_at"] >= _SCAN_CACHE_SECONDS):
         raise ValueError("QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED // Press SCAN ALL YEARS again.")
     started = time.monotonic()
-    raw = _scan_all_years(client, result["symbol"], touch_session)
+    if not ranking_only:
+        raw = _scan_all_years(client, result["symbol"], touch_session)
     candidates, annual_ids, _, potential_pairs = _rank_cached_vertical_chains(
         raw, result["target"], result["max_cost"], result["pricing_mode"],
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
@@ -1816,20 +1819,20 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     raw = (st.session_state.get("_vo_chain_cache") or {}).get(
         f'{result["source"]}:{result["symbol"]}'
     )
-    if (not isinstance(raw, dict) or raw.get("scan_id") != result.get("raw_scan_id")
-            or time.time() - float(raw.get("loaded_at") or 0) >= _SCAN_CACHE_SECONDS):
+    if not isinstance(raw, dict) or raw.get("scan_id") != result.get("raw_scan_id"):
         return None
     candidates, annual_ids, _, _ = _rank_cached_vertical_chains(
         raw, result["target"], result["max_cost"], mode,
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
     )
+    pricing_revision = int(result.get("pricing_revision", 0)) + 1
     scope = hashlib.sha256(
         repr((raw["scan_id"], result["target"], result["max_cost"],
               result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK), mode,
-              bool(result.get("capacity_limited")))).encode("utf-8")
+              pricing_revision, bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
-        **result, "pricing_mode": mode, "scope": scope,
+        **result, "pricing_mode": mode, "scope": scope, "pricing_revision": pricing_revision,
         "candidates": candidates, "annual_ids": annual_ids,
         "ranked_expirations": candidates.ranked_expirations,
         "chains_complete": raw["scan_complete"],
@@ -2349,8 +2352,10 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if not isinstance(result.get("candidates"), VerticalResultStore):
                 st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
                 return
+            pricing_progress = st.empty()
             if result.get("pricing_mode", "NORMAL") != pricing_mode:
-                updated = _reprice_cached_vertical_scan(result, pricing_mode)
+                with pricing_progress.container():
+                    updated = _reprice_cached_vertical_scan(result, pricing_mode)
                 st.session_state.pop("vo_review_bundle", None)
                 st.session_state.pop("vo_live_confirm", None)
                 st.session_state.pop("vo_last_send_results", None)
@@ -2358,6 +2363,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 if updated is None:
                     st.warning("QUOTE SNAPSHOT EXPIRED // Last results retained. Scan again for the selected pricing mode.")
                     return
+                st.session_state.pop("_vo_auto_scan_error", None)
                 result = updated
                 st.session_state["vo_scan_result"] = result
                 _remember_scan_snapshot()
@@ -2409,8 +2415,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 f'RISK:REWARD ≥ 1:{min_reward_risk:g} // '
                 "DEBIT MIN / MAX IN COLUMN FILTER // 7+ DAYS TO EXPIRY"
             ).replace("$", r"\$"))
+            snapshot_notice = st.empty()
             if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
-                st.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
+                snapshot_notice.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
             _scanner_help("PRICING & RISK", (
                 "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
                 "NORMAL suggests a limit between MID and ASK, falling back to MID when needed. "
@@ -2429,27 +2436,42 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 "Set cost minimum/maximum in Debit; these filter all retained results."
             ))
             candidates = result["candidates"]
+            qualification_notice = st.empty()
             if not candidates:
-                st.info(f"No call or put debit spreads met the 1:{min_reward_risk:g} ratio"
-                        + " at a qualifying quoted price across the loaded years.")
-            else:
+                qualification_notice.info(f"No call or put debit spreads met the 1:{min_reward_risk:g} ratio"
+                                          + " at a qualifying quoted price across the loaded years.")
+            if isinstance(candidates, VerticalResultStore):
                 annual_ids = set(result["annual_ids"])
                 scope = result["scope"]
+                # Filters belong to the quote snapshot; pricing and order reviews do not.
+                filter_scope = hashlib.sha256(repr((
+                    result["source"], result["symbol"], result.get("raw_scan_id"),
+                )).encode("utf-8")).hexdigest()[:16]
                 state = st.session_state.get("_vo_checked_spreads")
                 if not isinstance(state, dict) or state.get("scope") != scope:
                     state = {"scope": scope, "ids": set(), "revision": 0}
                     st.session_state["_vo_checked_spreads"] = state
                 filter_choices = candidates.column_filter_choices()
                 filter_state = st.session_state.get("_vo_column_filters")
-                if not isinstance(filter_state, dict) or filter_state.get("scope") != scope:
+                if not isinstance(filter_state, dict) or filter_state.get("filter_scope") != filter_scope:
                     same_snapshot = (isinstance(filter_state, dict)
+                                     and "filter_scope" not in filter_state
                                      and filter_state.get("raw_scan_id") == result.get("raw_scan_id"))
                     filters = (dict(filter_state["filters"]) if same_snapshot
                                else _default_column_filters(filter_choices["expiry"],
                                    st.session_state.get("vo_target_breakeven", "")))
-                    filter_state = {"scope": scope, "raw_scan_id": result.get("raw_scan_id"),
-                                    "filters": filters, "revision": 0}
+                    filter_state = {"filter_scope": filter_scope,
+                                    "raw_scan_id": result.get("raw_scan_id"), "filters": filters,
+                                    "revision": int(filter_state.get("revision", 0)) if same_snapshot else 0}
+                    if not same_snapshot and not filter_choices["expiry"]:
+                        filter_state["defaults_pending"] = True
                     st.session_state["_vo_column_filters"] = filter_state
+                    _remember_scan_snapshot()
+                if filter_state.get("defaults_pending") and filter_choices["expiry"]:
+                    if int(filter_state["revision"]) == 0:
+                        filter_state["filters"] = _default_column_filters(
+                            filter_choices["expiry"], st.session_state.get("vo_target_breakeven", ""))
+                    filter_state.pop("defaults_pending", None)
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
                 legacy_be = column_filters.get("breakeven")
@@ -2500,25 +2522,28 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     max_distance=max_distance, column_filters=query_filters,
                 )
                 active_year = None
+                year_selector = st.container()
                 if view == "BEST PER YEAR":
                     year_counts = candidates.counts_by_year(
                         max_distance=max_distance, column_filters=query_filters,
                     )
-                    year_key = "vo_results_year_" + scope
-                    selected_year = st.session_state["_vo_presentation"].get(year_key)
-                    if type(selected_year) is int and selected_year in year_counts:
+                    year_key = "vo_results_year_" + filter_scope
+                    saved_years = st.session_state["_vo_presentation"]
+                    selected_year = saved_years.get(year_key, saved_years.get("vo_results_year_" + scope))
+                    if type(selected_year) is int:
                         active_year = selected_year
-                    elif selected_year is not None:
-                        _select_results_year(year_key, None)
-                    if len(year_counts) > 1:
+                        year_counts.setdefault(selected_year, 0)
+                        if year_key not in saved_years:
+                            _select_results_year(year_key, selected_year)
+                    if len(year_counts) > 1 or active_year is not None:
                         year_buttons = [(None, f"ALL YEARS // {all_matching_count:,}")]
                         year_buttons.extend((year, f"{year} // {count:,}")
-                                            for year, count in year_counts.items())
+                                            for year, count in sorted(year_counts.items()))
                         for start in range(0, len(year_buttons), 6):
-                            cols = st.columns(len(year_buttons[start:start + 6]), gap="small")
+                            cols = year_selector.columns(len(year_buttons[start:start + 6]), gap="small")
                             for col, (year, label) in zip(cols, year_buttons[start:start + 6]):
                                 col.button(
-                                    label, key=f"vo_year_select_{scope}_{year}",
+                                    label, key=f"vo_year_select_{filter_scope}_{year}",
                                     type="primary" if active_year == year else "secondary",
                                     on_click=_select_results_year, args=(year_key, year),
                                     use_container_width=True,
@@ -2580,8 +2605,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         key="vo_export_qualified_html", on_click="ignore", use_container_width=True,
                         help="Download every retained qualifying spread, with the current filters and sort as a starting view. Open the HTML offline and clear filters to explore the full snapshot; no broker connection is used.",
                     )
+                matching_notice = st.empty()
                 if not matching_count:
-                    st.info("No spreads match these filters. Clear a column filter.")
+                    matching_notice.info("No spreads match these filters. Clear a column filter.")
                 # The table has one continuous scroll range. Load only its
                 # requested viewport so large scans do not exhaust server memory.
                 displayed = [_spread_table_row(
@@ -2589,19 +2615,22 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     contract_open_interest=contract_open_interest,
                 ) for row in displayed_candidates]
                 selected_update = _SPREAD_SCROLL_COMPONENT(
-                    scope=scope, sort_key=view_identity, rows=displayed,
+                    scope=scope, filter_scope=filter_scope, sort_key=view_identity, rows=displayed,
                     total_rows=matching_count, row_offset=offset,
                     selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
                     column_filters=column_filters, filter_choices=filter_choices,
-                    sort_by=sort_filter, sort_direction=sort_direction,
+                    sort_by=sort_filter, sort_direction=sort_direction, sort_view=view,
                     sortable=True, has_target=effective_target is not None,
                     filter_ack_revision=int(filter_state["revision"]),
-                    key="vo_spread_scroll_" + scope, default=None,
+                    key="vo_spread_scroll_" + filter_scope, default=None,
                 )
-                if isinstance(selected_update, dict) and selected_update.get("scope") == scope:
+                if isinstance(selected_update, dict):
+                    pricing_scope_matches = selected_update.get("scope") == scope
+                    filter_scope_matches = (selected_update.get("filter_scope") == filter_scope
+                                            or ("filter_scope" not in selected_update and pricing_scope_matches))
                     rerun_for_component = False
                     requested_offset = selected_update.get("viewport_offset")
-                    if (selected_update.get("viewport_sort_key") == view_identity
+                    if (pricing_scope_matches and selected_update.get("viewport_sort_key") == view_identity
                             and type(requested_offset) is int
                             and 0 <= requested_offset < matching_count):
                         requested_offset = min(requested_offset, max(0, matching_count - 200))
@@ -2615,12 +2644,15 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         incoming_filter_revision = int(selected_update.get("filter_revision", 0))
                     except (TypeError, ValueError, OverflowError):
                         incoming_filter_revision = 0
-                    if incoming_filter_revision > int(filter_state["revision"]):
+                    if filter_scope_matches and incoming_filter_revision > int(filter_state["revision"]):
                         incoming_sort = selected_update.get("sort_by")
                         incoming_direction = selected_update.get("sort_direction")
+                        incoming_sort_view = selected_update.get("sort_view", view)
                         if (incoming_sort in _QUALIFIED_SORT_FIELDS
-                                and incoming_direction in {"ASC", "DESC"}):
-                            sort_prefix = "vo_best_pair" if view == "BEST PER YEAR" else "vo_all_pair"
+                                and incoming_direction in {"ASC", "DESC"}
+                                and incoming_sort_view in {"BEST PER YEAR", "ALL QUALIFIED"}):
+                            sort_prefix = ("vo_best_pair" if incoming_sort_view == "BEST PER YEAR"
+                                           else "vo_all_pair")
                             for sort_key, value in ((sort_prefix + "_sort", incoming_sort),
                                                     (sort_prefix + "_direction", incoming_direction)):
                                 if st.session_state[sort_key] != value:
@@ -2639,6 +2671,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                                     st.session_state.pop("vo_review_bundle", None)
                                     st.session_state.pop("vo_live_confirm", None)
                                 filter_state["filters"] = incoming_filters
+                                filter_state.pop("defaults_pending", None)
                                 target_value = candidates.effective_target({"breakeven": {
                                     "target": (incoming_filters.get("breakeven") or {}).get("target")}})
                                 st.session_state["vo_target_breakeven"] = (
@@ -2652,7 +2685,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         st.session_state["_vo_column_filters"] = filter_state
                         _remember_scan_snapshot()
                     incoming = selected_update.get("selected_ids")
-                    if isinstance(incoming, list):
+                    if pricing_scope_matches and isinstance(incoming, list):
                         checked = set(candidates.get_many(incoming))
                         try:
                             incoming_revision = int(selected_update.get("revision", 0))
