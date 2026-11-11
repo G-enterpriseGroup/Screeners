@@ -591,12 +591,12 @@ def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
     """One visible Debit column retains numeric cost and its tiny pricing basis."""
     assert snapshot["headers"] == ["SELECT", "OS / TV", "TICKER", "TYPE", "EXP / YEAR",
                                     "STRIKE", "LAST PRICE", "OPEN INTEREST", "Debit", "BREAKEVEN",
-                                    "RISK:REWARD", "MAX PROFIT", "FILL EST"], snapshot
+                                    "RISK:REWARD", "MAX PROFIT", "FILL EST %"], snapshot
     assert "FILL" not in snapshot["headers"] and snapshot["rows"], snapshot
     oi_header = snapshot["openInterestHeader"]
     assert oi_header["label"] == "OI" and oi_header["order"] == "(B / S)", oi_header
     assert oi_header["fits"] and oi_header["width"] < .9 * oi_header["lastWidth"], oi_header
-    allowed = {"LIMIT", "MID"} if expected_fill == "NORMAL" else {expected_fill}
+    allowed = {"LIMIT", "MID"} if expected_fill == "NORMAL" else {"SMART", "ASK"}
     for row in snapshot["rows"]:
         assert row["cellCount"] == 13 and len(row["values"]) == 13, row
         assert [item["field"] for item in row["stacked"]] == ["strike_pair", "last_pair", "open_interest"], row
@@ -617,6 +617,12 @@ def assert_merged_debit(snapshot: dict, expected_fill: str) -> None:
             price = prices[index]
             assert price["fontSize"] == "11px" and price["accessible"] == field + " " + price["value"], row
             assert price["value"] == "—" or re.fullmatch(r"-?\d+\.\d{2}", price["value"]), row
+        if all(price["value"] != "—" for price in prices):
+            debit = float(row["debitValue"].replace("$", "").replace(",", "")) / 100
+            mid, ask = float(prices[1]["value"]), float(prices[2]["value"])
+            assert mid - .005 <= debit <= ask + .005, row
+            if expected_fill != "NORMAL":
+                assert debit >= .97 * ask - .005, row
         assert row["fillFits"], row
 
 
@@ -1206,7 +1212,7 @@ def test() -> None:
             print("Vertical Options flip toggle persistence PASS (refresh + both positions)")
             for label, text in (
                 ("Normal mode explanation", "between the spread midpoint and natural ask"),
-                ("Smart Fill mode explanation", "uses the natural spread ASK"),
+                ("Smart Fill mode explanation", "3%"),
             ):
                 help_icon = wait.until(lambda _: driver.find_element(
                     By.CSS_SELECTOR, f'.vo-mode-help[aria-label="{label}"]'
@@ -1499,7 +1505,7 @@ def test() -> None:
             ), best
             assert all(row["href"].startswith("https://optionstrat.com/build/") and
                        row["target"] == "_blank" for row in best["rows"]), best
-            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"] and "FILL EST" in best["headers"], best
+            assert "RISK:REWARD" in best["header"] and "FILL" not in best["headers"] and "FILL EST %" in best["headers"], best
             assert all(row["values"][-1] in {"LIMIT", "MID"} for row in best["rows"]), best
             assert not best["horizontalOverflow"], best
             assert best["height"] == 516, best
@@ -1509,13 +1515,56 @@ def test() -> None:
             chain_reads = sum(event["event"] == "chain" for event in events(event_path))
             visible_switch_label(driver, "vo_smart_fill").click()
             smart = wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
-                all(row["fillDetail"] == "ASK" for row in snapshot["rows"]) else False))
-            assert_merged_debit(smart, "ASK")
+                all(row["fillDetail"] in {"SMART", "ASK"} for row in snapshot["rows"]) else False))
+            assert_merged_debit(smart, "SMART FILL")
             visible_switch_label(driver, "vo_smart_fill").click()
             wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
                 all(row["fillDetail"] in {"LIMIT","MID"} for row in snapshot["rows"]) else False))
             assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
-            print("Numeric BID/MID/ASK/debit ruler and SMART natural ASK PASS (13 columns with stacked legs/OI, 43px rows)", flush=True)
+            print("Numeric BID/MID/ASK ruler, FILL EST % and SMART within 3% of ASK PASS (13 columns, 43px rows)", flush=True)
+
+            # Choices cover the complete filtered snapshot, and strict > uses
+            # the same whole-number percentage shown in the column.
+            fill_source = download_csv(driver, wait, downloads, "vo_export_qualified_csv",
+                                       "SPY_vertical_qualified.csv")
+            percentages = []
+            for item in fill_source:
+                if item["Orderable"] != "YES" or not item["Spread Bid"] or not item["Spread Ask"]:
+                    continue
+                bid, ask = float(item["Spread Bid"]), float(item["Spread Ask"])
+                if ask > bid:
+                    score = 5 + 90 * min(1, max(0, (
+                        float(item["Cost Per Contract ($)"]) / 100 - bid) / (ask - bid)))
+                    percentages.append(int(score + .5))
+            available = sorted(set(percentages))
+            assert len(available) > 2, available
+            def fill_select():
+                panel = driver.find_element(By.ID, "filter-panel")
+                if not panel.is_displayed() or not panel.find_elements(By.CSS_SELECTOR, 'select[data-bound="gt"]'):
+                    driver.find_element(By.CSS_SELECTOR, '.filter-button[data-key="fill_scale"]').click()
+                assert not panel.find_elements(By.CSS_SELECTOR, 'input[data-bound="min"], input[data-bound="max"]')
+                return panel.find_element(By.CSS_SELECTOR, 'select[aria-label="FILL EST % greater than"]')
+            def fill_options():
+                return [int(option.get_attribute("value")) for option in
+                        fill_select().find_elements(By.TAG_NAME, "option") if option.get_attribute("value")]
+            assert in_grid(driver, fill_options) == available
+            threshold = available[len(available) // 2]
+            in_grid(driver, lambda: Select(fill_select()).select_by_value(str(threshold)))
+            grid_menu_action(driver, "fill_scale", "DONE")
+            expected_count = sum(value > threshold for value in percentages)
+            wait.until(lambda _: grid_page_rows(driver)["total"] == expected_count)
+            assert all(int(re.search(r"S≈(\d+)%", row["fillRuler"]).group(1)) > threshold
+                       for row in grid_snapshot(driver)["rows"])
+            assert in_grid(driver, fill_options) == available  # Excludes its own threshold.
+            in_grid(driver, lambda: Select(fill_select()).select_by_value(str(max(available))))
+            grid_menu_action(driver, "fill_scale", "DONE")
+            wait.until(lambda _: grid_page_rows(driver)["total"] == 0)
+            assert in_grid(driver, fill_options) == available
+            grid_menu_action(driver, "fill_scale", "CLEAR COLUMN")
+            grid_menu_action(driver, "fill_scale", "DONE")
+            wait.until(lambda _: grid_page_rows(driver)["total"] == len(fill_source))
+            assert sum(event["event"] == "chain" for event in events(event_path)) == chain_reads
+            print("FILL EST % actual full-store choices, strict greater-than equality and empty recovery PASS", flush=True)
 
             in_grid(driver, lambda: driver.find_element(By.CSS_SELECTOR, '.row[data-index="0"] .select').click())
             wait.until(lambda _: checked_count(driver) == 1)
@@ -2088,7 +2137,7 @@ def test() -> None:
                 wait.until(lambda _: driver.find_element(
                     By.CSS_SELECTOR, '.st-key-vo_smart_fill input').is_selected() == smart)
                 wait.until(lambda _: (snapshot if (snapshot := grid_snapshot(driver))["rows"] and
-                    all(row["fillDetail"] in ({"ASK"} if smart else {"LIMIT", "MID"})
+                    all(row["fillDetail"] in ({"SMART", "ASK"} if smart else {"LIMIT", "MID"})
                         for row in snapshot["rows"]) else False))
                 wait.until(lambda _: grid_page_rows(driver)["total"] == 30)
                 def read_budget():

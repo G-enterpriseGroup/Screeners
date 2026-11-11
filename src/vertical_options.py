@@ -86,6 +86,7 @@ def validate_vertical(
 # ==============================
 
 _MIN_REWARD_RISK = 2.0
+VERTICAL_PRICING_POLICY = "desktop-quote-policy-v3"
 
 
 def _finite_number(value: Any, *, positive: bool = False) -> float | None:
@@ -103,6 +104,31 @@ def _reward_risk_floor(value: Any) -> float:
     if minimum is None:
         raise ValueError("Minimum reward-to-risk ratio must be positive and finite.")
     return minimum
+
+
+def vertical_limit_bounds(
+    *, width: float, max_cost: float | None, spread_mid: float | None,
+    spread_ask: float | None, pricing_mode: str = "NORMAL",
+    min_reward_risk: float = _MIN_REWARD_RISK,
+) -> tuple[float, float] | None:
+    """Inclusive cent limits inside the quoted mode band and strict risk caps."""
+    if pricing_mode not in {"NORMAL", "SMART FILL"}:
+        raise ValueError("Invalid Vertical Options pricing mode.")
+    minimum = max(2.0, _reward_risk_floor(min_reward_risk))
+    width = _finite_number(width, positive=True)
+    midpoint = _finite_number(spread_mid)
+    ask = _finite_number(spread_ask, positive=True)
+    budget = None if max_cost is None else _finite_number(max_cost, positive=True)
+    if (width is None or midpoint is None or ask is None or midpoint > ask
+            or (max_cost is not None and budget is None)):
+        return None
+    lower = max(.01, midpoint, .97 * ask if pricing_mode == "SMART FILL" else .01)
+    upper = min(ask, width / (1 + minimum), budget / 100 if budget is not None else math.inf)
+    lower_cents = math.ceil(lower * 100 - 1e-8)
+    upper_cents = math.floor(upper * 100 + 1e-8)
+    if lower_cents > upper_cents:
+        return None
+    return lower_cents / 100, upper_cents / 100
 
 
 def price_vertical_quote(
@@ -129,11 +155,10 @@ def price_vertical_quote(
     ask. LAST is eligible only if it is within the current spread market
     at or above its midpoint; an old Last below MID is not a likely fill.
     Missing bid/ask yields a visible LAST* estimate only, never an order.
-    Legacy SMART FILL offers a conservative MID-to-ASK price. When the original
-    desktop scanner explicitly enables desktop_fast_fill, SMART uses ONLY the
-    natural ASK debit (BUY ask minus SELL bid) and rejects spreads that fail
-    the risk floor there. Desktop NORMAL uses a MID-to-ASK limit. The phone
-    scanner retains the previous behavior when desktop_fast_fill is omitted.
+    With desktop_fast_fill enabled, NORMAL stays within MID..ASK and SMART
+    stays within max(MID, 97% of ASK)..ASK, using cent limits that preserve
+    the risk/cost gates. SMART is never less aggressive than NORMAL on the
+    same quotes. The legacy policy remains when desktop_fast_fill is omitted.
     This is a quote-based limit proposal, not a fill probability or order.
     No quote basis is a guarantee of execution or liquidity.
     """
@@ -161,19 +186,19 @@ def price_vertical_quote(
         quote_ask = round(ba - sb, 4)
         quote_mid = round((quote_bid + quote_ask) / 2, 4)
         if desktop_fast_fill:
+            bounds = vertical_limit_bounds(
+                width=spread_width, max_cost=budget, spread_mid=quote_mid,
+                spread_ask=quote_ask, pricing_mode=pricing_mode, min_reward_risk=minimum,
+            )
+            if bounds is None:
+                return None
+            lower, upper = bounds
+            preferred = math.ceil((quote_mid + .35 * (quote_ask - quote_mid)) * 100 - 1e-8) / 100
+            limit = min(upper, max(lower, preferred))
+            basis = ("ASK" if abs(limit - quote_ask) < 1e-8 else "SMART") if pricing_mode == "SMART FILL" else "LIMIT"
+            choices.append((basis, limit, 0, True))
             if pricing_mode == "SMART FILL":
-                # The natural limit may be marketable at the displayed quote,
-                # but size, latency and quote changes can prevent an immediate fill.
-                choices.append(("ASK", quote_ask, 0, True))
-                liquidity = "NATURAL ASK / DEPTH UNVERIFIED"
-            else:
-                # NORMAL starts above midpoint, giving a price-improvement
-                # attempt without paying natural ASK unless the market is tight.
-                middle_to_ask = max(0.0, quote_ask - quote_mid)
-                desired_cents = math.ceil((quote_mid + .35 * middle_to_ask) * 100 - 1e-8)
-                normal_limit = min(quote_ask, desired_cents / 100)
-                choices.append(("LIMIT", normal_limit, 0, True))
-                choices.append(("MID", quote_mid, 1, True))
+                liquidity = "WITHIN 3% OF ASK / DEPTH UNVERIFIED"
         elif pricing_mode == "SMART FILL":
             # Volume/OI describe the individual legs, not executable spread
             # depth. No bid/ask size, quote timestamp, or fill history is

@@ -51,6 +51,7 @@ from src.gex_snapshot_cache import hydrate_gex_snapshots, persist_gex_snapshots
 from src.yfinance_options import options_market_client
 from src.ticker_autocomplete import company_name, record_lookup
 from src.vertical_options import (
+    VERTICAL_PRICING_POLICY,
     build_place_payload,
     build_vertical_preview_payload,
     extract_order_id,
@@ -60,6 +61,7 @@ from src.vertical_options import (
     scan_vertical_candidates,
     smart_fill_ladder,
     validate_vertical,
+    vertical_limit_bounds,
 )
 from src.vertical_options_store import VerticalResultStore, filterable_verticals_html, indicative_fill_score
 from src.risk_sizing_ui_v9 import _select_true_cash
@@ -1317,7 +1319,7 @@ def _rank_cached_vertical_chains(raw: dict[str, Any], target: float | None,
     _, potential_pairs = _safe_vertical_pair_limit(raw["rows"])
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
-    policy = (target, max_cost, mode, min_reward_risk, "desktop-quote-policy-v2")
+    policy = (target, max_cost, mode, min_reward_risk, VERTICAL_PRICING_POLICY)
     store = policies.pop(policy, None)
     if not isinstance(store, VerticalResultStore):
         store = VerticalResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
@@ -2083,10 +2085,11 @@ def _reprice_cached_vertical_scan(result: dict[str, Any], mode: str) -> dict[str
     scope = hashlib.sha256(
         repr((raw["scan_id"], result["target"], result["max_cost"],
               result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK), mode,
-              pricing_revision, bool(result.get("capacity_limited")))).encode("utf-8")
+              pricing_revision, VERTICAL_PRICING_POLICY, bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
         **result, "pricing_mode": mode, "scope": scope, "pricing_revision": pricing_revision,
+        "pricing_policy": VERTICAL_PRICING_POLICY,
         "candidates": candidates, "annual_ids": annual_ids,
         "ranked_expirations": candidates.ranked_expirations,
         "chains_complete": raw["scan_complete"],
@@ -2261,7 +2264,7 @@ def _pricing_mode_flip_switch() -> str | None:
     smart = st.toggle(
         "SMART FILL", key="vo_smart_fill", label_visibility="collapsed",
         on_change=_remember_pricing_mode,
-        help="Left = NORMAL midpoint-to-ask limit; right = SMART FILL natural ASK. "
+        help="Left = NORMAL midpoint-to-ask limit; right = SMART FILL at ASK or up to 3% below ASK. "
              "The chosen mode is retained in this session; browser storage is best-effort.",
     )
     mode = "SMART FILL" if smart else "NORMAL"
@@ -2317,7 +2320,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                         '<span><span class="vo-mode-help" tabindex="0" aria-label="Normal mode explanation">?'
                         '<span class="vo-mode-tooltip" role="tooltip">'
                         'NORMAL suggests a limit between the spread midpoint and natural ask, '
-                        'falling back to MID when the suggested limit fails the 1:2 minimum. '
+                        'staying inside that band after cent rounding and the 1:2/cost caps. '
                         'A midpoint limit can remain unfilled.'
                         '</span></span> NORMAL</span></div>'
                     )
@@ -2328,9 +2331,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     st.html(
                         '<div class="vo-mode-guide"><span>SMART FILL <span class="vo-mode-help vo-mode-help--smart" tabindex="0" aria-label="Smart Fill mode explanation">?'
                         '<span class="vo-mode-tooltip" role="tooltip">'
-                        'SMART FILL uses the natural spread ASK (buy leg ask minus sell leg bid) '
+                        'SMART FILL uses ASK or a limit no more than 3% below ASK, never below MID, '
                         'only when risk:reward is at least 1:2 and cost rules pass. '
-                        'It proposes a marketable DAY limit but cannot guarantee a fill '
+                        'It proposes a DAY limit but cannot guarantee a fill '
                         'or automatically submit an order.'
                         '</span></span></span></div>'
                     )
@@ -2551,13 +2554,14 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 )
                 scope = hashlib.sha256(
                     repr((raw["scan_id"], target, max_cost, min_reward_risk, pricing_mode,
-                          safe_limit is not None)).encode("utf-8")
+                          VERTICAL_PRICING_POLICY, safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["vo_scan_result"] = {
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
                     "min_reward_risk": min_reward_risk,
                     "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
+                    "pricing_policy": VERTICAL_PRICING_POLICY,
                     "target_defaulted": False,
                     "target_basis": "NOT PROVIDED" if target is None else "CUSTOM",
                     "loaded_at": raw["loaded_at"],
@@ -2607,7 +2611,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.info("SCANNER UPGRADED // Press SCAN ALL YEARS to build the complete result set.")
                 return
             pricing_progress = st.empty()
-            if result.get("pricing_mode", "NORMAL") != pricing_mode:
+            if (result.get("pricing_mode", "NORMAL") != pricing_mode
+                    or result.get("pricing_policy") != VERTICAL_PRICING_POLICY):
                 with pricing_progress.container():
                     updated = _reprice_cached_vertical_scan(result, pricing_mode)
                 st.session_state.pop("vo_review_bundle", None)
@@ -2674,8 +2679,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 snapshot_notice.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
             _scanner_help("PRICING & RISK", (
                 "ASK = BUY ask minus SELL bid; MID = the two-leg market midpoint. "
-                "NORMAL suggests a limit between MID and ASK, falling back to MID when needed. "
-                f"SMART FILL proposes only the natural spread ASK when reward:risk meets 1:{max(2.0, min_reward_risk):g}. "
+                "NORMAL stays between MID and ASK, including cent rounding and risk/cost caps. "
+                f"SMART FILL stays at ASK or within 3% below ASK, never below MID, when reward:risk meets 1:{max(2.0, min_reward_risk):g}. "
                 "The Debit MAX filter also caps the reviewed order limit. "
                 "For one standard 100-share contract: max loss = debit × 100; max profit = "
                 f"(strike width − debit) × 100. Reward/risk must be at least {min_reward_risk:g}. "
@@ -2685,8 +2690,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 "Quotes may be delayed; no reference price guarantees execution or a fill. "
                 "BREAKEVEN TARGET ±% filters prices around your target (default ±5%). "
                 "For example $250 ±5% selects $237.50–$262.50. "
-                "FILL EST is an uncalibrated quote-position indicator, not a historical fill probability; "
+                "FILL EST % is a rounded scan-based quote-position score, not a percentile or fill probability; "
                 "bid≈5%, midpoint≈50%, ask≈95%, with no estimate for unquoted spreads. "
+                "Its GREATER THAN menu lists percentages present under the other filters and excludes equality. "
                 "Set cost minimum/maximum in Debit; these filter all retained results."
             ))
             candidates = result["candidates"]
@@ -2728,6 +2734,19 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     filter_state.pop("defaults_pending", None)
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
+                legacy_fill = column_filters.get("fill_scale")
+                if isinstance(legacy_fill, dict) and ({"min", "max"} & set(legacy_fill)):
+                    try:
+                        threshold = float(legacy_fill.get("min"))
+                    except (TypeError, ValueError, OverflowError):
+                        threshold = math.nan
+                    if (not isinstance(legacy_fill.get("min"), bool)
+                            and math.isfinite(threshold) and 0 <= threshold <= 100):
+                        column_filters["fill_scale"] = {"gt": threshold}
+                    else:
+                        column_filters.pop("fill_scale", None)
+                    filter_state["filters"] = column_filters
+                    _remember_scan_snapshot()
                 legacy_be = column_filters.get("breakeven")
                 if (isinstance(legacy_be, dict)
                         and ({"min", "max"} & set(legacy_be)
@@ -2881,6 +2900,8 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     total_rows=matching_count, row_offset=offset,
                     selected_ids=sorted(saved_ids), ack_revision=int(state["revision"]),
                     column_filters=column_filters, filter_choices=filter_choices,
+                    fill_est_values=candidates.fill_est_values(
+                        column_filters=query_filters, max_distance=max_distance, year=active_year),
                     sort_by=sort_filter, sort_direction=sort_direction, sort_view=view,
                     sortable=True, has_target=effective_target is not None,
                     filter_ack_revision=int(filter_state["revision"]),
@@ -3075,9 +3096,59 @@ def _vertical_preview_error(exc: Exception) -> str:
         )
     return message
 
+def _validate_current_vertical_limit(client, touch_session, candidate: dict[str, Any],
+                                     result: dict[str, Any], limit_price: float) -> None:
+    """Requote exact legs on a discrete Review/Send click; never change its limit."""
+    if result.get("pricing_policy") != VERTICAL_PRICING_POLICY:
+        raise ValueError("Pricing policy changed. Rescan and review again.")
+    if time.time() - float(result["loaded_at"]) >= _SCAN_CACHE_SECONDS:
+        raise ValueError("Market snapshot expired. Rescan and review again.")
+    latest = _chain(client, candidate["symbol"], candidate["expiry"], touch_session,
+                    fresh_broker_quote=True)
+    cache_event = st.session_state.get("_etrade_cache_last_event") or {}
+    if isinstance(client, CachedETradeClient) and (
+            cache_event.get("stale") or st.session_state.get("_etrade_offline_mode")):
+        raise ValueError("Live E*TRADE quote failed; cached fallback cannot approve an order.")
+    if time.time() - float(result["loaded_at"]) >= _SCAN_CACHE_SECONDS:
+        raise ValueError("Market snapshot expired during requote. Rescan and review again.")
+    def exact_leg(leg: str) -> dict[str, Any]:
+        matches = [row for row in latest if (
+            row.get("call_put") == candidate["call_put"]
+            and abs(float(row.get("strike") or 0) - candidate[leg + "_strike"]) < 1e-5
+            and str(row.get("osi") or "") == str(candidate.get(leg + "_osi") or ""))]
+        if len(matches) != 1:
+            raise ValueError("Selected contract no longer has one unambiguous current chain quote.")
+        return matches[0]
+    buy, sell = exact_leg("buy"), exact_leg("sell")
+    checked = price_vertical_quote(
+        buy_last=buy.get("last"), sell_last=sell.get("last"),
+        buy_bid=buy.get("bid"), buy_ask=buy.get("ask"),
+        sell_bid=sell.get("bid"), sell_ask=sell.get("ask"),
+        width=candidate["width"], max_cost=result["max_cost"],
+        pricing_mode=result.get("pricing_mode", "NORMAL"),
+        min_reward_risk=result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
+        desktop_fast_fill=True,
+    )
+    bounds = (vertical_limit_bounds(
+        width=candidate["width"], max_cost=result["max_cost"],
+        spread_mid=checked["spread_mid"], spread_ask=checked["spread_ask"],
+        pricing_mode=result.get("pricing_mode", "NORMAL"),
+        min_reward_risk=result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
+    ) if checked and checked["orderable"] else None)
+    if bounds is None or not bounds[0] - 1e-8 <= limit_price <= bounds[1] + 1e-8:
+        raise ValueError("The unchanged debit is outside the current pricing band or risk/cost caps. "
+                         "Rescan and review again; no limit was changed.")
+
+
+
 def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                            result: dict[str, Any], broker_live: bool) -> None:
     """Keep the existing reviewed, explicit multi-account order path optional."""
+    if result.get("pricing_policy") != VERTICAL_PRICING_POLICY:
+        st.session_state.pop("vo_review_bundle", None)
+        st.session_state.pop("vo_live_confirm", None)
+        st.warning("PRICING POLICY CHANGED // Rescan before reviewing an order.")
+        return
     if candidate["expiry"] < _minimum_expiry_date():
         st.warning("EXPIRATION EXCLUDED // Only options at least 7 days from today are available.")
         return
@@ -3140,9 +3211,9 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
     # Start from the selected NORMAL/SMART NET_DEBIT. Broker review
     # rechecks the same legs and risk cap before any live order is enabled.
     limit_price = round(float(candidate["debit"]), 2)
-    if smart_mode and (candidate.get("basis") != "ASK" or
+    if smart_mode and (candidate.get("basis") not in {"ASK", "SMART"} or
                        candidate.get("spread_ask") is None):
-        st.warning("SMART FILL NEEDS A VALID NATURAL ASK // Rescan a quoted spread.")
+        st.warning("SMART FILL NEEDS A VALID NEAR-ASK QUOTE // Rescan a quoted spread.")
         return
     controls = st.columns([.85, .9, 2.5], gap="small")
     quantity = int(controls[0].number_input(
@@ -3210,15 +3281,15 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         live_be = (candidate["buy_strike"] + limit_price if call_put == "CALL"
                    else candidate["buy_strike"] - limit_price)
         st.caption(
-            f'SMART // NATURAL ASK LIMIT {_money(limit_price)} // R:R 1:{risk_ratio:.2f} '
-            f'// BREAKEVEN {_money(live_be)} // MAY FILL QUICKLY IF LIVE QUOTES HOLD; '
+            f'SMART // NEAR-ASK LIMIT {_money(limit_price)} // R:R 1:{risk_ratio:.2f} '
+            f'// BREAKEVEN {_money(live_be)} // AT ASK OR UP TO 3% BELOW ASK; '
             'DEPTH, LATENCY AND FILL TIME CANNOT BE GUARANTEED.'
         )
     st.caption(
         f'Pricing: {candidate["basis"]} // spread market BID {_money(candidate.get("spread_bid"))} / '
         f'MID {_money(candidate.get("spread_mid"))} / ASK {_money(candidate.get("spread_ask"))}. '
-        'ASK = BUY option ask − SELL option bid. A proposed marketable ASK limit '
-        'may still queue or remain unfilled; an uncached chain quote is obtained before broker preview.'
+        'ASK = BUY option ask − SELL option bid. A proposed limit '
+        'may queue or remain unfilled; Review and Send each recheck uncached exact-leg quotes without changing the limit.'
     )
     st.caption(
         "SAVE CHECKED SPREADS = TERMINAL-ONLY DRAFT; NOT SAVED AT E*TRADE. "
@@ -3235,41 +3306,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         # Requote only on an explicit Review click: no broker traffic on
         # checkbox, filter, order quantity, or OptionStrat interactions.
         try:
-            latest = _chain(client, symbol, expiry, touch_session, fresh_broker_quote=True)
-            def exact_leg(strike: float, osi: str) -> dict[str, Any]:
-                for row in latest:
-                    if (row.get("call_put") == call_put
-                            and abs(float(row.get("strike") or 0) - strike) < 1e-5
-                            and str(row.get("osi") or "") == str(osi or "")):
-                        return row
-                raise ValueError("Selected contract no longer has a current chain quote.")
-            buy_leg = exact_leg(buy_strike, candidate.get("buy_osi", ""))
-            sell_leg = exact_leg(sell_strike, candidate.get("sell_osi", ""))
-            checked_price = price_vertical_quote(
-                buy_last=buy_leg.get("last"), sell_last=sell_leg.get("last"),
-                buy_bid=buy_leg.get("bid"), buy_ask=buy_leg.get("ask"),
-                sell_bid=sell_leg.get("bid"), sell_ask=sell_leg.get("ask"),
-                width=candidate["width"], max_cost=result["max_cost"],
-                pricing_mode=result.get("pricing_mode", "NORMAL"),
-                min_reward_risk=min_reward_risk, desktop_fast_fill=True,
-                buy_volume=buy_leg.get("volume"), sell_volume=sell_leg.get("volume"),
-                buy_open_interest=buy_leg.get("open_interest"),
-                sell_open_interest=sell_leg.get("open_interest"),
-            )
-            if (not checked_price or not checked_price["orderable"]
-                    or checked_price["basis"] != candidate["basis"]
-                    or (smart_mode and (
-                        checked_price["spread_ask"] > limit_price + .005
-                        or candidate["width"] - limit_price + 1e-8 < min_reward_risk * limit_price
-                        or (result["max_cost"] is not None
-                            and limit_price * 100 > result["max_cost"] + 1e-8)
-                    ))
-                    or (not smart_mode and checked_price["debit"] != limit_price)):
-                raise ValueError(
-                    "The current spread market/SMART target changed or the selected limit "
-                    f"no longer meets your 1:{min_reward_risk:g} and cost criteria. "
-                    "SCAN ALL YEARS again before reviewing."
-                )
+            _validate_current_vertical_limit(client, touch_session, candidate, result, limit_price)
         except Exception as exc:
             st.session_state.pop("vo_review_bundle", None)
             st.session_state.pop("vo_live_confirm", None)
@@ -3349,6 +3386,18 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
         if send_click:
             if not _reviews_are_fresh(st.session_state.get("vo_review_bundle"), fingerprint):
                 st.error("PREVIEW EXPIRED // Review again. No order was sent.")
+                return
+            try:
+                _validate_current_vertical_limit(client, touch_session, candidate, result, limit_price)
+            except Exception as exc:
+                st.session_state.pop("vo_review_bundle", None)
+                st.session_state.pop("vo_live_confirm", None)
+                st.error(f"LIVE SPREAD REQUOTE BLOCKED // {exc}")
+                return
+            if not _reviews_are_fresh(st.session_state.get("vo_review_bundle"), fingerprint):
+                st.session_state.pop("vo_review_bundle", None)
+                st.session_state.pop("vo_live_confirm", None)
+                st.error("PREVIEW EXPIRED DURING REQUOTE // Review again. No order was sent.")
                 return
             results: list[dict[str, Any]] = []
             for account_key in account_keys:

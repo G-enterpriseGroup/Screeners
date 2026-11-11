@@ -262,6 +262,143 @@ class LiveQuoteOverlayTests(unittest.TestCase):
                 ticket.assert_not_called()
 
 
+class FillEstimateFilterTests(unittest.TestCase):
+    def store(self, groups):
+        from src.vertical_options_store import VerticalResultStore
+        store = VerticalResultStore("SPY", 100, 100, None, "NORMAL")
+        for expiry, side, scores in groups:
+            rows = []
+            for index, score in enumerate(scores):
+                debit = .5 if score is None else (score - 5) / 90
+                cost = 100 * debit
+                rows.append({"id": f"{expiry}-{side}-{index}", "expiry": expiry, "year": expiry.year,
+                             "call_put": side, "symbol": "SPY", "spot_last": 100,
+                             "buy_strike": 100 if side == "CALL" else 110,
+                             "sell_strike": 110 if side == "CALL" else 100,
+                             "buy_osi": "", "sell_osi": "", "buy_last": 3, "sell_last": 2,
+                             "debit": debit, "cost": cost, "max_loss": cost, "width": 10,
+                             "max_profit": 1000-cost, "reward_risk": (1000-cost)/cost,
+                             "breakeven": 100 if side == "CALL" else 110, "basis": "LIMIT", "grade": 0,
+                             "orderable": score is not None, "spread_bid": 0 if score is not None else None,
+                             "spread_mid": .5 if score is not None else None,
+                             "spread_ask": 1 if score is not None else None})
+            def calculator(*, candidate_sink, rows=rows, **kwargs):
+                for row in rows:
+                    candidate_sink(row)
+            store.add_expiration(expiry, rows, calculator)
+        return store
+
+    def test_strict_gt_uses_display_rounding_and_excludes_equal_or_unknown(self):
+        expiry = date.today() + timedelta(days=45)
+        store = self.store([(expiry, "CALL", [72.49, 72.5, 90, None])])
+        self.assertEqual(store.fill_est_values(), [72, 73, 90])
+        self.assertEqual(store.count(column_filters={"fill_scale": {"gt": 72}}), 2)
+        self.assertEqual(store.count(column_filters={"fill_scale": {"gt": 73}}), 1)
+        self.assertEqual(store.count(column_filters={"fill_scale": {"gt": 90}}), 0)
+        self.assertEqual(store.count(column_filters={"fill_scale": {"gt": 100}}), 0)
+        self.assertEqual(store.count(column_filters={"fill_scale": {"gt": 72.5}}), 2)
+        self.assertEqual(len(list(store.iter_rows(column_filters={"fill_scale": {"gt": 73}}))), 1)
+        self.assertEqual(store.fill_est_values(column_filters={"fill_scale": {"gt": 100}}), [72, 73, 90])
+        for invalid in ({}, {"min": 72}, {"max": 90}, {"gt": 72, "max": 90}, {"gt": True},
+                        {"gt": None}, {"gt": "72"}, {"gt": float("nan")}, {"gt": -1}, {"gt": 101}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                store.count(column_filters={"fill_scale": invalid})
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                store.fill_est_values(column_filters={"fill_scale": invalid})
+
+    def test_choices_cover_the_full_store_under_other_filters_year_and_distance(self):
+        first, second = date(2027, 1, 15), date(2028, 1, 21)
+        store = self.store([(first, "CALL", [10] * 250 + [90]), (second, "PUT", [80, None])])
+        self.assertEqual(len(store.page()), 200)
+        self.assertEqual(store.fill_est_values(), [10, 80, 90])
+        self.assertEqual(store.fill_est_values(column_filters={"side": ["CALL"], "fill_scale": {"gt": 95}}), [10, 90])
+        self.assertEqual(store.fill_est_values(year=2028), [80])
+        self.assertEqual(store.fill_est_values(column_filters={"side": []}), [])
+        self.assertEqual(store.fill_est_values(column_filters={"ticker": ["QQQ"]}), [])
+        self.assertEqual(store.fill_est_values(max_distance=0), [10, 90])
+        self.assertEqual(store.fill_est_values(column_filters={"cost": {"max": 10}}), [10])
+        with self.assertRaises(ValueError):
+            store.fill_est_values(column_filters={"unknown": {"gt": 60}})
+
+    def test_choice_cache_is_bounded_reused_and_invalidated_only_by_store_mutation(self):
+        first, second = date(2027, 1, 15), date(2028, 1, 21)
+        store = self.store([(first, "CALL", [10, 90])])
+        with patch.object(store, "_connect", wraps=store._connect) as connect:
+            self.assertEqual(store.fill_est_values(), [10, 90])
+            self.assertEqual(store.fill_est_values(column_filters={"fill_scale": {"gt": 95}}), [10, 90])
+            self.assertEqual(connect.call_count, 1)
+            for minimum in range(10):
+                store.fill_est_values(column_filters={"cost": {"min": minimum}})
+            self.assertLessEqual(len(store._fill_values_cache), 8)
+        self.assertTrue(store._fill_values_cache)
+        rows = []
+        store.add_expiration(second, rows, lambda **kwargs: None)
+        self.assertEqual(store._fill_values_cache, {})
+        store.fill_est_values()
+        store.prune_before(second)
+        self.assertEqual(store._fill_values_cache, {})
+        self.assertEqual(store.fill_est_values(), [])
+
+    def test_offline_worker_matches_strict_gt_and_preserves_recovery_choices(self):
+        import shutil
+        import subprocess
+        from src.vertical_options_store import filterable_verticals_html
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable for actual offline worker verification")
+        store = self.store([(date(2027, 1, 15), "CALL", [10] * 250 + [72.49, 72.5, 90]),
+                            (date(2028, 1, 21), "PUT", [80, None])])
+        output = filterable_verticals_html(store, source="SYNTHETIC", loaded_at=1234,
+            pricing_mode="NORMAL", column_filters={"fill_scale": {"gt": 100}})
+        script = output.split("<script>", 1)[1].split("</script>", 1)[0]
+        metadata = json.loads(re.search(r'id="vertical-meta"[^>]*>(.*?)</script>', output).group(1))
+        packed = re.search(r'id="vertical-data"[^>]*>(.*?)</script>', output).group(1)
+        cases = []
+        for filters, year in (({"fill_scale": {"gt": 72}}, None),
+                              ({"fill_scale": {"gt": 90}}, None),
+                              ({"fill_scale": {"gt": 100}}, None),
+                              ({"fill_scale": {"gt": 72}, "side": ["CALL"]}, None),
+                              ({"fill_scale": {"gt": 72}}, 2028),
+                              ({"fill_scale": {"gt": 72}, "side": []}, None)):
+            cases.append({"state": {"filters": filters, "year": year or "", "sort_by": "COST",
+                                    "direction": "ASC", "search": "", "page": 0},
+                          "total": store.count(column_filters=filters, year=year),
+                          "choices": store.fill_est_values(column_filters=filters, year=year)})
+        harness = r'''
+const vm=require("vm"),assert=require("assert"),fixture=JSON.parse(require("fs").readFileSync(0,"utf8"));
+const context={DecompressionStream,Response,Blob,Uint8Array,atob,setTimeout,clearTimeout,onmessage:null,postMessage:()=>{}};
+vm.createContext(context);vm.runInContext(fixture.script.split("\n(()=>{")[0]+"\nverticalsWorker();",context);
+(async()=>{
+ await context.onmessage({data:{type:"init",meta:fixture.meta,compressed:fixture.packed}});
+ let revision=0;
+ async function query(state){return await new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>reject(Error("No worker result")),3000);
+  context.postMessage=message=>{if(["page","error"].includes(message.type)){clearTimeout(timer);resolve(message);}};
+  context.onmessage({data:{type:"query",revision:++revision,state}});
+ });}
+ for(const item of fixture.cases){
+  const message=await query(item.state);assert.equal(message.type,"page");assert.equal(message.total,item.total);
+  assert.deepEqual(Array.from(message.fill_values),item.choices);
+ }
+ for(const invalid of [{min:72},{gt:true},{gt:NaN},{gt:72,max:90}]){
+  const message=await query({...fixture.cases[0].state,filters:{fill_scale:invalid}});
+  assert.equal(message.type,"error");
+ }
+ new vm.Script(fixture.script);
+ console.log("PASS actual offline strict greater-than worker and full-store recovery choices");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+        result = subprocess.run([node, "-e", harness], input=json.dumps(
+            {"script": script, "meta": metadata, "packed": packed, "cases": cases}),
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with self.assertRaises(ValueError):
+            filterable_verticals_html(store, source="SYNTHETIC", loaded_at=1234,
+                pricing_mode="NORMAL", column_filters={"fill_scale": {"min": 72}})
+        self.assertIn('id="fill_gt"', output)
+        self.assertIn('(saved)', output)
+
+
 class PhoneIsolationTests(unittest.TestCase):
     def test_production_route_has_its_own_owner_and_preserves_desktop_dispatch(self):
         app = ast.parse((ROOT / "streamlit_app.py").read_text())
@@ -531,7 +668,8 @@ class PhoneParityTests(unittest.TestCase):
                 with (patch.object(feature, "st", ui), patch.object(feature, "_chain") as chain):
                     result = {"source": "E*TRADE", "symbol": "SPY", "raw_scan_id": 44,
                               "loaded_at": loaded_at, "target": None, "max_cost": None,
-                              "min_reward_risk": 2, "pricing_mode": "NORMAL", "scope": "old"}
+                              "min_reward_risk": 2, "pricing_mode": "NORMAL", "scope": "old",
+                              "pricing_policy": feature.VERTICAL_PRICING_POLICY}
                     updated = feature._reprice_cached_vertical_scan(result, "SMART FILL")
                     self.assertIsNotNone(updated)
                     self.assertEqual(updated["pricing_mode"], "SMART FILL")
@@ -569,7 +707,8 @@ class PhoneParityTests(unittest.TestCase):
                       patch.object(feature, "_chain", side_effect=AssertionError("Broker chain")) as chain):
                     result = {"source": "E*TRADE", "symbol": "SPY", "raw_scan_id": 44,
                               "loaded_at": loaded_at, "target": None, "max_cost": None,
-                              "min_reward_risk": 2, "pricing_mode": "NORMAL", "scope": "old"}
+                              "min_reward_risk": 2, "pricing_mode": "NORMAL", "scope": "old",
+                              "pricing_policy": feature.VERTICAL_PRICING_POLICY}
                     updated = feature._reprice_cached_vertical_scan(result, "SMART FILL")
                     self.assertEqual(updated["ranked_expirations"], 1)
                     self.assertFalse(updated["scan_complete"])
@@ -865,7 +1004,8 @@ class PhoneOrderTests(unittest.TestCase):
     def setUp(self):
         self.candidate, self.rows = quoted_spread()
         self.result = {"source": "E*TRADE", "loaded_at": time.time(), "max_cost": 200,
-                       "pricing_mode": "NORMAL", "scope": "synthetic-scope"}
+                       "pricing_mode": "NORMAL", "scope": "synthetic-scope",
+                       "pricing_policy": phone.VERTICAL_PRICING_POLICY}
         self.state = {"etrade_accounts": deepcopy(ACCOUNTS),
                       "_vp_order_account_selection": ["preferred"],
                       "vo_review_bundle": {"desktop": "approved"}, "vo_live_confirm": True,
@@ -942,6 +1082,77 @@ class PhoneOrderTests(unittest.TestCase):
             self.assertEqual(placed["PreviewIds"], [{"previewId": preview_id}])
         self.render_order({"vp_send"})
         self.assertEqual(self.client.place_order.call_count, 2)
+
+    def test_smart_discounted_limit_reviews_and_sends_exact_unchanged_debit(self):
+        candidates, _ = math.scan_vertical_candidates(
+            symbol="SPY", spot_last=100, option_rows=self.rows,
+            target_breakeven=None, max_cost=200, desktop_fast_fill=True, pricing_mode="SMART FILL")
+        self.candidate = candidates[0]
+        self.result["pricing_mode"] = "SMART FILL"
+        self.assertEqual((self.candidate["basis"], self.candidate["debit"]), ("SMART", 1.17))
+        before = deepcopy(self.candidate)
+        self.render_order({"vp_preview"})
+        self.client.preview_order.assert_called_once()
+        self.render_order({"vp_send"})
+        self.client.place_order.assert_called_once()
+        self.assertEqual(self.candidate, before)
+        self.assertEqual(self.client.place_order.call_args.args[1]["PlaceOrderRequest"]["Order"][0]["limitPrice"], 1.17)
+
+    def test_send_requotes_and_blocks_out_of_band_without_changing_reviewed_limit(self):
+        candidates, _ = math.scan_vertical_candidates(
+            symbol="SPY", spot_last=100, option_rows=self.rows,
+            target_breakeven=None, max_cost=200, desktop_fast_fill=True, pricing_mode="SMART FILL")
+        self.candidate, self.result["pricing_mode"] = candidates[0], "SMART FILL"
+        self.render_order({"vp_preview"})
+        payload = deepcopy(self.state["vp_review_bundle"]["previews"]["preferred"]["place_payload"])
+        ui = self.render_order({"vp_send"}, rows=[{**self.rows[0], "ask": 3.11}, self.rows[1]])
+        self.client.place_order.assert_not_called()
+        self.assertNotIn("vp_review_bundle", self.state)
+        self.assertNotIn("vp_live_confirm", self.state)
+        self.assertTrue(any("LIVE SPREAD REQUOTE BLOCKED" in str(call) for call in ui.error.call_args_list))
+        self.assertEqual(payload["PlaceOrderRequest"]["Order"][0]["limitPrice"], 1.17)
+        self.assertEqual(self.candidate["debit"], 1.17)
+
+    def test_normal_fixed_limit_may_review_when_preferred_price_changes_inside_band(self):
+        self.render_order({"vp_preview"}, rows=[{**self.rows[0], "bid": 2.8}, self.rows[1]])
+        self.client.preview_order.assert_called_once()
+        self.assertEqual(self.client.preview_order.call_args.args[1]["PreviewOrderRequest"]["Order"][0]["limitPrice"], 1.07)
+
+    def test_legacy_policy_cannot_reuse_review_or_reach_broker(self):
+        self.result["pricing_policy"] = "desktop-quote-policy-v2"
+        self.state["vp_review_bundle"], self.state["vp_live_confirm"] = {"old": True}, True
+        self.render_order({"vp_preview", "vp_send"})
+        self.client.preview_order.assert_not_called()
+        self.client.place_order.assert_not_called()
+        self.assertNotIn("vp_review_bundle", self.state)
+        self.assertNotIn("vp_live_confirm", self.state)
+
+    def test_cached_fallback_cannot_approve_review_or_live_send(self):
+        from src.etrade_data_cache import CachedETradeClient
+        original_client = self.client
+        self.render_order({"vp_preview"})
+        self.client = MagicMock(spec=CachedETradeClient)
+        self.client.is_offline = False
+        self.client.preview_order, self.client.place_order = MagicMock(), MagicMock()
+        self.state["_etrade_cache_last_event"] = {"resource": "option_chain", "stale": True}
+        self.render_order({"vp_send"})
+        self.client.place_order.assert_not_called()
+        self.assertNotIn("vp_review_bundle", self.state)
+        self.render_order({"vp_preview"})
+        self.client.preview_order.assert_not_called()
+        original_client.place_order.assert_not_called()
+
+    def test_preview_expiring_during_send_requote_cannot_place(self):
+        self.render_order({"vp_preview"})
+        ui = order_ui(self.state, {"vp_send"})
+        def slow_quote(*args, **kwargs):
+            self.state["vp_review_bundle"]["previewed_at"] -= phone._PREVIEW_FRESH_SECONDS + 1
+            return self.rows
+        with patch.object(phone, "st", ui), patch.object(phone, "_chain", side_effect=slow_quote):
+            phone._render_selected_order(self.client, MagicMock(), self.candidate, self.result, True)
+        self.client.place_order.assert_not_called()
+        self.assertNotIn("vp_review_bundle", self.state)
+        self.assertTrue(any("PREVIEW EXPIRED DURING REQUOTE" in str(call) for call in ui.error.call_args_list))
 
     def test_uncertain_submission_is_reported_and_never_automatically_retried(self):
         self.render_order({"vp_preview"})
@@ -1129,6 +1340,7 @@ if (not st.session_state.get("fixture_restore_only")
     st.session_state["FEATURE_PREFIX_scan_result"] = {
         "symbol":"QQQ","source":"E*TRADE","spot":100,"target":None,
         "max_cost":None,"pricing_mode":"NORMAL","raw_scan_id":1,"scope":"initial",
+        "pricing_policy":feature.VERTICAL_PRICING_POLICY,
         "loaded_at":raw["loaded_at"],"candidates":store,"annual_ids":annual,
         "listed_years":3,"loaded_expirations":3,"listed_expirations":3,
         "contract_count":len(raw["rows"]),"ranked_expirations":3,"scan_complete":True,"errors":[]}
@@ -1484,6 +1696,25 @@ with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
                     self.assertFalse(app.exception)
                     self.assertEqual(app.session_state["fixture_args"]["column_filters"],
                                      {} if explicit_clear else default)
+
+                # A same-mode policy upgrade retains filters while invalidating old order state.
+                current = dict(app.session_state[result_key])
+                previous_scope = current["scope"]
+                filters_before_upgrade = deepcopy(app.session_state[filter_key]["filters"])
+                current.pop("pricing_policy")
+                app.session_state[result_key] = current
+                app.session_state[prefix + "_review_bundle"] = {"old-policy": True}
+                app.session_state[prefix + "_live_confirm"] = True
+                scans_before_upgrade = list(app.session_state["fixture_scan_calls"])
+                app.run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.session_state[result_key]["pricing_policy"], math.VERTICAL_PRICING_POLICY)
+                self.assertNotEqual(app.session_state[result_key]["scope"], previous_scope)
+                self.assertEqual(app.session_state[filter_key]["filters"], filters_before_upgrade)
+                self.assertNotIn(prefix + "_review_bundle", app.session_state)
+                self.assertNotIn(prefix + "_live_confirm", app.session_state)
+                self.assertEqual(app.session_state["fixture_args"]["selected_ids"], [])
+                self.assertEqual(app.session_state["fixture_scan_calls"], scans_before_upgrade)
 
                 # Capped legacy snapshots require an explicit rescan and cannot resume or trade.
                 legacy = dict(app.session_state[result_key])
