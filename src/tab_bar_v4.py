@@ -249,8 +249,10 @@ def render_terminal_tab_bar(vault_key: str) -> tuple[list[str], str]:
         )
         proposed = {"order": proposed_order, "active": proposed_active}
         if not _same_state(proposed, state):
-            saved = _save(vault_key, proposed_order, proposed_active)
-            return saved["order"], saved["active"]
+            _save(vault_key, proposed_order, proposed_active)
+            # The component above was rendered with the previous props. Start
+            # the selected route only after it receives the matching state.
+            st.rerun()
 
     acknowledged = _load(vault_key)
     return acknowledged["order"], acknowledged["active"]
