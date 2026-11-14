@@ -174,29 +174,43 @@ def _cache_all_account_holdings():
 
     marker_key = "_etrade_holdings_cache_namespace"
     seeded_key = "_etrade_holdings_cached_account_keys"
+    failed_key = "_etrade_holdings_failed_account_at"
+    inventory_failed_key = "_etrade_holdings_inventory_failed_at"
     if st.session_state.get(marker_key) != namespace:
         st.session_state[marker_key] = namespace
         st.session_state[seeded_key] = set()
+        st.session_state[failed_key] = {}
+        st.session_state.pop(inventory_failed_key, None)
 
     accounts = st.session_state.get("etrade_accounts") or []
     if not accounts:
+        if time.time() - st.session_state.get(inventory_failed_key, 0) < 300:
+            return
         try:
             accounts = client.list_accounts()
             st.session_state["etrade_accounts"] = accounts
         except Exception:
+            st.session_state[inventory_failed_key] = time.time()
             return
+        if not accounts:
+            st.session_state[inventory_failed_key] = time.time()
+            return
+        st.session_state.pop(inventory_failed_key, None)
 
     seeded = set(st.session_state.get(seeded_key) or set())
+    failed = st.session_state.setdefault(failed_key, {})
     holdings = st.session_state.setdefault("etrade_holdings", {})
     loaded_any = False
     for account in accounts:
         account_key = str(account.get("accountIdKey") or "").strip()
-        if not account_key or account_key in seeded:
+        if not account_key or account_key in seeded or time.time() - failed.get(account_key, 0) < 300:
             continue
         try:
             holdings[account_key] = client.get_portfolio(account_key)
         except Exception:
+            failed[account_key] = time.time()
             continue
+        failed.pop(account_key, None)
         seeded.add(account_key)
         loaded_any = True
 
