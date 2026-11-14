@@ -34,6 +34,7 @@ def _render_compact_css() -> None:
         [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) [data-testid="stTextInput"] div[data-baseweb="input"]>div,
         [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) [data-testid="stTextInput"] input{min-height:34px!important;height:34px!important;}
         [data-testid="stVerticalBlockBorderWrapper"]:has(.etrade-oauth-v3-head) .stButton>button{min-height:34px!important;height:34px!important;padding:.16rem .42rem!important;margin:0!important;font-size:.69rem!important;line-height:1!important;}
+        .st-key-etrade_verify button{min-height:34px!important;height:34px!important;padding:.16rem .42rem!important;margin:0!important;font-size:.69rem!important;line-height:1!important;}
         .etrade-oauth-paste{width:100%;height:34px;min-height:34px;border:1px solid #fb8b1e;border-radius:.5rem;background:#222;color:#fb8b1e;font:800 .69rem/1 "Courier New",monospace;cursor:pointer;}
         .etrade-oauth-paste:hover,.etrade-oauth-paste:focus-visible{background:#fb8b1e;color:#000;}
         </style>
