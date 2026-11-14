@@ -50,6 +50,12 @@ jobs:
           python scripts/test_risk_intent_override.py
           python scripts/test_tab_layout.py
 
+      - name: Test E*TRADE verification and failed-holdings retry
+        run: |
+          python -m unittest tests.test_etrade_connection_ui tests.test_terminal_holdings_retry
+          python -m pip install selenium==4.36.0
+          python scripts/test_etrade_connection_browser.py
+
       - name: Test CBOE and Morningstar GEX source isolation
         run: |
           python -m py_compile src/gex_ui_v3.py src/gex_ui_v3_base.py scripts/test_gex_cboe.py
