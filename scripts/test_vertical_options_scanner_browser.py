@@ -67,6 +67,14 @@ def delayed_preference_component(**kwargs):
             return None
     return value
 vo._PRICING_PREFERENCE_COMPONENT = delayed_preference_component
+original_quote_refresh = getattr(vo, "_fixture_original_quote_refresh", vo._refresh_live_quotes)
+vo._fixture_original_quote_refresh = original_quote_refresh
+def observed_quote_refresh(*args, **kwargs):
+    original_quote_refresh(*args, **kwargs)
+    state = st.session_state.get("_vo_live_quotes") or {}
+    record("quote-callback", enabled=state.get("enabled"), revision=state.get("revision"),
+           scope=state.get("scope"), markets=state.get("markets"), next_due=state.get("next_due"))
+vo._refresh_live_quotes = observed_quote_refresh
 if os.environ.get("VO_SCANNER_PARTIAL_TEST"):
     import src.vertical_options_ui as vo
     vo._SCAN_BATCH_EXPIRATIONS = 1
@@ -101,7 +109,9 @@ class StubETrade:
                         if side == "CALL" else (strike - (49 if root == "MASSIVE" else 85)) / 5 + 1)
                 bid = .01 if root == "MODEZ" else last - (.01 if root == "MASSIVE" else .02)
                 ask = last + 10 if root == "MODEZ" else last + .01 if root == "MASSIVE" else last + .02 + .002 * (strike - 90)
-                move = .01 * revision * (strike - 100) if root == "LIVEQ" else 0
+                # Keep the synthetic market moving within the fixed debit's
+                # range; a one-way drift quickly pins every marker at 100%.
+                move = .002 * ((revision % 3) - 1) * (strike - 100) if root == "LIVEQ" else 0
                 quotes.append({
                     "Product": {"symbol": root, "securityType": "OPTN", "expiryYear": int(year),
                                 "expiryMonth": int(month), "expiryDay": int(day),
@@ -2261,6 +2271,8 @@ def test() -> None:
                     const scroll=document.getElementById('scroll');
                     window.fixtureLiveRow=document.querySelector('.row');
                     window.fixtureLiveSelect=window.fixtureLiveRow.querySelector('.select');
+                    window.fixtureLiveMarker=window.fixtureLiveRow.querySelector('.fill-marker');
+                    window.fixtureLiveMarkerLeft=window.fixtureLiveMarker.style.left;
                     return scroll.scrollTop;
                 """)
             live_scroll = in_grid(driver, retain_live_nodes)
@@ -2283,12 +2295,21 @@ def test() -> None:
                 return {rowConnected:window.fixtureLiveRow.isConnected,
                   rowSame:window.fixtureLiveRow===document.querySelector('.row'),
                   selectSame:window.fixtureLiveSelect===document.querySelector('.row .select'),
+                  markerSame:window.fixtureLiveMarker===document.querySelector('.row .fill-marker'),
+                  markerMoved:window.fixtureLiveMarker.style.left!==window.fixtureLiveMarkerLeft,
+                  markerTransition:getComputedStyle(window.fixtureLiveMarker).transitionProperty,
+                  markerDuration:getComputedStyle(window.fixtureLiveMarker).transitionDuration,
+                  reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,
                   scrollTop:document.getElementById('scroll').scrollTop,
                   expectedScroll:arguments[0]};
             """, live_scroll))
             assert (live_identity["rowConnected"] and live_identity["rowSame"] and
                     live_identity["selectSame"] and
                     live_identity["scrollTop"] == live_identity["expectedScroll"]), live_identity
+            assert live_identity["markerSame"] and live_identity["markerMoved"], live_identity
+            assert (live_identity["reducedMotion"] or
+                    (live_identity["markerTransition"] == "left" and
+                     live_identity["markerDuration"] == "0.7s")), live_identity
             live_calls = [e for e in events(event_path) if e["event"] == "live-quote" and
                           any(value.startswith("LIVEQ:") for value in e["symbols"])]
             assert len(live_calls) >= 2 and all(0 < len(e["symbols"]) <= 25 for e in live_calls), live_calls
@@ -2361,7 +2382,18 @@ def test() -> None:
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)
+            print("Recent synthetic broker/quote events:", events(event_path)[-25:], file=sys.stderr)
             if driver is not None:
+                print("Browser errors:", driver.get_log("browser")[-15:], file=sys.stderr)
+                if grid_is_mounted(driver):
+                    print("Quote UI:", in_grid(driver, lambda: driver.execute_script("""
+                        const panel=document.getElementById('filter-panel'),scroll=document.getElementById('scroll');
+                        return {hidden:document.hidden,panelHidden:panel?.hidden,
+                          clip:scroll?.getBoundingClientRect().toJSON(),
+                          bars:[...document.querySelectorAll('.fill-scale')].slice(0,4).map(cell=>({
+                            text:cell.textContent,label:cell.getAttribute('aria-label'),
+                            box:cell.getBoundingClientRect().toJSON()}))};
+                    """)), file=sys.stderr)
                 print(driver.find_element(By.TAG_NAME, "body").text[-6000:], file=sys.stderr)
                 print([(item.get_attribute("aria-label"), item.get_attribute("value"))
                        for item in driver.find_elements(By.CSS_SELECTOR, 'input[aria-label]')], file=sys.stderr)

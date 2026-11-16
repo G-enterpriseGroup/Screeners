@@ -177,13 +177,49 @@ class LiveQuoteOverlayTests(unittest.TestCase):
             with patch.object(feature.st, "session_state", state), patch.object(feature.time, "time", return_value=now):
                 overlay = self.tick(feature, prefix, state, client, rows)
                 market = deepcopy(overlay["markets"]["0"])
-                self.assertEqual((market["status"], market["as_of"], market["stale"]), ("DELAYED", now - 900, True))
+                self.assertEqual((market["status"], market["as_of"], market["stale"]),
+                                 ("DELAYED", now - 900, prefix == "vp"))
                 client.get_quote.side_effect = RuntimeError("Unavailable")
                 for revision, delay in ((2, 30), (3, 60), (4, 120)):
                     state["_" + prefix + "_live_quotes"]["next_due"] = 0
                     overlay = self.tick(feature, prefix, state, client, rows, revision)
                     self.assertEqual(overlay["next_due"] - now, delay)
-                    self.assertEqual(overlay["markets"]["0"], market)
+                    self.assertEqual(overlay["markets"]["0"], {**market, "stale": True})
+
+    def test_desktop_quote_status_preserves_delay_close_and_expires_realtime_legs(self):
+        for status, age, expected in (("DELAYED", 900, False), ("CLOSING", 3600, False),
+                                      ("EH_CLOSED", 3600, False), ("REALTIME", 40, True),
+                                      ("EH_REALTIME", 40, True), ("INDICATIVE_REALTIME", 2, False)):
+            with self.subTest(status=status):
+                state, client, rows, now = self.fixture(desktop, "vo")
+                def quotes(symbols, **kwargs):
+                    payload = self.payload(symbols, now)
+                    for row in payload["QuoteResponse"]["QuoteData"]:
+                        row.update(quoteStatus=status, dateTimeUTC=now - age)
+                    return payload
+                client.get_quote.side_effect = quotes
+                with patch.object(desktop.st, "session_state", state):
+                    market = self.tick(desktop, "vo", state, client, rows)["markets"]["0"]
+                    self.assertEqual(market["stale"], expected)
+                    self.assertEqual(market["status"], status)
+                    self.assertEqual(market["as_of"], now - age)
+
+    def test_desktop_new_scan_resets_failed_quote_backoff_without_sort_bypass(self):
+        state, client, rows, now = self.fixture(desktop, "vo")
+        with patch.object(desktop.st, "session_state", state):
+            self.tick(desktop, "vo", state, client, rows)
+            old = state["_vo_live_quotes"]
+            old.update(next_due=now + 120, failures=3)
+            desktop._live_quote_context("pricing-a", "sorted-view", rows, True, client)
+            self.assertEqual(state["_vo_live_quotes"]["next_due"], now + 120)
+            state["vo_scan_result"]["scope"] = "fresh-scan"
+            desktop._live_quote_context("fresh-scan", "sorted-view", rows, True, client)
+            self.assertEqual(state["_vo_live_quotes"]["next_due"], 0)
+            self.assertEqual(state["_vo_live_quotes"]["failures"], 0)
+            state["component"].update(scope="fresh-scan", quote_sort_key="sorted-view", quote_revision=2)
+            desktop._refresh_live_quotes(client, "component", "fresh-scan", "sorted-view")
+            self.assertEqual(client.get_quote.call_count, 2)
+            self.assertFalse(state["_vo_live_quotes"]["markets"]["0"]["stale"])
 
     def test_both_owners_reject_cached_fallback_and_do_not_extend_auth_activity(self):
         from src.etrade_data_cache import CachedETradeClient, session_namespace

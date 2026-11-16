@@ -13,6 +13,65 @@ from src.vertical_options import (
 
 
 class VerticalOptionsTests(unittest.TestCase):
+    def test_explicit_scan_refresh_bypasses_broker_cache_in_every_continued_batch(self):
+        from datetime import timedelta
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        from src.etrade_data_cache import CachedETradeClient
+
+        state = {}
+        client = MagicMock(spec=CachedETradeClient)
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        expiries = [date.today() + timedelta(days=days) for days in (45, 90)]
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "_expirations", return_value=expiries),
+              patch.object(vo, "extract_option_rows", side_effect=lambda payload, expiry: [{"expiry": expiry}]),
+              patch.object(vo, "record_lookup"),
+              patch.object(vo, "_SCAN_BATCH_EXPIRATIONS", 1)):
+            partial = vo._scan_all_years(client, "QQQ", lambda: None, refresh=True)
+            self.assertFalse(partial["scan_complete"])
+            complete = vo._scan_all_years(client, "QQQ", lambda: None)
+            self.assertTrue(complete["scan_complete"])
+            client.get_quote.assert_called_once_with("QQQ", force_refresh=True)
+            self.assertEqual(client.get_option_chain.call_count, 2)
+            self.assertTrue(all(call.kwargs["force_refresh"] for call in client.get_option_chain.call_args_list))
+            self.assertEqual(partial["scan_id"], complete["scan_id"])
+            self.assertIs(vo._scan_all_years(client, "QQQ", lambda: None), complete)
+            self.assertEqual(client.get_option_chain.call_count, 2)
+
+    def test_manual_refresh_does_not_relabel_cached_broker_fallback_as_fresh(self):
+        from unittest.mock import MagicMock, patch
+        import src.vertical_options_ui as vo
+        from src.etrade_data_cache import CachedETradeClient
+
+        saved = {"scope": "last-good", "candidates": ["preserved"]}
+        state = {"vo_scan_result": saved, "_etrade_cache_last_event": {"stale": True}}
+        client = MagicMock(spec=CachedETradeClient)
+        client.is_offline = False
+        client.get_quote.return_value = {"lastTrade": 100}
+        with patch.object(vo.st, "session_state", state):
+            with self.assertRaisesRegex(ValueError, "Broker returned cached quotes"):
+                vo._scan_all_years(client, "QQQ", lambda: None, refresh=True)
+            self.assertIs(state["vo_scan_result"], saved)
+            client.get_option_chain.assert_not_called()
+
+        state["_etrade_cache_last_event"] = {"stale": False}
+        def cached_chain(*args, **kwargs):
+            state["_etrade_cache_last_event"] = {"stale": True}
+            return {}
+        client.get_option_chain.side_effect = cached_chain
+        with (patch.object(vo.st, "session_state", state),
+              patch.object(vo.st, "progress", return_value=MagicMock()),
+              patch.object(vo, "_expirations", return_value=[date(2029, 1, 19)]),
+              patch.object(vo, "extract_option_rows", return_value=[{"expiry": date(2029, 1, 19)}]),
+              patch.object(vo, "record_lookup")):
+            with self.assertRaisesRegex(ValueError, "cached contracts during refresh"):
+                vo._scan_all_years(client, "QQQ", lambda: None, refresh=True)
+            self.assertEqual(state["_vo_chain_cache"]["E*TRADE:QQQ"]["rows"], [])
+            self.assertIs(state["vo_scan_result"], saved)
+
     def test_stacked_leg_open_interest_uses_exact_cached_quote_and_keeps_zero(self):
         from copy import deepcopy
         from unittest.mock import patch
@@ -1471,6 +1530,7 @@ for(const fixture of fixtures){
  advance(0);assert.equal(ticks().length,1,'Bridge rejects duplicate, foreign and unbounded requests');
  const first=main.ids.visible.children[0],select=first.querySelector('.select'),cost=first.querySelector('.cost'),cell=first.querySelector('.fill-scale'),panel=main.ids['filter-panel'];
  const oldCost=cost.textContent,oldRows=JSON.stringify(rows),oldScroll=main.ids.scroll.scrollTop;
+ const firstMarker=cell.querySelector('.fill-marker'),firstRuler=cell.querySelector('.fill-ruler');
  advance(10000);assert.equal(ticks().length,1,'No overlapping request');
  update={revision:ticks()[0].quote_revision,retry_seconds:10,markets:{'row-0':{bid:1.2,mid:2.2,ask:3.2,estimate:41,status:'REALTIME',as_of:now/1000-2,fetched_at:now/1000,stale:false}}};
  renderBridge();advance(0);
@@ -1478,6 +1538,11 @@ for(const fixture of fixtures){
  assert.equal(cost.textContent,oldCost);assert.equal(JSON.stringify(rows),oldRows);assert.equal(main.ids.scroll.scrollTop,oldScroll);
  assert(cell.textContent.includes('1.20'));assert(cell.textContent.includes('DEBIT 2.00'));assert(cell.textContent.includes('RT 2s'));
  assert(cell.getAttribute('aria-label').includes('REALTIME'));assert(cell.getAttribute('aria-label').includes('sorting use the scan snapshot'));
+ if(fixture.main.includes('transition:left .7s ease')){
+  assert.strictEqual(cell.querySelector('.fill-marker'),firstMarker,'Animation retains the marker node');
+  assert.strictEqual(cell.querySelector('.fill-ruler'),firstRuler,'Quote update retains the ruler');
+  assert.equal(Number.parseFloat(firstMarker.style.left),40,'Debit moves from midpoint to 40% of new market');
+ }
  const filled=cell.textContent;
  const oldUpdate=update;update={revision:0,markets:{'row-0':{bid:99,ask:100,status:'REALTIME',as_of:now/1000}},retry_seconds:10};renderBridge();advance(0);assert.equal(cell.textContent,filled,'Old ACK must not replace quotes');update=oldUpdate;
  panel.hidden=false;advance(10000);assert.equal(ticks().length,1,'Open filter menu pauses polling');panel.hidden=true;
@@ -1504,6 +1569,10 @@ for(const fixture of fixtures){
  for(const [status,age,stale,label] of [['DELAYED',900,false,'DLY 15m'],['CLOSING',3600,false,'CLOSE 1h'],['UNKNOWN',2,false,'N/A 2s'],['REALTIME',40,false,'STALE 40s'],['REALTIME',2,true,'STALE 2s']]){
   update={revision:ticks().at(-1).quote_revision,retry_seconds:30,markets:{'row-0':{bid:1.3,mid:2.3,ask:3.3,estimate:35,status,as_of:now/1000-age,fetched_at:now/1000,stale}}};
   renderBridge();advance(0);assert(currentCell.textContent.includes(label),currentCell.textContent);
+ }
+ if(fixture.main.includes('transition:left .7s ease')){
+  update={revision:ticks().at(-1).quote_revision,retry_seconds:30,markets:{'row-0':{bid:1.3,mid:2.3,ask:3.3,status:'DELAYED',as_of:now/1000-900,fetched_at:now/1000-31,stale:false}}};
+  renderBridge();advance(0);assert(currentCell.textContent.includes('STALE 15m'),'A stalled delayed feed remains visibly stale');
  }
  const countBeforeBackoff=ticks().length;advance(29999);assert.equal(ticks().length,countBeforeBackoff);advance(1);assert.equal(ticks().length,countBeforeBackoff+1);
  // An unavailable bridge marks old quotes honestly; reconnecting the same
