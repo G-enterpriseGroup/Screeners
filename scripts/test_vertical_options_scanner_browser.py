@@ -2261,6 +2261,8 @@ def test() -> None:
                     const scroll=document.getElementById('scroll');
                     window.fixtureLiveRow=document.querySelector('.row');
                     window.fixtureLiveSelect=window.fixtureLiveRow.querySelector('.select');
+                    window.fixtureLiveMarker=window.fixtureLiveRow.querySelector('.fill-marker');
+                    window.fixtureLiveMarkerLeft=window.fixtureLiveMarker.style.left;
                     return scroll.scrollTop;
                 """)
             live_scroll = in_grid(driver, retain_live_nodes)
@@ -2283,12 +2285,21 @@ def test() -> None:
                 return {rowConnected:window.fixtureLiveRow.isConnected,
                   rowSame:window.fixtureLiveRow===document.querySelector('.row'),
                   selectSame:window.fixtureLiveSelect===document.querySelector('.row .select'),
+                  markerSame:window.fixtureLiveMarker===document.querySelector('.row .fill-marker'),
+                  markerMoved:window.fixtureLiveMarker.style.left!==window.fixtureLiveMarkerLeft,
+                  markerTransition:getComputedStyle(window.fixtureLiveMarker).transitionProperty,
+                  markerDuration:getComputedStyle(window.fixtureLiveMarker).transitionDuration,
+                  reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,
                   scrollTop:document.getElementById('scroll').scrollTop,
                   expectedScroll:arguments[0]};
             """, live_scroll))
             assert (live_identity["rowConnected"] and live_identity["rowSame"] and
                     live_identity["selectSame"] and
                     live_identity["scrollTop"] == live_identity["expectedScroll"]), live_identity
+            assert live_identity["markerSame"] and live_identity["markerMoved"], live_identity
+            assert (live_identity["reducedMotion"] or
+                    (live_identity["markerTransition"] == "left" and
+                     live_identity["markerDuration"] == "0.7s")), live_identity
             live_calls = [e for e in events(event_path) if e["event"] == "live-quote" and
                           any(value.startswith("LIVEQ:") for value in e["symbols"])]
             assert len(live_calls) >= 2 and all(0 < len(e["symbols"]) <= 25 for e in live_calls), live_calls

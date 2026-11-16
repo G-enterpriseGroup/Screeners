@@ -54,7 +54,8 @@ html,body{margin:0;padding:0;background:#000;color:#f6b56a;overflow:hidden;font-
 .fill-labels>span:last-child{align-items:flex-end}
 .fill-track{height:3px;margin:3px 4px 4px;position:relative;background:#8f99a8}
 .fill-track:before{content:"";position:absolute;left:50%;top:-3px;height:9px;border-left:1px solid #f6b56a}
-.fill-marker{position:absolute;top:-5px;width:5px;height:13px;background:#4af6c3;transform:translateX(-50%);box-shadow:0 0 2px #4af6c3}
+.fill-marker{position:absolute;top:-5px;width:5px;height:13px;background:#4af6c3;transform:translateX(-50%);box-shadow:0 0 2px #4af6c3;transition:left .7s ease}
+@media(prefers-reduced-motion:reduce){.fill-marker{transition:none}}
 .fill-estimate{font:800 10px/1 "Courier New",monospace;text-align:center;color:#4af6c3!important;-webkit-text-fill-color:#4af6c3!important;white-space:nowrap}
 .fill-estimate.unavailable{color:#8f99a8!important;-webkit-text-fill-color:#8f99a8!important}
 .row.annual>.cell{font-weight:900!important}
@@ -229,25 +230,34 @@ function renderFillScale(cell,row){
  const debit=number(row.fill_market?.debit),estimate=number(row.fill_market?.estimate);
  const quoted=Number.isFinite(bid)&&Number.isFinite(ask)&&ask>bid;
  const position=quoted&&Number.isFinite(debit);
- const ruler=document.createElement("div");ruler.className="fill-ruler";
- const labels=document.createElement("div");labels.className="fill-labels";
- for(const [word,value] of [["BID",bid],["MID",mid],["ASK",ask]]){
-  const tag=document.createElement("span"),price=Number.isFinite(value)?value.toFixed(2):"—";
-  tag.textContent=price;tag.setAttribute("aria-label",word+" "+price);labels.appendChild(tag);
+ // Retain the marker node so a new quote transitions from its actual prior
+ // position. Replacing the ruler on every tick cancels CSS transitions.
+ let ruler=cell.querySelector(".fill-ruler");
+ if(!ruler){
+  ruler=document.createElement("div");ruler.className="fill-ruler";
+  const labels=document.createElement("div");labels.className="fill-labels";
+  for(let index=0;index<3;index++)labels.appendChild(document.createElement("span"));
+  const track=document.createElement("div");track.className="fill-track";
+  const marker=document.createElement("i");marker.className="fill-marker";track.appendChild(marker);
+  const odds=document.createElement("small");odds.className="fill-estimate";
+  ruler.append(labels,track,odds);cell.replaceChildren(ruler);
  }
- const track=document.createElement("div");track.className="fill-track";
- const odds=document.createElement("small");odds.className="fill-estimate";
- if(position){
-  const marker=document.createElement("i");marker.className="fill-marker";
-  marker.style.left=(100*Math.max(0,Math.min(1,(debit-bid)/(ask-bid))))+"%";track.appendChild(marker);
+ const labels=ruler.querySelector(".fill-labels"),marker=ruler.querySelector(".fill-marker"),odds=ruler.querySelector(".fill-estimate");
+ for(const [index,[word,value]] of [["BID",bid],["MID",mid],["ASK",ask]].entries()){
+  const tag=labels.children[index],price=Number.isFinite(value)?value.toFixed(2):"—";
+  tag.textContent=price;tag.setAttribute("aria-label",word+" "+price);
  }
+ marker.hidden=!position;
+ if(position)marker.style.left=(100*Math.max(0,Math.min(1,(debit-bid)/(ask-bid))))+"%";
+ odds.className="fill-estimate";
  let freshness="SNAP",detail="Scan snapshot quotes.";
  if(live){
   const status=String(live.status||"UNKNOWN").toUpperCase(),normalized=status.replace(/[\s_-]/g,"");
-  const asOf=number(live.as_of),age=Date.now()/1000-asOf;
+  const asOf=number(live.as_of),age=Date.now()/1000-asOf,fetchAge=Date.now()/1000-number(live.fetched_at);
   const knownTime=Number.isFinite(asOf)&&asOf>0&&age>=-60;
-  const stale=Boolean(live.stale)||!knownTime||(normalized==="REALTIME"&&age>30);
-  const badge=stale?"STALE":normalized==="REALTIME"?"RT":normalized.includes("DELAY")?"DLY":normalized.includes("CLOS")?"CLOSE":"N/A";
+  const realtime=["REALTIME","EHREALTIME","INDICATIVEREALTIME"].includes(normalized);
+  const stale=Boolean(live.stale)||!knownTime||!Number.isFinite(fetchAge)||fetchAge>30||fetchAge< -60||(realtime&&age>30);
+  const badge=stale?"STALE":realtime?"RT":normalized.includes("DELAY")?"DLY":normalized.includes("CLOS")||normalized==="EHBEFOREOPEN"?"CLOSE":"N/A";
   const seconds=Math.max(0,Math.floor(age));
   const ageText=knownTime?(seconds<60?seconds+"s":seconds<3600?Math.floor(seconds/60)+"m":Math.floor(seconds/3600)+"h"):"?";
   freshness=badge+" "+ageText;
@@ -263,7 +273,7 @@ function renderFillScale(cell,row){
  cell.setAttribute("aria-label",(quoted?"Spread BID "+bid.toFixed(2)+", MID "+(Number.isFinite(mid)?mid.toFixed(2):"unavailable")+
   ", ASK "+ask.toFixed(2):"Spread quotes unavailable")+", fixed scan debit "+(Number.isFinite(debit)?debit.toFixed(2):"unavailable")+
   ". "+detail+" "+FILL_EST_HELP);
- ruler.append(labels,track,odds);cell.classList.add("fill-scale");cell.replaceChildren(ruler);
+ cell.classList.add("fill-scale");
 }
 function patchLiveQuotes(){
  for(const line of visible.querySelectorAll(".row")){

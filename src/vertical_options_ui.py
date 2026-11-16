@@ -949,7 +949,7 @@ def _chain(client, symbol: str, expiry: date, touch_session, *,
            fresh_broker_quote: bool = False) -> list[dict[str, Any]]:
     params = {"no_of_strikes": None, "chain_type": "CALLPUT"}
     # The authenticated session wrapper caches chains for up to five minutes.
-    # Broker REVIEW must obtain a new quote, unlike ordinary result scanning.
+    # Broker REVIEW and an explicit scan refresh must bypass that cache.
     if fresh_broker_quote and isinstance(client, CachedETradeClient):
         params["force_refresh"] = True
     payload = client.get_option_chain(
@@ -1214,6 +1214,9 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
             return cached
 
     market_client = options_market_client(client)
+    # Carry manual refresh through continued expiration batches as well.
+    refresh_quotes = bool(refresh or (fresh_cached and cached.get("refresh_quotes")))
+    refresh_broker = refresh_quotes and isinstance(market_client, CachedETradeClient)
     if fresh_cached:
         # Continue from the first unvisited expiration; never silently retry
         # already downloaded chains or discard successfully loaded contracts.
@@ -1227,7 +1230,10 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         start_index = int(cached["next_expiry_index"])
         tv_exchange = cached.get("tv_exchange", "")
     else:
-        quote_payload = market_client.get_quote(symbol)
+        quote_payload = market_client.get_quote(symbol, **({"force_refresh": True} if refresh_broker else {}))
+        if refresh_broker and (st.session_state.get("_etrade_offline_mode")
+                               or (st.session_state.get("_etrade_cache_last_event") or {}).get("stale")):
+            raise ValueError("REFRESH UNAVAILABLE // Broker returned cached quotes. Last results retained; retry when connected.")
         quote = quote_summary(quote_payload)
         touch_session()
         spot = _entered_price(
@@ -1258,7 +1264,11 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
                 text=f"LOADING {index + 1}/{len(expirations)} // {_date_label(expiry)} // {symbol}",
             )
             try:
-                chain_rows = _chain(market_client, symbol, expiry, touch_session)
+                chain_rows = _chain(market_client, symbol, expiry, touch_session,
+                                    **({"fresh_broker_quote": True} if refresh_broker else {}))
+                if refresh_broker and (st.session_state.get("_etrade_offline_mode")
+                                       or (st.session_state.get("_etrade_cache_last_event") or {}).get("stale")):
+                    raise ValueError("Broker returned cached contracts during refresh; retry when connected.")
                 if chain_rows:
                     rows.extend(chain_rows)
                     loaded += 1
@@ -1293,6 +1303,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         "loaded_at": cached["loaded_at"] if fresh_cached else now,
         "scan_id": cached["scan_id"] if fresh_cached else time.time_ns(),
         "source": source, "symbol": symbol, "spot": spot, "name": name,
+        "refresh_quotes": refresh_quotes,
         "expirations": expirations, "loaded_expirations": loaded,
         "rows": rows, "errors": errors, "failed_expirations": failed_expirations,
         "tv_exchange": tv_exchange,
@@ -1659,9 +1670,12 @@ def _live_quote_context(scope: str, sort_key: str, rows: list[dict[str, Any]],
     auth_key = _live_quote_auth_key(client) if enabled else ""
     same_context = (previous.get("scope") == scope and previous.get("sort_key") == sort_key
                     and previous.get("auth_key") == auth_key)
+    same_feed = previous.get("scope") == scope and previous.get("auth_key") == auth_key
     candidates = {row["id"]: row for row in rows}
     state = {**previous, "scope": scope, "sort_key": sort_key, "enabled": bool(auth_key),
              "auth_key": auth_key,
+             "next_due": float(previous.get("next_due", 0)) if same_feed else 0,
+             "failures": int(previous.get("failures", 0)) if same_feed else 0,
              "candidates": candidates,
              "revision": int(previous.get("revision", 0)) if same_context else 0,
              "markets": {key: value for key, value in previous.get("markets", {}).items()
@@ -1756,7 +1770,12 @@ def _refresh_live_quotes(client, component_key: str, scope: str, sort_key: str) 
         state["markets"][row["id"]] = {
             "bid": bid, "mid": round((bid + ask) / 2, 4), "ask": ask,
             "estimate": indicative_fill_score(overlay), "status": status,
-            "as_of": stamp, "fetched_at": now, "stale": now - stamp > 30,
+            "as_of": stamp, "fetched_at": now,
+            # A freshly fetched DELAYED/CLOSING quote is not a failed refresh.
+            # Preserve its broker status and age; realtime legs still expire.
+            "stale": any(re.sub(r"[\s_-]", "", leg["status"]) in
+                         {"REALTIME", "EHREALTIME", "INDICATIVEREALTIME"}
+                         and now - leg["as_of"] > 30 for leg in (buy, sell)),
         }
     state["failures"] = min(3, int(state.get("failures", 0)) + 1) if failed else 0
     state["next_due"] = now + (30 * 2 ** (state["failures"] - 1) if failed else 10)
