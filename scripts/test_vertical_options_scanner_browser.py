@@ -101,7 +101,9 @@ class StubETrade:
                         if side == "CALL" else (strike - (49 if root == "MASSIVE" else 85)) / 5 + 1)
                 bid = .01 if root == "MODEZ" else last - (.01 if root == "MASSIVE" else .02)
                 ask = last + 10 if root == "MODEZ" else last + .01 if root == "MASSIVE" else last + .02 + .002 * (strike - 90)
-                move = .01 * revision * (strike - 100) if root == "LIVEQ" else 0
+                # Keep the synthetic market moving within the fixed debit's
+                # range; a one-way drift quickly pins every marker at 100%.
+                move = .002 * ((revision % 3) - 1) * (strike - 100) if root == "LIVEQ" else 0
                 quotes.append({
                     "Product": {"symbol": root, "securityType": "OPTN", "expiryYear": int(year),
                                 "expiryMonth": int(month), "expiryDay": int(day),
