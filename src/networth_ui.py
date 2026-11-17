@@ -343,12 +343,16 @@ def _start_link(store, client, item_id: str = "", products=None) -> None:
     if state.get("plaid_environment") and state["plaid_environment"] != client.config.environment:
         raise NetworthError("Plaid environment differs from the saved ledger. Restore the original environment or use a separate ledger_id.")
     item = state.get("items", {}).get(item_id, {})
+    if item_id and not item.get("access_token"):
+        raise NetworthError("This institution is no longer linked. Reload saved balances before reconnecting.")
     link = client.create_link(store.scope, access_token=item.get("access_token") if item_id else None, products=products)
     link_id = uuid.uuid4().hex
 
     def save(latest):
         if latest.get("plaid_environment") and latest["plaid_environment"] != client.config.environment:
             raise NetworthError("Plaid environment differs from the saved ledger. Use a separate ledger_id.")
+        if item_id and latest.get("items", {}).get(item_id, {}).get("access_token") != item["access_token"]:
+            raise NetworthError("This institution changed during reconnect. Reload saved balances and retry.")
         latest["plaid_environment"] = client.config.environment
         latest.setdefault("pending_links", {})[link_id] = {
             "link_token": link["link_token"], "hosted_link_url": link["hosted_link_url"],
@@ -381,7 +385,8 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
     # Exchange once; retain a server-memory recovery copy until the encrypted
     # write verifies, because Plaid public tokens are single use.
     recovery = st.session_state.setdefault("_networth_link_exchange", {})
-    for token in result.get("public_tokens", []):
+    # Update mode repairs the existing Item; its access token does not change.
+    for token in (() if entry.get("item_id") else result.get("public_tokens", [])):
         if token in entry.get("processed_tokens", []):
             continue
         key = (link_id, token)
@@ -410,9 +415,6 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
     if result.get("completed"):
         def finish(latest):
             latest.setdefault("pending_links", {}).pop(link_id, None)
-            item = latest.get("items", {}).get(pending.get("item_id"))
-            if item:
-                item["error"] = ""
         store.update_state(finish)
         sync_networth(store, client)
         return True
@@ -549,6 +551,34 @@ def _daily_sheet(store, state: dict) -> None:
     st.caption("Daily view defaults to the latest saved capture. Each snapshot keeps the classification used when it was captured; current edits apply to subsequent captures. Currencies are reported separately.")
 
 
+def _refresh_errors(store, client, state: dict) -> None:
+    for item_id, error in state.get("last_errors", {}).items():
+        item = state.get("items", {}).get(item_id, {})
+        label = str(item.get("label") or "Linked institution")
+        if error != "PLAID_ITEM_LOGIN_REQUIRED" or not item.get("access_token"):
+            st.warning("Balance refresh — " + label + ": " + str(error))
+            continue
+        st.warning(label + " needs bank reauthorization. Your linked accounts and saved balances are retained. "
+                   "Reload only reads saved balances; it does not sign you out. Reconnect this institution to resume syncing.")
+        pending = None
+        for entry in state.get("pending_links", {}).values():
+            if entry.get("item_id") != item_id:
+                continue
+            expiration = entry.get("expiration")
+            try:
+                expired = expiration and datetime.fromisoformat(expiration.replace("Z", "+00:00")) < datetime.now(timezone.utc)
+            except (ValueError, TypeError):
+                expired = True
+            if not expired:
+                pending = entry
+                break
+        if pending:
+            st.link_button("OPEN PLAID — " + label, pending["hosted_link_url"])
+        elif st.button("RECONNECT — " + label, key="networth_refresh_reconnect_" + item_id):
+            _start_link(store, client, item_id)
+            st.rerun()
+
+
 def _connections(store, client, state: dict) -> None:
     if not state.get("items"):
         return
@@ -556,7 +586,9 @@ def _connections(store, client, state: dict) -> None:
         for item_id, item in state["items"].items():
             st.write(item.get("label") or "Linked institution")
             if item.get("error"):
-                st.warning("Connection needs attention: " + str(item["error"]))
+                st.warning("Bank reauthorization required. Use RECONNECT to resume syncing; your accounts stay linked."
+                           if item["error"] == "PLAID_ITEM_LOGIN_REQUIRED"
+                           else "Connection needs attention: " + str(item["error"]))
             if st.button("RECONNECT", key="networth_reconnect_" + item_id):
                 _start_link(store, client, item_id)
                 st.rerun()
@@ -629,8 +661,7 @@ def _render_networth_content() -> None:
                 st.warning("Balance sync could not finish. Showing the last saved balances; retry shortly.")
             else:
                 st.rerun()
-        for error in state.get("last_errors", {}).values():
-            st.warning("Balance refresh: " + str(error))
+        _refresh_errors(store, client, state)
         if state.get("last_errors") or state.get("last_capture_complete") is False:
             status_col.caption("Most recent account balance update: " + _timestamp(_latest_account_update(state)) + "; some accounts may be older.")
         _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
