@@ -27,6 +27,7 @@ _networth_buckets = components.declare_component(
     "networth_account_buckets_v1",
     path=str(Path(__file__).parent / "components" / "networth_buckets_v1"),
 )
+_TEMPORARY_BANK_ERRORS = ("PLAID_INSTITUTION_NOT_AVAILABLE", "PLAID_INSTITUTION_DOWN", "PLAID_INSTITUTION_NOT_RESPONDING")
 
 
 def _remember_verified(cache_key, state: dict) -> None:
@@ -345,6 +346,10 @@ def _start_link(store, client, item_id: str = "", products=None) -> None:
     item = state.get("items", {}).get(item_id, {})
     if item_id and not item.get("access_token"):
         raise NetworthError("This institution is no longer linked. Reload saved balances before reconnecting.")
+    if item_id and any(entry.get("item_id") == item_id and
+                       (entry.get("completed_at") or not _link_expired(entry))
+                       for entry in state.get("pending_links", {}).values()):
+        return
     link = client.create_link(store.scope, access_token=item.get("access_token") if item_id else None, products=products)
     link_id = uuid.uuid4().hex
 
@@ -362,8 +367,36 @@ def _start_link(store, client, item_id: str = "", products=None) -> None:
     store.update_state(save)
 
 
+def _parsed_time(value):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _sync_active(state: dict) -> bool:
+    expires = _parsed_time((state.get("sync_lease") or {}).get("expires_at"))
+    return bool(expires and expires > datetime.now(timezone.utc))
+
+
+def _link_expired(pending: dict) -> bool:
+    expiration = pending.get("expiration")
+    expires = _parsed_time(expiration)
+    return bool(expiration and (expires is None or expires <= datetime.now(timezone.utc)))
+
+
+def _link_refreshed(state: dict, pending: dict) -> bool:
+    completed = _parsed_time(pending.get("completed_at"))
+    items = pending.get("refresh_item_ids", [])
+    return bool(completed and items and all(
+        (attempt := _parsed_time(state.get("items", {}).get(item_id, {}).get("last_attempt")))
+        and attempt >= completed for item_id in items
+    ))
+
+
 def _complete_link(store, client, link_id: str, pending: dict) -> bool:
-    result = client.link_results(pending["link_token"])
+    result = {"completed": True} if pending.get("completed_at") else client.link_results(pending["link_token"])
     if not result.get("completed"):
         return False
     owner = st.session_state.setdefault("_networth_link_owner", uuid.uuid4().hex)
@@ -374,7 +407,7 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
         if entry is None:
             return
         lease = entry.get("processing_until")
-        if lease and lease > now.isoformat() and entry.get("processing_owner") != owner:
+        if lease and lease > now.isoformat() and entry.get("processing_owner") != owner and not entry.get("completed_at"):
             return
         entry.update(processing_owner=owner, processing_until=(now + timedelta(minutes=5)).isoformat())
 
@@ -413,39 +446,96 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
         store.update_state(save)
         recovery.pop(key, None)
     if result.get("completed"):
+        def approved(latest):
+            current = latest.get("pending_links", {}).get(link_id)
+            if current is None or current.get("processing_owner") != owner:
+                raise NetworthError("Plaid connection changed during linking; reload and retry.")
+            if not current.get("completed_at"):
+                current["completed_at"] = now.isoformat()
+                current["refresh_item_ids"] = [current["item_id"]] if current.get("item_id") else list(latest.get("items", {}))
+
+        if not entry.get("completed_at"):
+            claimed = store.update_state(approved)
+            entry = claimed["pending_links"][link_id]
+        if _sync_active(claimed):
+            return False
+        if not _link_refreshed(claimed, entry):
+            try:
+                sync_networth(store, client)
+            except NetworthError as exc:
+                if str(exc) == "NETWORTH_SYNC_IN_PROGRESS":
+                    return False
+                raise
+
         def finish(latest):
-            latest.setdefault("pending_links", {}).pop(link_id, None)
+            current = latest.get("pending_links", {}).get(link_id)
+            if current and current.get("processing_owner") == owner:
+                latest["pending_links"].pop(link_id)
         store.update_state(finish)
-        sync_networth(store, client)
         return True
     return False
 
 
-@st.fragment(run_every="5s")
-def _pending_links(store, client) -> None:
-    state = store.read_state()
-    pending_links = state.get("pending_links", {})
+def _pending_link_controls(store, state: dict) -> None:
+    pending_links = {key: pending for key, pending in state.get("pending_links", {}).items()
+                     if pending.get("completed_at") or not _link_expired(pending)}
     if pending_links:
-        st.caption("Finish Plaid in its window. Connection status checks automatically.")
+        st.caption("Connection status updates automatically after you finish Plaid.")
     for index, (link_id, pending) in enumerate(pending_links.items(), 1):
-        expiration = pending.get("expiration")
-        expired = expiration and datetime.fromisoformat(expiration.replace("Z", "+00:00")) < datetime.now(timezone.utc)
-        status, open_link, dismiss_link = st.columns([3, 2, 1], gap="small", vertical_alignment="center")
-        try:
-            if _complete_link(store, client, link_id, pending):
-                st.rerun()
-        except NetworthError as exc:
-            status.caption(str(exc))
-        if expired:
-            status.caption("Connection " + str(index) + " · Expired; start a new link.")
+        label = state.get("items", {}).get(pending.get("item_id"), {}).get("label") or "Connection " + str(index)
+        status, open_link, dismiss_link = st.columns([6, 1, 1], gap="small", vertical_alignment="center")
+        if pending.get("completed_at"):
+            status.caption(label + " · Bank approved; refreshing balances…")
         else:
-            status.caption("Connection " + str(index) + " · Waiting for Plaid")
-            open_link.link_button("OPEN PLAID" if not pending.get("item_id") else "RECONNECT", pending["hosted_link_url"])
-        if dismiss_link.button("DISMISS", key="networth_dismiss_" + link_id):
+            status.caption(label + " · Waiting for bank approval")
+            open_link.link_button("OPEN PLAID", pending["hosted_link_url"], width="stretch")
+        if dismiss_link.button("DISMISS", key="networth_dismiss_" + link_id, width="stretch"):
             def dismiss(latest):
                 latest.setdefault("pending_links", {}).pop(link_id, None)
             store.update_state(dismiss)
             st.rerun()
+
+
+def _refresh_revision(state: dict) -> str:
+    visible = _readonly_snapshot(state)
+    visible["syncing"] = _sync_active(state)
+    visible["pending_links"] = {key: {field: entry.get(field) for field in ("item_id", "expiration", "completed_at")}
+                                for key, entry in state.get("pending_links", {}).items()}
+    for field in ("last_capture_complete", "last_scheduled_at"):
+        visible[field] = state.get(field)
+    return hashlib.sha256(json.dumps(visible, sort_keys=True).encode()).hexdigest()
+
+
+@st.fragment(run_every="10s")
+def _pending_links(store, client, revision: str, cache_key=None) -> None:
+    try:
+        state = store.read_state()
+        retries = st.session_state.setdefault("_networth_link_retries", {})
+        scope = cache_key or store.scope
+        processed = False
+        for link_id, pending in state.get("pending_links", {}).items():
+            if pending.get("completed_at") and _sync_active(state):
+                continue
+            if not pending.get("completed_at") and _link_expired(pending):
+                continue
+            retry_key = (scope, link_id)
+            retry_at = _parsed_time(retries.get(retry_key))
+            if retry_at and retry_at > datetime.now(timezone.utc):
+                continue
+            try:
+                _complete_link(store, client, link_id, pending)
+            except NetworthError:
+                retries[retry_key] = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+                st.caption("Connection verification is delayed. Saved balances remain visible; status will retry automatically.")
+            else:
+                retries.pop(retry_key, None)
+            processed = True
+        latest = store.read_state() if processed else state
+        if _refresh_revision(latest) != revision:
+            _remember_verified(cache_key, latest)
+            st.rerun()
+    except NetworthError:
+        st.caption("Connection status is temporarily unavailable. Saved balances remain visible; retry shortly.")
 
 
 def _classification_editor(store, state: dict, *, cache_key=None) -> None:
@@ -555,26 +645,26 @@ def _refresh_errors(store, client, state: dict) -> None:
     for item_id, error in state.get("last_errors", {}).items():
         item = state.get("items", {}).get(item_id, {})
         label = str(item.get("label") or "Linked institution")
+        if error in _TEMPORARY_BANK_ERRORS:
+            st.warning(label + " · Bank connection temporarily unavailable. Your login is saved; showing the last saved balances. Try syncing again later.")
+            continue
         if error != "PLAID_ITEM_LOGIN_REQUIRED" or not item.get("access_token"):
             st.warning("Balance refresh — " + label + ": " + str(error))
             continue
-        st.warning(label + " needs bank reauthorization. Your linked accounts and saved balances are retained. "
-                   "Reload only reads saved balances; it does not sign you out. Reconnect this institution to resume syncing.")
+        matching = [entry for entry in state.get("pending_links", {}).values() if entry.get("item_id") == item_id]
+        if any(entry.get("completed_at") for entry in matching):
+            st.info(label + " · Bank approved. Updating balances automatically; no further login is needed unless the bank requests it again.")
+            continue
+        status, action = st.columns([6, 1], gap="small", vertical_alignment="center")
+        status.warning(label + " · Bank reauthorization required. Saved accounts and balances are retained.")
         pending = None
-        for entry in state.get("pending_links", {}).values():
-            if entry.get("item_id") != item_id:
-                continue
-            expiration = entry.get("expiration")
-            try:
-                expired = expiration and datetime.fromisoformat(expiration.replace("Z", "+00:00")) < datetime.now(timezone.utc)
-            except (ValueError, TypeError):
-                expired = True
-            if not expired:
+        for entry in matching:
+            if not _link_expired(entry):
                 pending = entry
                 break
         if pending:
-            st.link_button("OPEN PLAID — " + label, pending["hosted_link_url"])
-        elif st.button("RECONNECT — " + label, key="networth_refresh_reconnect_" + item_id):
+            action.link_button("OPEN PLAID", pending["hosted_link_url"], width="stretch")
+        elif action.button("RECONNECT", key="networth_refresh_reconnect_" + item_id, width="stretch"):
             _start_link(store, client, item_id)
             st.rerun()
 
@@ -585,11 +675,17 @@ def _connections(store, client, state: dict) -> None:
     with st.expander("Manage linked institutions"):
         for item_id, item in state["items"].items():
             st.write(item.get("label") or "Linked institution")
-            if item.get("error"):
-                st.warning("Bank reauthorization required. Use RECONNECT to resume syncing; your accounts stay linked."
-                           if item["error"] == "PLAID_ITEM_LOGIN_REQUIRED"
-                           else "Connection needs attention: " + str(item["error"]))
-            if st.button("RECONNECT", key="networth_reconnect_" + item_id):
+            updating = any(entry.get("item_id") == item_id and entry.get("completed_at")
+                           for entry in state.get("pending_links", {}).values())
+            if updating:
+                st.caption("Bank approved · refreshing balances automatically")
+            elif item.get("error"):
+                st.warning("Bank connection temporarily unavailable. Your login is saved; try syncing again later."
+                           if item["error"] in _TEMPORARY_BANK_ERRORS else
+                           "Bank reauthorization required. Use RECONNECT to resume syncing; your accounts stay linked."
+                           if item["error"] == "PLAID_ITEM_LOGIN_REQUIRED" else
+                           "Connection needs attention: " + str(item["error"]))
+            if st.button("RECONNECT", key="networth_reconnect_" + item_id, disabled=updating):
                 _start_link(store, client, item_id)
                 st.rerun()
             confirmed = st.checkbox("Disconnect this institution and stop future syncs (saved history remains)", key="networth_disconnect_confirm_" + item_id)
@@ -640,12 +736,15 @@ def _render_networth_content() -> None:
             _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
             return
         cache[cache_key] = _readonly_snapshot(state)
+        syncing = _sync_active(state)
         status_col, sync_col, reload_col = st.columns([6, 1, 1], gap="small", vertical_alignment="center")
         status_col.caption("PLAID " + plaid_config.environment.upper() + " // Last attempt: " + _timestamp(state.get("last_sync")))
         status_col.caption("Schedule: 9 AM · noon · 5 PM · 10 PM · Indianapolis")
-        if reload_col.button("RELOAD", key="networth_reload", help="Reload saved settings and balances without another Plaid pull"):
+        if syncing:
+            status_col.caption("Syncing balances · updates appear automatically")
+        if reload_col.button("RELOAD", key="networth_reload", width="stretch", help="Reload saved settings and balances without another Plaid pull"):
             st.rerun()
-        if sync_col.button("SYNC NOW", disabled=not state.get("items")):
+        if sync_col.button("SYNCING" if syncing else "SYNC NOW", disabled=not state.get("items") or syncing, width="stretch", key="networth_sync"):
             try:
                 with st.spinner("Pulling linked account balances…"):
                     updated = sync_networth(store, client)
@@ -683,7 +782,7 @@ def _render_networth_content() -> None:
             if reload_col.button("RELOAD BALANCES"):
                 st.rerun()
             if state.get("pending_links"):
-                _pending_links(store, client)
+                _pending_link_controls(store, state)
             _classification_editor(store, state, cache_key=cache_key)
             _connections(store, client, state)
             if state.get("last_scheduled_at"):
@@ -692,6 +791,7 @@ def _render_networth_content() -> None:
                 st.info("Scheduled syncing is not yet verified. Configure matching GitHub Actions secrets and verify the first scheduled run.")
         with st.expander("Daily history & CSV"):
             _daily_sheet(store, state)
+        _pending_links(store, client, _refresh_revision(state), cache_key)
     except NetworthError as exc:
         st.error(str(exc))
     except Exception:
@@ -708,10 +808,18 @@ def render_networth() -> None:
 .st-key-networth_workspace [data-testid="stFormSubmitButton"] button,
 .st-key-networth_workspace [data-testid="stDownloadButton"] button,
 .st-key-networth_workspace [data-testid="stLinkButton"] a{min-height:30px!important;height:30px!important;padding:0 9px!important;white-space:nowrap!important}
+.st-key-networth_workspace [data-testid="stButton"] button,
+.st-key-networth_workspace [data-testid="stFormSubmitButton"] button,
+.st-key-networth_workspace [data-testid="stDownloadButton"] button,
+.st-key-networth_workspace [data-testid="stLinkButton"] a{display:inline-flex!important;align-items:center!important;justify-content:center!important;text-align:center!important}
+.st-key-networth_workspace [data-testid="stButton"] button [data-testid="stMarkdownContainer"],
+.st-key-networth_workspace [data-testid="stFormSubmitButton"] button [data-testid="stMarkdownContainer"],
+.st-key-networth_workspace [data-testid="stDownloadButton"] button [data-testid="stMarkdownContainer"],
+.st-key-networth_workspace [data-testid="stLinkButton"] a [data-testid="stMarkdownContainer"]{display:flex!important;align-items:center!important;justify-content:center!important}
 .st-key-networth_workspace [data-testid="stButton"] button p,
 .st-key-networth_workspace [data-testid="stFormSubmitButton"] button p,
 .st-key-networth_workspace [data-testid="stDownloadButton"] button p,
-.st-key-networth_workspace [data-testid="stLinkButton"] a p{font-size:12px!important;line-height:1!important}
+.st-key-networth_workspace [data-testid="stLinkButton"] a p{display:block!important;font-size:12px!important;line-height:1.1!important;margin:0!important;text-align:center!important;white-space:nowrap!important}
 .st-key-networth_workspace [data-testid="stExpander"] summary{min-height:30px!important;padding:4px 8px!important}
 .st-key-networth_workspace [data-testid="stExpander"] summary p{font-size:13px!important}
 .st-key-networth_workspace .networth-statement{font-size:14px}

@@ -1069,8 +1069,8 @@ class NetworthResilienceTests(unittest.TestCase):
                     sync.assert_not_called()
                     warnings = " ".join(message.value for message in restored.warning)
                     if error:
-                        self.assertIn("Synthetic Bank needs bank reauthorization", warnings)
-                        self.assertIn("does not sign you out", warnings)
+                        self.assertIn("Synthetic Bank · Bank reauthorization required", warnings)
+                        self.assertIn("Saved accounts and balances are retained", warnings)
                         self.assertNotIn("PLAID_ITEM_LOGIN_REQUIRED", warnings)
                     else:
                         self.assertFalse(restored.warning)
@@ -1095,7 +1095,7 @@ class NetworthResilienceTests(unittest.TestCase):
             self.assertEqual(client.return_value.calls, [("create", self.store.scope, "PRIVATE_ACCESS_TOKEN", None)])
             self.assertFalse(any(button.key == "networth_refresh_reconnect_i" for button in app.button))
             links = app.get("link_button")
-            self.assertTrue(any(link.proto.label == "OPEN PLAID — Synthetic Bank"
+            self.assertTrue(any(link.proto.label == "OPEN PLAID"
                                 and link.proto.url == "https://secure.plaid.com/link/test" for link in links))
             app.button(key="networth_reload").click().run()
             self.assertEqual(len(client.return_value.calls), 1)
@@ -1110,6 +1110,198 @@ class NetworthResilienceTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertTrue(any("Synthetic Bank: PLAID_INTERNAL_SERVER_ERROR" in message.value for message in app.warning))
             self.assertFalse(any(button.key == "networth_refresh_reconnect_i" for button in app.button))
+
+
+class NetworthDynamicRecoveryTests(unittest.TestCase):
+    setUp = NetworthResilienceTests.setUp
+    configured = NetworthResilienceTests.configured
+
+    def pending(self, completed=False):
+        pending = {"link_token": "PRIVATE_LINK", "hosted_link_url": "https://secure.plaid.com/link/test",
+                   "item_id": "i", "expiration": "2099-01-01T00:00:00Z"}
+        if completed:
+            pending.update(completed_at="2026-11-16T18:00:00Z", refresh_item_ids=["i"])
+        self.store.state["pending_links"]["link"] = pending
+        self.store.state["items"]["i"]["error"] = "PLAID_ITEM_LOGIN_REQUIRED"
+        self.store.state["last_errors"] = {"i": "PLAID_ITEM_LOGIN_REQUIRED"}
+        return deepcopy(pending)
+
+    def monitor(self, revision):
+        return networth_ui._pending_links.__wrapped__(self.store, Plaid(), revision, "cache")
+
+    def test_busy_sync_keeps_completed_link_and_resumes_without_another_bank_login(self):
+        pending = self.pending()
+        self.store.state["sync_lease"] = {"owner": "worker", "expires_at": "2099-01-01T00:00:00Z"}
+        client = Plaid()
+        with patch("src.networth_ui.st.session_state", {}), patch.object(client, "link_results", wraps=client.link_results) as link, patch(
+            "src.networth_ui.sync_networth"
+        ) as sync:
+            self.assertFalse(_complete_link(self.store, client, "link", pending))
+            sync.assert_not_called()
+            link.assert_called_once()
+        self.assertTrue(self.store.state["pending_links"]["link"]["completed_at"])
+        self.assertEqual(self.store.state["pending_links"]["link"]["refresh_item_ids"], ["i"])
+        self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
+        self.store.state.pop("sync_lease")
+        with patch("src.networth_ui.st.session_state", {}), patch.object(client, "link_results") as link, patch.object(
+            client, "exchange"
+        ) as exchange, patch("src.networth_ui.sync_networth") as sync:
+            self.assertTrue(_complete_link(self.store, client, "link", self.store.read_state()["pending_links"]["link"]))
+            link.assert_not_called()
+            exchange.assert_not_called()
+            sync.assert_called_once()
+        self.assertFalse(self.store.state["pending_links"])
+
+    def test_sync_claim_race_retains_approved_link_for_automatic_retry(self):
+        pending = self.pending()
+        with patch("src.networth_ui.st.session_state", {}), patch("src.networth_ui.sync_networth",
+                side_effect=NetworthError("NETWORTH_SYNC_IN_PROGRESS")):
+            self.assertFalse(_complete_link(self.store, Plaid(), "link", pending))
+        self.assertTrue(self.store.state["pending_links"]["link"]["completed_at"])
+
+    def test_already_saved_refresh_is_not_repeated_when_pending_cleanup_is_retried(self):
+        pending = self.pending(completed=True)
+        self.store.state["items"]["i"].update(last_attempt="2026-11-16T18:01:00Z", error=None)
+        client = Plaid()
+        with patch("src.networth_ui.st.session_state", {}), patch.object(client, "link_results") as link, patch(
+            "src.networth_ui.sync_networth"
+        ) as sync:
+            self.assertTrue(_complete_link(self.store, client, "link", pending))
+            link.assert_not_called()
+            sync.assert_not_called()
+        self.assertFalse(self.store.state["pending_links"])
+
+    def test_older_worker_observation_does_not_finish_post_approval_refresh(self):
+        pending = self.pending(completed=True)
+        self.store.state["items"]["i"]["last_attempt"] = "2026-11-16T17:59:00Z"
+        with patch("src.networth_ui.st.session_state", {}), patch("src.networth_ui.sync_networth") as sync:
+            self.assertTrue(_complete_link(self.store, Plaid(), "link", pending))
+            sync.assert_called_once()
+
+    def test_refresh_failure_retains_completed_checkpoint_and_original_balances(self):
+        pending = self.pending()
+        with patch("src.networth_ui.st.session_state", {}), patch("src.networth_ui.sync_networth",
+                side_effect=NetworthError("ARCHIVE_UNAVAILABLE")):
+            with self.assertRaisesRegex(NetworthError, "ARCHIVE_UNAVAILABLE"):
+                _complete_link(self.store, Plaid(), "link", pending)
+        self.assertTrue(self.store.state["pending_links"]["link"]["completed_at"])
+        self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
+
+    def test_repeated_reconnect_reuses_pending_approval_instead_of_opening_another_link(self):
+        client = Plaid()
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                self.pending(completed=completed)
+                _start_link(self.store, client, "i")
+        self.assertFalse(client.calls)
+
+    def test_busy_approved_connection_shows_progress_and_short_centered_controls(self):
+        self.pending(completed=True)
+        self.store.state["sync_lease"] = {"expires_at": "2099-01-01T00:00:00Z"}
+        with self.configured() as app, patch("src.networth_ui._pending_links"):
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertTrue(app.button(key="networth_sync").disabled)
+            self.assertEqual(app.button(key="networth_sync").label, "SYNCING")
+            self.assertTrue(any("Bank approved" in item.value for item in app.info))
+            self.assertFalse(any("reauthorization required" in item.value for item in app.warning))
+            self.assertFalse(any(button.key == "networth_refresh_reconnect_i" for button in app.button))
+            self.assertFalse(app.get("link_button"))
+
+    def test_expired_attempts_do_not_poll_plaid_or_clutter_connection_controls(self):
+        self.pending()
+        self.store.state["pending_links"]["link"]["expiration"] = "2000-01-01T00:00:00Z"
+        with self.configured() as app, patch("src.networth_ui._complete_link") as complete:
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertFalse(any("Expired" in item.value or "Waiting for" in item.value for item in app.caption))
+            self.assertFalse(any(button.label == "DISMISS" for button in app.button))
+            complete.assert_not_called()
+
+    def test_idle_live_monitor_reads_storage_only_and_does_not_rerun_unchanged_page(self):
+        revision = networth_ui._refresh_revision(self.store.state)
+        with patch("src.networth_ui.st.session_state", {}), patch("src.networth_ui._complete_link") as complete, patch(
+            "src.networth_ui.st.rerun"
+        ) as rerun, patch.object(self.store, "read_state", wraps=self.store.read_state) as read, patch.object(
+            self.store, "update_state", wraps=self.store.update_state
+        ) as write:
+            self.monitor(revision)
+            read.assert_called_once()
+            complete.assert_not_called()
+            write.assert_not_called()
+            rerun.assert_not_called()
+
+    def test_monitor_refreshes_changed_balances_without_manual_reload_and_caches_no_tokens(self):
+        revision = networth_ui._refresh_revision(self.store.state)
+        self.store.state["accounts"]["a"]["current"] = 1300
+        self.store.state["items"]["i"]["error"] = None
+        self.store.state["last_errors"] = {}
+        session = {}
+        with patch("src.networth_ui.st.session_state", session), patch("src.networth_ui.st.rerun") as rerun, patch(
+            "src.networth_ui.sync_networth"
+        ) as sync:
+            self.monitor(revision)
+            rerun.assert_called_once()
+            sync.assert_not_called()
+        cache = session["_networth_verified_balances"]["cache"]
+        self.assertEqual(cache["accounts"]["a"]["current"], 1300)
+        self.assertNotIn("PRIVATE_ACCESS_TOKEN", repr(cache))
+
+    def test_approved_link_waits_for_active_worker_without_more_claims_or_bank_calls(self):
+        self.pending(completed=True)
+        self.store.state["sync_lease"] = {"expires_at": "2099-01-01T00:00:00Z"}
+        revision = networth_ui._refresh_revision(self.store.state)
+        with patch("src.networth_ui._complete_link") as complete, patch("src.networth_ui.st.rerun") as rerun, patch.object(
+            self.store, "update_state", wraps=self.store.update_state
+        ) as write:
+            self.monitor(revision)
+            complete.assert_not_called()
+            rerun.assert_not_called()
+            write.assert_not_called()
+
+    def test_sync_lease_expiry_updates_button_state_even_without_a_storage_write(self):
+        self.store.state["sync_lease"] = {"expires_at": "2099-01-01T00:00:00Z"}
+        revision = networth_ui._refresh_revision(self.store.state)
+        with patch("src.networth_ui._sync_active", return_value=False), patch(
+            "src.networth_ui.st.session_state", {}
+        ), patch("src.networth_ui.st.rerun") as rerun:
+            self.monitor(revision)
+            rerun.assert_called_once()
+
+    def test_transient_status_failure_preserves_balances_and_redacts_error_details(self):
+        with patch.object(self.store, "read_state", side_effect=NetworthError("PRIVATE_ERROR")), patch(
+            "src.networth_ui.st.caption"
+        ) as caption:
+            self.monitor("revision")
+            self.assertNotIn("PRIVATE_ERROR", caption.call_args.args[0])
+        self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
+
+    def test_bank_outage_does_not_request_another_login(self):
+        for error in ("PLAID_INSTITUTION_NOT_AVAILABLE", "PLAID_INSTITUTION_DOWN", "PLAID_INSTITUTION_NOT_RESPONDING"):
+            self.store.state["last_errors"] = {"i": error}
+            self.store.state["items"]["i"]["error"] = error
+            with self.subTest(error=error), self.configured() as app:
+                app.run()
+                self.assertFalse(app.exception)
+                warnings = " ".join(item.value for item in app.warning)
+                self.assertIn("Synthetic Bank · Bank connection temporarily unavailable", warnings)
+                self.assertIn("Your login is saved", warnings)
+                self.assertNotIn("reauthorization required", warnings)
+                self.assertFalse(any(button.key == "networth_refresh_reconnect_i" for button in app.button))
+
+    def test_status_retry_backs_off_without_changing_bank_approval_or_balances(self):
+        self.pending(completed=True)
+        revision = networth_ui._refresh_revision(self.store.state)
+        session = {}
+        with patch("src.networth_ui.st.session_state", session), patch("src.networth_ui._complete_link",
+                side_effect=NetworthError("PRIVATE_ERROR")) as complete, patch("src.networth_ui.st.caption") as caption:
+            self.monitor(revision)
+            self.monitor(revision)
+            complete.assert_called_once()
+            self.assertNotIn("PRIVATE_ERROR", caption.call_args.args[0])
+        self.assertTrue(self.store.state["pending_links"]["link"]["completed_at"])
+        self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
 
 
 class NetworthWorkerTests(unittest.TestCase):
