@@ -107,6 +107,81 @@ class NetworthUITests(unittest.TestCase):
         self.assertEqual(set(self.store.state["items"]), {"item-one", "item-two"})
         self.assertFalse(self.store.state["pending_links"])
 
+    def test_reconnect_uses_existing_access_token_without_replacing_accounts(self):
+        self.store.state["items"]["bank"] = {"access_token": "PRIVATE_EXISTING", "label": "Synthetic Bank"}
+        self.store.state["accounts"]["a"] = {"item_id": "bank", "current": 1200}
+        self.store.state["preferences"]["a"] = {"nickname": "Saved nickname", "classification": "Asset"}
+        before = self.store.read_state()
+        _start_link(self.store, self.plaid, "bank")
+        self.assertEqual(self.plaid.calls, [("create", self.store.scope, "PRIVATE_EXISTING", None)])
+        for key in ("items", "accounts", "preferences"):
+            self.assertEqual(self.store.state[key], before[key])
+        self.assertEqual(next(iter(self.store.state["pending_links"].values()))["item_id"], "bank")
+
+    def test_missing_reconnect_token_cannot_create_a_new_item(self):
+        for item in (None, {}):
+            if item is not None:
+                self.store.state["items"]["bank"] = item
+            with self.assertRaisesRegex(NetworthError, "no longer linked"):
+                _start_link(self.store, self.plaid, "bank")
+        self.assertFalse(self.plaid.calls)
+        self.assertFalse(self.store.state["pending_links"])
+
+    def test_reconnect_cannot_save_after_the_item_is_disconnected(self):
+        self.store.state["items"]["bank"] = {"access_token": "PRIVATE_EXISTING"}
+        create = self.plaid.create_link
+
+        def disconnect(*args, **kwargs):
+            self.store.state["items"].pop("bank")
+            return create(*args, **kwargs)
+
+        with patch.object(self.plaid, "create_link", side_effect=disconnect):
+            with self.assertRaisesRegex(NetworthError, "changed during reconnect"):
+                _start_link(self.store, self.plaid, "bank")
+        self.assertFalse(self.store.state["pending_links"])
+
+    def test_update_mode_preserves_item_and_only_clears_error_after_successful_balance_sync(self):
+        from tests.test_networth import MemoryStore, account
+
+        for reply in ({"accounts": [account("a", 1300)]}, NetworthError("PLAID_ITEM_LOGIN_REQUIRED")):
+            with self.subTest(success=isinstance(reply, dict)):
+                store = MemoryStore({
+                    "items": {"bank": {"access_token": "PRIVATE_EXISTING", "label": "Synthetic Bank",
+                                       "error": "PLAID_ITEM_LOGIN_REQUIRED", "linked_at": "2026-11-01T00:00:00Z"}},
+                    "accounts": {"a": {"account_id": "a", "item_id": "bank", "current": 1200,
+                                       "type": "depository", "currency": "USD"}},
+                    "preferences": {"a": {"nickname": "Saved nickname", "classification": "Asset"}},
+                    "last_errors": {"bank": "PLAID_ITEM_LOGIN_REQUIRED"},
+                    "pending_links": {"link": {"link_token": "PRIVATE_LINK", "item_id": "bank"}},
+                })
+                pending = deepcopy(store.state["pending_links"]["link"])
+                before_item = deepcopy(store.state["items"]["bank"])
+                before_preferences = deepcopy(store.state["preferences"])
+
+                def balances(token, now=None):
+                    self.assertEqual(token, "PRIVATE_EXISTING")
+                    self.assertEqual(store.state["items"]["bank"]["error"], "PLAID_ITEM_LOGIN_REQUIRED")
+                    if isinstance(reply, Exception):
+                        raise reply
+                    return reply
+
+                with patch("src.networth_ui.st.session_state", {}), patch.object(
+                    self.plaid, "link_results", return_value={"completed": True, "public_tokens": ["update-token"]}
+                ), patch.object(self.plaid, "exchange") as exchange, patch.object(
+                    self.plaid, "balances", side_effect=balances, create=True
+                ) as read:
+                    self.assertTrue(_complete_link(store, self.plaid, "link", pending))
+                    exchange.assert_not_called()
+                    read.assert_called_once()
+                self.assertEqual(set(store.state["items"]), {"bank"})
+                for field in ("access_token", "label", "linked_at"):
+                    self.assertEqual(store.state["items"]["bank"][field], before_item[field])
+                self.assertEqual(store.state["preferences"], before_preferences)
+                self.assertFalse(store.state["pending_links"])
+                self.assertEqual(store.state["accounts"]["a"]["current"], 1300 if isinstance(reply, dict) else 1200)
+                self.assertEqual(bool(store.state["last_errors"]), not isinstance(reply, dict))
+                self.assertEqual(bool(store.state["items"]["bank"]["error"]), not isinstance(reply, dict))
+
     def test_other_browser_cannot_exchange_claimed_link(self):
         self.store.state["pending_links"]["link"] = {
             "link_token": "FAKE_LINK", "processing_owner": "another-browser",
@@ -967,6 +1042,74 @@ class NetworthResilienceTests(unittest.TestCase):
             self.assertFalse(any("Last pull:" in value for value in captions))
             self.assertTrue(any("Most recent account balance update:" in value and "some accounts may be older" in value for value in captions))
         self.assertEqual(networth_ui._latest_account_update(self.store.state), "2026-11-03T16:00:00Z")
+
+    def test_reload_and_new_session_reuse_saved_accounts_without_any_plaid_request(self):
+        for error in (None, "PLAID_ITEM_LOGIN_REQUIRED"):
+            with self.subTest(error=error):
+                self.store.state["selected_accounts"] = []
+                self.store.state["items"]["i"]["error"] = error
+                self.store.state["last_errors"] = {"i": error} if error else {}
+                before = self.store.read_state()
+                with self.configured() as app, patch("src.networth_ui.PlaidClient") as client, patch(
+                    "src.networth_ui.sync_networth"
+                ) as sync:
+                    app.run()
+                    app.button(key="networth_reload").click().run()
+                    next(button for button in app.button if button.label == "RELOAD BALANCES").click().run()
+                    restored = AppTest.from_string("from src.networth_ui import render_networth\nrender_networth()")
+                    restored.run()
+                    self.assertFalse(app.exception)
+                    self.assertFalse(restored.exception)
+                    self.assertFalse(restored.error)
+                    self.assertEqual(restored.multiselect[0].value, [])
+                    client.return_value.create_link.assert_not_called()
+                    client.return_value.link_results.assert_not_called()
+                    client.return_value.exchange.assert_not_called()
+                    client.return_value.balances.assert_not_called()
+                    sync.assert_not_called()
+                    warnings = " ".join(message.value for message in restored.warning)
+                    if error:
+                        self.assertIn("Synthetic Bank needs bank reauthorization", warnings)
+                        self.assertIn("does not sign you out", warnings)
+                        self.assertNotIn("PLAID_ITEM_LOGIN_REQUIRED", warnings)
+                    else:
+                        self.assertFalse(restored.warning)
+                self.assertEqual(self.store.state, before)
+
+    def test_reauthorization_action_targets_only_failed_item_and_reuses_pending_link(self):
+        self.store.state["items"]["i"]["error"] = "PLAID_ITEM_LOGIN_REQUIRED"
+        self.store.state["items"]["healthy"] = {"label": "Healthy Bank", "access_token": "PRIVATE_HEALTHY"}
+        self.store.state["last_errors"] = {"i": "PLAID_ITEM_LOGIN_REQUIRED"}
+        before = self.store.read_state()
+        self.store.state["pending_links"]["expired"] = {
+            "item_id": "i", "expiration": "2000-01-01T00:00:00Z", "link_token": "EXPIRED",
+            "hosted_link_url": "https://secure.plaid.com/link/expired",
+        }
+        with self.configured() as app, patch("src.networth_ui.PlaidClient", return_value=Plaid()) as client, patch(
+            "src.networth_ui._pending_links"
+        ), patch("src.networth_ui.sync_networth") as sync:
+            app.run()
+            app.button(key="networth_refresh_reconnect_i").click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertEqual(client.return_value.calls, [("create", self.store.scope, "PRIVATE_ACCESS_TOKEN", None)])
+            self.assertFalse(any(button.key == "networth_refresh_reconnect_i" for button in app.button))
+            links = app.get("link_button")
+            self.assertTrue(any(link.proto.label == "OPEN PLAID — Synthetic Bank"
+                                and link.proto.url == "https://secure.plaid.com/link/test" for link in links))
+            app.button(key="networth_reload").click().run()
+            self.assertEqual(len(client.return_value.calls), 1)
+            sync.assert_not_called()
+        for field in ("items", "accounts", "preferences"):
+            self.assertEqual(self.store.state[field], before[field])
+
+    def test_other_refresh_errors_name_institution_without_prompting_bank_login(self):
+        self.store.state["last_errors"] = {"i": "PLAID_INTERNAL_SERVER_ERROR"}
+        with self.configured() as app:
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any("Synthetic Bank: PLAID_INTERNAL_SERVER_ERROR" in message.value for message in app.warning))
+            self.assertFalse(any(button.key == "networth_refresh_reconnect_i" for button in app.button))
 
 
 class NetworthWorkerTests(unittest.TestCase):
