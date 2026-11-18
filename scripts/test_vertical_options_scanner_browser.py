@@ -2381,9 +2381,17 @@ def test() -> None:
             print("Completed grid clears before slow rescan and reappears only after completion PASS", flush=True)
             # A pasted list must scan every symbol, retain each completed
             # snapshot, and show legible ticker text in the compact list.
-            expander = driver.find_element(By.XPATH, '//details[contains(., "EDIT TICKER BREAKEVENS")]')
-            if not expander.get_attribute("open"):
-                expander.find_element(By.TAG_NAME, "summary").click()
+            driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]').click()
+            textarea = wait.until(lambda _: driver.find_element(
+                By.CSS_SELECTOR, 'textarea[aria-label^="PASTE TICKERS"]',
+            ))
+            textarea.clear()
+            textarea.send_keys("| Ticker |\n| ------ |\n| MSFT |\n| SPY |\n| GOOGL |")
+            driver.find_element(By.XPATH, '//button[contains(., "LOAD TICKERS")]').click()
+            wait.until(lambda _: "LOADED TICKERS (3)" in driver.find_element(By.TAG_NAME, "body").text)
+            driver.find_element(
+                By.XPATH, '//*[contains(text(), "EDIT TICKER BREAKEVENS // 3 LOADED")]',
+            ).click()
             wait.until(lambda _: driver.find_elements(By.CSS_SELECTOR, ".vo-ticker-list td"))
             ink = driver.execute_script("""
                 const cell=document.querySelector('.vo-ticker-list td');
