@@ -49,8 +49,13 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from unittest.mock import Mock
 
 import streamlit as st
+import src.security_runtime as fixture_security
+# This generated, isolated test-app process exercises the scanner after login.
+# Keep its mock installed across reruns: callbacks run before the next script.
+fixture_security.require_finance_access = Mock(return_value=None)
 from src.vertical_options_ui import render_vertical_options
 import src.vertical_options_ui as vo
 from src.etrade_data_cache import session_namespace
@@ -204,7 +209,7 @@ st.html(_TYPING_CARET_CSS)
 st.html(_LAYOUT_GUARDRAIL_CSS)
 # Simulate the exact stale manually entered debit from a pre-fix session.
 st.session_state.setdefault("vo_limit_price", 4.35)
-# Synthetic authorization for the feature-local read-only quote poll guard.
+# Synthetic broker session for the feature-local read-only quote poll guard.
 st.session_state.setdefault("etrade_access_unlocked", True)
 st.session_state.setdefault("etrade_access_token", {
     "oauth_token": "DUMMY-SCANNER-TEST-TOKEN", "oauth_token_secret": "DUMMY-TEST-SECRET",

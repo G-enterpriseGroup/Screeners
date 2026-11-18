@@ -82,11 +82,13 @@ canonical trade/risk math owners are unchanged. The preexisting untracked
 - `scripts/sync_networth.py`
 - `scripts/test_performance_ui.py`
 - `scripts/test_protective_puts.py`
+- `scripts/test_protective_puts_paging_browser.py`
 - `scripts/test_rebalance_connected_ui.py`
 - `scripts/test_risk_intent_override.py`
 - `scripts/test_risk_production_ui.py`
 - `scripts/test_tab_layout.py`
 - `scripts/test_touch_id_persistence.py`
+- `scripts/test_vertical_options_scanner_browser.py`
 - `scripts/validate_architecture.py`
 - `src/ARCHITECTURE.md`
 - `src/NETWORTH_SETUP.md`
@@ -150,3 +152,15 @@ endpoint returned HTTP 200 / `ok`; CUA observed the committed public security
 policy, correct links and no financial imports/rendering. This is a **local**
 fresh-process receipt. Managed production publication/reboot, deployed health,
 actual MFA login and mail delivery remain pending owner credential activation.
+
+The published review commit `74bd9e1c628467302381fa4c45b1df506e52b03b` in
+[draft PR #210](https://github.com/G-enterpriseGroup/Screeners/pull/210) has tree
+`6401d014afc42957eabcdda5aee943187b330297`, identical to tested local receipt
+commit `a390ad7`. Remote security assessment passed. Every architecture-job unit,
+syntax, tab and workflow step passed; its standalone scanner browser fixture
+initially lacked the synthetic authorization required by the new guards. Two
+generated browser-test apps now mock authorization only inside their isolated
+synthetic processes, including early callbacks. Their compilation and extracted
+AppTest rendering/callback/rerun checks pass. The complete manifest now contains
+69 files. No production authorization code changed in this CI fixture follow-up;
+remote browser verification is rerun on the follow-up commit.
