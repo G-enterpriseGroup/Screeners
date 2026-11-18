@@ -2229,6 +2229,28 @@ def _advance_ticker_batch() -> None:
         st.session_state.pop(key, None)
 
 
+def _save_pasted_ticker_target(symbol: str, widget_key: str) -> None:
+    value = str(st.session_state.get(widget_key) or "").strip()
+    try:
+        if value and value.casefold() != _NO_BREAKEVEN:
+            _entered_price(value, f"{symbol} breakeven")
+    except ValueError as exc:
+        st.session_state["_vp_target_input_error"] = str(exc)
+        return
+    targets = dict(st.session_state.get("vp_ticker_targets") or {})
+    if targets.get(symbol, "") == value:
+        return
+    targets[symbol] = value
+    st.session_state["vp_ticker_targets"] = targets
+    if st.session_state.get("vp_list_selection") == symbol:
+        for key in ("vp_scan_result", "vp_review_bundle", "vp_live_confirm",
+                    "_vp_order_candidate", "vp_last_send_results"):
+            st.session_state.pop(key, None)
+        st.session_state["vp_target_breakeven"] = value
+        st.session_state.pop("_vp_auto_target", None)
+        st.session_state.pop("_vp_auto_target_pending", None)
+
+
 def _remember_results_view(widget_key: str) -> None:
     st.session_state["vp_results_view"] = st.session_state[widget_key]
     _remember_presentation("vp_results_view")
@@ -2467,37 +2489,17 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                         '<th>TARGET BREAKEVEN ($)</th></tr></thead><tbody>' + rows +
                         '</tbody></table></div>')
                 editing = st.session_state.get("vp_list_selection") or loaded_tickers[0]
-                entered = st.text_input(
+                target_key = f"vp_ticker_target_{st.session_state.get('vp_ticker_editor_revision', 0)}_{editing}"
+                if st.session_state.get(target_key) != target_map.get(editing, ""):
+                    st.session_state[target_key] = target_map.get(editing, "")
+                st.text_input(
                     f"{editing} TARGET BREAKEVEN ($)",
-                    value=target_map.get(editing, ""),
-                    key=f"vp_ticker_target_{st.session_state.get('vp_ticker_editor_revision', 0)}_{editing}",
+                    key=target_key, on_change=_save_pasted_ticker_target,
+                    args=(editing, target_key),
                     help="Blank scans without a target. Filter the Breakeven column afterward.",
-                ).strip()
-                updated_targets = {**target_map, editing: entered}
-                try:
-                    for ticker, value in updated_targets.items():
-                        if value and value.casefold() != _NO_BREAKEVEN:
-                            _entered_price(value, f"{ticker} breakeven")
-                except ValueError as exc:
-                    st.error(str(exc))
-                else:
-                    if updated_targets != target_map:
-                        changed_targets = {
-                            ticker for ticker in loaded_tickers
-                            if updated_targets.get(ticker, "") != target_map.get(ticker, "")
-                        }
-                        st.session_state["vp_ticker_targets"] = updated_targets
-                        target_map = updated_targets
-                        if st.session_state.get("vp_list_selection") in changed_targets:
-                            selected_target = st.session_state["vp_list_selection"]
-                            st.session_state["vp_target_breakeven"] = target_map.get(selected_target) or ""
-                            st.session_state.pop("_vp_auto_target", None)
-                            st.session_state.pop("_vp_auto_target_pending", None)
-                            for state_key in (
-                                "vp_scan_result", "vp_review_bundle", "vp_live_confirm",
-                                "_vp_order_candidate", "vp_last_send_results",
-                            ):
-                                st.session_state.pop(state_key, None)
+                )
+                if st.session_state.get("_vp_target_input_error"):
+                    st.error(st.session_state.pop("_vp_target_input_error"))
 
             with st.container():
                 picked_ticker = st.selectbox(

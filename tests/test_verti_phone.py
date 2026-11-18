@@ -52,6 +52,25 @@ def order_ui(state, clicked=()):
 
 
 class PastedTickerBatchTests(unittest.TestCase):
+    def test_native_target_change_updates_only_selected_symbol(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            with self.subTest(tab=prefix):
+                key = f"{prefix}_ticker_target_1_MSFT"
+                state = {key: "103", f"{prefix}_ticker_targets": {"MSFT": "", "SPY": "500"},
+                         f"{prefix}_list_selection": "MSFT",
+                         f"{prefix}_scan_result": {"symbol": "MSFT"},
+                         f"{prefix}_review_bundle": {"old": True}}
+                with patch.object(feature.st, "session_state", state):
+                    feature._save_pasted_ticker_target("MSFT", key)
+                    self.assertEqual(state[f"{prefix}_ticker_targets"],
+                                     {"MSFT": "103", "SPY": "500"})
+                    self.assertNotIn(f"{prefix}_scan_result", state)
+                    self.assertNotIn(f"{prefix}_review_bundle", state)
+                    state[key] = "bad"
+                    feature._save_pasted_ticker_target("MSFT", key)
+                    self.assertEqual(state[f"{prefix}_ticker_targets"]["MSFT"], "103")
+                    self.assertIn("valid MSFT breakeven", state[f"_{prefix}_target_input_error"])
+
     def test_both_tabs_scan_every_loaded_symbol_and_isolate_order_review(self):
         for feature, prefix in ((desktop, "vo"), (phone, "vp")):
             with self.subTest(tab=prefix):
