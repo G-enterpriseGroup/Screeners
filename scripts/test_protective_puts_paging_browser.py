@@ -28,6 +28,11 @@ BASE = f"http://127.0.0.1:{PORT}"
 FIXTURE = '''
 import pandas as pd
 import streamlit as st
+from unittest.mock import Mock
+import src.security_runtime as fixture_security
+# This generated, isolated test-app process exercises the chain after login.
+# Keep its mock installed across reruns: callbacks run before the next script.
+fixture_security.require_finance_access = Mock(return_value=None)
 from src.protective_puts_portfolio_ui import (
     _CSS, _results, _load_selection, _write_selection,
     _toggle_selection, _account_token,

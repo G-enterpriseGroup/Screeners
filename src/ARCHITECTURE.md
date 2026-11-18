@@ -320,3 +320,49 @@ For every future change:
 3. Do not introduce a global Streamlit assignment.
 4. Run the architecture validator.
 5. Re-test the feature changed **and** confirm the other top-level tabs still render.
+
+## Terminal access, public policies and security operations
+
+`streamlit_app.py` → `src/public_policies.py` serves only allowlisted Markdown
+documents from `docs/policies/` before core definitions or financial imports.
+The public `pin_reset` route in `src/security_runtime.py` also stops before the
+financial app loads. Neither route grants an authenticated session.
+
+Protected routing is `streamlit_app.py` → `src/security_runtime.py` →
+`src/terminal_security.py` + `src/security_store.py`. The app validates a signed,
+expiring MFA claim and the current role **before** restoring E*TRADE or entering
+Networth/Plaid Link. The legacy unlocked boolean alone is insufficient.
+`src/lock_screen_v2.py` and its existing keypad own PIN/passkey → TOTP interaction.
+New passkey enrollment requires fresh PIN and TOTP; an existing passkey still
+requires TOTP on sign-in. Public credential memory stays browser scoped and sealed
+with a server-only key. Older PIN-only enrollment envelopes must be enrolled again.
+
+`finance_fragment` in `src/security_runtime.py` owns authorization on fragment-only
+reruns. Production fragment decorators in the existing financial feature owners
+use it because those reruns skip the entrypoint. The Networth polling fragment
+calls the same guard explicitly. The core's two fragment decorators are shared
+dependencies for the Holdings wrapper and order simulator; their formulas, broker
+transport and presentation are unchanged. A watchdog checks expiry without
+extending idle time. Do not replace these checks with a session boolean or a test
+flag. Role/configuration changes and durable PIN revisions revoke old claims.
+`finance_dialog` applies the same check to independent GEX/vertical popup reruns;
+`finance_callback` checks broker-quote and cross-session preference callbacks
+before Streamlit executes their parent render. These guards do not renew idle
+time. Callback changes are authorization-only; intent/pricing/account math remains
+in its existing feature owners.
+
+`src/pin_recovery.py` owns TLS SMTP delivery, fixed-recipient reset tokens, atomic
+single use and PIN revision changes. It uses the authentication store, never the
+financial ledger. Email recovery cannot replace the authenticator. Real secrets
+are entered by the owner using `scripts/setup_terminal_mfa.py` and server settings;
+see `docs/security/MFA_SETUP.md`.
+
+Networth retention/deletion belongs to its existing UI/core/store/worker owners.
+It is opt-in and operates on the current application view with tombstones,
+generation checks, scoped daily-document enumeration and verified deletion
+receipts. Prior encrypted Git revisions remain; never claim all-copy erasure.
+
+`scripts/security_audit.py`, its support/review registers, and
+`.github/workflows/security-audit.yml` own scoped source/dependency assessment,
+patch targets and EOL evidence. `docs/security/CONTROL_REGISTER.md` distinguishes
+tested code from live activation, provider controls and remaining attestations.

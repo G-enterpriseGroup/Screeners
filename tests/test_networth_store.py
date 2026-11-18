@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import unittest
@@ -14,7 +15,10 @@ from cryptography.fernet import Fernet
 import requests
 from streamlit.runtime.secrets import AttrDict
 
-from src.networth_store import GitHubNetworthStore, NetworthError, StoreConfig
+from src.networth_store import (
+    GitHubNetworthStore, NetworthError, StoreConfig, privacy_generation,
+    require_privacy_ready, retention_cutoff,
+)
 
 
 def blob_sha(raw):
@@ -568,6 +572,186 @@ class NetworthStoreTests(unittest.TestCase):
         self.assertEqual(ref_calls, 4)
         self.assertEqual(self.sleep.call_count, 2)
         self.assertFalse(any(method == "POST" for method, _, _ in self.github.calls))
+
+
+class PrivacyGitHub(GitHub):
+    """Synthetic immutable Git trees and SHA-conditional current-file deletion."""
+    def __init__(self):
+        super().__init__()
+        self.trees = {}
+        self.truncated = False
+        self.delete_conflict = False
+        self.bad_delete_readback = False
+
+    def tree(self, files):
+        children = {}
+        for path, raw in files.items():
+            first, separator, rest = path.partition("/")
+            if separator:
+                children.setdefault(first, {})[rest] = raw
+            else:
+                children[first] = raw
+        entries = []
+        for name, value in sorted(children.items()):
+            directory = isinstance(value, dict)
+            entries.append({"path": name, "type": "tree" if directory else "blob",
+                            "mode": "040000" if directory else "100644",
+                            "sha": self.tree(value) if directory else blob_sha(value)})
+        sha = hashlib.sha1(json.dumps(entries, sort_keys=True).encode()).hexdigest()
+        self.trees[sha] = entries
+        return sha
+
+    def request(self, method, url, **kwargs):
+        path = unquote(urlsplit(url).path.removeprefix("/repos/G-enterpriseGroup/Portfolio"))
+        params = kwargs.get("params") or {}
+        if path.startswith("/git/ref/heads/"):
+            branch = path.removeprefix("/git/ref/heads/")
+            if branch in self.files:
+                sha = self.tree(self.files[branch])
+                self.commits[sha] = deepcopy(self.files[branch])
+                self.calls.append((method, path, deepcopy(kwargs)))
+                return Response(200, {"ref": "refs/heads/" + branch, "object": {"type": "commit", "sha": sha}})
+        if path.startswith("/git/commits/"):
+            sha = path.removeprefix("/git/commits/")
+            self.calls.append((method, path, deepcopy(kwargs)))
+            if sha not in self.commits:
+                return Response(404, {})
+            return Response(200, {"sha": sha, "tree": {"sha": self.tree(self.commits[sha])}})
+        if path.startswith("/git/trees/"):
+            sha = path.removeprefix("/git/trees/")
+            self.calls.append((method, path, deepcopy(kwargs)))
+            return Response(200, {"sha": sha, "truncated": self.truncated, "tree": self.trees[sha]})
+        if method == "DELETE":
+            self.calls.append((method, path, deepcopy(kwargs)))
+            payload = kwargs["json"]
+            files = self.files[payload["branch"]]
+            document = path.removeprefix("/contents/")
+            if self.delete_conflict or blob_sha(files[document]) != payload["sha"]:
+                return Response(409, {})
+            removed = files.pop(document)
+            sha = hashlib.sha1(("delete" + str(len(self.commits))).encode()).hexdigest()
+            self.commits[sha] = deepcopy(files)
+            if self.bad_delete_readback:
+                self.commits[sha][document] = removed
+            return Response(200, {"commit": {"sha": sha}})
+        return super().request(method, url, **kwargs)
+
+
+class NetworthPrivacyStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.config = StoreConfig(github_token="PRIVATE_FAKE_TOKEN", encryption_key=Fernet.generate_key().decode())
+        self.store = GitHubNetworthStore(self.config)
+        self.github = PrivacyGitHub()
+        request = patch("src.networth_store.requests.request", side_effect=self.github.request)
+        request.start()
+        self.addCleanup(request.stop)
+        sleep = patch("src.networth_store.time.sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def approve(self, days):
+        def save(state):
+            state["privacy"] = {"operation": {"id": "a" * 32, "remaining_days": days}}
+            state["sync_lease"] = {"owner": "owner", "expires_at": "2099-01-01T00:00:00Z"}
+        self.store.update_state(save)
+
+    def delete(self, day):
+        return self.store.delete_current_day(day, operation_id="a" * 32, lease_owner="owner")
+
+    def test_generation_and_retention_validation_fail_closed(self):
+        self.assertEqual(privacy_generation({}), "")
+        for state in ({"privacy": None}, {"privacy": {"generation": "bad"}},
+                      {"privacy": {"retention_days": True}}, {"privacy": {"retention_days": -1}}):
+            with self.subTest(state=state), self.assertRaises(NetworthError):
+                require_privacy_ready(state)
+        with self.assertRaisesRegex(NetworthError, "MAINTENANCE"):
+            require_privacy_ready({"privacy": {"operation": {"id": "a" * 32}}})
+        self.assertEqual(retention_cutoff({"privacy": {"retention_days": 2}},
+            datetime(2026, 11, 3, 2, 0, tzinfo=timezone.utc)), "2026-11-01")
+
+    def test_scoped_nonrecursive_tree_listing_pages_beyond_contents_limit(self):
+        self.store.read_state()
+        prefix = "networth/" + self.store.scope + "/days/"
+        start = date(2020, 1, 1)
+        expected = [(start + timedelta(days=day)).isoformat() for day in range(1005)]
+        self.github.files["networth-data"].update({prefix + day + ".enc": b"synthetic" for day in expected})
+        self.github.files["networth-data"]["networth/another-ledger/days/1999-01-01.enc"] = b"private-other-scope"
+        pages = list(self.store.iter_day_pages(100))
+        self.assertEqual([day for page in pages for day in page], expected)
+        self.assertEqual([len(page) for page in pages], [100] * 10 + [5])
+        self.assertFalse(any("another-ledger" in path for _, path, _ in self.github.calls))
+        self.assertFalse(any(method == "DELETE" for method, _, _ in self.github.calls))
+
+    def test_truncated_or_unsafe_listing_cannot_authorize_deletion(self):
+        self.store.read_state()
+        prefix = "networth/" + self.store.scope + "/days/"
+        self.github.files["networth-data"][prefix + "2026-01-01.enc"] = b"synthetic"
+        self.github.truncated = True
+        with self.assertRaisesRegex(NetworthError, "LIST_INCOMPLETE"):
+            list(self.store.iter_day_pages())
+        self.github.truncated = False
+        self.github.files["networth-data"][prefix + "not-a-date.enc"] = b"synthetic"
+        with self.assertRaises(NetworthError):
+            list(self.store.iter_day_pages())
+        self.assertFalse(any(method == "DELETE" for method, _, _ in self.github.calls))
+
+    def test_verified_current_deletion_preserves_prior_encrypted_revision(self):
+        self.store.save_capture("2026-11-03", "one", {"accounts": [{"current": -12}]})
+        old_commits = deepcopy(self.github.commits)
+        self.approve(["2026-11-03"])
+        self.assertTrue(self.delete("2026-11-03"))
+        self.assertFalse(self.delete("2026-11-03"))
+        self.assertEqual(list(self.store.iter_day_pages()), [])
+        self.assertTrue(any("days/2026-11-03.enc" in path for files in old_commits.values() for path in files))
+        self.assertTrue(all(self.github.commits[sha] == files for sha, files in old_commits.items()))
+        deletion = next(call for method, _, call in self.github.calls if method == "DELETE")
+        self.assertEqual(deletion["json"]["branch"], "networth-data")
+        self.assertEqual(len(deletion["json"]["sha"]), 40)
+
+    def test_deletion_requires_exact_manifest_owner_and_unexpired_lease(self):
+        self.store.save_capture("2026-11-03", "one", {})
+        self.approve(["2026-11-03"])
+        for day, owner, operation in (("2026-11-02", "owner", "a" * 32),
+                                      ("2026-11-03", "other", "a" * 32),
+                                      ("2026-11-03", "owner", "b" * 32)):
+            with self.subTest(day=day, owner=owner), self.assertRaisesRegex(NetworthError, "LEASE_LOST"):
+                self.store.delete_current_day(day, operation_id=operation, lease_owner=owner)
+        self.store.update_state(lambda state: state["sync_lease"].update(expires_at="2000-01-01T00:00:00Z"))
+        with self.assertRaisesRegex(NetworthError, "LEASE_LOST"):
+            self.delete("2026-11-03")
+        self.assertFalse(any(method == "DELETE" for method, _, _ in self.github.calls))
+
+    def test_conflict_and_failed_immutable_absence_readback_never_report_success(self):
+        self.store.save_capture("2026-11-03", "one", {})
+        self.approve(["2026-11-03"])
+        self.github.delete_conflict = True
+        with self.assertRaisesRegex(NetworthError, "DOCUMENT_CHANGED"):
+            self.delete("2026-11-03")
+        self.github.delete_conflict = False
+        self.github.bad_delete_readback = True
+        with self.assertRaisesRegex(NetworthError, "DELETE_UNVERIFIED"):
+            self.delete("2026-11-03")
+
+    def test_stale_generation_captures_are_hidden_and_cannot_be_saved(self):
+        self.store.save_capture("2026-11-03", "old", {"accounts": [{"current": 42}]})
+        self.store.update_state(lambda state: state.update(privacy={"generation": "c" * 32}))
+        self.assertEqual(self.store.read_day("2026-11-03")["captures"], {})
+        with self.assertRaisesRegex(NetworthError, "GENERATION_CHANGED"):
+            self.store.save_capture("2026-11-03", "late", {})
+        self.store.save_capture("2026-11-03", "fresh", {"privacy_generation": "c" * 32})
+        self.assertEqual(set(self.store.read_day("2026-11-03")["captures"]), {"fresh"})
+
+    def test_generation_changed_during_history_read_refuses_stale_result(self):
+        self.store.save_capture("2026-11-03", "one", {})
+        original = self.store._read_document
+        def read(document, **kwargs):
+            result = original(document, **kwargs)
+            if document.startswith("days/"):
+                self.store.update_state(lambda state: state.update(privacy={"generation": "e" * 32}))
+            return result
+        with patch.object(self.store, "_read_document", side_effect=read):
+            with self.assertRaisesRegex(NetworthError, "GENERATION_CHANGED"):
+                self.store.read_day("2026-11-03")
 
 
 if __name__ == "__main__":

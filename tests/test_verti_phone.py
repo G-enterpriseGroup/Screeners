@@ -97,7 +97,8 @@ class LiveQuoteOverlayTests(unittest.TestCase):
         state["component"] = {"kind": "quote_tick", "scope": "pricing-a",
                               "quote_sort_key": "view-a", "quote_revision": revision,
                               "quote_ids": [row["id"] for row in rows[:20]]}
-        feature._refresh_live_quotes(client, "component", "pricing-a", "view-a")
+        with patch("src.security_runtime.require_finance_access"):
+            feature._refresh_live_quotes(client, "component", "pricing-a", "view-a")
         return state["_" + prefix + "_live_quotes"]
 
     def test_both_owners_batch_only_visible_legs_without_changing_orders_or_scan(self):
@@ -125,7 +126,7 @@ class LiveQuoteOverlayTests(unittest.TestCase):
     def test_both_owners_reject_nonquote_stale_scope_invalid_ids_and_inactive_callbacks(self):
         for feature, prefix in ((desktop, "vo"), (phone, "vp")):
             state, client, rows, _ = self.fixture(feature, prefix)
-            with patch.object(feature.st, "session_state", state):
+            with patch.object(feature.st, "session_state", state), patch("src.security_runtime.require_finance_access"):
                 feature._live_quote_context("pricing-a", "view-a", rows, True, client)
                 valid = {"kind": "quote_tick", "scope": "pricing-a", "quote_sort_key": "view-a",
                          "quote_revision": 1, "quote_ids": ["0"]}
@@ -206,7 +207,7 @@ class LiveQuoteOverlayTests(unittest.TestCase):
 
     def test_desktop_new_scan_resets_failed_quote_backoff_without_sort_bypass(self):
         state, client, rows, now = self.fixture(desktop, "vo")
-        with patch.object(desktop.st, "session_state", state):
+        with patch.object(desktop.st, "session_state", state), patch("src.security_runtime.require_finance_access"):
             self.tick(desktop, "vo", state, client, rows)
             old = state["_vo_live_quotes"]
             old.update(next_due=now + 120, failures=3)
@@ -244,7 +245,7 @@ class LiveQuoteOverlayTests(unittest.TestCase):
             for condition in ("locked", "missing-token", "expired", "other-login", "wrong-namespace",
                               "lock-during-read", "leave-during-read", "rescan-during-read"):
                 state, client, rows, now = self.fixture(feature, prefix)
-                with patch.object(feature.st, "session_state", state):
+                with patch.object(feature.st, "session_state", state), patch("src.security_runtime.require_finance_access"):
                     feature._live_quote_context("pricing-a", "view-a", rows, True, client)
                     state["component"] = {"kind": "quote_tick", "scope": "pricing-a", "quote_sort_key": "view-a",
                                           "quote_revision": 1, "quote_ids": ["0"]}
@@ -277,6 +278,7 @@ class LiveQuoteOverlayTests(unittest.TestCase):
             state, client, rows, now = self.fixture(feature, prefix)
             rows.append({**rows[0], "id": "same-legs"})
             with (patch.object(feature.st, "session_state", state),
+                  patch("src.security_runtime.require_finance_access"),
                   patch.object(feature, "_QUOTE_BRIDGE_COMPONENT") as bridge,
                   patch.object(feature, "_liquid_cash_markup") as cash,
                   patch.object(feature, "_ticker_quote_preview") as ticker,
@@ -492,7 +494,7 @@ class PhoneIsolationTests(unittest.TestCase):
                  "vp_saved_spread_drafts": {"draft": "never-cache"},
                  "vo_scan_result": {"symbol": "DESKTOP-SESSION"}, "vo_live_confirm": True}
         untouched = {key: deepcopy(value) for key, value in state.items() if key.startswith("vo_")}
-        with patch.object(phone, "st", order_ui(state)):
+        with patch.object(phone, "st", order_ui(state)), patch("src.security_runtime.require_finance_access"):
             phone._restore_scan_memory(vault)
             phone._restore_presentation()
             state["vp_symbol_value"] = "PHONE"
@@ -904,6 +906,7 @@ class PhoneParityTests(unittest.TestCase):
         import src.verti_phone_ui as vo
         state = {}
         with (patch.object(vo.st, "session_state", state),
+              patch("src.security_runtime.require_finance_access"),
               patch.object(vo, "_hydrate_vertical_options_pricing", return_value=True) as read,
               patch.object(vo.st, "rerun") as rerun):
             vo._recover_vertical_pricing_without_blocking.__wrapped__()
@@ -912,6 +915,7 @@ class PhoneParityTests(unittest.TestCase):
             self.assertNotIn("_vp_pref_recovery_unavailable", state)
         state = {"_vp_pref_recovery_started": 1}
         with (patch.object(vo.st, "session_state", state),
+              patch("src.security_runtime.require_finance_access"),
               patch.object(vo, "_hydrate_vertical_options_pricing", return_value=False),
               patch.object(vo.time, "monotonic", return_value=30),
               patch.object(vo.st, "rerun") as rerun,
@@ -987,6 +991,7 @@ if not st.session_state.get("hide_phone"):
 
     def test_production_phone_portfolio_retains_empty_choice_without_touching_desktop(self):
         from streamlit.testing.v1 import AppTest
+        self.enterContext(patch("src.security_runtime.require_finance_access"))
         source = '''
 import streamlit as st
 from unittest.mock import patch
@@ -1011,7 +1016,8 @@ st.session_state.setdefault("_vp_pricing_mode_preference", "NORMAL")
 st.session_state.setdefault("vo_review_bundle", {"desktop":"untouched"})
 st.session_state.setdefault("vo_live_confirm", True)
 st.session_state.setdefault("_vo_portfolio_account_selection", ["other"])
-with (patch.object(phone, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
+with (patch("src.security_runtime.require_finance_access"),
+      patch.object(phone, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
       patch.object(phone, "hydrate_gex_snapshots", return_value=False)):
     if not st.session_state.get("hide_phone"):
         phone.render_verti_phone(Broker(), lambda: None)
@@ -1298,6 +1304,7 @@ class VerticalCostFilterTests(unittest.TestCase):
                          {**expected, "breakeven": {"target": 103, "percent": 5.0}})
 
     def test_both_renderers_use_only_column_max_over_the_complete_store(self):
+        self.enterContext(patch("src.security_runtime.require_finance_access"))
         import csv
         import io
         from streamlit.testing.v1 import AppTest
@@ -1380,7 +1387,8 @@ if (not st.session_state.get("fixture_restore_only")
         "loaded_at":raw["loaded_at"],"candidates":store,"annual_ids":annual,
         "listed_years":3,"loaded_expirations":3,"listed_expirations":3,
         "contract_count":len(raw["rows"]),"ranked_expirations":3,"scan_complete":True,"errors":[]}
-with (patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
+with (patch("src.security_runtime.require_finance_access"),
+      patch.object(feature, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
       patch.object(feature, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
       patch.object(feature, "hydrate_gex_snapshots", return_value=False),
       patch.object(feature, "_cboe_wall_markup", return_value="<span></span>"),

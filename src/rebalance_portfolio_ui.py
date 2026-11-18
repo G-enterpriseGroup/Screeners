@@ -26,6 +26,8 @@ from typing import Any, Callable
 
 import pandas as pd
 import streamlit as st
+
+from src.security_runtime import finance_fragment
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError
@@ -1134,7 +1136,7 @@ def _config_from_editor(frame: pd.DataFrame) -> list[dict[str, Any]]:
 # PUBLIC RENDER
 # ==============================
 
-@st.fragment
+@finance_fragment
 def render_rebalance_portfolio(
     client: Any,
     *,

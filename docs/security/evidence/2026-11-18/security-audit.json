@@ -1,0 +1,1642 @@
+{
+  "assessed_source_checkout_clean": false,
+  "assessment_errors": [],
+  "assessment_python": "3.12.14",
+  "checks": [
+    {
+      "control": "support_policy_review",
+      "review_due": "2027-02-17",
+      "reviewed_on": "2026-11-17",
+      "status": "pass"
+    },
+    {
+      "control": "assessment_python_support",
+      "policy_cutoff": "2028-10-01",
+      "python_minor": "3.12",
+      "status": "pass"
+    },
+    {
+      "actionable_count": 0,
+      "control": "actionable_findings",
+      "reported_below_gate_count": 59,
+      "reviewed_context_count": 17,
+      "status": "pass"
+    }
+  ],
+  "dependency_inventory": [
+    {
+      "name": "altair",
+      "version": "6.3.0"
+    },
+    {
+      "name": "anyio",
+      "version": "4.16.0"
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0"
+    },
+    {
+      "name": "beautifulsoup4",
+      "version": "4.15.0"
+    },
+    {
+      "name": "cbor2",
+      "version": "5.9.0"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.10.23"
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1"
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.2"
+    },
+    {
+      "name": "click",
+      "version": "8.5.1"
+    },
+    {
+      "name": "cryptography",
+      "version": "50.0.2"
+    },
+    {
+      "name": "curl-cffi",
+      "version": "0.17.0"
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0"
+    },
+    {
+      "name": "idna",
+      "version": "3.20"
+    },
+    {
+      "name": "itsdangerous",
+      "version": "2.2.0"
+    },
+    {
+      "name": "jinja2",
+      "version": "3.1.6"
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0"
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1"
+    },
+    {
+      "name": "lxml",
+      "version": "6.1.3"
+    },
+    {
+      "name": "markupsafe",
+      "version": "3.0.4"
+    },
+    {
+      "name": "narwhals",
+      "version": "2.29.0"
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.5"
+    },
+    {
+      "name": "oauthlib",
+      "version": "4.0.1"
+    },
+    {
+      "name": "pandas",
+      "version": "3.1.1"
+    },
+    {
+      "name": "peewee",
+      "version": "4.5.3"
+    },
+    {
+      "name": "pillow",
+      "version": "13.0.0"
+    },
+    {
+      "name": "platformdirs",
+      "version": "4.14.7"
+    },
+    {
+      "name": "plotly",
+      "version": "7.1.0"
+    },
+    {
+      "name": "protobuf",
+      "version": "7.36.2"
+    },
+    {
+      "name": "pyarrow",
+      "version": "26.0.1"
+    },
+    {
+      "name": "pyasn1",
+      "version": "0.6.5"
+    },
+    {
+      "name": "pyasn1-modules",
+      "version": "0.4.2"
+    },
+    {
+      "name": "pycparser",
+      "version": "3.12"
+    },
+    {
+      "name": "pydeck",
+      "version": "0.9.3"
+    },
+    {
+      "name": "pyopenssl",
+      "version": "26.4.0"
+    },
+    {
+      "name": "python-dateutil",
+      "version": "4.0.0"
+    },
+    {
+      "name": "python-multipart",
+      "version": "0.0.34"
+    },
+    {
+      "name": "pytz",
+      "version": "2026.6"
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0"
+    },
+    {
+      "name": "reportlab",
+      "version": "4.5.1"
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2"
+    },
+    {
+      "name": "requests-oauthlib",
+      "version": "2.0.0"
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.9.1"
+    },
+    {
+      "name": "soupsieve",
+      "version": "4.1.1"
+    },
+    {
+      "name": "starlette",
+      "version": "1.10.0"
+    },
+    {
+      "name": "streamlit",
+      "version": "1.67.0"
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0"
+    },
+    {
+      "name": "tzdata",
+      "version": "2026.6"
+    },
+    {
+      "name": "urllib3",
+      "version": "2.8.0"
+    },
+    {
+      "name": "uvicorn",
+      "version": "0.54.0"
+    },
+    {
+      "name": "webauthn",
+      "version": "2.8.0"
+    },
+    {
+      "name": "websockets",
+      "version": "17.4"
+    },
+    {
+      "name": "xlsxwriter",
+      "version": "3.3.1"
+    },
+    {
+      "name": "yfinance",
+      "version": "1.8.0"
+    }
+  ],
+  "findings": [
+    {
+      "confidence": "high",
+      "id": "source:scripts/security_audit.py:B404:18",
+      "line": 18,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B404",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:scripts/security_audit.py:B603:266",
+      "line": 266,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B603",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:scripts/security_audit.py:B607:312",
+      "line": 312,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B607",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:scripts/security_audit.py:B603:312",
+      "line": 312,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B603",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:scripts/security_audit.py:B607:329",
+      "line": 329,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B607",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:scripts/security_audit.py:B603:329",
+      "line": 329,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B603",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:scripts/security_audit.py:B105:384",
+      "line": 384,
+      "path": "scripts/security_audit.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:streamlit_app.py:B102:76",
+      "line": 76,
+      "path": "streamlit_app.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The exec input is read from the fixed repository-local src/terminal_core.py path and split at a constant source boundary. No request, broker data, URL, or user text is compiled here. This preserves the existing trusted-source production loader; it is not approval for untrusted code execution.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B102",
+      "scanner_requires_review": true,
+      "source_sha256": "8d42b971963cfc80b809cc32d9bf0fb7200766bb29a150f87d1f5d0916337b3b",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/acquisition_history_github.py:B310:126",
+      "line": 126,
+      "path": "src/acquisition_history_github.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "GitHubArchive._request builds the initial URI from literal https://api.github.com, constant repository REPO, and percent-encoded path/ref. Caller data cannot select the URI scheme or authority. B310 arbitrary-scheme input is not present in this reviewed call; this does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "4d7dabe853100b365cfde92256a2a39adf3c00c50b0c7d0e0fd0f9917e3bb1b4",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/acquisition_private_blotter.py:B105:114",
+      "line": 114,
+      "path": "src/acquisition_private_blotter.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/acquisition_private_blotter.py:B105:117",
+      "line": 117,
+      "path": "src/acquisition_private_blotter.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/acquisition_private_blotter.py:B105:120",
+      "line": 120,
+      "path": "src/acquisition_private_blotter.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/acquisition_private_blotter.py:B310:187",
+      "line": 187,
+      "path": "src/acquisition_private_blotter.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "PrivateTradeBlotter rejects any constructor repository other than PRIVATE_REPO. _request uses literal https://api.github.com plus encoded content path/ref; _token_identity_diagnostic uses the fixed https://api.github.com/user endpoint. No caller-controlled scheme or authority reaches these calls. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "e0825d9f82b57f73ab63cec6eae665fe7e5436d24d573440a7fc0a39b9f832c5",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/acquisition_private_blotter.py:B310:220",
+      "line": 220,
+      "path": "src/acquisition_private_blotter.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "PrivateTradeBlotter rejects any constructor repository other than PRIVATE_REPO. _request uses literal https://api.github.com plus encoded content path/ref; _token_identity_diagnostic uses the fixed https://api.github.com/user endpoint. No caller-controlled scheme or authority reaches these calls. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "e0825d9f82b57f73ab63cec6eae665fe7e5436d24d573440a7fc0a39b9f832c5",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/acquisition_private_blotter.py:B105:263",
+      "line": 263,
+      "path": "src/acquisition_private_blotter.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_cboe.py:B310:83",
+      "line": 83,
+      "path": "src/gex_cboe.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "_url_candidates creates literal https://cdn.cboe.com URLs; _normalize_symbol permits only uppercase ASCII letters and digits. No caller-selected URI scheme or authority is passed to urlopen. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "a450312bc9ab3879d3a323e0240a4415ae7a20289ccc3f57594f01b4c76f8542",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_github_bridge.py:B310:53",
+      "line": 53,
+      "path": "src/gex_github_bridge.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "_publish_path constructs api_url from literal https://api.github.com and constant REPO. Content path/ref cannot replace the URI scheme or authority. Both flagged calls use that constructed GitHub endpoint. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "e52139d33d75acd166c64ba3815b78e2ba8d08d68cad759c4fddb962a31ab594",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_github_bridge.py:B310:79",
+      "line": 79,
+      "path": "src/gex_github_bridge.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "_publish_path constructs api_url from literal https://api.github.com and constant REPO. Content path/ref cannot replace the URI scheme or authority. Both flagged calls use that constructed GitHub endpoint. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "e52139d33d75acd166c64ba3815b78e2ba8d08d68cad759c4fddb962a31ab594",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/gex_realized_vol.py:B105:45",
+      "line": 45,
+      "path": "src/gex_realized_vol.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui.py:B110:1038",
+      "line": 1038,
+      "path": "src/gex_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_legacy.py:B112:120",
+      "line": 120,
+      "path": "src/gex_ui_legacy.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B112",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_legacy.py:B110:648",
+      "line": 648,
+      "path": "src/gex_ui_legacy.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3.py:B110:113",
+      "line": 113,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/gex_ui_v3.py:B105:171",
+      "line": 171,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3.py:B110:218",
+      "line": 218,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3.py:B110:271",
+      "line": 271,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3.py:B110:286",
+      "line": 286,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3.py:B110:447",
+      "line": 447,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3.py:B110:1705",
+      "line": 1705,
+      "path": "src/gex_ui_v3.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/gex_ui_v3_base.py:B608:898",
+      "line": 898,
+      "path": "src/gex_ui_v3_base.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3_base.py:B110:947",
+      "line": 947,
+      "path": "src/gex_ui_v3_base.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/gex_ui_v3_base.py:B608:1110",
+      "line": 1110,
+      "path": "src/gex_ui_v3_base.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/gex_ui_v3_proven.py:B608:503",
+      "line": 503,
+      "path": "src/gex_ui_v3_proven.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3_proven.py:B110:670",
+      "line": 670,
+      "path": "src/gex_ui_v3_proven.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_ui_v3_proven.py:B110:1179",
+      "line": 1179,
+      "path": "src/gex_ui_v3_proven.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_workspace_v2.py:B112:588",
+      "line": 588,
+      "path": "src/gex_workspace_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B112",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_workspace_v2.py:B110:717",
+      "line": 717,
+      "path": "src/gex_workspace_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/gex_workspace_v2.py:B110:772",
+      "line": 772,
+      "path": "src/gex_workspace_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/gex_workspace_v2.py:B105:1059",
+      "line": 1059,
+      "path": "src/gex_workspace_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B105",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/heatmaps_ui.py:B310:708",
+      "line": 708,
+      "path": "src/heatmaps_ui.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "_fed_target_history loops over a fixed tuple of FRED series IDs under literal https://fred.stlouisfed.org; _fed_lower_target_history uses a complete literal HTTPS URI. No user-provided URI reaches these calls. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "17901767460b1542a24f9ba2784c4a5f5dd0fb981677ccca6f9d9c64c4bde424",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/heatmaps_ui.py:B112:716",
+      "line": 716,
+      "path": "src/heatmaps_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B112",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/heatmaps_ui.py:B310:728",
+      "line": 728,
+      "path": "src/heatmaps_ui.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "_fed_target_history loops over a fixed tuple of FRED series IDs under literal https://fred.stlouisfed.org; _fed_lower_target_history uses a complete literal HTTPS URI. No user-provided URI reaches these calls. This does not certify upstream redirect behavior.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B310",
+      "scanner_requires_review": true,
+      "source_sha256": "17901767460b1542a24f9ba2784c4a5f5dd0fb981677ccca6f9d9c64c4bde424",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/lock_screen_v2.py:B110:143",
+      "line": 143,
+      "path": "src/lock_screen_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/lock_screen_v2.py:B110:152",
+      "line": 152,
+      "path": "src/lock_screen_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/networth.py:B110:498",
+      "line": 498,
+      "path": "src/networth.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/networth.py:B110:562",
+      "line": 562,
+      "path": "src/networth.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/networth_store.py:B324:319",
+      "line": 319,
+      "path": "src/networth_store.py",
+      "priority": "high",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The SHA1 computes the Git blob object identifier (blob + length + NUL + stored ciphertext) for consistency with GitHub content metadata. SHA1 is not the confidentiality/authentication mechanism: the encrypted payload must separately pass Fernet authenticated decryption before JSON is accepted. This is not approval to use SHA1 for passwords or signatures.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B324",
+      "scanner_requires_review": true,
+      "source_sha256": "ff5749e53293d5db6fd190bfc7ecfc1faa30ac1c0e41f18f5bcf12cf6f3b14f9",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/option_book_ui.py:B110:706",
+      "line": 706,
+      "path": "src/option_book_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/performance_ui.py:B110:464",
+      "line": 464,
+      "path": "src/performance_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/protective_puts_portfolio_ui.py:B110:493",
+      "line": 493,
+      "path": "src/protective_puts_portfolio_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/protective_puts_sources.py:B110:96",
+      "line": 96,
+      "path": "src/protective_puts_sources.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/risk_sizing_ui_v2.py:B110:255",
+      "line": 255,
+      "path": "src/risk_sizing_ui_v2.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/risk_sizing_ui_v4.py:B102:124",
+      "line": 124,
+      "path": "src/risk_sizing_ui_v4.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The exec source is read from fixed repository-local risk_sizing_ui_v2.py, then transformed using fixed source markers and static labels. User/broker inputs are not compiled. The warning is retained for this trusted-source loader; production ownership must still follow ARCHITECTURE.md.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B102",
+      "scanner_requires_review": true,
+      "source_sha256": "f8ea700fe735df4724dc3d31432c285cde12a4afd9018e470c18fbcf44de449e",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/risk_sizing_ui_v6.py:B102:46",
+      "line": 46,
+      "path": "src/risk_sizing_ui_v6.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The exec source is read from fixed repository-local risk_sizing_ui_v2.py and transformed through fixed repository code/markers. No user/broker text is compiled. The warning is retained for this trusted-source loader; production ownership must still follow ARCHITECTURE.md.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B102",
+      "scanner_requires_review": true,
+      "source_sha256": "acdb921fb2119be4a3df0f15a6a0b1b2f770ca0e43de5b5430cc4d720636f9ad",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/security_runtime.py:B110:150",
+      "line": 150,
+      "path": "src/security_runtime.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/stockanalysis_cache.py:B110:69",
+      "line": 69,
+      "path": "src/stockanalysis_cache.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/theme.py:B608:109",
+      "line": 109,
+      "path": "src/theme.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/theme.py:B110:495",
+      "line": 495,
+      "path": "src/theme.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/theme.py:B110:512",
+      "line": 512,
+      "path": "src/theme.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/treasury_data.py:B110:50",
+      "line": 50,
+      "path": "src/treasury_data.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/treasury_data.py:B110:377",
+      "line": 377,
+      "path": "src/treasury_data.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/verti_phone_ui.py:B110:700",
+      "line": 700,
+      "path": "src/verti_phone_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/verti_phone_ui.py:B110:916",
+      "line": 916,
+      "path": "src/verti_phone_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/vertical_options_store.py:B608:190",
+      "line": 190,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B608",
+      "scanner_requires_review": true,
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/vertical_options_store.py:B608:219",
+      "line": 219,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B608",
+      "scanner_requires_review": true,
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/vertical_options_store.py:B608:413",
+      "line": 413,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B608",
+      "scanner_requires_review": true,
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/vertical_options_store.py:B608:420",
+      "line": 420,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B608",
+      "scanner_requires_review": true,
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/vertical_options_store.py:B608:451",
+      "line": 451,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/vertical_options_store.py:B608:520",
+      "line": 520,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "low",
+      "id": "source:src/vertical_options_store.py:B608:532",
+      "line": 532,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B608",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "medium",
+      "id": "source:src/vertical_options_store.py:B608:550",
+      "line": 550,
+      "path": "src/vertical_options_store.py",
+      "priority": "medium",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "review_expires_on": "2027-02-15",
+      "review_rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths.",
+      "review_status": "reviewed_not_exploitable_in_current_context",
+      "reviewed_on": "2026-11-18",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rule": "B608",
+      "scanner_requires_review": true,
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "tool": "bandit",
+      "tracking_status": "reviewed_context_warning_retained"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/vertical_options_ui.py:B110:673",
+      "line": 673,
+      "path": "src/vertical_options_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/vertical_options_ui.py:B110:889",
+      "line": 889,
+      "path": "src/vertical_options_ui.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/visual_safety.py:B110:422",
+      "line": 422,
+      "path": "src/visual_safety.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/yfinance_options.py:B110:63",
+      "line": 63,
+      "path": "src/yfinance_options.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    },
+    {
+      "confidence": "high",
+      "id": "source:src/yfinance_options.py:B110:80",
+      "line": 80,
+      "path": "src/yfinance_options.py",
+      "priority": "low",
+      "priority_basis": "scanner_severity",
+      "requires_action": false,
+      "rule": "B110",
+      "tool": "bandit",
+      "tracking_status": "reported_below_gate_threshold"
+    }
+  ],
+  "observed_at": "2026-11-18T04:46:50.279207Z",
+  "requirements_sha256": "ac2279a52dd7056e7a5c01e6edaae69029b27239569bff19c82761632a7527c2",
+  "schema_version": 1,
+  "scope": {
+    "dependency_scope": "current requirements resolution, including transitive packages; not a deployed-runtime inventory",
+    "not_assessed": [
+      "developer_device_OS",
+      "managed_host_internals",
+      "deployed_installed_versions",
+      "provider_account_permissions_or_MFA",
+      "vendor_EOL_of_individual_Python_packages"
+    ],
+    "source_gate": "medium/high severity and medium/high confidence; individual expiring file-digest reviews and all lower findings retained",
+    "source_targets": [
+      "streamlit_app.py",
+      "src",
+      "scripts/sync_networth.py",
+      "scripts/security_audit.py",
+      "scripts/setup_terminal_mfa.py"
+    ]
+  },
+  "source_commit": "ffd6fb2cb9c717f8f0e5e7801ad024de60028f50",
+  "source_coverage": {
+    "file_metric_count": 84,
+    "lines_assessed": 48040
+  },
+  "source_manifest": [
+    {
+      "path": "scripts/security_audit.py",
+      "sha256": "c4406da5a6cbf85fbf731195b0b86130490a2dc052e38ea83620c72ba49ad342"
+    },
+    {
+      "path": "scripts/setup_terminal_mfa.py",
+      "sha256": "7e9346e84fdaf85c955c9c2adfa5fab34279906138f7daedfe306a7eb625bca9"
+    },
+    {
+      "path": "scripts/sync_networth.py",
+      "sha256": "c7b295ff1bf32699f7218826c2356484179efb876538960d408eaf0bc73ac8ae"
+    },
+    {
+      "path": "src/__init__.py",
+      "sha256": "ed547c1f9a7bdf3de596e383f2a68a18a4902256a32d1f54c3eb0764fa70286f"
+    },
+    {
+      "path": "src/acquisition_history_github.py",
+      "sha256": "4d7dabe853100b365cfde92256a2a39adf3c00c50b0c7d0e0fd0f9917e3bb1b4"
+    },
+    {
+      "path": "src/acquisition_private_blotter.py",
+      "sha256": "e0825d9f82b57f73ab63cec6eae665fe7e5436d24d573440a7fc0a39b9f832c5"
+    },
+    {
+      "path": "src/acquisition_ui.py",
+      "sha256": "b82010c60c1ef56ad103b1ef3014fd096adf8f5596179a41ba48cba20f764668"
+    },
+    {
+      "path": "src/bull_debit_spread.py",
+      "sha256": "9525b524c8f8591497837766bd924306be9c19f02119805154fcc17929d5a815"
+    },
+    {
+      "path": "src/bull_debit_ui.py",
+      "sha256": "39f42e1537f004e41146a81765363b214aba1818392e17e2c766c05341257ffd"
+    },
+    {
+      "path": "src/etrade_client.py",
+      "sha256": "d143a82cbe923897c8f6c6f8ae2f48e19b6adca0feb83c1db5c664a77c3475ed"
+    },
+    {
+      "path": "src/etrade_connection_ui_v2.py",
+      "sha256": "5fb84d1ca937e3603e8e43788928978ced5357552c7ff40b57cc61f320f402c2"
+    },
+    {
+      "path": "src/etrade_data_cache.py",
+      "sha256": "ee1a97d725a747af26ad5368e8584f362e7350daae73e752598b2dccdbc02847"
+    },
+    {
+      "path": "src/gex_cboe.py",
+      "sha256": "a450312bc9ab3879d3a323e0240a4415ae7a20289ccc3f57594f01b4c76f8542"
+    },
+    {
+      "path": "src/gex_github_bridge.py",
+      "sha256": "e52139d33d75acd166c64ba3815b78e2ba8d08d68cad759c4fddb962a31ab594"
+    },
+    {
+      "path": "src/gex_realized_vol.py",
+      "sha256": "028ceb176db4af6ebc24bfc415702c8745a77ac581c27f57a7feb885bd917f52"
+    },
+    {
+      "path": "src/gex_runtime_v1.py",
+      "sha256": "ba52fab94e9a02def4dcb9b149ad806e91200a7c62228e16ff56f2403487442d"
+    },
+    {
+      "path": "src/gex_snapshot_cache.py",
+      "sha256": "d9af801ac5b3e1e6be9de921f957f425390c7ec690a03589fe9832f07d5f8523"
+    },
+    {
+      "path": "src/gex_ui.py",
+      "sha256": "d235c250abe50904988b4b5676b095c8c5b0cb90bb9f5ab0aa5d5a4374455094"
+    },
+    {
+      "path": "src/gex_ui_legacy.py",
+      "sha256": "4395d7840729f76dc55bf3ed19d46bba265a15a1e7dd729dc56c8e71836eb894"
+    },
+    {
+      "path": "src/gex_ui_v3.py",
+      "sha256": "e463ff227a9267a6cb0a88dd70be1330a315be3a1d0d84009af691324bb151fc"
+    },
+    {
+      "path": "src/gex_ui_v3_base.py",
+      "sha256": "e6f3e43fb621f1a3a26af042065a591d694d27949aa7556be76677b49f74afb2"
+    },
+    {
+      "path": "src/gex_ui_v3_proven.py",
+      "sha256": "dec518b6cd6f68225c5c1edd17b3c5cacf65544873083c48a5ca0106e76f2eac"
+    },
+    {
+      "path": "src/gex_workspace_v2.py",
+      "sha256": "971ce2df6871bfdf369fc07830718bbd8af4b3edf455154d85ceeb622099e457"
+    },
+    {
+      "path": "src/heatmaps_export.py",
+      "sha256": "b3da060f02b3b969c6e56e7ac984895834bbcab7816215b0e8a67813a448402a"
+    },
+    {
+      "path": "src/heatmaps_ui.py",
+      "sha256": "17901767460b1542a24f9ba2784c4a5f5dd0fb981677ccca6f9d9c64c4bde424"
+    },
+    {
+      "path": "src/holdings_snapshot_mode.py",
+      "sha256": "f2da95105dbbe9c246844ffb525f91db00771bedd8c884625c5509950ad45e89"
+    },
+    {
+      "path": "src/holdings_snapshot_mode_v2.py",
+      "sha256": "f6834d20613f1233a457abb11dace638d9e969aa8db223f839ee9a0bc0139384"
+    },
+    {
+      "path": "src/layout_guardrails.py",
+      "sha256": "6d06fbd2b52fa258c6709c50c2b0fb2318cbb3a24d0d6cd31f134369ecc9b700"
+    },
+    {
+      "path": "src/lock_screen_v2.py",
+      "sha256": "0a61a0da5f3653a4223de1f04fdf2a633bb9ce889688d829510755c809e16c8b"
+    },
+    {
+      "path": "src/muni_data.py",
+      "sha256": "811e17bcea0424f21cc76527a83a2e9b2f4f9daba6c5b2c9754b4562a86deda5"
+    },
+    {
+      "path": "src/networth.py",
+      "sha256": "b9ff12dd53268c8afec4e665d417cbb5cc905cc3220e50cc99c57d6fdbbcca2f"
+    },
+    {
+      "path": "src/networth_store.py",
+      "sha256": "ff5749e53293d5db6fd190bfc7ecfc1faa30ac1c0e41f18f5bcf12cf6f3b14f9"
+    },
+    {
+      "path": "src/networth_ui.py",
+      "sha256": "a2e69d57536eea7cf01486247e3e1ae6a785bd59f22ea5ce75a66397a6da1dea"
+    },
+    {
+      "path": "src/option_book.py",
+      "sha256": "71e2628ba5d7c08076d1d2749d6ce4ff344526bb810045388fa19a8cb4c77e47"
+    },
+    {
+      "path": "src/option_book_ui.py",
+      "sha256": "c4ae816fb528bdb44687d5f4aa39e9aad9284310e8df5e1923ae51a74c897ce4"
+    },
+    {
+      "path": "src/passkey_auth.py",
+      "sha256": "7622065d0acbb529470bb5ee5bd03b0a7b006e07b6668d559327a40364097d25"
+    },
+    {
+      "path": "src/performance_ui.py",
+      "sha256": "ad709f4d8da7408b88dd603bbc87f537a6b0074e68eb3477a0cbcbae343303b7"
+    },
+    {
+      "path": "src/pin_recovery.py",
+      "sha256": "67a8bdfb9861aa92a6a9378419d3fdbacc6789213cec5c6999143ff8cb2ba1ff"
+    },
+    {
+      "path": "src/production_manifest.py",
+      "sha256": "a32648b0dd757de5c90f5140857af5ccabe0694712ad7ec90b0cca708b93c8ea"
+    },
+    {
+      "path": "src/protective_puts.py",
+      "sha256": "15e9c4cdbd46022e011f5bf14387d1dc9133fb2f00d39f7654688d5c324292f8"
+    },
+    {
+      "path": "src/protective_puts_orders.py",
+      "sha256": "6920e876aac1676bc980972645d61ac0683cc39609cd46d497cfee51266c7321"
+    },
+    {
+      "path": "src/protective_puts_portfolio_ui.py",
+      "sha256": "a271e9293aa08de67dabc7be48a1842c29e931407f6b0054d321cbfa88aa5350"
+    },
+    {
+      "path": "src/protective_puts_sources.py",
+      "sha256": "72af6b8f2b60921eb9908cf8077cc62a395c688a5ef38a911f106c38e0a59a52"
+    },
+    {
+      "path": "src/protective_puts_ui.py",
+      "sha256": "5b6885fd8a9c408f5324299bf17106ee3678929a66f5adc8dface809f322f657"
+    },
+    {
+      "path": "src/public_policies.py",
+      "sha256": "96d0e3656cc22cdde2cf54d30c418ec25bdcdae3d1ad98eb1aa3f615df875de4"
+    },
+    {
+      "path": "src/rebalance_portfolio_ui.py",
+      "sha256": "e8e2bd0cc9128083937a7521046eef8eb3385fa7ad9737714aea51a230cbdade"
+    },
+    {
+      "path": "src/reboot_guard.py",
+      "sha256": "d4facc5a724e90377154b1086e02737cfd42c53b86598b7ab553a6be3ebb9858"
+    },
+    {
+      "path": "src/risk_sizing.py",
+      "sha256": "a6594e7083438ec78be4f492bdce7c935e9842a42649870f0951c4c3b6fb85d6"
+    },
+    {
+      "path": "src/risk_sizing_ui.py",
+      "sha256": "dd21c3f4769325a69283f6d697ad2db59c40e7117f2f54a8416f6fdcb1f32b7c"
+    },
+    {
+      "path": "src/risk_sizing_ui_v10.py",
+      "sha256": "a4325833f6959c2e34b51615efdc6b4bebbbcb49745c6a2e71799827fef65237"
+    },
+    {
+      "path": "src/risk_sizing_ui_v2.py",
+      "sha256": "b113bb26b83cb3de651a0398006391f9916d479fb834b66d16b2f28e38886837"
+    },
+    {
+      "path": "src/risk_sizing_ui_v3.py",
+      "sha256": "0bae41c089c88987d57370066da5abcf096280519abab063638bf176b07e48ba"
+    },
+    {
+      "path": "src/risk_sizing_ui_v4.py",
+      "sha256": "f8ea700fe735df4724dc3d31432c285cde12a4afd9018e470c18fbcf44de449e"
+    },
+    {
+      "path": "src/risk_sizing_ui_v5.py",
+      "sha256": "83f6bad1a19e51c860e545f5caeb2722fcfdbec13bd6043d43f8dff68cb41b58"
+    },
+    {
+      "path": "src/risk_sizing_ui_v6.py",
+      "sha256": "acdb921fb2119be4a3df0f15a6a0b1b2f770ca0e43de5b5430cc4d720636f9ad"
+    },
+    {
+      "path": "src/risk_sizing_ui_v7.py",
+      "sha256": "baa449dacac52fd6db9a1af8111b3d5cef41cd06d358df9eebc1544b6308c4a6"
+    },
+    {
+      "path": "src/risk_sizing_ui_v9.py",
+      "sha256": "313b226f020803a471f542453ce50c08c8bc7b8dea864b63c98135014dcc4276"
+    },
+    {
+      "path": "src/schwab_risk_sizing_ui.py",
+      "sha256": "89d378f7a4da6a7afcf238bc635760195036062d36299de39d609ea18b24560a"
+    },
+    {
+      "path": "src/sector_data.py",
+      "sha256": "6b80161878c8084b38eadc3d7106f24666d9e534b3d156b70605c31ef004e463"
+    },
+    {
+      "path": "src/security_runtime.py",
+      "sha256": "4b607b743e64c2ef73830f7d8d5d5a471117b1b10fc52a59c29655a7e71ec662"
+    },
+    {
+      "path": "src/security_store.py",
+      "sha256": "cdafae64ca45ff39ba7952cb1e1e8d1f7df3536958ebceeecb1a468bd08509e5"
+    },
+    {
+      "path": "src/session_persistence.py",
+      "sha256": "0c2e5031717cc26ad9e1704c6ec0ac9353890919775714e178f8a89c32ad56e2"
+    },
+    {
+      "path": "src/stockanalysis_cache.py",
+      "sha256": "d7fc26e9396ed005c0f367443911fe55a1436053121450b33c47496af492d8ff"
+    },
+    {
+      "path": "src/stockanalysis_portfolio.py",
+      "sha256": "bbf02b22c625eb0d529ae2c0fa770b360e0321f81fdc453d413ff66284ffb7bd"
+    },
+    {
+      "path": "src/stockanalysis_portfolio_v2.py",
+      "sha256": "fee1c1fb40aad91b1b5ab0f6537915e1ca9f8affda7c717c7c7547b8df2a88d0"
+    },
+    {
+      "path": "src/stockanalysis_portfolio_v3.py",
+      "sha256": "147b9e9aad437694a65f1b394c3a73937a696ef7c755c5048dd68c2f21da6ccf"
+    },
+    {
+      "path": "src/stockanalysis_portfolio_v4.py",
+      "sha256": "2f66051589036d6649eed85803fb5aebbe2dbea01b7fc7dc82efd2cdd57615b5"
+    },
+    {
+      "path": "src/stockanalysis_portfolio_v5.py",
+      "sha256": "1fdcf2f5b598f2e14a58f601f9d8cb1d0c60ba204b430bc2c16a99441de80898"
+    },
+    {
+      "path": "src/tab_bar.py",
+      "sha256": "fdc986d849b3fdbb707335c0943d468f91f30d4e0a87298425abce68acfcb04a"
+    },
+    {
+      "path": "src/tab_bar_v4.py",
+      "sha256": "fbb1ed0aba119f1688001c25c70581decce4fd9f75b7c91bfd812e907a14a855"
+    },
+    {
+      "path": "src/terminal_core.py",
+      "sha256": "4af504b01dc1ffc96ac719608a0fbf724165bf311c43542ca6ed8ff6194c8031"
+    },
+    {
+      "path": "src/terminal_number_format.py",
+      "sha256": "a7f5e1e8ba568eeee85c0e82036dcd1cd584928be2d981b333dcbd5d8c379561"
+    },
+    {
+      "path": "src/terminal_security.py",
+      "sha256": "66219c0913a28e610731655243d807daee73467c7c05c9f973ec1cba850c0239"
+    },
+    {
+      "path": "src/theme.py",
+      "sha256": "c6a5f7c1499fd5d72bda77e60b070da0eb3e7adbd5ad88f70064fd0b7eaae693"
+    },
+    {
+      "path": "src/ticker_autocomplete.py",
+      "sha256": "2ad0caf502e4a972c9ce17b3c77440fb3661ebaeb5047d510533f8e48169e63a"
+    },
+    {
+      "path": "src/trade_math.py",
+      "sha256": "fc214a8a491b3d3d703b3b61ded3ea96915b1f30d57ea53b4c1c7b0b49aed55e"
+    },
+    {
+      "path": "src/treasury_data.py",
+      "sha256": "e32189a6eb24c3bc55b7cd69afdf8b479b2070fb0d33a83da70246947a8e804c"
+    },
+    {
+      "path": "src/verti_phone_ui.py",
+      "sha256": "40c0b1d450213b9428ef072c7e5f298bd8a2a43671f1a08e83016a855ba2c092"
+    },
+    {
+      "path": "src/vertical_options.py",
+      "sha256": "2824866975f6ac4391f4aaf24327723296f439439c5c8de8278d621c2dc6798a"
+    },
+    {
+      "path": "src/vertical_options_store.py",
+      "sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc"
+    },
+    {
+      "path": "src/vertical_options_ui.py",
+      "sha256": "f7f3ed702267c1df58bdb6fbaa776418097dc2267d773a7485d1e4865e8ef67d"
+    },
+    {
+      "path": "src/visual_safety.py",
+      "sha256": "6be0e24b7a7bc12c9bdcdeb5b7557d73d1a9b74552a5addff21f4bd1df26277a"
+    },
+    {
+      "path": "src/yfinance_options.py",
+      "sha256": "109a5edaf377ef70e1387285903513d2c5134241b9551464f58d60199d81b343"
+    },
+    {
+      "path": "streamlit_app.py",
+      "sha256": "8d42b971963cfc80b809cc32d9bf0fb7200766bb29a150f87d1f5d0916337b3b"
+    }
+  ],
+  "status": "pass",
+  "tool_versions": {
+    "bandit": "1.9.4",
+    "pip-audit": "2.10.1"
+  }
+}

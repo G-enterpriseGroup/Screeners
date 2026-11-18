@@ -293,7 +293,7 @@ class VerticalOptionsTests(unittest.TestCase):
         import src.vertical_options_ui as vo
         state = {"_vo_presentation": {"vo_target_breakeven": vo._NO_BREAKEVEN,
                                        "vo_max_cost": vo._NO_COST_CEILING}}
-        with patch.object(vo.st, "session_state", state):
+        with patch.object(vo.st, "session_state", state), patch("src.security_runtime.require_finance_access"):
             vo._restore_presentation()
             self.assertEqual(state["vo_target_breakeven"], "")
             self.assertNotIn("vo_max_cost", state)
@@ -310,7 +310,7 @@ class VerticalOptionsTests(unittest.TestCase):
             state = {"vo_scan_result": {"symbol": "SPY", "loaded_at": 123},
                      "_vo_chain_cache": {"ETRADE:SPY": {"scan_id": "snapshot"}},
                      "vo_review_bundle": {"unsafe": True}, "vo_live_confirm": True}
-            with patch.object(vo.st, "session_state", state):
+            with patch.object(vo.st, "session_state", state), patch("src.security_runtime.require_finance_access"):
                 vo._restore_scan_memory("account-a")
                 vo._restore_presentation()
                 state["vo_symbol_value"] = "SPY"
@@ -335,6 +335,7 @@ class VerticalOptionsTests(unittest.TestCase):
         partial = {"symbol": "SPY", "scan_complete": False}
         state = {"vo_scan_result": partial, "vo_symbol_value": "SPY", "vo_auto_finish": True}
         with (patch.object(vo.st, "session_state", state),
+              patch("src.security_runtime.require_finance_access"),
               patch.object(vo, "_continue_vertical_scan",
                            return_value={"symbol": "SPY", "scan_complete": True}) as advance,
               patch.object(vo, "_remember_scan_snapshot") as remember,
@@ -349,7 +350,7 @@ class VerticalOptionsTests(unittest.TestCase):
         from unittest.mock import patch
         import src.vertical_options_ui as vo
         state = {}
-        with patch.object(vo.st, "session_state", state):
+        with patch.object(vo.st, "session_state", state), patch("src.security_runtime.require_finance_access"):
             vo._restore_presentation()
             self.assertEqual(state["vo_results_view"], "BEST PER YEAR")
             self.assertFalse(state["vo_be_filter_enabled"])
@@ -383,7 +384,9 @@ class VerticalOptionsTests(unittest.TestCase):
             self.assertEqual(vo.st.session_state["vo_min_reward_risk"], "2")
 
     def test_real_streamlit_widget_cleanup_restores_manual_presentation(self):
+        from unittest.mock import patch
         from streamlit.testing.v1 import AppTest
+        self.enterContext(patch("src.security_runtime.require_finance_access"))
         app = AppTest.from_string("""
 import streamlit as st
 from src.vertical_options_ui import _restore_presentation, _remember_presentation
@@ -542,6 +545,7 @@ else:
         import src.vertical_options_ui as vo
         state = {}
         with (patch.object(vo.st, "session_state", state),
+              patch("src.security_runtime.require_finance_access"),
               patch.object(vo, "_hydrate_vertical_options_pricing", return_value=True) as read,
               patch.object(vo.st, "rerun") as rerun):
             vo._recover_vertical_pricing_without_blocking.__wrapped__()
@@ -550,6 +554,7 @@ else:
             self.assertNotIn("_vo_pref_recovery_unavailable", state)
         state = {"_vo_pref_recovery_started": 1}
         with (patch.object(vo.st, "session_state", state),
+              patch("src.security_runtime.require_finance_access"),
               patch.object(vo, "_hydrate_vertical_options_pricing", return_value=False),
               patch.object(vo.time, "monotonic", return_value=30),
               patch.object(vo.st, "rerun") as rerun,
@@ -1612,8 +1617,10 @@ console.log('PASS both live quote bridges, visible polling, pending edits and in
         self.assertIn("PASS both live quote bridges", result.stdout)
 
     def test_renderer_column_filters_refresh_pricing_and_memory_in_one_update(self):
+        from unittest.mock import patch
         from uuid import uuid4
         from streamlit.testing.v1 import AppTest
+        self.enterContext(patch("src.security_runtime.require_finance_access"))
 
         source = '''
 from datetime import date
@@ -1683,7 +1690,8 @@ if not restoring and "vo_scan_result" not in st.session_state and not st.session
         "candidates": store, "annual_ids": annual, "listed_years": 3,
         "loaded_expirations": 3, "listed_expirations": 3, "contract_count": len(raw["rows"]),
         "ranked_expirations": 3, "scan_complete": True, "errors": []}
-with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
+with (patch("src.security_runtime.require_finance_access"),
+      patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
       patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
       patch.object(vo, "hydrate_gex_snapshots", return_value=False),
       patch.object(vo, "_cboe_wall_markup", return_value="<span></span>"),
@@ -3586,7 +3594,9 @@ with (patch.object(vo, "_SPREAD_SCROLL_COMPONENT", side_effect=component),
 
 class PortfolioVerticalsTests(unittest.TestCase):
     def test_popup_survives_full_reruns_and_native_dismiss_stays_closed(self):
+        from unittest.mock import patch
         from streamlit.testing.v1 import AppTest
+        self.enterContext(patch("src.security_runtime.require_finance_access"))
         source = """
 import streamlit as st
 from unittest.mock import patch
@@ -3617,7 +3627,8 @@ st.session_state.setdefault("vo_scan_result", {"symbol": "EXISTING", "scope": "r
 st.session_state.setdefault("vo_review_bundle", {"fingerprint": "reviewed"})
 st.session_state.setdefault("vo_live_confirm", True)
 # AppTest has no browser components; hydrate only those read-only preferences.
-with (patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
+with (patch("src.security_runtime.require_finance_access"),
+      patch.object(vo, "_PRICING_PREFERENCE_COMPONENT", return_value=None),
       patch.object(vo, "hydrate_gex_snapshots", return_value=False)):
     if not st.session_state.get("fixture_hide_feature"):
         vo.render_vertical_options(FixtureBroker(), lambda: None)

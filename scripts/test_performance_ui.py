@@ -45,6 +45,11 @@ etrade.normalize_position = lambda value: value
 etrade.total_account_value = lambda value: None
 sys.modules["src.etrade_client"] = etrade
 
+# Math-only import isolation must not load the real Streamlit auth boundary.
+security_runtime = types.ModuleType("src.security_runtime")
+security_runtime.finance_fragment = st.fragment
+sys.modules["src.security_runtime"] = security_runtime
+
 spec = importlib.util.spec_from_file_location("src.performance_ui", SOURCE)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
@@ -94,7 +99,7 @@ assert round(metrics["max_drawdown_pct"], 2) == -0.50, metrics
 
 source = SOURCE.read_text(encoding="utf-8")
 for required in (
-    '@st.fragment(run_every=_LIVE_REFRESH_SECONDS)',
+    '@finance_fragment(run_every=_LIVE_REFRESH_SECONDS)',
     'columns=["PERFORMANCE", "TODAY", "MTD", "YTD", "ALL-TIME"]',
     'missing history is never invented',
     'LIVE CUMULATIVE NET P&L',

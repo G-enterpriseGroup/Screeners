@@ -14,7 +14,10 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from src.networth_store import NetworthError
+from src.networth_store import (
+    NetworthError, privacy_generation, require_privacy_ready, retention_cutoff,
+    retention_days,
+)
 
 
 TIMEZONE = ZoneInfo("America/Indiana/Indianapolis")
@@ -311,10 +314,198 @@ def _require_sync_lease(state, owner):
         raise NetworthError("NETWORTH_SYNC_LEASE_EXPIRED")
 
 
+def configure_retention(store, days: int, *, confirmed: bool = False, now=None):
+    """Save an explicit owner opt-in; zero keeps automatic deletion disabled."""
+    if type(days) is not int or not 0 <= days <= 3650 or (days and not confirmed):
+        raise NetworthError("NETWORTH_RETENTION_CONFIRMATION_REQUIRED")
+    now = _now(now)
+
+    def save(latest):
+        require_privacy_ready(latest)
+        latest.setdefault("privacy", {}).update(retention_days=days, retention_updated_at=_iso(now))
+
+    return store.update_state(save)
+
+
+def maintain_networth(store, client, *, now=None, erase: str | None = None, confirmed: bool = False):
+    """Resume bounded current-document maintenance; never rewrites Git history."""
+    now = _now(now)
+    if erase is not None and (erase not in ("history", "all") or not confirmed):
+        raise NetworthError("NETWORTH_PRIVACY_CONFIRMATION_REQUIRED")
+    initial = store.read_state()
+    privacy_generation(initial)
+    cutoff = retention_cutoff(initial, now)
+    privacy = initial.get("privacy", {})
+    if not privacy.get("operation") and erase is None:
+        if cutoff is None:
+            return initial
+        receipt = privacy.get("last_operation") or {}
+        if (receipt.get("kind") == "retention" and receipt.get("cutoff") == cutoff
+                and receipt.get("completed_at")):
+            return initial
+    owner = uuid.uuid4().hex
+    operation_id = None
+
+    def claim(latest):
+        nonlocal operation_id
+        privacy_generation(latest)
+        retention_days(latest)
+        clock = _sync_time()
+        if _newer((latest.get("sync_lease") or {}).get("expires_at"), clock):
+            raise NetworthError("NETWORTH_SYNC_IN_PROGRESS")
+        policy = latest.setdefault("privacy", {})
+        operation = policy.get("operation")
+        if operation:
+            if not isinstance(operation, dict) or operation.get("kind") not in ("retention", "history", "all"):
+                raise NetworthError("NETWORTH_PRIVACY_STATE_INVALID")
+            if erase is not None and erase != operation["kind"]:
+                raise NetworthError("NETWORTH_PRIVACY_MAINTENANCE_IN_PROGRESS")
+        else:
+            if any(_newer(entry.get("processing_until"), clock)
+                   for entry in latest.get("pending_links", {}).values() if isinstance(entry, dict)):
+                raise NetworthError("NETWORTH_PRIVACY_LINK_IN_PROGRESS")
+            active_cutoff = retention_cutoff(latest, now)
+            if erase is None and active_cutoff is None:
+                return
+            operation = {"id": uuid.uuid4().hex, "kind": erase or "retention", "started_at": _iso(now),
+                         "cutoff": active_cutoff if erase is None else None, "remaining_days": None,
+                         "deleted_daily_documents": 0, "revocations_confirmed": 0}
+            if erase is not None:
+                policy["generation"] = uuid.uuid4().hex
+                # Older in-flight Link results must not restore an erased generation.
+                latest["pending_links"] = {}
+            policy["operation"] = operation
+        operation_id = operation.get("id")
+        if not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", operation_id):
+            raise NetworthError("NETWORTH_PRIVACY_STATE_INVALID")
+        latest["sync_lease"] = {"owner": owner, "expires_at": _iso(clock + _SYNC_LEASE_TTL)}
+
+    def checked(latest):
+        _require_sync_lease(latest, owner)
+        operation = latest.get("privacy", {}).get("operation") or {}
+        if operation.get("id") != operation_id:
+            raise NetworthError("NETWORTH_PRIVACY_LEASE_LOST")
+        return operation
+
+    def release(latest):
+        if (latest.get("sync_lease") or {}).get("owner") == owner:
+            latest.pop("sync_lease", None)
+
+    def renew(latest):
+        checked(latest)
+        latest["sync_lease"]["expires_at"] = _iso(_sync_time() + _SYNC_LEASE_TTL)
+
+    def documents(operation):
+        result = []
+        for page in store.iter_day_pages():
+            for day in page:
+                if operation["kind"] != "retention" or day < operation["cutoff"]:
+                    result.append(day)
+        return result
+
+    try:
+        state = store.update_state(claim)
+        if operation_id is None:
+            return state
+        operation = checked(state)
+        if operation.get("remaining_days") is None:
+            remaining = documents(operation)
+
+            def plan(latest):
+                current = checked(latest)
+                if current.get("remaining_days") is None:
+                    current["remaining_days"] = remaining
+            state = store.update_state(plan)
+        if operation["kind"] == "all":
+            # A failed revocation retains its encrypted token and a resumable job.
+            for item_id, item in list(state.get("items", {}).items())[:25]:
+                state = store.update_state(renew)
+                token = item.get("access_token")
+                if not isinstance(token, str) or not token:
+                    raise NetworthError("NETWORTH_PRIVACY_REVOCATION_UNVERIFIED")
+                try:
+                    client.remove(token)
+                except NetworthError as exc:
+                    if str(exc) != "PLAID_ITEM_NOT_FOUND":
+                        raise
+
+                def revoked(latest):
+                    current = checked(latest)
+                    if latest.get("items", {}).get(item_id, {}).get("access_token") != token:
+                        raise NetworthError("NETWORTH_PRIVACY_GENERATION_CHANGED")
+                    latest["items"].pop(item_id)
+                    current["revocations_confirmed"] += 1
+                state = store.update_state(revoked)
+            if state.get("items"):
+                return state
+        for _ in range(25):
+            operation = checked(state)
+            remaining = operation.get("remaining_days")
+            if not isinstance(remaining, list):
+                raise NetworthError("NETWORTH_PRIVACY_STATE_INVALID")
+            if not remaining:
+                break
+            day = remaining[0]
+            state = store.update_state(renew)
+            removed = store.delete_current_day(day, operation_id=operation_id, lease_owner=owner)
+
+            def completed_day(latest):
+                current = checked(latest)
+                if not current["remaining_days"] or current["remaining_days"][0] != day:
+                    raise NetworthError("NETWORTH_PRIVACY_STATE_INVALID")
+                current["remaining_days"].pop(0)
+                current["deleted_daily_documents"] += int(removed)
+            state = store.update_state(completed_day)
+        operation = checked(state)
+        if operation["remaining_days"]:
+            return state
+        # Re-list after deletion so a late/conflicting current document cannot
+        # silently disappear from the approved maintenance manifest.
+        remaining = documents(operation)
+        if remaining:
+            def retry_remaining(latest):
+                checked(latest)["remaining_days"] = remaining
+            return store.update_state(retry_remaining)
+
+        def finish(latest):
+            current = checked(latest)
+            policy = latest["privacy"]
+            receipt = {key: current[key] for key in ("id", "kind", "started_at", "cutoff",
+                       "deleted_daily_documents", "revocations_confirmed")}
+            receipt.update(completed_at=_iso(_sync_time()), current_view_verified=True,
+                           prior_encrypted_revisions_remain=True, full_erasure_verified=False)
+            if current["kind"] == "all":
+                environment = latest.get("plaid_environment")
+                latest.clear()
+                latest.update(version=1, items={}, accounts={}, preferences={}, pending_links={}, privacy=policy)
+                if environment:
+                    latest["plaid_environment"] = environment
+            elif current["kind"] == "history":
+                for key in ("last_capture_at", "last_capture_date", "last_capture_id", "last_capture_complete"):
+                    latest.pop(key, None)
+            policy["last_operation"] = receipt
+            policy.pop("operation", None)
+            latest.pop("sync_lease", None)
+        state = store.update_state(finish)
+        receipt = state.get("privacy", {}).get("last_operation") or {}
+        if receipt.get("id") != operation_id or not receipt.get("current_view_verified"):
+            raise NetworthError("NETWORTH_PRIVACY_RECEIPT_UNVERIFIED")
+        return state
+    finally:
+        if operation_id is not None:
+            try:
+                store.update_state(release)
+            except Exception:
+                # The durable job remains resumable after its bounded lease.
+                pass
+
+
 def sync_networth(store, client, now=None, scheduled_slot=None):
     """Claim paid balance reads across workers; archive before checkpointing."""
     now = _now(now)
     initial = store.read_state()
+    require_privacy_ready(initial)
+    generation = privacy_generation(initial)
     environment = getattr(getattr(client, "config", None), "environment", None)
     if environment and initial.get("plaid_environment") not in (None, "", environment):
         raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
@@ -337,6 +528,7 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
 
     def claim(latest):
         nonlocal claimed
+        require_privacy_ready(latest, generation=generation)
         if environment and latest.get("plaid_environment") not in (None, "", environment):
             raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
         if not latest.get("items") or (scheduled_slot and scheduled_slot in latest.get("completed_slots", {})):
@@ -375,6 +567,7 @@ def sync_networth(store, client, now=None, scheduled_slot=None):
 
 def _sync_networth_owned(store, client, now, scheduled_slot, slot_time, initial, owner, environment):
     captured_at = _iso(now)
+    generation = privacy_generation(initial)
     date = now.astimezone(TIMEZONE).date().isoformat()
     if scheduled_slot:
         day = store.read_day(date) or {}
@@ -386,6 +579,7 @@ def _sync_networth_owned(store, client, now, scheduled_slot, slot_time, initial,
             capture_id, capture = max(recoverable, key=lambda pair: pair[1]["captured_at"])
 
             def recover(latest):
+                require_privacy_ready(latest, generation=generation)
                 _require_sync_lease(latest, owner)
                 if environment and latest.get("plaid_environment") not in (None, "", environment):
                     raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
@@ -428,6 +622,7 @@ def _sync_networth_owned(store, client, now, scheduled_slot, slot_time, initial,
             fetched[item_id] = {"error": "PLAID_SYNC_FAILED"}
 
     def apply(latest):
+        require_privacy_ready(latest, generation=generation)
         _require_sync_lease(latest, owner)
         if environment and latest.get("plaid_environment") not in (None, "", environment):
             raise NetworthError("PLAID_LEDGER_ENVIRONMENT_MISMATCH")
@@ -475,6 +670,8 @@ def _sync_networth_owned(store, client, now, scheduled_slot, slot_time, initial,
         capture_id = now.strftime("%H%M%S%f") + "-" + uuid.uuid4().hex
         capture = {"captured_at": captured_at, "scheduled_slot": scheduled_slot,
                    "accounts": rows, "totals": totals, "errors": errors, "complete": complete}
+        if generation:
+            capture["privacy_generation"] = generation
         store.save_capture(date, capture_id, capture)
         _require_sync_lease(latest, owner)
         if not _newer(latest.get("last_sync"), now):

@@ -26,6 +26,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, quote_summary
+from src.security_runtime import finance_callback
 from src.risk_sizing import (
     CROWN_DEFAULT_RISK_PCT,
     CROWN_DEFAULT_TACTICAL_SLEEVE_PCT,
@@ -584,6 +585,7 @@ def _risk_override_widget_key(account_key: str, symbol: str, row_uid: str) -> st
     )
 
 
+@finance_callback
 def _set_long_term_override(
     account_key: str,
     symbol: str,

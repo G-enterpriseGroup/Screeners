@@ -7,10 +7,48 @@ Use a browser as well to verify the 48px navigation frame and 4px header gap.
 """
 from pathlib import Path
 import ast
+from copy import deepcopy
+import hashlib
+import sys
+from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.security_store import initial_state
+from src.terminal_security import AuthService, load_policy, totp_code
+
+
+class _SyntheticAuthStore:
+    def __init__(self):
+        self.state = initial_state()
+
+    def read(self):
+        return deepcopy(self.state)
+
+    def update(self, callback):
+        state = self.read()
+        callback(state)
+        self.state = state
+
+
+def _test_authentication():
+    # Test-only credentials and CAS state; production never recognizes a flag
+    # that bypasses MFA. Exercise the same two factors used by the live gate.
+    policy = load_policy({"security": {
+        "owner_email": "owner@example.test",
+        "trade_access_code_sha256": hashlib.sha256(b"998877665544").hexdigest(),
+        "totp_secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+    }})
+    service = AuthService(policy, _SyntheticAuthStore())
+    session = {}
+    assert service.begin_first_factor(session, "owner", "998877665544")
+    assert service.verify_second_factor(session, totp_code(policy.owner.totp_secret))
+    return service, session
+
 nav = ast.parse((ROOT / "src/tab_bar_v4.py").read_text())
 TABS = next(
     ast.literal_eval(node.value)
@@ -21,11 +59,15 @@ TABS = next(
 
 
 def check_session(tabs):
+    service, authenticated_state = _test_authentication()
     app = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=60)
     app.session_state["etrade_access_unlocked"] = True
+    for key, value in authenticated_state.items():
+        app.session_state[key] = value
     for tab in tabs:
         app.session_state["terminal_tab_state"] = {"order": TABS, "active": tab}
-        app.run()
+        with patch("src.security_runtime.get_auth_service", return_value=service):
+            app.run()
         assert not app.exception, [e.message for e in app.exception]
         headers = [m for m in app.get("html") if 'class="terminal-page-header-shell"' in m.value]
         assert len(headers) == 1, (tab, len(headers))

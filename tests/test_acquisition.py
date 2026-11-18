@@ -366,7 +366,8 @@ def download(label, data, **kwargs):
     return False
 def clipboard(*, data, **kwargs):
     st.session_state["fixture_clipboard"] = data
-with (patch.object(acq,"_history_vault",return_value=st.session_state["fixture_vault"]),
+with (patch("src.security_runtime.require_finance_access",return_value=None),
+      patch.object(acq,"_history_vault",return_value=st.session_state["fixture_vault"]),
       patch.object(acq,"_archive_client",return_value=None),
       patch.object(acq,"GitHubAcquisitionArchive",side_effect=archive),
       patch.object(acq,"PrivateTradeBlotter",side_effect=archive),
@@ -1543,7 +1544,8 @@ from tests.test_acquisition import AcquisitionVerticalCacheTests
 payload = acq._build_vertical_cache(AcquisitionVerticalCacheTests.rows())
 original = payload["blotter"][0]
 payload["blotter"] = [{**original, "ticker":f"R{index:04d}", "opened":"2010-01-01T10:00:00-05:00"} for index in range(350)]
-with (patch.object(acq,"_history_vault",side_effect=AssertionError("Fragment cannot access archives")),
+with (patch("src.security_runtime.require_finance_access",return_value=None),
+      patch.object(acq,"_history_vault",side_effect=AssertionError("Fragment cannot access archives")),
       patch.object(acq,"_sync_history",side_effect=AssertionError("Fragment cannot sync history")),
       patch.object(acq,"_cached_verticals",side_effect=AssertionError("Fragment consumes its existing payload"))):
     acq._render_vertical_blotter(payload,"offline-fixture","raj",date(2010,1,1),date(2026,11,8))
@@ -1824,7 +1826,8 @@ def apply_header():
         "filters":[{"field":"Ticker","op":"in","values":["R0349"]}],
         "sort":{"field":"Realized P&L","direction":"desc"},"page":0}
     acq._apply_blotter_table_event(scope,"synthetic_header_event",acq._vertical_filter_records(payload),payload["source_fingerprint"])
-with (patch.object(acq,"_history_vault",side_effect=AssertionError("Header controls cannot read archives")),
+with (patch("src.security_runtime.require_finance_access",return_value=None),
+      patch.object(acq,"_history_vault",side_effect=AssertionError("Header controls cannot read archives")),
       patch.object(acq,"_sync_history",side_effect=AssertionError("Header controls cannot request broker data")),
       patch.object(acq,"_cached_verticals",side_effect=AssertionError("Header controls cannot recompute source"))):
     st.button("APPLY SYNTHETIC HEADER",on_click=apply_header)
@@ -1853,6 +1856,7 @@ with (patch.object(acq,"_history_vault",side_effect=AssertionError("Header contr
         from streamlit.testing.v1 import AppTest
         app = AppTest.from_string('''
 from datetime import date
+from unittest.mock import patch
 import src.acquisition_ui as acq
 from tests.test_acquisition import AcquisitionVerticalCacheTests
 payload = acq._build_vertical_cache(AcquisitionVerticalCacheTests.rows())
@@ -1862,7 +1866,8 @@ payload["blotter"] = [
     {**original,"ticker":"ZERO","currency":"USD","pnl":0,"match":"TIME // INFERRED"},
     {**original,"ticker":"UNKNOWN","currency":"CAD","status":"OPEN","closed":None,"pnl":None,"fees":None},
 ]
-acq._render_vertical_blotter(payload,"format-fixture","raj",date(2026,10,1),date(2026,11,8))
+with patch("src.security_runtime.require_finance_access",return_value=None):
+    acq._render_vertical_blotter(payload,"format-fixture","raj",date(2026,10,1),date(2026,11,8))
 ''',default_timeout=15).run()
         self.assertFalse(app.exception)
         groups = {group["currency"]:group for group in _blotter_args(app)["totals"]["groups"]}

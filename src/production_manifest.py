@@ -18,6 +18,16 @@ from __future__ import annotations
 
 
 FEATURE_ROUTES = {
+    "terminal_access": {
+        "entry": "src/lock_screen_v2.py",
+        "owner": "src/lock_screen_v2.py",
+        "support": ["src/security_runtime.py", "src/terminal_security.py", "src/security_store.py", "src/pin_recovery.py", "src/passkey_auth.py", "src/components/lock_keypad_v2/index.html"],
+    },
+    "public_policies": {
+        "entry": "src/public_policies.py",
+        "owner": "src/public_policies.py",
+        "support": ["docs/policies/privacy.md", "docs/policies/security.md", "docs/policies/retention.md", "docs/policies/vulnerability-management.md"],
+    },
     "networth": {
         "entry": "src/networth_ui.py",
         "owner": "src/networth_ui.py",

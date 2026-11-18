@@ -1,9 +1,11 @@
 """Offline interaction regression through the actual v7 → v10 → v9 → v2 Risk route.
 
-Only broker responses and the unrelated sector enrichment are stubbed.
+Broker responses, unrelated sector enrichment and the isolated UI's access gate
+are stubbed; production authorization remains enforced by its own regressions.
 """
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 from streamlit.testing.v1 import AppTest
@@ -431,7 +433,7 @@ def main():
     source = (ROOT / "src" / "risk_sizing_ui_v10.py").read_text(encoding="utf-8")
     v9_source = (ROOT / "src" / "risk_sizing_ui_v9.py").read_text(encoding="utf-8")
     v2_source = (ROOT / "src" / "risk_sizing_ui_v2.py").read_text(encoding="utf-8")
-    assert "@st.fragment\ndef render_risk_sizing" in source
+    assert "@finance_fragment\ndef render_risk_sizing" in source
     assert "st.rerun()" not in source
     assert "st.rerun" not in v9_source
     assert "st.rerun" not in v2_source
@@ -951,4 +953,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with patch("src.security_runtime.require_finance_access", return_value=None):
+        main()

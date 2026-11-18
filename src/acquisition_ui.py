@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+
+from src.security_runtime import finance_fragment
 import streamlit.components.v1 as components
 
 from src.etrade_client import normalize_position
@@ -1962,7 +1964,7 @@ def _apply_blotter_table_event(scope: str, widget_key: str, records: list[dict[s
     preferences["header_revision"] = event["revision"]
 
 
-@st.fragment
+@finance_fragment
 def _render_vertical_blotter(payload: dict[str, Any] | None, vault_key: str, account: str,
                               covered_from: date | None, covered_through: date | None,
                               cache_message: str = "", cache_error: str = "", synced_at: float | None = None) -> None:

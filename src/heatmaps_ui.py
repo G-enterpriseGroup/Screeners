@@ -27,6 +27,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+from src.security_runtime import finance_fragment
 import streamlit.components.v1 as components
 import yfinance as yf
 
@@ -775,7 +777,7 @@ def _fed_year_cells(columns: list[str]) -> list[tuple[str, str, str]]:
 # ==============================
 # HEATMAPS UI / CONTROLS
 # ==============================
-@st.fragment
+@finance_fragment
 def _render_heatmaps_fragment(vault_key: str) -> None:
     state, hydrated = _load_state(vault_key)
     if not hydrated:

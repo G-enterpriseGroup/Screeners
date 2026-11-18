@@ -16,6 +16,19 @@ import time
 
 import streamlit as st
 
+from src.public_policies import render_public_policy_request
+
+if render_public_policy_request():
+    st.stop()
+
+from src.security_runtime import (
+    clear_expired_session, clear_login_session, current_principal,
+    render_access_watchdog, render_pin_reset_request, require_finance_access,
+)
+
+if render_pin_reset_request():
+    st.stop()
+
 from src.reboot_guard import ensure_fresh_process
 
 
@@ -136,6 +149,7 @@ _CORE_HOLDINGS_RENDERER = render_etrade_holdings
 
 def _live_etrade_client():
     """Return the authenticated live client wrapped in the shared smart cache."""
+    require_finance_access()
     raw_client = _CORE_ETRADE_CLIENT_FACTORY()
     if raw_client is None:
         return None
@@ -148,6 +162,7 @@ def _live_etrade_client():
 
 def _offline_etrade_client():
     """Return a read-only last-known-good client when a snapshot exists."""
+    require_finance_access()
     vault_key = _trade_access_code_hash()
     if not offline_snapshot_available(vault_key):
         return None
@@ -262,6 +277,7 @@ def _clear_etrade_runtime(lock_access=False):
             clear_etrade_session(_trade_access_code_hash())
         else:
             _persist_active_etrade_session()
+        clear_login_session()
     return _CORE_CLEAR_ETRADE_RUNTIME(lock_access=lock_access)
 
 
@@ -269,6 +285,7 @@ def _restore_active_etrade_session_after_unlock():
     """Restore OAuth only after the terminal access code has been accepted."""
     if not _trade_access_unlocked():
         return False
+    require_finance_access()
     if st.session_state.get("etrade_access_token"):
         return False
 
@@ -731,13 +748,26 @@ def _render_without_legacy_page_header(active_tab: str, renderer):
         st.markdown = original_markdown
 
 
-render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
-_restore_active_etrade_session_after_unlock()
-
-if not _trade_access_unlocked():
+_principal = current_principal(touch=True)
+if _principal is None or not _trade_access_unlocked():
+    if _trade_access_unlocked():
+        clear_expired_session()
     render_seamless_lock_screen(globals())
     st.stop()
 
+if not _principal.can_access_finance:
+    from src.public_policies import render_policy_links
+    st.title("Terminal security review")
+    st.write("Your auditor role can review the public policies. Financial accounts and Plaid Link require the owner role.")
+    render_policy_links()
+    if st.button("Sign out", key="terminal_auditor_signout"):
+        clear_expired_session()
+        st.rerun()
+    st.stop()
+
+render_access_watchdog()
+render_etrade_holdings = build_manual_holdings_renderer(_CORE_HOLDINGS_RENDERER)
+_restore_active_etrade_session_after_unlock()
 _seed_offline_from_session_state()
 
 st.title("Raj's Terminal")
