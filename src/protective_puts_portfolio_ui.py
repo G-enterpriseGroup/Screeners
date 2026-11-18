@@ -16,6 +16,8 @@ from typing import Any, Callable
 
 import pandas as pd
 import streamlit as st
+
+from src.security_runtime import finance_fragment
 import streamlit.components.v1 as components
 
 from src.etrade_client import find_number, quote_summary, total_account_value
@@ -1469,7 +1471,7 @@ def _render_risk_slide(
     )
 
 
-@st.fragment
+@finance_fragment
 def _results(
     result: dict[str, Any], money: Callable, metric_markup: Callable,
     client: Any, touch_session: Callable, live_etrade: Callable,

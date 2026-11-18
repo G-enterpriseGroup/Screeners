@@ -31,6 +31,12 @@ SRC = ROOT / "src"
 
 PRODUCTION_PYTHON_FILES = [
     ROOT / "streamlit_app.py",
+    SRC / "public_policies.py",
+    SRC / "lock_screen_v2.py",
+    SRC / "security_runtime.py",
+    SRC / "terminal_security.py",
+    SRC / "security_store.py",
+    SRC / "pin_recovery.py",
     SRC / "theme.py",
     SRC / "layout_guardrails.py",
     SRC / "risk_sizing_ui_v7.py",
@@ -343,7 +349,7 @@ def main() -> int:
             if forbidden in performance_text:
                 errors.append("PERFORMANCE SAFETY: read-only Performance may not call " + forbidden)
         for required in (
-            '@st.fragment(run_every=_LIVE_REFRESH_SECONDS)',
+            '@finance_fragment(run_every=_LIVE_REFRESH_SECONDS)',
             'columns=["PERFORMANCE", "TODAY", "MTD", "YTD", "ALL-TIME"]',
             'missing history is never invented',
         ):

@@ -42,6 +42,8 @@ from typing import Any, Callable
 
 import streamlit as st
 
+from src.security_runtime import finance_dialog, finance_fragment
+
 from src import gex_ui as _core
 from src import gex_ui_v3_proven as _proven
 from src.gex_cboe import build_cboe_gex, cboe_results, cboe_snapshot, save_cboe_refresh
@@ -126,7 +128,7 @@ def _inject_dte_editor_links(markup: str) -> str:
     return re.sub(r'(<td class="sym">([^<]+)</td>)<td>([0-9]+)</td>', replace, markup)
 
 
-@st.dialog("EDIT TICKER DTE", width="small")
+@finance_dialog("EDIT TICKER DTE", width="small")
 def _ticker_dte_dialog(client: Any, key: str, ticker: str, touch: Any):
     state = _core._clean_state(st.session_state.get("_gex_state") or {})
     if ticker not in state["tickers"]:
@@ -1547,7 +1549,7 @@ def _background_status_snapshot(job: dict[str, Any] | None) -> tuple[Any, ...] |
     )
 
 
-@st.fragment(run_every=_GEX_LIVE_STATUS_POLL_SECONDS)
+@finance_fragment(run_every=_GEX_LIVE_STATUS_POLL_SECONDS)
 def _render_live_background_status_fragment(vault_key: str) -> None:
     """Refresh visible GEX job progress and promote completed rows into the app."""
     _ORIGINAL_RENDER_BACKGROUND_STATUS(vault_key)

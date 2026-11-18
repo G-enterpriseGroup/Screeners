@@ -43,6 +43,8 @@ import time
 from pathlib import Path
 
 import streamlit as st
+
+from src.security_runtime import finance_fragment
 import streamlit.components.v1 as components
 
 import src.risk_sizing_ui_v9 as _v9
@@ -1325,7 +1327,7 @@ def _refresh_stop_watch_entry_now(
     return fill, row
 
 
-@st.fragment(run_every=_RISK_STOP_WATCH_POLL_SECONDS)
+@finance_fragment(run_every=_RISK_STOP_WATCH_POLL_SECONDS)
 def maybe_auto_watch_risk_entries(client=None) -> None:
     """Automatically monitor armed entries; never preview/place/cancel an order."""
     state = _sync_stop_watch_state_from_browser("background")
@@ -2257,7 +2259,7 @@ def _safe_full_width_ticker_columns(original_columns, original_container, origin
     return wrapped
 
 
-@st.fragment
+@finance_fragment
 def render_risk_sizing(*args, **kwargs):
     """Render Risk Sizing as one reactive fragment, then restore local hooks."""
     previous_css = _v9._render_css

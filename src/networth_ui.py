@@ -18,9 +18,13 @@ import streamlit.components.v1 as components
 
 from src.networth import (
     CLASSES, TIMEZONE, PlaidClient, PlaidConfig, account_rows, balance_sheet,
-    sync_networth,
+    configure_retention, maintain_networth, sync_networth,
 )
-from src.networth_store import GitHubNetworthStore, NetworthError, StoreConfig
+from src.networth_store import (
+    GitHubNetworthStore, NetworthError, StoreConfig, privacy_generation,
+    require_privacy_ready, retention_days,
+)
+from src.security_runtime import require_finance_access
 
 
 _networth_buckets = components.declare_component(
@@ -33,6 +37,12 @@ _TEMPORARY_BANK_ERRORS = ("PLAID_INSTITUTION_NOT_AVAILABLE", "PLAID_INSTITUTION_
 def _remember_verified(cache_key, state: dict) -> None:
     if cache_key is not None:
         st.session_state.setdefault("_networth_verified_balances", {})[cache_key] = _readonly_snapshot(state)
+
+
+def _clear_private_session_cache() -> None:
+    for key in ("_networth_verified_balances", "_networth_link_exchange", "_networth_link_retries",
+                "_networth_link_owner", "_networth_bucket_views"):
+        st.session_state.pop(key, None)
 
 
 def _bucket_revision(rows: list[dict]) -> str:
@@ -166,6 +176,8 @@ def _readonly_snapshot(state: dict) -> dict:
                         if isinstance(value, Mapping) or (isinstance(value, str) and value in CLASSES)},
         "last_sync": state.get("last_sync"), "last_errors": deepcopy(state.get("last_errors", {})),
         "plaid_environment": state.get("plaid_environment"),
+        "privacy_generation": privacy_generation(state),
+        "privacy_maintenance": bool(state.get("privacy", {}).get("operation")),
     }
 
 
@@ -341,6 +353,8 @@ ledger_id = "raj-terminal"''', language="toml")
 
 def _start_link(store, client, item_id: str = "", products=None) -> None:
     state = store.read_state()
+    require_privacy_ready(state)
+    generation = privacy_generation(state)
     if state.get("plaid_environment") and state["plaid_environment"] != client.config.environment:
         raise NetworthError("Plaid environment differs from the saved ledger. Restore the original environment or use a separate ledger_id.")
     item = state.get("items", {}).get(item_id, {})
@@ -354,6 +368,7 @@ def _start_link(store, client, item_id: str = "", products=None) -> None:
     link_id = uuid.uuid4().hex
 
     def save(latest):
+        require_privacy_ready(latest, generation=generation)
         if latest.get("plaid_environment") and latest["plaid_environment"] != client.config.environment:
             raise NetworthError("Plaid environment differs from the saved ledger. Use a separate ledger_id.")
         if item_id and latest.get("items", {}).get(item_id, {}).get("access_token") != item["access_token"]:
@@ -362,6 +377,7 @@ def _start_link(store, client, item_id: str = "", products=None) -> None:
         latest.setdefault("pending_links", {})[link_id] = {
             "link_token": link["link_token"], "hosted_link_url": link["hosted_link_url"],
             "expiration": link.get("expiration"), "item_id": item_id,
+            "privacy_generation": generation,
         }
 
     store.update_state(save)
@@ -396,6 +412,12 @@ def _link_refreshed(state: dict, pending: dict) -> bool:
 
 
 def _complete_link(store, client, link_id: str, pending: dict) -> bool:
+    state = store.read_state()
+    require_privacy_ready(state)
+    generation = privacy_generation(state)
+    if (link_id not in state.get("pending_links", {})
+            or pending.get("privacy_generation", "") != generation):
+        return False
     result = {"completed": True} if pending.get("completed_at") else client.link_results(pending["link_token"])
     if not result.get("completed"):
         return False
@@ -403,6 +425,7 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
     now = datetime.now(timezone.utc)
 
     def claim(latest):
+        require_privacy_ready(latest, generation=generation)
         entry = latest.get("pending_links", {}).get(link_id)
         if entry is None:
             return
@@ -431,6 +454,7 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
         label = institution.get("name", "Linked institution") if isinstance(institution, dict) else str(institution)
 
         def save(latest):
+            require_privacy_ready(latest, generation=generation)
             item_id = exchanged["item_id"]
             old = latest.setdefault("items", {}).get(item_id, {})
             latest["items"][item_id] = {
@@ -447,6 +471,7 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
         recovery.pop(key, None)
     if result.get("completed"):
         def approved(latest):
+            require_privacy_ready(latest, generation=generation)
             current = latest.get("pending_links", {}).get(link_id)
             if current is None or current.get("processing_owner") != owner:
                 raise NetworthError("Plaid connection changed during linking; reload and retry.")
@@ -468,6 +493,7 @@ def _complete_link(store, client, link_id: str, pending: dict) -> bool:
                 raise
 
         def finish(latest):
+            require_privacy_ready(latest, generation=generation)
             current = latest.get("pending_links", {}).get(link_id)
             if current and current.get("processing_owner") == owner:
                 latest["pending_links"].pop(link_id)
@@ -508,8 +534,14 @@ def _refresh_revision(state: dict) -> str:
 
 @st.fragment(run_every="10s")
 def _pending_links(store, client, revision: str, cache_key=None) -> None:
+    require_finance_access(touch=False)
     try:
         state = store.read_state()
+        if state.get("privacy", {}).get("operation"):
+            _clear_private_session_cache()
+            st.rerun()
+            return
+        require_privacy_ready(state)
         retries = st.session_state.setdefault("_networth_link_retries", {})
         scope = cache_key or store.scope
         processed = False
@@ -531,11 +563,16 @@ def _pending_links(store, client, revision: str, cache_key=None) -> None:
                 retries.pop(retry_key, None)
             processed = True
         latest = store.read_state() if processed else state
+        if latest.get("privacy", {}).get("operation"):
+            _clear_private_session_cache()
+            st.rerun()
+            return
         if _refresh_revision(latest) != revision:
             _remember_verified(cache_key, latest)
             st.rerun()
     except NetworthError:
-        st.caption("Connection status is temporarily unavailable. Saved balances remain visible; retry shortly.")
+        _clear_private_session_cache()
+        st.rerun()
 
 
 def _classification_editor(store, state: dict, *, cache_key=None) -> None:
@@ -706,6 +743,58 @@ def _connections(store, client, state: dict) -> None:
                 st.rerun()
 
 
+def _privacy_controls(store, client, state: dict) -> None:
+    with st.expander("Data privacy and retention", expanded=bool(state.get("privacy", {}).get("operation"))):
+        st.caption("These controls remove current application records only. Prior encrypted Git revisions, provider backups, and downloaded exports remain; full erasure needs verified key retirement or provider-assisted cleanup.")
+        policy = state.get("privacy", {})
+        operation = policy.get("operation")
+        receipt = policy.get("last_operation") or {}
+        if receipt:
+            st.caption("Last current-data operation: " + str(receipt.get("kind", "")) + " · "
+                       + _timestamp(receipt.get("completed_at")) + " · daily documents removed: "
+                       + str(receipt.get("deleted_daily_documents", 0)) + " · disconnects confirmed: "
+                       + str(receipt.get("revocations_confirmed", 0)) + ". Full historical erasure is not verified.")
+        if operation:
+            remaining = operation.get("remaining_days")
+            st.info("Privacy maintenance is pending. Balance display, linking and syncing are paused until it finishes. "
+                    + (str(len(remaining)) + " current daily documents remain." if isinstance(remaining, list)
+                       else "The current document inventory still needs verification."))
+            if st.button("RESUME PRIVACY MAINTENANCE", key="networth_privacy_resume", disabled=_sync_active(state)):
+                _clear_private_session_cache()
+                maintain_networth(store, client)
+                st.rerun()
+            return
+        saved_days = retention_days(state)
+        days = st.number_input("Keep current daily history for days (0 disables automatic expiry)",
+                               min_value=0, max_value=3650, value=saved_days, step=1,
+                               key="networth_retention_days")
+        acknowledge = st.checkbox("I authorize deletion of current daily documents older than this window; earlier encrypted revisions remain",
+                                  key="networth_retention_confirm")
+        if st.button("SAVE RETENTION", key="networth_retention_save", disabled=bool(days and not acknowledge)):
+            configure_retention(store, int(days), confirmed=acknowledge)
+            _clear_private_session_cache()
+            st.rerun()
+        st.caption("Automatic expiry is disabled by default. After an explicit opt-in, the scheduled Networth worker maintains the saved window even when no institutions remain linked. Today counts as one retained day.")
+        if saved_days and st.button("RUN RETENTION NOW", key="networth_retention_run", disabled=_sync_active(state)):
+            _clear_private_session_cache()
+            maintain_networth(store, client)
+            st.rerun()
+        choices = {"Saved daily history only": "history", "Disconnect all institutions and remove current account data and daily history": "all"}
+        selected = st.selectbox("Current records to remove", list(choices), key="networth_privacy_scope")
+        kind = choices[selected]
+        expected = "DELETE ALL" if kind == "all" else "DELETE HISTORY"
+        confirmation = st.text_input("Type " + expected + " to confirm", key="networth_privacy_confirmation")
+        informed = st.checkbox("I understand this cancels pending links and does not erase prior encrypted Git revisions, backups or exports",
+                               key="networth_privacy_understand")
+        approved = confirmation == expected and informed
+        if st.button("DELETE SELECTED CURRENT RECORDS", key="networth_privacy_delete", disabled=not approved or _sync_active(state)):
+            if not approved:
+                raise NetworthError("NETWORTH_PRIVACY_CONFIRMATION_REQUIRED")
+            _clear_private_session_cache()
+            maintain_networth(store, client, erase=kind, confirmed=True)
+            st.rerun()
+
+
 def _render_networth_content() -> None:
     try:
         plaid_config = PlaidConfig.from_runtime()
@@ -720,21 +809,22 @@ def _render_networth_content() -> None:
         cache = st.session_state.setdefault("_networth_verified_balances", {})
         cache_key = (getattr(store_config, "repository", ""), getattr(store_config, "branch", ""),
                      store.scope, plaid_config.environment)
-        readonly = False
         try:
             state = store.read_state()
+            generation = privacy_generation(state)
+            retention_days(state)
         except Exception:
-            if cache_key not in cache:
-                raise
-            state = deepcopy(cache[cache_key])
-            readonly = True
+            _clear_private_session_cache()
+            raise NetworthError("Saved storage could not be verified. Balances are hidden until the current privacy/deletion state can be checked. Reload when storage recovers.") from None
         if state.get("plaid_environment") and state["plaid_environment"] != plaid_config.environment:
             raise NetworthError("Plaid environment differs from the saved ledger. Restore the original environment or use a separate ledger_id.")
-        if readonly:
-            st.warning("Saved storage is unavailable. Showing the last verified balances from this browser session in read-only mode; reload when storage recovers.")
-            st.caption("Last saved attempt: " + _timestamp(state.get("last_sync")) + " // Most recent account balance update: " + _timestamp(_latest_account_update(state)))
-            _render_statement(account_rows(state), state.get("preferences", {}), key="networth_current")
+        if state.get("privacy", {}).get("operation"):
+            _clear_private_session_cache()
+            _privacy_controls(store, client, state)
             return
+        if cache_key in cache and cache[cache_key].get("privacy_generation", "") != generation:
+            _clear_private_session_cache()
+            cache = st.session_state.setdefault("_networth_verified_balances", {})
         cache[cache_key] = _readonly_snapshot(state)
         syncing = _sync_active(state)
         status_col, sync_col, reload_col = st.columns([6, 1, 1], gap="small", vertical_alignment="center")
@@ -791,6 +881,7 @@ def _render_networth_content() -> None:
                 st.info("Scheduled syncing is not yet verified. Configure matching GitHub Actions secrets and verify the first scheduled run.")
         with st.expander("Daily history & CSV"):
             _daily_sheet(store, state)
+        _privacy_controls(store, client, state)
         _pending_links(store, client, _refresh_revision(state), cache_key)
     except NetworthError as exc:
         st.error(str(exc))

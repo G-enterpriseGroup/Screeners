@@ -40,6 +40,8 @@ from urllib.parse import quote as url_quote
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+
+from src.security_runtime import finance_callback, finance_dialog, finance_fragment
 import streamlit.components.v1 as components
 
 from src.etrade_client import ETradeError, find_number, option_expiration_dates, quote_summary
@@ -836,7 +838,7 @@ def _remember_portfolio_accounts() -> None:
     st.session_state["_vo_portfolio_account_selection"] = list(st.session_state.get("vo_portfolio_accounts") or [])
 
 
-@st.dialog("PORTFOLIO VERTICALS", width="large", on_dismiss=_dismiss_portfolio_verticals)
+@finance_dialog("PORTFOLIO VERTICALS", width="large", on_dismiss=_dismiss_portfolio_verticals)
 def _render_portfolio_verticals(client, touch_session) -> None:
     with st.container(key="vo_portfolio_dashboard"):
         st.html("""<style>
@@ -1685,6 +1687,7 @@ def _live_quote_context(scope: str, sort_key: str, rows: list[dict[str, Any]],
             "retry_seconds": max(1, math.ceil(float(state.get("next_due", 0)) - time.time()))}
 
 
+@finance_callback
 def _refresh_live_quotes(client, component_key: str, scope: str, sort_key: str) -> None:
     """Handle only viewport quote ticks; never touch scan prices, approvals or inactivity."""
     update = st.session_state.get(component_key)
@@ -1782,7 +1785,7 @@ def _refresh_live_quotes(client, component_key: str, scope: str, sort_key: str) 
 
 
 
-@st.fragment
+@finance_fragment
 def _render_live_quote_bridge(client, channel: str, scope: str, sort_key: str) -> None:
     """Quote ticks rerun only this bridge, never the cash/ticket feature renderer."""
     state = st.session_state.get("_vo_live_quotes") or {}
@@ -2157,6 +2160,7 @@ def _remember_scan_snapshot() -> None:
             memory[key] = dict(value) if isinstance(value, dict) else value
 
 
+@finance_callback
 def _remember_presentation(key: str) -> None:
     saved = dict(st.session_state.get("_vo_presentation") or {})
     saved[key] = st.session_state[key]
@@ -2296,7 +2300,7 @@ def _pricing_mode_flip_switch() -> str | None:
     return mode
 
 
-@st.fragment
+@finance_fragment
 def _render_vertical_options_fragment(client, touch_session, vault_key: str = "default") -> None:
     _restore_presentation()
     # GEX wall restoration is optional scanner context, never a page-load gate.
@@ -3449,7 +3453,7 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
             )
 
 
-@st.fragment(run_every=1)
+@finance_fragment(run_every=1)
 def _recover_vertical_pricing_without_blocking() -> None:
     """Restore delayed browser preferences while the scanner remains usable.
 
@@ -3466,7 +3470,7 @@ def _recover_vertical_pricing_without_blocking() -> None:
         st.rerun()  # Stop this timer; keep the visible session-mode switch.
 
 
-@st.fragment(run_every=1)
+@finance_fragment(run_every=1)
 def _render_vertical_scan_continuation(client, touch_session) -> None:
     result = st.session_state.get("vo_scan_result") or {}
     if (not result or result.get("max_cost") is not None or result.get("scan_complete", True)

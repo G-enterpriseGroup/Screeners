@@ -6,7 +6,7 @@ import base64
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -15,6 +15,7 @@ import re
 import time
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 import requests
@@ -40,6 +41,46 @@ _MAX_DOCUMENT_BYTES = 512 * 1024
 _MAX_HTTP_BYTES = 2 * 1024 * 1024
 _READ_RETRY_DELAYS = (0.5, 1.0)
 _MAX_RETRY_WAIT = 2.0
+_PRIVACY_GENERATION = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def privacy_generation(state: Mapping) -> str:
+    privacy = state.get("privacy", {})
+    if not isinstance(privacy, Mapping):
+        raise NetworthError("NETWORTH_PRIVACY_STATE_INVALID")
+    generation = privacy.get("generation", "")
+    if not isinstance(generation, str) or (generation and not _PRIVACY_GENERATION.fullmatch(generation)):
+        raise NetworthError("NETWORTH_PRIVACY_STATE_INVALID")
+    return generation
+
+
+def retention_days(state: Mapping) -> int:
+    privacy_generation(state)
+    days = state.get("privacy", {}).get("retention_days", 0)
+    if type(days) is not int or not 0 <= days <= 3650:
+        raise NetworthError("NETWORTH_RETENTION_INVALID")
+    return days
+
+
+def retention_cutoff(state: Mapping, now: datetime | None = None) -> str | None:
+    days = retention_days(state)
+    if not days:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise NetworthError("NETWORTH_TIMEZONE_REQUIRED")
+    today = now.astimezone(ZoneInfo("America/Indiana/Indianapolis")).date()
+    return (today - timedelta(days=days - 1)).isoformat()
+
+
+def require_privacy_ready(state: Mapping, *, generation: str | None = None) -> None:
+    current = privacy_generation(state)
+    retention_days(state)
+    operation = state.get("privacy", {}).get("operation")
+    if operation:
+        raise NetworthError("NETWORTH_PRIVACY_MAINTENANCE_IN_PROGRESS")
+    if generation is not None and current != generation:
+        raise NetworthError("NETWORTH_PRIVACY_GENERATION_CHANGED")
 
 
 def _retry_transient_read(response) -> None:
@@ -353,26 +394,135 @@ class GitHubNetworthStore:
 
     def read_day(self, day: str) -> dict | None:
         document = self._day_document(day)
+        state = self.read_state()
+        require_privacy_ready(state)
+        cutoff = retention_cutoff(state)
+        if cutoff and day < cutoff:
+            return None
+        generation = privacy_generation(state)
         self._prepare()
         value, _, _ = self._read_document(document)
+        if value is not None:
+            value["captures"] = {key: capture for key, capture in value["captures"].items()
+                                 if isinstance(capture, dict) and capture.get("privacy_generation", "") == generation}
+        require_privacy_ready(self.read_state(), generation=generation)
         return value
 
     def save_capture(self, day: str, capture_id: str, capture: dict) -> None:
         document = self._day_document(day)
         if not isinstance(capture_id, str) or not capture_id.strip() or len(capture_id) > 200 or not isinstance(capture, dict):
             raise NetworthError("Networth capture invalid; no data was written.")
+        state = self.read_state()
+        generation = capture.get("privacy_generation", "")
+        require_privacy_ready(state, generation=generation)
+        cutoff = retention_cutoff(state)
+        if cutoff and day < cutoff:
+            raise NetworthError("NETWORTH_CAPTURE_OUTSIDE_RETENTION")
         self._prepare()
         for _ in range(4):
             current, sha, _ = self._read_document(document)
             updated = deepcopy(current) if current is not None else {"version": 1, "captures": {}}
+            updated["captures"] = {key: value for key, value in updated["captures"].items()
+                                   if isinstance(value, dict) and value.get("privacy_generation", "") == generation}
             if capture_id in updated["captures"]:
                 if updated["captures"][capture_id] != capture:
                     raise NetworthError("Networth capture ID already saved with different data; existing capture was preserved.")
                 return
             updated["captures"][capture_id] = deepcopy(capture)
             try:
+                require_privacy_ready(self.read_state(), generation=generation)
                 self._write_document(document, updated, sha)
+                # A stale writer may finish after a privacy-generation change.
+                # Such captures are hidden by read_day and fail this receipt.
+                require_privacy_ready(self.read_state(), generation=generation)
                 return
             except _Conflict:
                 continue
         raise NetworthError("Networth daily captures changed concurrently; existing data was preserved. Retry the sync.")
+
+    def iter_day_pages(self, page_size: int = 100):
+        """Enumerate the exact ledger at one immutable tree, in bounded pages.
+
+        GitHub Contents cannot paginate past 1,000 files. Walk nonrecursive Git
+        trees instead, rejecting truncation rather than claiming full coverage.
+        """
+        if type(page_size) is not int or not 1 <= page_size <= 250:
+            raise NetworthError("NETWORTH_RETENTION_PAGE_INVALID")
+        self._prepare()
+        head = self._ref(self.config.branch)["object"]["sha"]
+        commit = self._request("GET", "/git/commits/" + head)
+        tree_sha = (commit.get("tree") or {}).get("sha")
+        if commit.get("sha") != head or not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+            raise NetworthError("NETWORTH_RETENTION_TREE_INVALID")
+
+        def tree(sha):
+            result = self._request("GET", "/git/trees/" + sha)
+            entries = result.get("tree")
+            if result.get("sha") != sha or result.get("truncated") is not False or not isinstance(entries, list):
+                raise NetworthError("NETWORTH_RETENTION_LIST_INCOMPLETE")
+            if len(entries) > 10000:
+                raise NetworthError("NETWORTH_RETENTION_LIST_TOO_LARGE")
+            return entries
+
+        for segment in ("networth", self.scope, "days"):
+            matches = [entry for entry in tree(tree_sha) if isinstance(entry, dict) and entry.get("path") == segment]
+            if not matches:
+                return
+            if (len(matches) != 1 or matches[0].get("type") != "tree" or matches[0].get("mode") != "040000"
+                    or not _SHA.fullmatch(str(matches[0].get("sha", "")))):
+                raise NetworthError("NETWORTH_RETENTION_TREE_INVALID")
+            tree_sha = matches[0]["sha"]
+        days = []
+        for entry in tree(tree_sha):
+            if (not isinstance(entry, dict) or entry.get("type") != "blob" or entry.get("mode") != "100644"
+                    or not _SHA.fullmatch(str(entry.get("sha", "")))):
+                raise NetworthError("NETWORTH_RETENTION_DOCUMENT_INVALID")
+            name = entry.get("path", "")
+            if not isinstance(name, str) or not name.endswith(".enc"):
+                raise NetworthError("NETWORTH_RETENTION_DOCUMENT_INVALID")
+            day = name[:-4]
+            if self._day_document(day) != "days/" + name:
+                raise NetworthError("NETWORTH_RETENTION_DOCUMENT_INVALID")
+            days.append(day)
+        if len(days) != len(set(days)):
+            raise NetworthError("NETWORTH_RETENTION_DOCUMENT_INVALID")
+        days.sort()
+        for start in range(0, len(days), page_size):
+            yield days[start:start + page_size]
+
+    def delete_current_day(self, day: str, *, operation_id: str, lease_owner: str) -> bool:
+        """Delete one approved current document; earlier Git objects remain."""
+        document = self._day_document(day)
+        self._prepare()
+        state = self.read_state()
+        operation = state.get("privacy", {}).get("operation") or {}
+        lease = state.get("sync_lease") or {}
+        try:
+            expires = datetime.fromisoformat(str(lease.get("expires_at", "")).replace("Z", "+00:00"))
+            lease_valid = expires.tzinfo is not None and expires > datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            lease_valid = False
+        if (operation.get("id") != operation_id or day not in operation.get("remaining_days", [])
+                or lease.get("owner") != lease_owner or not lease_valid):
+            raise NetworthError("NETWORTH_PRIVACY_LEASE_LOST")
+        _, sha, _ = self._read_document(document)
+        if sha is None:
+            return False
+        try:
+            result = self._request("DELETE", "/contents/" + quote(self._path(document), safe="/"), payload={
+                "message": "Remove current encrypted Networth history document",
+                "branch": self.config.branch, "sha": sha,
+            }, conflict_ok=True)
+        except _Conflict:
+            raise NetworthError("NETWORTH_PRIVACY_DOCUMENT_CHANGED") from None
+        commit_sha = (result.get("commit") or {}).get("sha")
+        if not isinstance(commit_sha, str) or not _SHA.fullmatch(commit_sha):
+            raise NetworthError("NETWORTH_PRIVACY_DELETE_UNVERIFIED")
+        committed = self._request("GET", "/git/commits/" + commit_sha)
+        if committed.get("sha") != commit_sha:
+            raise NetworthError("NETWORTH_PRIVACY_DELETE_UNVERIFIED")
+        remaining = self._request("GET", "/contents/" + quote(self._path(document), safe="/"),
+                                  params={"ref": commit_sha}, missing_ok=True)
+        if remaining is not None:
+            raise NetworthError("NETWORTH_PRIVACY_DELETE_UNVERIFIED")
+        return True

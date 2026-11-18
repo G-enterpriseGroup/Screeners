@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
@@ -140,4 +141,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # This isolated simulated-account fixture exercises the UI after login.
+    with patch("src.security_runtime.require_finance_access", return_value=None):
+        main()

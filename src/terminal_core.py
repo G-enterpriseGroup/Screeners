@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+from src.security_runtime import finance_fragment
 import streamlit.components.v1 as components
 
 from src.bull_debit_ui import render_bull_debit_spread
@@ -2295,7 +2297,7 @@ def _load_etrade_gamma_walls(client, symbol, spot, target_dte=45):
     return walls
 
 
-@st.fragment
+@finance_fragment
 def render_order_simulator():
     st.subheader("Triggers – OCO Order Simulator")
     st.caption(
@@ -2808,7 +2810,7 @@ def _refresh_live_holdings(client, account, refresh_balance=False):
     st.session_state.pop("etrade_holdings_refresh_error", None)
 
 
-@st.fragment(run_every=f"{ETRADE_HOLDINGS_TICK_SECONDS}s")
+@finance_fragment(run_every=f"{ETRADE_HOLDINGS_TICK_SECONDS}s")
 def render_etrade_holdings():
     st.subheader("E*TRADE Holdings")
     client = _etrade_client()

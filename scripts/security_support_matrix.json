@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "owner": "Balraj Singh",
+  "contact": "enterpriseghotra@gmail.com",
+  "reviewed_on": "2026-11-17",
+  "review_due": "2027-02-17",
+  "runtime_support_source": "https://devguide.python.org/versions/",
+  "runtime_cutoff_convention": "Conservative first day of the vendor EOL month unless an exact date is published",
+  "python_support_cutoffs": {
+    "3.10": "2026-10-01",
+    "3.11": "2027-10-01",
+    "3.12": "2028-10-01",
+    "3.13": "2029-10-01",
+    "3.14": "2030-10-01",
+    "3.15": "2031-10-01"
+  },
+  "dependency_support_review": "Review vendor advisories, maintained release lines and package support notices at each quarterly review; outdated does not by itself mean EOL",
+  "patch_sla_days": {
+    "critical": 7,
+    "high": 14,
+    "medium": 30,
+    "low": 90
+  },
+  "triage_sla_days": 1,
+  "findings": [
+    {
+      "id": "dependency:cryptography:GHSA-537c-gmf6-5ccf",
+      "first_seen": "2026-11-18",
+      "priority": "high",
+      "status": "resolved",
+      "resolved_on": "2026-11-18",
+      "resolution_scope": "Fresh requirements resolution and isolated encrypted-storage compatibility checks; deployed-runtime patch receipt still required",
+      "fix": "cryptography>=50.0.0,<51",
+      "evidence": "Sanitized dependency receipt reports53 resolved packages and0 advisories; retain the dated local/CI artifact separately"
+    },
+    {
+      "id": "dependency:cryptography:PYSEC-2026-3552",
+      "first_seen": "2026-11-18",
+      "priority": "high",
+      "status": "resolved",
+      "resolved_on": "2026-11-18",
+      "resolution_scope": "Fresh requirements resolution and isolated encrypted-storage compatibility checks; deployed-runtime patch receipt still required",
+      "fix": "cryptography>=50.0.0,<51",
+      "evidence": "Sanitized dependency receipt reports53 resolved packages and0 advisories; retain the dated local/CI artifact separately"
+    },
+    {
+      "id": "dependency:cryptography:PYSEC-2026-3553",
+      "first_seen": "2026-11-18",
+      "priority": "high",
+      "status": "resolved",
+      "resolved_on": "2026-11-18",
+      "resolution_scope": "Fresh requirements resolution and isolated encrypted-storage compatibility checks; deployed-runtime patch receipt still required",
+      "fix": "cryptography>=50.0.0,<51",
+      "evidence": "Sanitized dependency receipt reports53 resolved packages and0 advisories; retain the dated local/CI artifact separately"
+    },
+    {
+      "id": "dependency:cryptography:PYSEC-2026-3554",
+      "first_seen": "2026-11-18",
+      "priority": "high",
+      "status": "resolved",
+      "resolved_on": "2026-11-18",
+      "resolution_scope": "Fresh requirements resolution and isolated encrypted-storage compatibility checks; deployed-runtime patch receipt still required",
+      "fix": "cryptography>=50.0.0,<51",
+      "evidence": "Sanitized dependency receipt reports53 resolved packages and0 advisories; retain the dated local/CI artifact separately"
+    }
+  ]
+}

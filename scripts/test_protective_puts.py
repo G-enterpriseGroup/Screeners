@@ -501,7 +501,7 @@ assert 'with st.expander("FULL GHOTRA COLUMNS' not in feature_src
 # The option-chain remains virtualized; the checked-only RISK SLIDE uses a
 # compact, fully visible scenario table beside its profit/loss graph.
 chain_src = feature_src.split("def _results(", 1)[1].split("def render_portfolio_hedge(", 1)[0]
-slide_src = feature_src.split("def _render_risk_slide(", 1)[1].split("@st.fragment", 1)[0]
+slide_src = feature_src.split("def _render_risk_slide(", 1)[1].split("@finance_fragment", 1)[0]
 assert "st.dataframe(" not in chain_src
 assert "_risk_slide_table_markup(scenarios, money)" in slide_src
 assert "proxy_put_risk_scenarios(" in slide_src

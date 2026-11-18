@@ -93,7 +93,7 @@ def main() -> None:
     assert "_TOUCH_ID_SESSION_RECORD_KEY" in lock_source
     assert "load_touch_id_record" not in lock_source
     assert "elif persist_then_unlock and touch_memory:" in lock_source
-    assert "NEW MAC / BROWSER // ENTER ACCESS CODE ONCE" in lock_source
+    assert "NEW MAC / BROWSER // PIN + AUTHENTICATOR REQUIRED" in lock_source
     assert "st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = enrolled_record" in lock_source
     assert "st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = updated_record" in lock_source
     assert "st.session_state[_TOUCH_ID_SESSION_RECORD_KEY] = restored" in lock_source

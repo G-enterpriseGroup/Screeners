@@ -1,0 +1,65 @@
+name: Terminal Security Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "streamlit_app.py"
+      - "src/**"
+      - "requirements.txt"
+      - "scripts/sync_networth.py"
+      - "scripts/setup_terminal_mfa.py"
+      - "scripts/security_audit.py"
+      - "scripts/security_support_matrix.json"
+      - "scripts/security_reviewed_findings.json"
+      - ".github/workflows/security-audit.yml"
+  pull_request:
+    paths:
+      - "streamlit_app.py"
+      - "src/**"
+      - "requirements.txt"
+      - "scripts/sync_networth.py"
+      - "scripts/setup_terminal_mfa.py"
+      - "scripts/security_audit.py"
+      - "scripts/security_support_matrix.json"
+      - "scripts/security_reviewed_findings.json"
+      - "tests/test_security_audit.py"
+      - ".github/workflows/security-audit.yml"
+  schedule:
+    - cron: "23 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terminal-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Read source without retained credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up the assessed Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install maintained assessment tools
+        run: python -m pip install --disable-pip-version-check --index-url https://pypi.org/simple pip-audit==2.10.1 bandit==1.9.4
+      - name: Verify assessment failure and evidence handling
+        run: python -m unittest tests.test_security_audit
+      - name: Scan source and resolved requirements and evaluate support and deadlines
+        run: python scripts/security_audit.py --output-dir security-evidence
+      - name: Retain sanitized evidence even when a control fails
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: terminal-security-${{ github.run_id }}-${{ github.run_attempt }}
+          path: security-evidence/
+          if-no-files-found: error
+          retention-days: 90

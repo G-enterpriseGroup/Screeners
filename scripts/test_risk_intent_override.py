@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 from streamlit.testing.v1 import AppTest
@@ -424,4 +425,6 @@ with st.container(key="risk_book_native_grid"):
 
 
 if __name__ == "__main__":
-    main()
+    # The synthetic fixture exercises intent persistence after authorization.
+    with patch("src.security_runtime.require_finance_access", return_value=None):
+        main()

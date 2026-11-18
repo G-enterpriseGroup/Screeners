@@ -13,7 +13,7 @@ import requests
 from src.networth import (
     CLASSES, TIMEZONE, PlaidClient, PlaidConfig, NetworthError, account_rows,
     balance_sheet, default_classification, normalize_accounts, scheduled_slot,
-    sync_networth,
+    configure_retention, maintain_networth, sync_networth,
 )
 
 
@@ -62,6 +62,15 @@ class MemoryStore:
 
     def read_day(self, date):
         return deepcopy(self.days.get(date))
+
+    def iter_day_pages(self, page_size=100):
+        days = sorted(self.days)
+        for start in range(0, len(days), page_size):
+            yield days[start:start + page_size]
+
+    def delete_current_day(self, day, **kwargs):
+        self.events.append("delete:" + day)
+        return self.days.pop(day, None) is not None
 
 
 class Client:
@@ -664,6 +673,136 @@ class SyncTests(unittest.TestCase):
         result = sync_networth(store, Client({"SENSITIVE_BANK_TOKEN": {"accounts": [account()]}}), NOW)
         self.assertEqual(result["last_capture_date"], "2026-11-03")
         self.assertEqual(set(store.days), {"2026-11-03"})
+
+
+class PrivacyMaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.store = linked_store()
+        self.store.state["accounts"] = {"cash": {"item_id": "bank", "current": -100}}
+        self.store.days = {"2026-11-01": {"captures": {}}, "2026-11-02": {"captures": {}},
+                           "2026-11-03": {"captures": {}}}
+        self.client = Mock()
+
+    def run_maintenance(self, **kwargs):
+        with patch("src.networth._sync_time", return_value=NOW):
+            return maintain_networth(self.store, self.client, now=NOW, **kwargs)
+
+    def test_default_retention_does_not_list_write_or_delete(self):
+        before = deepcopy(self.store.state)
+        with patch.object(self.store, "iter_day_pages", side_effect=AssertionError("must not list")):
+            self.assertEqual(self.run_maintenance(), before)
+        self.assertFalse(self.store.events)
+        self.client.remove.assert_not_called()
+
+    def test_retention_requires_opt_in_and_keeps_inclusive_local_window(self):
+        for value in (True, -1, 3651, 2.5, "2", 2):
+            with self.subTest(value=value), self.assertRaises(NetworthError):
+                configure_retention(self.store, value, now=NOW)
+        configure_retention(self.store, 2, confirmed=True, now=NOW)
+        result = self.run_maintenance()
+        self.assertEqual(sorted(self.store.days), ["2026-11-02", "2026-11-03"])
+        self.assertEqual(result["accounts"]["cash"]["current"], -100)
+        receipt = result["privacy"]["last_operation"]
+        self.assertEqual(receipt["cutoff"], "2026-11-02")
+        self.assertEqual(receipt["deleted_daily_documents"], 1)
+        self.assertTrue(receipt["current_view_verified"])
+        self.assertTrue(receipt["prior_encrypted_revisions_remain"])
+        self.assertFalse(receipt["full_erasure_verified"])
+        self.assertNotIn("sync_lease", self.store.state)
+        before = list(self.store.events)
+        self.run_maintenance()
+        self.assertEqual(self.store.events, before)
+
+    def test_manual_erase_requires_confirmation_and_rotates_generation(self):
+        with self.assertRaisesRegex(NetworthError, "CONFIRMATION_REQUIRED"):
+            self.run_maintenance(erase="history")
+        self.store.state["pending_links"]["old"] = {"link_token": "OLD"}
+        self.store.state.update(last_capture_at="old", last_capture_id="old")
+        result = self.run_maintenance(erase="history", confirmed=True)
+        self.assertEqual(len(result["privacy"]["generation"]), 32)
+        self.assertFalse(result["pending_links"])
+        self.assertFalse(self.store.days)
+        self.assertTrue(result["items"])
+        self.assertEqual(result["accounts"]["cash"]["current"], -100)
+        self.assertNotIn("last_capture_id", result)
+        self.client.remove.assert_not_called()
+
+    def test_all_revokes_before_clearing_current_state_and_keeps_honest_receipt(self):
+        self.store.state.update(plaid_environment="production", selected_accounts=["cash"], last_errors={"old": "ERROR"})
+        result = self.run_maintenance(erase="all", confirmed=True)
+        self.client.remove.assert_called_once_with("SENSITIVE_BANK_TOKEN")
+        for key in ("accounts", "items", "preferences", "pending_links"):
+            self.assertEqual(result[key], {})
+        self.assertNotIn("selected_accounts", result)
+        self.assertNotIn("last_errors", result)
+        self.assertFalse(self.store.days)
+        self.assertEqual(result["plaid_environment"], "production")
+        self.assertEqual(result["privacy"]["last_operation"]["revocations_confirmed"], 1)
+        self.assertFalse(result["privacy"]["last_operation"]["full_erasure_verified"])
+
+    def test_failed_revocation_preserves_token_and_resumes_without_false_completion(self):
+        self.client.remove.side_effect = NetworthError("PLAID_CONNECTION_FAILED")
+        with self.assertRaisesRegex(NetworthError, "PLAID_CONNECTION_FAILED"):
+            self.run_maintenance(erase="all", confirmed=True)
+        operation_id = self.store.state["privacy"]["operation"]["id"]
+        self.assertEqual(self.store.state["items"]["bank"]["access_token"], "SENSITIVE_BANK_TOKEN")
+        self.assertNotIn("last_operation", self.store.state["privacy"])
+        self.assertNotIn("sync_lease", self.store.state)
+        self.assertEqual(len(self.store.days), 3)
+        self.client.remove.side_effect = NetworthError("PLAID_ITEM_NOT_FOUND")
+        result = self.run_maintenance()
+        self.assertEqual(result["privacy"]["last_operation"]["id"], operation_id)
+        self.assertFalse(result["items"])
+
+    def test_active_sync_or_link_claim_blocks_before_any_removal(self):
+        for active in ("sync", "link"):
+            with self.subTest(active=active):
+                self.setUp()
+                if active == "sync":
+                    self.store.state["sync_lease"] = {"owner": "other", "expires_at": "2099-01-01T00:00:00Z"}
+                else:
+                    self.store.state["pending_links"]["link"] = {"processing_until": "2099-01-01T00:00:00Z"}
+                with self.assertRaises(NetworthError):
+                    self.run_maintenance(erase="all", confirmed=True)
+                self.client.remove.assert_not_called()
+                self.assertEqual(len(self.store.days), 3)
+                self.assertNotIn("privacy", self.store.state)
+
+    def test_bounded_manifest_survives_interruption_and_pauses_sync(self):
+        self.store.days = {f"2026-10-{day:02d}": {} for day in range(1, 31)}
+        first = self.run_maintenance(erase="history", confirmed=True)
+        operation_id = first["privacy"]["operation"]["id"]
+        self.assertEqual(len(self.store.days), 5)
+        self.assertNotIn("sync_lease", self.store.state)
+        with self.assertRaisesRegex(NetworthError, "MAINTENANCE_IN_PROGRESS"):
+            sync_networth(self.store, Client({}), now=NOW)
+        result = self.run_maintenance()
+        self.assertFalse(self.store.days)
+        self.assertEqual(result["privacy"]["last_operation"]["id"], operation_id)
+        self.assertEqual(result["privacy"]["last_operation"]["deleted_daily_documents"], 30)
+
+    def test_failed_document_readback_leaves_manifest_for_retry(self):
+        with patch.object(self.store, "delete_current_day", side_effect=NetworthError("NETWORTH_PRIVACY_DELETE_UNVERIFIED")):
+            with self.assertRaisesRegex(NetworthError, "DELETE_UNVERIFIED"):
+                self.run_maintenance(erase="history", confirmed=True)
+        operation = self.store.state["privacy"]["operation"]
+        self.assertEqual(operation["remaining_days"], sorted(self.store.days))
+        self.assertEqual(operation["deleted_daily_documents"], 0)
+        self.assertNotIn("last_operation", self.store.state["privacy"])
+        self.assertFalse(self.run_maintenance()["privacy"].get("operation"))
+
+    def test_generation_change_during_bank_request_rejects_stale_sync(self):
+        client = Client({"SENSITIVE_BANK_TOKEN": [account()]})
+        original = client.balances
+        def change(token, now=None):
+            result = original(token, now)
+            self.store.state["privacy"] = {"generation": "f" * 32}
+            return result
+        client.balances = change
+        with patch("src.networth._sync_time", return_value=NOW), self.assertRaisesRegex(NetworthError, "GENERATION_CHANGED"):
+            sync_networth(self.store, client, now=NOW)
+        self.assertNotIn("capture", self.store.events)
+        self.assertEqual(self.store.state["accounts"]["cash"]["current"], -100)
 
 
 class ScheduleTests(unittest.TestCase):

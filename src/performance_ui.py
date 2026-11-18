@@ -19,6 +19,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.security_runtime import finance_fragment
+
 from src.etrade_client import ETradeError, normalize_position, total_account_value
 
 
@@ -436,7 +438,7 @@ def _default_account(accounts: list[dict[str, Any]]) -> str:
     return str(accounts[0].get("accountIdKey") or "") if accounts else ""
 
 
-@st.fragment(run_every=_LIVE_REFRESH_SECONDS)
+@finance_fragment(run_every=_LIVE_REFRESH_SECONDS)
 def _live(client: Any, account: dict[str, Any], transactions: list[dict[str, Any]], touch_session: Callable[[], Any] | None) -> None:
     account_key = str(account.get("accountIdKey") or "").strip()
     try:

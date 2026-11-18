@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.networth import PlaidClient, PlaidConfig, scheduled_slot, sync_networth
+from src.networth import PlaidClient, PlaidConfig, maintain_networth, scheduled_slot, sync_networth
 from src.networth_store import GitHubNetworthStore, NetworthError, StoreConfig
 
 
@@ -23,14 +23,19 @@ def main() -> int:
         now = datetime.now(timezone.utc)
         scheduled = os.environ.get("NETWORTH_TRIGGER", "schedule") != "workflow_dispatch"
         slot = scheduled_slot(now) if scheduled else None
+        store = GitHubNetworthStore(storage)
+        client = PlaidClient(plaid)
+        state = maintain_networth(store, client, now=now)
+        if state.get("privacy", {}).get("operation"):
+            print("Networth: current-document privacy maintenance is pending; collection is paused.")
+            return 1
         if scheduled and slot is None:
             print("Networth: no scheduled capture is due yet today.")
             return 0
-        store = GitHubNetworthStore(storage)
-        if not store.read_state().get("items"):
+        if not state.get("items"):
             print("Networth: no linked institutions. Complete Plaid linking in the Networth tab first.")
             return 0
-        state = sync_networth(store, PlaidClient(plaid), now=now, scheduled_slot=slot)
+        state = sync_networth(store, client, now=now, scheduled_slot=slot)
         if (state.get("last_errors") or state.get("last_capture_complete") is False
                 or (slot is not None and slot not in state.get("completed_slots", {}))):
             print("Networth: capture incomplete. Review connection and balance status in the Networth tab.")

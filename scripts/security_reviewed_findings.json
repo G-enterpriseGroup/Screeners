@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "review_scope": "Individual retained scanner warnings; unchanged-file, expiring source-context reviews, not remediated vulnerabilities",
+  "reviews": [
+    {
+      "id": "source:streamlit_app.py:B102:76",
+      "source_sha256": "8d42b971963cfc80b809cc32d9bf0fb7200766bb29a150f87d1f5d0916337b3b",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The exec input is read from the fixed repository-local src/terminal_core.py path and split at a constant source boundary. No request, broker data, URL, or user text is compiled here. This preserves the existing trusted-source production loader; it is not approval for untrusted code execution."
+    },
+    {
+      "id": "source:src/acquisition_history_github.py:B310:126",
+      "source_sha256": "4d7dabe853100b365cfde92256a2a39adf3c00c50b0c7d0e0fd0f9917e3bb1b4",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "GitHubArchive._request builds the initial URI from literal https://api.github.com, constant repository REPO, and percent-encoded path/ref. Caller data cannot select the URI scheme or authority. B310 arbitrary-scheme input is not present in this reviewed call; this does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/acquisition_private_blotter.py:B310:187",
+      "source_sha256": "e0825d9f82b57f73ab63cec6eae665fe7e5436d24d573440a7fc0a39b9f832c5",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "PrivateTradeBlotter rejects any constructor repository other than PRIVATE_REPO. _request uses literal https://api.github.com plus encoded content path/ref; _token_identity_diagnostic uses the fixed https://api.github.com/user endpoint. No caller-controlled scheme or authority reaches these calls. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/acquisition_private_blotter.py:B310:220",
+      "source_sha256": "e0825d9f82b57f73ab63cec6eae665fe7e5436d24d573440a7fc0a39b9f832c5",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "PrivateTradeBlotter rejects any constructor repository other than PRIVATE_REPO. _request uses literal https://api.github.com plus encoded content path/ref; _token_identity_diagnostic uses the fixed https://api.github.com/user endpoint. No caller-controlled scheme or authority reaches these calls. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/gex_cboe.py:B310:83",
+      "source_sha256": "a450312bc9ab3879d3a323e0240a4415ae7a20289ccc3f57594f01b4c76f8542",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "_url_candidates creates literal https://cdn.cboe.com URLs; _normalize_symbol permits only uppercase ASCII letters and digits. No caller-selected URI scheme or authority is passed to urlopen. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/gex_github_bridge.py:B310:53",
+      "source_sha256": "e52139d33d75acd166c64ba3815b78e2ba8d08d68cad759c4fddb962a31ab594",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "_publish_path constructs api_url from literal https://api.github.com and constant REPO. Content path/ref cannot replace the URI scheme or authority. Both flagged calls use that constructed GitHub endpoint. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/gex_github_bridge.py:B310:79",
+      "source_sha256": "e52139d33d75acd166c64ba3815b78e2ba8d08d68cad759c4fddb962a31ab594",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "_publish_path constructs api_url from literal https://api.github.com and constant REPO. Content path/ref cannot replace the URI scheme or authority. Both flagged calls use that constructed GitHub endpoint. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/heatmaps_ui.py:B310:708",
+      "source_sha256": "17901767460b1542a24f9ba2784c4a5f5dd0fb981677ccca6f9d9c64c4bde424",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "_fed_target_history loops over a fixed tuple of FRED series IDs under literal https://fred.stlouisfed.org; _fed_lower_target_history uses a complete literal HTTPS URI. No user-provided URI reaches these calls. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/heatmaps_ui.py:B310:728",
+      "source_sha256": "17901767460b1542a24f9ba2784c4a5f5dd0fb981677ccca6f9d9c64c4bde424",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "_fed_target_history loops over a fixed tuple of FRED series IDs under literal https://fred.stlouisfed.org; _fed_lower_target_history uses a complete literal HTTPS URI. No user-provided URI reaches these calls. This does not certify upstream redirect behavior."
+    },
+    {
+      "id": "source:src/networth_store.py:B324:319",
+      "source_sha256": "ff5749e53293d5db6fd190bfc7ecfc1faa30ac1c0e41f18f5bcf12cf6f3b14f9",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The SHA1 computes the Git blob object identifier (blob + length + NUL + stored ciphertext) for consistency with GitHub content metadata. SHA1 is not the confidentiality/authentication mechanism: the encrypted payload must separately pass Fernet authenticated decryption before JSON is accepted. This is not approval to use SHA1 for passwords or signatures."
+    },
+    {
+      "id": "source:src/risk_sizing_ui_v4.py:B102:124",
+      "source_sha256": "f8ea700fe735df4724dc3d31432c285cde12a4afd9018e470c18fbcf44de449e",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The exec source is read from fixed repository-local risk_sizing_ui_v2.py, then transformed using fixed source markers and static labels. User/broker inputs are not compiled. The warning is retained for this trusted-source loader; production ownership must still follow ARCHITECTURE.md."
+    },
+    {
+      "id": "source:src/risk_sizing_ui_v6.py:B102:46",
+      "source_sha256": "acdb921fb2119be4a3df0f15a6a0b1b2f770ca0e43de5b5430cc4d720636f9ad",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The exec source is read from fixed repository-local risk_sizing_ui_v2.py and transformed through fixed repository code/markers. No user/broker text is compiled. The warning is retained for this trusted-source loader; production ownership must still follow ARCHITECTURE.md."
+    },
+    {
+      "id": "source:src/vertical_options_store.py:B608:190",
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths."
+    },
+    {
+      "id": "source:src/vertical_options_store.py:B608:219",
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths."
+    },
+    {
+      "id": "source:src/vertical_options_store.py:B608:413",
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths."
+    },
+    {
+      "id": "source:src/vertical_options_store.py:B608:420",
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths."
+    },
+    {
+      "id": "source:src/vertical_options_store.py:B608:550",
+      "source_sha256": "9ecb3ad0be7eda7984fbc7461fd66cd3702093bb12f38d6c096e94813bdea6fc",
+      "reviewed_on": "2026-11-18",
+      "expires_on": "2027-02-15",
+      "reviewer": "Codex source review; not a Plaid owner attestation",
+      "rationale": "The flagged queries concatenate _where/_order or the fixed _CANONICAL_ORDER. _where accepts only allowlisted field expressions and uses SQL placeholders for selected values; effective_target validates a positive finite float before the only numeric literal interpolation. _order rejects keys absent from _SORTS and directions outside ASC/DESC. _iterate callers pass these internal builders or constants. No free-form user SQL is concatenated in these reviewed paths."
+    }
+  ]
+}

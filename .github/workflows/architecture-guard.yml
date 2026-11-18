@@ -32,6 +32,9 @@ jobs:
       - name: Validate production architecture
         run: python scripts/validate_architecture.py
 
+      - name: Test Terminal MFA, recovery and public policy boundaries
+        run: python -m unittest tests.test_terminal_security tests.test_security_store tests.test_pin_recovery tests.test_security_login tests.test_public_policies tests.test_security_audit
+
       - name: Test Touch ID multi-Mac persistence and keypad script
         run: |
           python -m py_compile src/passkey_auth.py src/lock_screen_v2.py scripts/test_touch_id_persistence.py

@@ -77,6 +77,9 @@ class NetworthUITests(unittest.TestCase):
         self.store = Store()
         self.plaid = Plaid()
         self.session = {}
+        guard = patch("src.networth_ui.require_finance_access")
+        guard.start()
+        self.addCleanup(guard.stop)
 
     def test_no_configuration_has_clear_setup_without_exceptions(self):
         app = AppTest.from_string("from src.networth_ui import render_networth\nrender_networth()")
@@ -884,7 +887,9 @@ class NetworthResilienceTests(unittest.TestCase):
         app = AppTest.from_string("from src.networth_ui import render_networth\nrender_networth()")
         with patch("src.networth_ui.PlaidConfig.from_runtime", side_effect=lambda: self.plaid_config), patch(
             "src.networth_ui.StoreConfig.from_runtime", side_effect=lambda: self.storage_config
-        ), patch("src.networth_ui.GitHubNetworthStore", return_value=self.store):
+        ), patch("src.networth_ui.GitHubNetworthStore", return_value=self.store), patch(
+            "src.networth_ui.require_finance_access"
+        ):
             yield app
 
     def test_manual_storage_or_transport_failure_keeps_loaded_statement(self):
@@ -944,7 +949,7 @@ class NetworthResilienceTests(unittest.TestCase):
                 self.assertNotIn(secret, repr(props))
             sync.assert_not_called()
 
-    def test_verified_session_snapshot_has_no_tokens_and_is_read_only_on_storage_outage(self):
+    def test_verified_session_snapshot_has_no_tokens_and_is_hidden_on_storage_outage(self):
         self.store.state["pending_links"]["link"] = {"link_token": "PRIVATE_LINK_TOKEN", "hosted_link_url": "PRIVATE_URL"}
         with self.configured() as app, patch("src.networth_ui._pending_links"), patch(
             "src.networth_ui.sync_networth"
@@ -964,10 +969,10 @@ class NetworthResilienceTests(unittest.TestCase):
             ) as statement, patch("src.networth_ui._networth_buckets") as board:
                 app.run()
                 self.assertFalse(app.exception)
-                self.assertFalse(app.error)
-                self.assertTrue(any("read-only" in message.value for message in app.warning))
-                self.assertEqual(statement.call_args.args[0][0]["current"], 1200)
-                self.assertEqual(statement.call_args.args[1]["a"]["nickname"], "Household Cash")
+                self.assertTrue(app.error)
+                self.assertTrue(any("privacy/deletion state" in message.value for message in app.error))
+                statement.assert_not_called()
+                self.assertNotIn("_networth_verified_balances", app.session_state)
                 self.assertFalse(app.button)
                 write.assert_not_called()
                 history.assert_not_called()
@@ -1007,12 +1012,18 @@ class NetworthResilienceTests(unittest.TestCase):
             statement.assert_not_called()
             write.assert_not_called()
 
-    def test_readonly_cache_retains_legacy_string_classification_and_statement_math(self):
+    def test_legacy_snapshot_math_is_preserved_but_cache_is_hidden_without_durable_state(self):
         for classification in ("Equity", "Liability"):
             with self.subTest(classification=classification), self.configured() as app:
                 self.store.state["preferences"]["a"] = classification
                 snapshot = networth_ui._readonly_snapshot(self.store.state)
                 self.assertEqual(snapshot["preferences"]["a"], {"classification": classification})
+                rows = networth_ui.account_rows(snapshot)
+                presentation = networth_ui._statement_rows(rows, snapshot["preferences"], "USD")
+                total_assets = next(row["amount"] for row in presentation if row["label"] == "Total Assets:")
+                self.assertEqual(total_assets, 0)
+                detail = next(row for row in presentation if row.get("account_id") == "a")
+                self.assertEqual(detail["amount"], -1200 if classification == "Liability" else 1200)
                 key = (self.storage_config.repository, self.storage_config.branch,
                        self.store.scope, self.plaid_config.environment)
                 app.session_state["_networth_verified_balances"] = {key: snapshot}
@@ -1021,15 +1032,8 @@ class NetworthResilienceTests(unittest.TestCase):
                 ) as statement:
                     app.run()
                     self.assertFalse(app.exception)
-                    self.assertFalse(app.error)
-                    rows, preferences = statement.call_args.args[:2]
-                    self.assertEqual(rows[0]["classification"], classification)
-                    presentation = networth_ui._statement_rows(rows, preferences, "USD")
-                    total_assets = next(row["amount"] for row in presentation if row["label"] == "Total Assets:")
-                    self.assertEqual(total_assets, 0)
-                    detail = next(row for row in presentation if row.get("account_id") == "a")
-                    self.assertEqual(detail["amount"], -1200 if classification == "Liability" else 1200)
-                    self.assertTrue(any("read-only" in message.value for message in app.warning))
+                    self.assertTrue(app.error)
+                    statement.assert_not_called()
 
     def test_failed_attempt_header_keeps_latest_account_update_distinct(self):
         self.store.state["last_errors"] = {"i": "PLAID_INTERNAL_SERVER_ERROR"}
@@ -1127,7 +1131,8 @@ class NetworthDynamicRecoveryTests(unittest.TestCase):
         return deepcopy(pending)
 
     def monitor(self, revision):
-        return networth_ui._pending_links.__wrapped__(self.store, Plaid(), revision, "cache")
+        with patch("src.networth_ui.require_finance_access"):
+            return networth_ui._pending_links.__wrapped__(self.store, Plaid(), revision, "cache")
 
     def test_busy_sync_keeps_completed_link_and_resumes_without_another_bank_login(self):
         pending = self.pending()
@@ -1269,12 +1274,16 @@ class NetworthDynamicRecoveryTests(unittest.TestCase):
             self.monitor(revision)
             rerun.assert_called_once()
 
-    def test_transient_status_failure_preserves_balances_and_redacts_error_details(self):
+    def test_transient_status_failure_clears_fallback_and_reruns_without_exposing_details(self):
         with patch.object(self.store, "read_state", side_effect=NetworthError("PRIVATE_ERROR")), patch(
             "src.networth_ui.st.caption"
-        ) as caption:
+        ) as caption, patch("src.networth_ui.st.rerun") as rerun, patch(
+            "src.networth_ui.st.session_state", {"_networth_verified_balances": {"old": "balance"}}
+        ) as session:
             self.monitor("revision")
-            self.assertNotIn("PRIVATE_ERROR", caption.call_args.args[0])
+            caption.assert_not_called()
+            rerun.assert_called_once()
+            self.assertNotIn("_networth_verified_balances", session)
         self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
 
     def test_bank_outage_does_not_request_another_login(self):
@@ -1304,7 +1313,106 @@ class NetworthDynamicRecoveryTests(unittest.TestCase):
         self.assertEqual(self.store.state["accounts"]["a"]["current"], 1200)
 
 
+class NetworthPrivacyUITests(unittest.TestCase):
+    setUp = NetworthResilienceTests.setUp
+    configured = NetworthResilienceTests.configured
+
+    def test_default_page_never_starts_maintenance_and_discloses_history_limit(self):
+        with self.configured() as app, patch("src.networth_ui.maintain_networth") as maintain:
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.number_input(key="networth_retention_days").value, 0)
+            self.assertTrue(app.button(key="networth_privacy_delete").disabled)
+            self.assertTrue(any("Prior encrypted Git revisions" in message.value for message in app.caption))
+            maintain.assert_not_called()
+
+    def test_retention_is_disabled_until_explicit_owner_opt_in(self):
+        with self.configured() as app, patch("src.networth_ui.configure_retention") as configure:
+            app.run()
+            app.number_input(key="networth_retention_days").set_value(30).run()
+            self.assertTrue(app.button(key="networth_retention_save").disabled)
+            configure.assert_not_called()
+            app.checkbox(key="networth_retention_confirm").check().run()
+            app.button(key="networth_retention_save").click().run()
+            self.assertFalse(app.exception)
+            configure.assert_called_once_with(self.store, 30, confirmed=True)
+
+    def test_history_and_all_data_deletion_require_scope_specific_phrase_and_acknowledgment(self):
+        for kind, phrase, choice in (("history", "DELETE HISTORY", "Saved daily history only"),
+                ("all", "DELETE ALL", "Disconnect all institutions and remove current account data and daily history")):
+            with self.subTest(kind=kind), self.configured() as app, patch("src.networth_ui.maintain_networth") as maintain:
+                app.run()
+                app.selectbox(key="networth_privacy_scope").select(choice).run()
+                app.text_input(key="networth_privacy_confirmation").set_value("DELETE").run()
+                app.checkbox(key="networth_privacy_understand").check().run()
+                self.assertTrue(app.button(key="networth_privacy_delete").disabled)
+                maintain.assert_not_called()
+                app.text_input(key="networth_privacy_confirmation").set_value(phrase).run()
+                app.button(key="networth_privacy_delete").click().run()
+                self.assertFalse(app.exception)
+                maintain.assert_called_once()
+                self.assertEqual(maintain.call_args.args[0], self.store)
+                self.assertEqual(maintain.call_args.kwargs, {"erase": kind, "confirmed": True})
+
+    def test_pending_operation_hides_statement_and_clears_old_fallback(self):
+        self.store.state["privacy"] = {"generation": "b" * 32, "operation": {
+            "id": "a" * 32, "kind": "all", "remaining_days": ["2026-11-03"]}}
+        with self.configured() as app, patch("src.networth_ui._render_statement") as statement, patch(
+            "src.networth_ui._pending_links"
+        ) as polling:
+            app.session_state["_networth_verified_balances"] = {"old": "private balances"}
+            app.run()
+            self.assertFalse(app.exception)
+            statement.assert_not_called()
+            polling.assert_not_called()
+            self.assertNotIn("_networth_verified_balances", app.session_state)
+            self.assertTrue(any("Privacy maintenance is pending" in message.value for message in app.info))
+            self.assertEqual([button.label for button in app.button], ["RESUME PRIVACY MAINTENANCE"])
+
+    def test_stale_pending_link_cannot_exchange_or_restore_erased_generation(self):
+        pending = {"link_token": "OLD", "privacy_generation": "a" * 32}
+        self.store.state["privacy"] = {"generation": "b" * 32}
+        client = Plaid()
+        with patch.object(client, "link_results") as results, patch("src.networth_ui.st.session_state", {}):
+            self.assertFalse(_complete_link(self.store, client, "removed-link", pending))
+        results.assert_not_called()
+        self.assertFalse(client.calls)
+
+    def test_polling_checks_central_finance_authorization_before_reading_data(self):
+        with patch("src.networth_ui.require_finance_access", side_effect=RuntimeError("expired claim")) as guard, patch.object(
+            self.store, "read_state"
+        ) as read:
+            with self.assertRaisesRegex(RuntimeError, "expired claim"):
+                networth_ui._pending_links.__wrapped__(self.store, Plaid(), "revision")
+        guard.assert_called_once_with(touch=False)
+        read.assert_not_called()
+
+
 class NetworthWorkerTests(unittest.TestCase):
+    def test_maintenance_runs_before_no_items_or_no_due_capture_exit(self):
+        for slot in (None, "DUE"):
+            with self.subTest(slot=slot), patch("scripts.sync_networth.PlaidConfig.from_runtime", return_value=Plaid.config), patch(
+                "scripts.sync_networth.StoreConfig.from_runtime", return_value=object()
+            ), patch("scripts.sync_networth.scheduled_slot", return_value=slot), patch(
+                "scripts.sync_networth.GitHubNetworthStore", return_value=Store()
+            ), patch("scripts.sync_networth.maintain_networth", return_value={"items": {}}) as maintain, patch(
+                "scripts.sync_networth.sync_networth"
+            ) as sync, redirect_stdout(StringIO()):
+                self.assertEqual(worker_main(), 0)
+            maintain.assert_called_once()
+            sync.assert_not_called()
+
+    def test_pending_maintenance_prevents_balance_collection_and_logs_no_payload(self):
+        output = StringIO()
+        with patch("scripts.sync_networth.PlaidConfig.from_runtime", return_value=Plaid.config), patch(
+            "scripts.sync_networth.StoreConfig.from_runtime", return_value=object()
+        ), patch("scripts.sync_networth.GitHubNetworthStore", return_value=Store()), patch(
+            "scripts.sync_networth.maintain_networth", return_value={"privacy": {"operation": {"id": "PRIVATE"}}}
+        ), patch("scripts.sync_networth.sync_networth") as sync, redirect_stdout(output):
+            self.assertEqual(worker_main(), 1)
+        sync.assert_not_called()
+        self.assertNotIn("PRIVATE", output.getvalue())
+
     def test_manual_worker_does_not_claim_a_scheduled_slot(self):
         store = Store()
         store.state["items"]["i"] = {"access_token": "PRIVATE_TOKEN"}

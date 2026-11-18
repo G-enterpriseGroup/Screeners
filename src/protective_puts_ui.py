@@ -29,6 +29,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src.security_runtime import finance_fragment
+
 from src.etrade_client import ETradeError, option_expiration_dates, quote_summary
 from src.option_book import extract_option_rows
 from src.protective_puts import (
@@ -325,7 +327,7 @@ def _render_scan_result(result: dict[str, Any]) -> None:
                 st.warning(str(msg))
 
 
-@st.fragment
+@finance_fragment
 def _render_protective_puts_fragment(client, touch_session) -> None:
     with st.container(key="protective_puts_workspace"):
         st.html(_PROTECTIVE_PUTS_CSS)
