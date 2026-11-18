@@ -2379,6 +2379,35 @@ def test() -> None:
             slow_rescan_file.unlink()
             assert not any(e["event"] == "place" for e in events(event_path))
             print("Completed grid clears before slow rescan and reappears only after completion PASS", flush=True)
+            # A pasted list must scan every symbol, retain each completed
+            # snapshot, and show legible ticker text in the compact list.
+            driver.find_element(By.XPATH, '//button[contains(., "PASTE TICKER LIST")]').click()
+            textarea = wait.until(lambda _: driver.find_element(
+                By.CSS_SELECTOR, 'textarea[aria-label^="PASTE TICKERS"]',
+            ))
+            textarea.clear()
+            textarea.send_keys("| Ticker |\n| ------ |\n| MSFT |\n| SPY |\n| GOOGL |")
+            driver.find_element(By.XPATH, '//button[contains(., "LOAD TICKERS")]').click()
+            wait.until(lambda _: "LOADED TICKERS (3)" in driver.find_element(By.TAG_NAME, "body").text)
+            driver.find_element(
+                By.XPATH, '//*[contains(text(), "EDIT TICKER BREAKEVENS // 3 LOADED")]',
+            ).click()
+            wait.until(lambda _: driver.find_elements(By.CSS_SELECTOR, ".vo-ticker-list td"))
+            ink = driver.execute_script("""
+                const cell=document.querySelector('.vo-ticker-list td');
+                return {color:getComputedStyle(cell).color,
+                        background:getComputedStyle(cell).backgroundColor,
+                        count:document.querySelectorAll('.vo-ticker-list tbody tr').length};
+            """)
+            assert ink == {"color": "rgb(251, 139, 30)", "background": "rgb(5, 5, 5)",
+                           "count": 3}, ink
+            driver.find_element(By.XPATH, '//button[contains(., "SCAN ALL LOADED TICKERS")]').click()
+            wait.until(lambda _: "BATCH COMPLETE // 3 SCANNED // 0 FAILED" in
+                       driver.find_element(By.TAG_NAME, "body").text)
+            assert {item["symbol"] for item in events(event_path)
+                    if item["event"] == "chain"} >= {"MSFT", "SPY", "GOOGL"}
+            assert not any(item["event"] == "place" for item in events(event_path))
+            print("Three pasted tickers scanned and readable ticker list PASS", flush=True)
             print("VERTICAL OPTIONS SCANNER BROWSER: PASS")
         except Exception:
             print(server_log.read_text(encoding="utf-8")[-5000:], file=sys.stderr)

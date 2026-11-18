@@ -153,6 +153,18 @@ _VERTICAL_OPTIONS_CSS = """
     -webkit-text-fill-color:var(--vp-orange)!important;
     font-family:"Courier New",monospace!important;
 }
+.st-key-verti_phone_workspace .vp-ticker-list{
+    max-height:220px;overflow:auto;border:1px solid var(--vp-orange);
+    font:800 12px/1.45 "Courier New",monospace;
+}
+.st-key-verti_phone_workspace .vp-ticker-list table{width:100%;border-collapse:collapse;}
+.st-key-verti_phone_workspace .vp-ticker-list th{
+    position:sticky;top:0;background:#fb8b1e;color:#000;padding:4px 8px;text-align:left;
+}
+.st-key-verti_phone_workspace .vp-ticker-list td{
+    background:#050505;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;
+    padding:3px 8px;border-top:1px solid #5d3605;
+}
 /* Streamlit 1.61+ multiselect uses React Aria, not BaseWeb tags.
    The actual selected chips are [data-tag] and the text is [title].
    Keep this fix inside Vertical Options; no global dropdown overrides. */
@@ -2152,7 +2164,7 @@ def _remember_scan_snapshot() -> None:
     memory = st.session_state.get("_vp_memory")
     if memory is None:
         return
-    for key in ("vp_scan_result", "_vp_chain_cache", "_vp_ticker_quotes",
+    for key in ("vp_scan_result", "vp_batch_results", "_vp_chain_cache", "_vp_ticker_quotes",
                 "_vp_manual_targets", "_vp_breakeven_symbol", "vp_ticker_list",
                 "vp_ticker_targets", "_vp_presentation", "_vp_column_filters"):
         if key in st.session_state:
@@ -2172,6 +2184,71 @@ def _remember_presentation(key: str) -> None:
 def _remember_scan_inputs() -> None:
     for key in ("vp_symbol_value", "vp_target_breakeven", "vp_min_reward_risk"):
         _remember_presentation(key)
+
+
+def _advance_ticker_batch() -> None:
+    """Move to the next loaded symbol only after the prior scan finishes or fails."""
+    pending = st.session_state.get("_vp_batch_pending") or []
+    if not pending:
+        return
+    symbol = pending[0]
+    result = st.session_state.get("vp_scan_result") or {}
+    errors = st.session_state.setdefault("_vp_batch_errors", {})
+    if st.session_state.get("_vp_batch_active") == symbol:
+        if symbol in errors:
+            pass
+        elif result.get("symbol") == symbol and result.get("scan_complete") and not result.get("failed_expirations"):
+            st.session_state.setdefault("vp_batch_results", {})[symbol] = result
+            _remember_scan_snapshot()
+        elif (result.get("symbol") == symbol and
+              (result.get("stopped_on_errors") or
+               result.get("next_expiry_index", 0) >= result.get("listed_expirations", 1) and
+               result.get("failed_expirations"))):
+            errors[symbol] = "Incomplete option chains"
+        elif st.session_state.get("_vp_auto_scan_error"):
+            errors[symbol] = st.session_state["_vp_auto_scan_error"]
+        else:
+            return
+        pending = pending[1:]
+        st.session_state["_vp_batch_pending"] = pending
+        st.session_state["_vp_batch_active"] = None
+    if not pending:
+        return
+    next_symbol = pending[0]
+    st.session_state["_vp_batch_active"] = next_symbol
+    st.session_state["vp_list_selection"] = next_symbol
+    st.session_state["_vp_last_list_selection"] = next_symbol
+    st.session_state["vp_symbol_value"] = next_symbol
+    st.session_state["vp_target_breakeven"] = (
+        st.session_state.get("vp_ticker_targets") or {}
+    ).get(next_symbol, "")
+    st.session_state["vp_scan_result"] = None
+    st.session_state["_vp_scan_pending"] = True
+    st.session_state.pop("_vp_auto_scan_error", None)
+    for key in ("vp_review_bundle", "vp_live_confirm", "_vp_order_candidate", "vp_last_send_results"):
+        st.session_state.pop(key, None)
+
+
+def _save_pasted_ticker_target(symbol: str, widget_key: str) -> None:
+    value = str(st.session_state.get(widget_key) or "").strip()
+    try:
+        if value and value.casefold() != _NO_BREAKEVEN:
+            _entered_price(value, f"{symbol} breakeven")
+    except ValueError as exc:
+        st.session_state["_vp_target_input_error"] = str(exc)
+        return
+    targets = dict(st.session_state.get("vp_ticker_targets") or {})
+    if targets.get(symbol, "") == value:
+        return
+    targets[symbol] = value
+    st.session_state["vp_ticker_targets"] = targets
+    if st.session_state.get("vp_list_selection") == symbol:
+        for key in ("vp_scan_result", "vp_review_bundle", "vp_live_confirm",
+                    "_vp_order_candidate", "vp_last_send_results"):
+            st.session_state.pop(key, None)
+        st.session_state["vp_target_breakeven"] = value
+        st.session_state.pop("_vp_auto_target", None)
+        st.session_state.pop("_vp_auto_target_pending", None)
 
 
 def _remember_results_view(widget_key: str) -> None:
@@ -2302,6 +2379,7 @@ def _pricing_mode_flip_switch() -> str | None:
 @st.fragment
 def _render_verti_phone_fragment(client, touch_session, vault_key: str = "default") -> None:
     _restore_presentation()
+    _advance_ticker_batch()
     # GEX wall restoration is optional scanner context, never a page-load gate.
     if hydrate_gex_snapshots(vault_key):
         persist_gex_snapshots(vault_key)
@@ -2376,6 +2454,11 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                     st.error(str(exc))
                 else:
                     st.session_state["vp_ticker_list"] = symbols
+                    st.session_state["vp_batch_results"] = {}
+                    st.session_state["_vp_batch_pending"] = []
+                    st.session_state["_vp_batch_active"] = None
+                    st.session_state["_vp_batch_errors"] = {}
+                    st.session_state["_vp_batch_total"] = 0
                     previous_targets = st.session_state.get("vp_ticker_targets") or {}
                     st.session_state["vp_ticker_targets"] = {
                         ticker: str(previous_targets.get(ticker) or "") for ticker in symbols
@@ -2396,65 +2479,70 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                 f"EDIT TICKER BREAKEVENS // {len(loaded_tickers)} LOADED",
                 expanded=False,
             ):
-                st.caption("BLANK = NO BREAKEVEN TARGET // EDIT INDIVIDUAL TARGETS // NO AUTO SCANS")
-                edited = st.data_editor(
-                    [
-                        {"Ticker": ticker, "Breakeven ($)": target_map.get(ticker, "")}
-                        for ticker in loaded_tickers
-                    ],
-                    disabled=["Ticker"], hide_index=True, num_rows="fixed",
-                    height=240, width="stretch",
-                    column_config={
-                        "Ticker": st.column_config.TextColumn("TICKER", width="small"),
-                        "Breakeven ($)": st.column_config.TextColumn(
-                            "TARGET BREAKEVEN ($)", help="Blank scans without a breakeven target. Filter the Breakeven column afterward."
-                        ),
-                    },
-                    key=f"vp_ticker_editor_{st.session_state.get('vp_ticker_editor_revision', 0)}",
+                st.caption("BLANK = NO BREAKEVEN TARGET // SELECT A TICKER TO EDIT // NO AUTO SCANS")
+                rows = "".join(
+                    "<tr><td>" + html.escape(ticker) + "</td><td>" +
+                    html.escape(target_map.get(ticker, "") or "—") + "</td></tr>"
+                    for ticker in loaded_tickers
                 )
-                updated_targets = {
-                    str(row["Ticker"]): str(row.get("Breakeven ($)") or "").strip()
-                    for row in (edited if isinstance(edited, list) else edited.to_dict("records"))
-                }
-                try:
-                    for ticker, value in updated_targets.items():
-                        if value and value.casefold() != _NO_BREAKEVEN:
-                            _entered_price(value, f"{ticker} breakeven")
-                except ValueError as exc:
-                    st.error(str(exc))
-                else:
-                    if updated_targets != target_map:
-                        changed_targets = {
-                            ticker for ticker in loaded_tickers
-                            if updated_targets.get(ticker, "") != target_map.get(ticker, "")
-                        }
-                        st.session_state["vp_ticker_targets"] = updated_targets
-                        target_map = updated_targets
-                        if st.session_state.get("vp_list_selection") in changed_targets:
-                            selected_target = st.session_state["vp_list_selection"]
-                            st.session_state["vp_target_breakeven"] = target_map.get(selected_target) or ""
-                            st.session_state.pop("_vp_auto_target", None)
-                            st.session_state.pop("_vp_auto_target_pending", None)
-                            for state_key in (
-                                "vp_scan_result", "vp_review_bundle", "vp_live_confirm",
-                                "_vp_order_candidate", "vp_last_send_results",
-                            ):
-                                st.session_state.pop(state_key, None)
+                st.html('<div class="vp-ticker-list"><table><thead><tr><th>TICKER</th>'
+                        '<th>TARGET BREAKEVEN ($)</th></tr></thead><tbody>' + rows +
+                        '</tbody></table></div>')
+                editing = st.session_state.get("vp_list_selection") or loaded_tickers[0]
+                target_key = f"vp_ticker_target_{st.session_state.get('vp_ticker_editor_revision', 0)}_{editing}"
+                if st.session_state.get(target_key) != target_map.get(editing, ""):
+                    st.session_state[target_key] = target_map.get(editing, "")
+                st.text_input(
+                    f"{editing} TARGET BREAKEVEN ($)",
+                    key=target_key, on_change=_save_pasted_ticker_target,
+                    args=(editing, target_key),
+                    help="Blank scans without a target. Filter the Breakeven column afterward.",
+                )
+                if st.session_state.get("_vp_target_input_error"):
+                    st.error(st.session_state.pop("_vp_target_input_error"))
 
             with st.container():
                 picked_ticker = st.selectbox(
-                    f"LOADED TICKERS ({len(loaded_tickers)}) // SELECT TO PREFILL",
+                    f"LOADED TICKERS ({len(loaded_tickers)}) // VIEW RESULTS",
                     loaded_tickers, key="vp_list_selection",
+                    disabled=bool(st.session_state.get("_vp_batch_pending")),
                 )
+            if st.session_state.get("_vp_batch_pending"):
+                done = len(st.session_state.get("vp_batch_results") or {})
+                failed = len(st.session_state.get("_vp_batch_errors") or {})
+                st.caption(f"BATCH SCANNING // {done + failed}/{len(loaded_tickers)} FINISHED // "
+                           f"{failed} FAILED // {st.session_state['_vp_batch_pending'][0]} IN PROGRESS")
+                if st.button("STOP BATCH", key="vp_batch_stop"):
+                    st.session_state["_vp_batch_pending"] = []
+                    st.session_state["_vp_batch_active"] = None
+                    st.session_state["_vp_batch_total"] = 0
+                    st.rerun(scope="fragment")
+            else:
+                if st.button("SCAN ALL LOADED TICKERS", key="vp_batch_scan"):
+                    st.session_state["vp_batch_results"] = {}
+                    st.session_state["_vp_batch_errors"] = {}
+                    st.session_state["_vp_batch_pending"] = list(loaded_tickers)
+                    st.session_state["_vp_batch_total"] = len(loaded_tickers)
+                    st.session_state["_vp_batch_active"] = None
+                    st.session_state["vp_scan_result"] = None
+                    st.rerun(scope="fragment")
+                if st.session_state.get("_vp_batch_total"):
+                    st.caption(f"BATCH COMPLETE // {len(st.session_state.get('vp_batch_results') or {})} "
+                               f"SCANNED // {len(st.session_state.get('_vp_batch_errors') or {})} FAILED")
+                    for failed_symbol, reason in (st.session_state.get("_vp_batch_errors") or {}).items():
+                        st.warning(f"{failed_symbol} // {reason}")
             if picked_ticker != st.session_state.get("_vp_last_list_selection"):
                 st.session_state["_vp_last_list_selection"] = picked_ticker
                 st.session_state["vp_symbol_value"] = picked_ticker
                 st.session_state["vp_target_breakeven"] = target_map.get(picked_ticker) or ""
                 for state_key in (
-                    "vp_scan_result", "vp_review_bundle", "vp_live_confirm",
+                    "vp_review_bundle", "vp_live_confirm",
                     "_vp_order_candidate", "vp_last_send_results",
                 ):
                     st.session_state.pop(state_key, None)
+                st.session_state["vp_scan_result"] = (
+                    st.session_state.get("vp_batch_results") or {}
+                ).get(picked_ticker)
                 st.session_state.pop("_vp_auto_target", None)
                 st.session_state.pop("_vp_auto_target_pending", None)
 
@@ -2608,6 +2696,9 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
+                if st.session_state.get("_vp_batch_active") == symbol:
+                    st.session_state.setdefault("_vp_batch_errors", {})[symbol] = str(exc)
+                    st.rerun(scope="fragment")
                 # Preserve the last successful snapshot if a new scan fails.
                 if scan_clicked:
                     st.session_state["vp_scan_result"] = st.session_state.pop("_vp_previous_scan_result", None)
@@ -2669,6 +2760,9 @@ def _render_verti_phone_fragment(client, touch_session, vault_key: str = "defaul
             if result.get("failed_expirations"):
                 st.error("SCAN INCOMPLETE // One or more option chains failed. Press SCAN ALL YEARS to retry the full scan; no partial results are shown.")
                 return
+            if symbol in loaded_tickers:
+                st.session_state.setdefault("vp_batch_results", {})[symbol] = result
+                _remember_scan_snapshot()
             if result["source"] == "E*TRADE" and not broker_live:
                 st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
             result["candidates"].prune_before(_minimum_expiry_date())

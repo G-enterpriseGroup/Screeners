@@ -152,6 +152,18 @@ _VERTICAL_OPTIONS_CSS = """
     -webkit-text-fill-color:var(--vo-orange)!important;
     font-family:"Courier New",monospace!important;
 }
+.st-key-vertical_options_workspace .vo-ticker-list{
+    max-height:220px;overflow:auto;border:1px solid var(--vo-orange);
+    font:800 12px/1.45 "Courier New",monospace;
+}
+.st-key-vertical_options_workspace .vo-ticker-list table{width:100%;border-collapse:collapse;}
+.st-key-vertical_options_workspace .vo-ticker-list th{
+    position:sticky;top:0;background:#fb8b1e;color:#000;padding:4px 8px;text-align:left;
+}
+.st-key-vertical_options_workspace .vo-ticker-list td{
+    background:#050505;color:#fb8b1e!important;-webkit-text-fill-color:#fb8b1e!important;
+    padding:3px 8px;border-top:1px solid #5d3605;
+}
 /* Streamlit 1.61+ multiselect uses React Aria, not BaseWeb tags.
    The actual selected chips are [data-tag] and the text is [title].
    Keep this fix inside Vertical Options; no global dropdown overrides. */
@@ -2149,7 +2161,7 @@ def _remember_scan_snapshot() -> None:
     memory = st.session_state.get("_vo_memory")
     if memory is None:
         return
-    for key in ("vo_scan_result", "_vo_chain_cache", "_vo_ticker_quotes",
+    for key in ("vo_scan_result", "vo_batch_results", "_vo_chain_cache", "_vo_ticker_quotes",
                 "_vo_manual_targets", "_vo_breakeven_symbol", "vo_ticker_list",
                 "vo_ticker_targets", "_vo_presentation", "_vo_column_filters"):
         if key in st.session_state:
@@ -2169,6 +2181,71 @@ def _remember_presentation(key: str) -> None:
 def _remember_scan_inputs() -> None:
     for key in ("vo_symbol_value", "vo_target_breakeven", "vo_min_reward_risk"):
         _remember_presentation(key)
+
+
+def _advance_ticker_batch() -> None:
+    """Move to the next loaded symbol only after the prior scan finishes or fails."""
+    pending = st.session_state.get("_vo_batch_pending") or []
+    if not pending:
+        return
+    symbol = pending[0]
+    result = st.session_state.get("vo_scan_result") or {}
+    errors = st.session_state.setdefault("_vo_batch_errors", {})
+    if st.session_state.get("_vo_batch_active") == symbol:
+        if symbol in errors:
+            pass
+        elif result.get("symbol") == symbol and result.get("scan_complete") and not result.get("failed_expirations"):
+            st.session_state.setdefault("vo_batch_results", {})[symbol] = result
+            _remember_scan_snapshot()
+        elif (result.get("symbol") == symbol and
+              (result.get("stopped_on_errors") or
+               result.get("next_expiry_index", 0) >= result.get("listed_expirations", 1) and
+               result.get("failed_expirations"))):
+            errors[symbol] = "Incomplete option chains"
+        elif st.session_state.get("_vo_auto_scan_error"):
+            errors[symbol] = st.session_state["_vo_auto_scan_error"]
+        else:
+            return
+        pending = pending[1:]
+        st.session_state["_vo_batch_pending"] = pending
+        st.session_state["_vo_batch_active"] = None
+    if not pending:
+        return
+    next_symbol = pending[0]
+    st.session_state["_vo_batch_active"] = next_symbol
+    st.session_state["vo_list_selection"] = next_symbol
+    st.session_state["_vo_last_list_selection"] = next_symbol
+    st.session_state["vo_symbol_value"] = next_symbol
+    st.session_state["vo_target_breakeven"] = (
+        st.session_state.get("vo_ticker_targets") or {}
+    ).get(next_symbol, "")
+    st.session_state["vo_scan_result"] = None
+    st.session_state["_vo_scan_pending"] = True
+    st.session_state.pop("_vo_auto_scan_error", None)
+    for key in ("vo_review_bundle", "vo_live_confirm", "_vo_order_candidate", "vo_last_send_results"):
+        st.session_state.pop(key, None)
+
+
+def _save_pasted_ticker_target(symbol: str, widget_key: str) -> None:
+    value = str(st.session_state.get(widget_key) or "").strip()
+    try:
+        if value and value.casefold() != _NO_BREAKEVEN:
+            _entered_price(value, f"{symbol} breakeven")
+    except ValueError as exc:
+        st.session_state["_vo_target_input_error"] = str(exc)
+        return
+    targets = dict(st.session_state.get("vo_ticker_targets") or {})
+    if targets.get(symbol, "") == value:
+        return
+    targets[symbol] = value
+    st.session_state["vo_ticker_targets"] = targets
+    if st.session_state.get("vo_list_selection") == symbol:
+        for key in ("vo_scan_result", "vo_review_bundle", "vo_live_confirm",
+                    "_vo_order_candidate", "vo_last_send_results"):
+            st.session_state.pop(key, None)
+        st.session_state["vo_target_breakeven"] = value
+        st.session_state.pop("_vo_auto_target", None)
+        st.session_state.pop("_vo_auto_target_pending", None)
 
 
 def _remember_results_view(widget_key: str) -> None:
@@ -2299,6 +2376,7 @@ def _pricing_mode_flip_switch() -> str | None:
 @st.fragment
 def _render_vertical_options_fragment(client, touch_session, vault_key: str = "default") -> None:
     _restore_presentation()
+    _advance_ticker_batch()
     # GEX wall restoration is optional scanner context, never a page-load gate.
     if hydrate_gex_snapshots(vault_key):
         persist_gex_snapshots(vault_key)
@@ -2318,8 +2396,7 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 "as such; broker preview and live placement remain disabled."
             )
 
-        # Optional ticker list stays collapsed until requested. Selecting from
-        # the list only pre-fills the existing one-ticker scanner; no chain calls.
+        # Loading a list does not call the broker; the explicit batch scan does.
         with st.container(key="vo_toolbar"):
             # Match the ticker/company and ratio/scan edges in the row below.
             paste_cols = st.columns([1.05, 1.7, 3.55], gap="small", vertical_alignment="top")
@@ -2378,6 +2455,11 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                     st.error(str(exc))
                 else:
                     st.session_state["vo_ticker_list"] = symbols
+                    st.session_state["vo_batch_results"] = {}
+                    st.session_state["_vo_batch_pending"] = []
+                    st.session_state["_vo_batch_active"] = None
+                    st.session_state["_vo_batch_errors"] = {}
+                    st.session_state["_vo_batch_total"] = 0
                     previous_targets = st.session_state.get("vo_ticker_targets") or {}
                     st.session_state["vo_ticker_targets"] = {
                         ticker: str(previous_targets.get(ticker) or "") for ticker in symbols
@@ -2398,65 +2480,70 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 f"EDIT TICKER BREAKEVENS // {len(loaded_tickers)} LOADED",
                 expanded=False,
             ):
-                st.caption("BLANK = NO BREAKEVEN TARGET // EDIT INDIVIDUAL TARGETS // NO AUTO SCANS")
-                edited = st.data_editor(
-                    [
-                        {"Ticker": ticker, "Breakeven ($)": target_map.get(ticker, "")}
-                        for ticker in loaded_tickers
-                    ],
-                    disabled=["Ticker"], hide_index=True, num_rows="fixed",
-                    height=240, width="stretch",
-                    column_config={
-                        "Ticker": st.column_config.TextColumn("TICKER", width="small"),
-                        "Breakeven ($)": st.column_config.TextColumn(
-                            "TARGET BREAKEVEN ($)", help="Blank scans without a breakeven target. Filter the Breakeven column afterward."
-                        ),
-                    },
-                    key=f"vo_ticker_editor_{st.session_state.get('vo_ticker_editor_revision', 0)}",
+                st.caption("BLANK = NO BREAKEVEN TARGET // SELECT A TICKER TO EDIT // NO AUTO SCANS")
+                rows = "".join(
+                    "<tr><td>" + html.escape(ticker) + "</td><td>" +
+                    html.escape(target_map.get(ticker, "") or "—") + "</td></tr>"
+                    for ticker in loaded_tickers
                 )
-                updated_targets = {
-                    str(row["Ticker"]): str(row.get("Breakeven ($)") or "").strip()
-                    for row in (edited if isinstance(edited, list) else edited.to_dict("records"))
-                }
-                try:
-                    for ticker, value in updated_targets.items():
-                        if value and value.casefold() != _NO_BREAKEVEN:
-                            _entered_price(value, f"{ticker} breakeven")
-                except ValueError as exc:
-                    st.error(str(exc))
-                else:
-                    if updated_targets != target_map:
-                        changed_targets = {
-                            ticker for ticker in loaded_tickers
-                            if updated_targets.get(ticker, "") != target_map.get(ticker, "")
-                        }
-                        st.session_state["vo_ticker_targets"] = updated_targets
-                        target_map = updated_targets
-                        if st.session_state.get("vo_list_selection") in changed_targets:
-                            selected_target = st.session_state["vo_list_selection"]
-                            st.session_state["vo_target_breakeven"] = target_map.get(selected_target) or ""
-                            st.session_state.pop("_vo_auto_target", None)
-                            st.session_state.pop("_vo_auto_target_pending", None)
-                            for state_key in (
-                                "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
-                                "_vo_order_candidate", "vo_last_send_results",
-                            ):
-                                st.session_state.pop(state_key, None)
+                st.html('<div class="vo-ticker-list"><table><thead><tr><th>TICKER</th>'
+                        '<th>TARGET BREAKEVEN ($)</th></tr></thead><tbody>' + rows +
+                        '</tbody></table></div>')
+                editing = st.session_state.get("vo_list_selection") or loaded_tickers[0]
+                target_key = f"vo_ticker_target_{st.session_state.get('vo_ticker_editor_revision', 0)}_{editing}"
+                if st.session_state.get(target_key) != target_map.get(editing, ""):
+                    st.session_state[target_key] = target_map.get(editing, "")
+                st.text_input(
+                    f"{editing} TARGET BREAKEVEN ($)",
+                    key=target_key, on_change=_save_pasted_ticker_target,
+                    args=(editing, target_key),
+                    help="Blank scans without a target. Filter the Breakeven column afterward.",
+                )
+                if st.session_state.get("_vo_target_input_error"):
+                    st.error(st.session_state.pop("_vo_target_input_error"))
 
             with paste_cols[1]:
                 picked_ticker = st.selectbox(
-                    f"LOADED TICKERS ({len(loaded_tickers)}) // SELECT TO PREFILL",
+                    f"LOADED TICKERS ({len(loaded_tickers)}) // VIEW RESULTS",
                     loaded_tickers, key="vo_list_selection",
+                    disabled=bool(st.session_state.get("_vo_batch_pending")),
                 )
+            if st.session_state.get("_vo_batch_pending"):
+                done = len(st.session_state.get("vo_batch_results") or {})
+                failed = len(st.session_state.get("_vo_batch_errors") or {})
+                st.caption(f"BATCH SCANNING // {done + failed}/{len(loaded_tickers)} FINISHED // "
+                           f"{failed} FAILED // {st.session_state['_vo_batch_pending'][0]} IN PROGRESS")
+                if st.button("STOP BATCH", key="vo_batch_stop"):
+                    st.session_state["_vo_batch_pending"] = []
+                    st.session_state["_vo_batch_active"] = None
+                    st.session_state["_vo_batch_total"] = 0
+                    st.rerun(scope="fragment")
+            else:
+                if st.button("SCAN ALL LOADED TICKERS", key="vo_batch_scan"):
+                    st.session_state["vo_batch_results"] = {}
+                    st.session_state["_vo_batch_errors"] = {}
+                    st.session_state["_vo_batch_pending"] = list(loaded_tickers)
+                    st.session_state["_vo_batch_total"] = len(loaded_tickers)
+                    st.session_state["_vo_batch_active"] = None
+                    st.session_state["vo_scan_result"] = None
+                    st.rerun(scope="fragment")
+                if st.session_state.get("_vo_batch_total"):
+                    st.caption(f"BATCH COMPLETE // {len(st.session_state.get('vo_batch_results') or {})} "
+                               f"SCANNED // {len(st.session_state.get('_vo_batch_errors') or {})} FAILED")
+                    for failed_symbol, reason in (st.session_state.get("_vo_batch_errors") or {}).items():
+                        st.warning(f"{failed_symbol} // {reason}")
             if picked_ticker != st.session_state.get("_vo_last_list_selection"):
                 st.session_state["_vo_last_list_selection"] = picked_ticker
                 st.session_state["vo_symbol_value"] = picked_ticker
                 st.session_state["vo_target_breakeven"] = target_map.get(picked_ticker) or ""
                 for state_key in (
-                    "vo_scan_result", "vo_review_bundle", "vo_live_confirm",
+                    "vo_review_bundle", "vo_live_confirm",
                     "_vo_order_candidate", "vo_last_send_results",
                 ):
                     st.session_state.pop(state_key, None)
+                st.session_state["vo_scan_result"] = (
+                    st.session_state.get("vo_batch_results") or {}
+                ).get(picked_ticker)
                 st.session_state.pop("_vo_auto_target", None)
                 st.session_state.pop("_vo_auto_target_pending", None)
 
@@ -2610,6 +2697,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
                 st.error(f"VERTICAL SCAN UNAVAILABLE // {exc}")
+                if st.session_state.get("_vo_batch_active") == symbol:
+                    st.session_state.setdefault("_vo_batch_errors", {})[symbol] = str(exc)
+                    st.rerun(scope="fragment")
                 # Preserve the last successful snapshot if a new scan fails.
                 if scan_clicked:
                     st.session_state["vo_scan_result"] = st.session_state.pop("_vo_previous_scan_result", None)
@@ -2671,6 +2761,9 @@ def _render_vertical_options_fragment(client, touch_session, vault_key: str = "d
             if result.get("failed_expirations"):
                 st.error("SCAN INCOMPLETE // One or more option chains failed. Press SCAN ALL YEARS to retry the full scan; no partial results are shown.")
                 return
+            if symbol in loaded_tickers:
+                st.session_state.setdefault("vo_batch_results", {})[symbol] = result
+                _remember_scan_snapshot()
             if result["source"] == "E*TRADE" and not broker_live:
                 st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
             result["candidates"].prune_before(_minimum_expiry_date())
