@@ -51,6 +51,48 @@ def order_ui(state, clicked=()):
     return ui
 
 
+class PastedTickerBatchTests(unittest.TestCase):
+    def test_both_tabs_scan_every_loaded_symbol_and_isolate_order_review(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            with self.subTest(tab=prefix):
+                state = {
+                    f"_{prefix}_batch_pending": ["MSFT", "SPY", "GOOGL"],
+                    f"{prefix}_ticker_targets": {"SPY": "500"},
+                    f"{prefix}_review_bundle": {"old": True},
+                    f"{prefix}_live_confirm": True,
+                }
+                with patch.object(feature.st, "session_state", state):
+                    feature._advance_ticker_batch()
+                    self.assertEqual(state[f"{prefix}_symbol_value"], "MSFT")
+                    self.assertTrue(state[f"_{prefix}_scan_pending"])
+                    self.assertNotIn(f"{prefix}_review_bundle", state)
+                    self.assertNotIn(f"{prefix}_live_confirm", state)
+                    for symbol in ("MSFT", "SPY", "GOOGL"):
+                        state[f"_{prefix}_scan_pending"] = False
+                        state[f"{prefix}_scan_result"] = {
+                            "symbol": symbol, "scan_complete": True,
+                            "failed_expirations": [], "id": symbol,
+                        }
+                        feature._advance_ticker_batch()
+                        self.assertIn(symbol, state[f"{prefix}_batch_results"])
+                    self.assertEqual(state[f"_{prefix}_batch_pending"], [])
+                    self.assertEqual(list(state[f"{prefix}_batch_results"]), ["MSFT", "SPY", "GOOGL"])
+                    self.assertEqual(state[f"{prefix}_ticker_targets"]["SPY"], "500")
+
+    def test_a_failed_ticker_advances_without_reusing_old_results(self):
+        for feature, prefix in ((desktop, "vo"), (phone, "vp")):
+            with self.subTest(tab=prefix):
+                state = {f"_{prefix}_batch_pending": ["BAD", "SPY"],
+                         f"_{prefix}_batch_active": "BAD",
+                         f"_{prefix}_batch_errors": {"BAD": "Quote unavailable"}}
+                with patch.object(feature.st, "session_state", state):
+                    feature._advance_ticker_batch()
+                self.assertEqual(state[f"{prefix}_symbol_value"], "SPY")
+                self.assertEqual(state[f"_{prefix}_batch_pending"], ["SPY"])
+                self.assertEqual(state[f"{prefix}_scan_result"], None)
+                self.assertTrue(state[f"_{prefix}_scan_pending"])
+
+
 class LiveQuoteOverlayTests(unittest.TestCase):
     def fixture(self, feature, prefix, count=1):
         now = time.time()
