@@ -181,6 +181,12 @@
         const verticalIndex = out.indexOf("VERTICAL OPTIONS");
         if (verticalIndex !== -1) out.splice(verticalIndex + 1, 0, "VERTI PHONE");
       }
+      if (allowed.includes("R.I.C.") && !out.includes("R.I.C.")) {
+        const verticalIndex = out.indexOf("VERTICAL OPTIONS");
+        let insertAt = verticalIndex + 1;
+        if (out[insertAt] === "VERTI PHONE") insertAt += 1;
+        if (verticalIndex !== -1) out.splice(insertAt, 0, "R.I.C.");
+      }
       allowed.forEach((item) => { if (!out.includes(item)) out.push(item); });
       return out;
     }

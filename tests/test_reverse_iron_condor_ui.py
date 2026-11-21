@@ -1,0 +1,520 @@
+"""Independent R.I.C. interaction, four-leg links and reviewed-order regressions."""
+from copy import deepcopy
+import csv
+from datetime import date, timedelta
+import io
+from pathlib import Path
+import sys
+import time
+from types import ModuleType
+import unittest
+from unittest.mock import MagicMock, patch
+from urllib.parse import unquote
+import zipfile
+
+from src import reverse_iron_condor_ui as ui
+from src.reverse_iron_condor import RIC_PRICING_POLICY, scan_ric_candidates
+from src.etrade_data_cache import session_namespace
+from src.etrade_client import ETradeError
+
+
+ACCOUNTS = [
+    {"accountIdKey": "other", "accountId": "10001234", "accountDesc": "Other synthetic"},
+    {"accountIdKey": "preferred", "accountId": "10005474", "accountDesc": "Preferred synthetic"},
+]
+
+
+def quoted_condor(width=5, fee=0):
+    expiry = date.today() + timedelta(days=45)
+    specs = [("PUT", 95-width, 1), ("PUT", 95, 1.5),
+             ("CALL", 105, 1.5), ("CALL", 105+width, 1)]
+    rows = [dict(expiry=expiry, call_put=side, strike=strike, last=last,
+                 bid=last-.05, ask=last+.05, open_interest=1000, volume=100,
+                 osi=f"SPY{expiry:%y%m%d}{side[0]}{strike*1000:08d}")
+            for side, strike, last in specs]
+    candidates, _ = scan_ric_candidates(symbol="SPY", spot_last=100, option_rows=rows,
+                                        target_breakeven=None, max_cost=None,
+                                        max_per_expiration=None, fee_per_spread=fee)
+    return candidates[0], rows
+
+
+def order_ui(state, clicked=()):
+    view = MagicMock()
+    view.session_state = state
+    view.button.side_effect = lambda label, *, key, disabled=False, **kwargs: key in clicked and not disabled
+    view.checkbox.side_effect = lambda label, *, key, **kwargs: state.get(key, False)
+    view.number_input.side_effect = lambda label, *, key, **kwargs: state.setdefault(key, 1)
+    view.selectbox.side_effect = lambda label, options, *, key, **kwargs: state.setdefault(key, options[0])
+    view.multiselect.side_effect = lambda label, options, *, key, **kwargs: list(state.get(key, []))
+    view.columns.side_effect = lambda widths, **kwargs: [view] * (widths if isinstance(widths, int) else len(widths))
+    return view
+
+
+def result(fee=0):
+    return {"pricing_policy": RIC_PRICING_POLICY, "loaded_at": time.time(),
+            "source": "E*TRADE", "max_cost": None, "min_reward_risk": 2,
+            "pricing_mode": "NORMAL", "fee_per_spread": fee}
+
+
+class LocalAccessCompatibilityTests(unittest.TestCase):
+    def view(self, *, unlocked=False):
+        view = MagicMock()
+        view.session_state = {"etrade_access_unlocked": unlocked}
+        view.fragment.side_effect = lambda render, **options: render
+        view.dialog.side_effect = lambda title, **options: lambda render: render
+        view.stop.side_effect = PermissionError("Terminal locked")
+        return view
+
+    def test_legacy_unlocked_contract_does_not_require_an_oauth_session(self):
+        view = self.view(unlocked=True)
+        with patch.object(ui, "st", view), patch.dict(sys.modules, {"src.security_runtime": None}):
+            self.assertIsNone(ui._require_ric_access())
+        view.rerun.assert_not_called()
+        view.stop.assert_not_called()
+        self.assertEqual(view.session_state, {"etrade_access_unlocked": True})
+
+    def test_locked_entry_stops_before_feature_render_or_broker_calls(self):
+        view, broker = self.view(), MagicMock()
+        with (patch.object(ui, "st", view), patch.dict(sys.modules, {"src.security_runtime": None}),
+              patch.object(ui, "_render_reverse_iron_condor_fragment") as render):
+            with self.assertRaises(PermissionError):
+                ui.render_reverse_iron_condor(broker, lambda: None)
+        view.rerun.assert_called_once_with(scope="app")
+        view.html.assert_not_called()
+        render.assert_not_called()
+        self.assertEqual(broker.mock_calls, [])
+
+    def test_locked_callback_fragment_and_dialog_never_enter_their_bodies(self):
+        for boundary in ("callback", "fragment", "dialog"):
+            with self.subTest(boundary=boundary):
+                view, called = self.view(), []
+                def body():
+                    called.append("financial work")
+                with patch.object(ui, "st", view), patch.dict(sys.modules, {"src.security_runtime": None}):
+                    decorate = (ui.finance_callback if boundary == "callback" else
+                                ui.finance_fragment if boundary == "fragment" else
+                                ui.finance_dialog("Synthetic portfolio"))
+                    protected = decorate(body)
+                    with self.assertRaises(PermissionError):
+                        protected()
+                self.assertEqual(called, [])
+                view.rerun.assert_called_once_with(scope="app")
+
+    def test_unlocked_local_wrappers_preserve_options_arguments_and_results(self):
+        view = self.view(unlocked=True)
+        def body(value):
+            return value + 1
+        with patch.object(ui, "st", view), patch.dict(sys.modules, {"src.security_runtime": None}):
+            self.assertEqual(ui.finance_callback(body)(2), 3)
+            self.assertEqual(ui.finance_fragment(run_every=1)(body)(3), 4)
+            self.assertEqual(ui.finance_dialog("Synthetic portfolio", width="large")(body)(4), 5)
+        self.assertEqual(view.fragment.call_args.kwargs, {"run_every": 1})
+        view.dialog.assert_called_once_with("Synthetic portfolio", width="large")
+        view.rerun.assert_not_called()
+
+    def test_optional_finance_guard_is_authoritative_and_never_touches_idle_time(self):
+        guard = ModuleType("src.security_runtime")
+        principal = object()
+        guard.require_finance_access = MagicMock(return_value=principal)
+        view = self.view()
+        with patch.object(ui, "st", view), patch.dict(sys.modules, {"src.security_runtime": guard}):
+            self.assertIs(ui._require_ric_access(), principal)
+        guard.require_finance_access.assert_called_once_with(touch=False)
+        view.rerun.assert_not_called()
+
+    def test_optional_guard_denial_cannot_fall_back_to_legacy_unlocked_boolean(self):
+        guard = ModuleType("src.security_runtime")
+        guard.require_finance_access = MagicMock(side_effect=PermissionError("MFA revoked"))
+        view, called = self.view(unlocked=True), []
+        def body():
+            called.append("financial work")
+        with patch.object(ui, "st", view), patch.dict(sys.modules, {"src.security_runtime": guard}):
+            with self.assertRaisesRegex(PermissionError, "MFA revoked"):
+                ui.finance_callback(body)()
+        self.assertEqual(called, [])
+        view.rerun.assert_not_called()
+
+    def test_missing_dependency_of_present_security_module_fails_closed(self):
+        view, original_import = self.view(unlocked=True), __import__
+        def broken_import(name, *args, **kwargs):
+            if name == "src.security_runtime":
+                raise ModuleNotFoundError("Security storage dependency missing", name="src.security_store")
+            return original_import(name, *args, **kwargs)
+        with patch.object(ui, "st", view), patch("builtins.__import__", side_effect=broken_import):
+            with self.assertRaises(ModuleNotFoundError) as raised:
+                ui._require_ric_access()
+        self.assertEqual(raised.exception.name, "src.security_store")
+        view.rerun.assert_not_called()
+
+
+class QuoteLinksAndExportTests(unittest.TestCase):
+    def test_four_legs_two_breakevens_and_both_profits_reach_table(self):
+        candidate, _ = quoted_condor()
+        row = ui._spread_table_row(candidate, {candidate["id"]})
+        self.assertEqual([leg["label"] for leg in row["ric_legs"]], ["P BUY", "P SELL", "C BUY", "C SELL"])
+        self.assertEqual([leg["strike"] for leg in row["ric_legs"]], [95, 90, 105, 110])
+        self.assertTrue(all(leg["open_interest"] == 1000 for leg in row["ric_legs"]))
+        self.assertEqual(row["lower_breakeven"], candidate["lower_breakeven"])
+        self.assertEqual(row["downside_profit"], candidate["downside_profit"])
+        self.assertEqual(row["upside_profit"], candidate["upside_profit"])
+
+    def test_optionstrat_and_tradingview_have_exact_four_actions(self):
+        c, _ = quoted_condor()
+        osi_date = c["expiry"].strftime("%y%m%d")
+        self.assertIn("/build/inverse-iron-condor/SPY/", ui._optionstrat_url(c))
+        self.assertTrue(ui._optionstrat_url(c).endswith(
+            f"-.SPY{osi_date}P90,.SPY{osi_date}P95,.SPY{osi_date}C105,-.SPY{osi_date}C110"))
+        formula = f"OPRA:SPY{osi_date}P95.0-OPRA:SPY{osi_date}P90.0+OPRA:SPY{osi_date}C105.0-OPRA:SPY{osi_date}C110.0"
+        self.assertEqual(ui._tradingview_spread_formula(c), formula)
+        self.assertIn(formula, unquote(ui._tradingview_spread_url(c)))
+        broken = c | {"put_buy_osi": c["buy_osi"]}
+        self.assertEqual(ui._tradingview_spread_formula(broken), "")
+        self.assertEqual(ui._optionstrat_url(broken), "")
+
+    def test_full_csv_excel_and_drafts_retain_put_legs_and_fees(self):
+        c, _ = quoted_condor(fee=2.6)
+        options = dict(source="SYNTHETIC", loaded_at=1, target=None, max_cost=None)
+        data = list(csv.DictReader(io.StringIO(ui._qualified_spreads_csv([c], set(), **options))))
+        self.assertEqual(len(data), 1)
+        for key in ("Long Put Strike", "Short Put Strike", "Long Call Strike", "Short Call Strike",
+                    "Lower Breakeven ($)", "Upper Breakeven ($)", "Downside Profit ($)", "Upside Profit ($)",
+                    "OptionStrat URL", "TradingView URL"):
+            self.assertTrue(data[0][key], key)
+        self.assertEqual(float(data[0]["Estimated Fees Per RIC ($)"]), 2.6)
+        book = ui._qualified_spreads_xlsx([c], set(), **options)
+        with zipfile.ZipFile(io.BytesIO(book)) as archive:
+            content = archive.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn("Long Put Strike", content)
+        self.assertIn("Short Call OSI", content)
+        self.assertIn("Lower Breakeven", content)
+        drafts = {}
+        self.assertEqual(ui._save_checked_spreads(drafts, [c], "SYNTHETIC"), 1)
+        self.assertEqual(ui._save_checked_spreads(drafts, [c], "SYNTHETIC"), 0)
+        draft = list(csv.DictReader(io.StringIO(ui._saved_drafts_csv(drafts))))[0]
+        self.assertEqual(draft["Long Put Strike"], "95.0")
+        self.assertEqual(draft["Quote Snapshot"], "")
+        self.assertEqual(draft["Status"], "TERMINAL SESSION DRAFT - NOT SENT")
+
+    def test_minimum_is_strict_and_fee_estimate_nonnegative(self):
+        self.assertEqual(ui._entered_reward_risk("1:2"), 2)
+        self.assertEqual(ui._entered_reward_risk("3"), 3)
+        for value in ("1.99", "0", "nan", "inf", "-1"):
+            with self.assertRaises(ValueError, msg=value):
+                ui._entered_reward_risk(value)
+        self.assertEqual(ui._entered_fee("0"), 0)
+        self.assertEqual(ui._entered_fee("$2.60"), 2.6)
+        for value in ("-1", "nan", "inf", ""):
+            with self.assertRaises(ValueError):
+                ui._entered_fee(value)
+
+    def test_account_defaults_never_borrow_risk_and_keep_empty_cash(self):
+        state = {"etrade_accounts": ACCOUNTS, "risk_sizing_account": 0, "_ric_order_accounts_memory": []}
+        broker = MagicMock()
+        with patch.object(ui.st, "session_state", state):
+            self.assertEqual(ui._default_account_keys(ACCOUNTS), ["preferred"])
+            self.assertIn("UNAVAILABLE", ui._liquid_cash_markup(broker, lambda: None))
+        broker.get_balance.assert_not_called()
+
+
+class ReviewedOrderTests(unittest.TestCase):
+    def setup_order(self, width=5, accounts=None):
+        c, rows = quoted_condor(width)
+        state = {"etrade_accounts": ACCOUNTS, "ric_accounts": accounts if accounts is not None else ["preferred"]}
+        broker = MagicMock(is_offline=False)
+        broker.preview_order.return_value = {"PreviewOrderResponse": {"PreviewIds": [{"previewId": 123}], "estimatedCommission": 0}}
+        broker.place_order.return_value = {"PlaceOrderResponse": {"OrderIds": [{"orderId": 456}]}}
+        return c, rows, state, broker, result()
+
+    def render(self, c, rows, state, broker, scan, clicked=()):
+        view = order_ui(state, clicked)
+        with patch.object(ui, "st", view), patch.object(ui, "_chain", return_value=rows):
+            ui._render_selected_order(broker, lambda: None, c, scan, True)
+        return view
+
+    def test_idle_and_empty_accounts_never_preview_or_place(self):
+        c, rows, state, broker, scan = self.setup_order(accounts=[])
+        self.render(c, rows, state, broker, scan, clicked=("ric_preview", "ric_send"))
+        self.assertEqual(state["ric_accounts"], [])
+        broker.preview_order.assert_not_called()
+        broker.place_order.assert_not_called()
+
+    def test_preview_all_accounts_four_legs_then_confirmation_and_exact_send(self):
+        c, rows, state, broker, scan = self.setup_order(accounts=["preferred", "other"])
+        self.render(c, rows, state, broker, scan, clicked=("ric_preview",))
+        self.assertEqual(broker.preview_order.call_count, 2)
+        broker.place_order.assert_not_called()
+        first_preview = broker.preview_order.call_args_list[0].args[1]["PreviewOrderRequest"]["Order"]
+        instruments = first_preview[0]["Instrument"]
+        self.assertEqual([(leg["Product"]["callPut"], leg["Product"]["strikePrice"], leg["orderAction"]) for leg in instruments],
+                         [("PUT",90,"SELL_OPEN"),("PUT",95,"BUY_OPEN"),("CALL",105,"BUY_OPEN"),("CALL",110,"SELL_OPEN")])
+        self.render(c, rows, state, broker, scan, clicked=("ric_send",))
+        broker.place_order.assert_not_called()
+        state["ric_live_confirm"] = True
+        self.render(c, rows, state, broker, scan, clicked=("ric_send",))
+        self.assertEqual(broker.place_order.call_count, 2)
+        self.assertEqual(broker.place_order.call_args_list[0].args[1]["PlaceOrderRequest"]["Order"], first_preview)
+        self.assertNotIn("ric_review_bundle", state)
+
+    def test_actual_commission_blocks_prefee_two_to_one_boundary(self):
+        c, rows, state, broker, scan = self.setup_order(width=3)
+        self.assertAlmostEqual(c["reward_risk"], 2)
+        broker.preview_order.return_value["PreviewOrderResponse"]["estimatedCommission"] = .01
+        view = self.render(c, rows, state, broker, scan, clicked=("ric_preview",))
+        self.assertNotIn("ric_review_bundle", state)
+        self.assertTrue(any("commission" in str(call).lower() for call in view.warning.call_args_list))
+        broker.place_order.assert_not_called()
+
+    def test_broker_fees_alone_reject_two_to_one_preview_for_all_accounts(self):
+        c, rows, state, broker, scan = self.setup_order(width=3, accounts=["preferred", "other"])
+        broker.preview_order.return_value = {"PreviewOrderResponse": {
+            "PreviewIds":[{"previewId":123}], "totalCommission":0,
+            "Order":[{"estimatedCommission":0,"estimatedFees":.01,"estimatedTotalAmount":100.01}]}}
+        view = self.render(c,rows,state,broker,scan,clicked=("ric_preview",))
+        self.assertEqual(broker.preview_order.call_count,2)
+        self.assertNotIn("ric_review_bundle",state)
+        self.assertTrue(any("fees" in str(call).lower() for call in view.warning.call_args_list))
+        broker.place_order.assert_not_called()
+
+    def test_authoritative_broker_charges_do_not_double_count_repeated_leg_fields(self):
+        payload = {"PreviewOrderResponse":{"PreviewIds":[{"previewId":123}],
+                   "totalOrderValue":109.1,"totalCommission":2,
+                   "Order":[{"estimatedCommission":2,"estimatedFees":.1,"estimatedTotalAmount":109.1,
+                             "Instrument":[{"estimatedCommission":2,"estimatedFees":.1} for _ in range(4)]}]}}
+        details = ui._ric_preview_details(payload,gross_debit=107)
+        self.assertAlmostEqual(details["estimated_total_charges"],2.1)
+        self.assertEqual(details["estimated_commission"],2)
+        self.assertEqual(details["estimated_fees"],.1)
+        # Official spread response's total contains a charge beyond commission.
+        payload["PreviewOrderResponse"].update(totalOrderValue=508.4762,totalCommission=8.44)
+        payload["PreviewOrderResponse"]["Order"] = [{"estimatedCommission":8.44,"estimatedTotalAmount":508.4762}]
+        details = ui._ric_preview_details(payload,gross_debit=500)
+        self.assertAlmostEqual(details["estimated_total_charges"],8.4762)
+
+    def test_invalid_fee_or_total_estimates_cannot_enable_preview(self):
+        for key in ("estimatedFees","estimatedTotalAmount"):
+            for value in (None,True,"malformed",float("nan"),float("inf"),-1):
+                c,rows,state,broker,scan=self.setup_order()
+                broker.preview_order.return_value = {"PreviewOrderResponse":{"PreviewIds":[{"previewId":123}],
+                    "Order":[{"estimatedCommission":0,key:value}]}}
+                self.render(c,rows,state,broker,scan,clicked=("ric_preview",))
+                self.assertNotIn("ric_review_bundle",state,(key,value))
+                broker.place_order.assert_not_called()
+        with self.assertRaises(ETradeError):
+            ui._ric_preview_details({"PreviewOrderResponse":{"totalOrderValue":99}},gross_debit=100)
+
+    def test_slow_first_submission_cannot_use_expired_second_account_preview(self):
+        c,rows,state,broker,scan=self.setup_order(accounts=["preferred","other"])
+        now=[time.time()]
+        with patch.object(ui.time,"time",side_effect=lambda:now[0]):
+            self.render(c,rows,state,broker,scan,clicked=("ric_preview",))
+            state["ric_live_confirm"]=True
+            def slow_place(*args,**kwargs):
+                now[0]+=ui._PREVIEW_FRESH_SECONDS+1
+                return {"PlaceOrderResponse":{"OrderIds":[{"orderId":456}]}}
+            broker.place_order.side_effect=slow_place
+            self.render(c,rows,state,broker,scan,clicked=("ric_send",))
+        self.assertEqual(broker.place_order.call_count,1)
+        self.assertEqual(state["ric_last_send_results"][0]["status"],"SUBMITTED")
+        self.assertEqual(state["ric_last_send_results"][1]["status"],"NOT SUBMITTED")
+        self.assertNotIn("ric_review_bundle",state)
+
+    def test_put_quote_drift_duplicate_or_wrong_expiration_blocks_requote(self):
+        c, rows, state, broker, scan = self.setup_order()
+        variants = [rows + [deepcopy(rows[1])], [row | {"expiry": row["expiry"]+timedelta(days=1)} for row in rows],
+                    [row | {"ask": row["ask"]+2} if row["call_put"] == "PUT" and row["strike"] == 95 else row for row in rows]]
+        for changed in variants:
+            with patch.object(ui.st, "session_state", state), patch.object(ui, "_chain", return_value=changed):
+                with self.assertRaises(ValueError):
+                    ui._validate_current_ric_limit(broker, lambda: None, c, scan, c["debit"])
+
+    def test_preview_rejection_invalid_commission_and_stale_data_never_send(self):
+        for commission in (float("nan"), -1):
+            c, rows, state, broker, scan = self.setup_order()
+            broker.preview_order.return_value["PreviewOrderResponse"]["estimatedCommission"] = commission
+            self.render(c, rows, state, broker, scan, clicked=("ric_preview", "ric_send"))
+            self.assertNotIn("ric_review_bundle", state)
+            broker.place_order.assert_not_called()
+        c, rows, state, broker, scan = self.setup_order()
+        scan["loaded_at"] = time.time()-301
+        self.render(c, rows, state, broker, scan, clicked=("ric_preview", "ric_send"))
+        broker.preview_order.assert_not_called()
+
+    def test_changed_put_leg_fingerprint_or_empty_selection_invalidates_preview(self):
+        c, rows, state, broker, scan = self.setup_order()
+        self.render(c, rows, state, broker, scan, clicked=("ric_preview",))
+        self.assertIn("ric_review_bundle", state)
+        changed = c | {"put_sell_strike": c["put_sell_strike"]-1}
+        self.render(changed, rows, state, broker, scan)
+        self.assertNotIn("ric_review_bundle", state)
+        broker.place_order.assert_not_called()
+        self.render(c, rows, state, broker, scan, clicked=("ric_preview",))
+        state["ric_accounts"] = []
+        self.render(c, rows, state, broker, scan)
+        self.assertNotIn("ric_review_bundle", state)
+
+    def test_send_requotes_then_stops_uncertain_multiaccount_batch(self):
+        c, rows, state, broker, scan = self.setup_order(accounts=["preferred", "other"])
+        self.render(c, rows, state, broker, scan, clicked=("ric_preview",))
+        state["ric_live_confirm"] = True
+        broker.place_order.side_effect = TimeoutError("synthetic uncertain reply")
+        self.render(c, rows, state, broker, scan, clicked=("ric_send",))
+        self.assertEqual(broker.place_order.call_count, 1)
+        self.assertNotIn("ric_review_bundle", state)
+        self.render(c, rows, state, broker, scan, clicked=("ric_send",))
+        self.assertEqual(broker.place_order.call_count, 1)
+
+
+
+class LiveQuoteOverlayTests(unittest.TestCase):
+    def fixture(self, count=1):
+        now = time.time()
+        candidate, _ = quoted_condor()
+        rows = []
+        for index in range(count):
+            row = candidate | {"id": str(index)}
+            for prefix, strike, side in (("put_buy", 995-index*10, "P"), ("put_sell", 990-index*10, "P"),
+                                         ("buy", 1005+index*10, "C"), ("sell", 1010+index*10, "C")):
+                row[prefix + "_strike"] = strike
+                row[prefix + "_osi"] = f"SPY{candidate['expiry']:%y%m%d}{side}{strike*1000:08d}"
+            rows.append(row)
+        token = {"oauth_token":"RIC-SYNTHETIC-TOKEN", "oauth_token_secret":"RIC-SYNTHETIC-SECRET", "issued_at":now}
+        state = {"etrade_access_unlocked":True, "etrade_access_token":token, "etrade_last_activity_at":now,
+                 "terminal_tab_state":{"active":"R.I.C."},
+                 "ric_scan_result":{"scope":"scope", "source":"E*TRADE", "unchanged":True},
+                 "ric_review_bundle":{"untouched":True}, "ric_live_confirm":True}
+        broker = MagicMock(is_offline=False)
+        broker._namespace = session_namespace(token)
+        broker.get_quote.side_effect = lambda symbols, **kwargs: self.payload(symbols, now)
+        return state, broker, rows, now
+
+    def payload(self, symbols, now, omit_put=False):
+        data = []
+        for symbol in symbols.split(","):
+            root, year, month, day, side, strike = symbol.split(":")
+            expiry = date(int(year),int(month),int(day))
+            strike = float(strike)
+            if omit_put and side == "PUT":
+                continue
+            long = (side == "CALL" and int(strike)%10 == 5) or (side == "PUT" and int(strike)%10 == 5)
+            premium = 3 if long else 2
+            data.append({"Product":{"symbol":root,"securityType":"OPTN","expiryYear":expiry.year,
+                                     "expiryMonth":expiry.month,"expiryDay":expiry.day,"callPut":side,"strikePrice":strike},
+                         "All":{"bid":premium-.05,"ask":premium+.05,
+                                "osiKey":f"{root}{expiry:%y%m%d}{side[0]}{int(strike*1000):08d}"},
+                         "dateTimeUTC":now,"quoteStatus":"REALTIME"})
+        return {"QuoteResponse":{"QuoteData":data}}
+
+    def tick(self, state, broker, rows, revision=1):
+        ui._live_quote_context("scope", "view", rows, True, broker)
+        state["bridge"] = {"kind":"quote_tick", "scope":"scope", "quote_sort_key":"view",
+                           "quote_revision":revision,"quote_ids":[row["id"] for row in rows[:20]]}
+        with patch.object(ui, "_require_ric_access"):
+            ui._refresh_live_quotes(broker,"bridge","scope","view")
+        return state["_ric_live_quotes"]
+
+    def test_twenty_rows_deduplicate_and_batch_all_eighty_exact_contracts(self):
+        state, broker, rows, now = self.fixture(20)
+        before_rows, before_scan, before_review = deepcopy(rows), deepcopy(state["ric_scan_result"]), deepcopy(state["ric_review_bundle"])
+        with patch.object(ui.st,"session_state",state), patch.object(ui.time,"time",return_value=now):
+            overlay = self.tick(state,broker,rows)
+        self.assertEqual(broker.get_quote.call_count,4)
+        queried = [symbol for call in broker.get_quote.call_args_list for symbol in call.args[0].split(",")]
+        self.assertEqual(len(queried),80)
+        self.assertEqual(len(set(queried)),80)
+        self.assertTrue(all(len(call.args[0].split(",")) <= 25 for call in broker.get_quote.call_args_list))
+        for market in overlay["markets"].values():
+            self.assertAlmostEqual(market["bid"],1.8)
+            self.assertAlmostEqual(market["mid"],2)
+            self.assertAlmostEqual(market["ask"],2.2)
+            self.assertFalse(market["stale"])
+        self.assertEqual(rows,before_rows)
+        self.assertEqual(state["ric_scan_result"],before_scan)
+        self.assertEqual(state["ric_review_bundle"],before_review)
+        self.assertTrue(state["ric_live_confirm"])
+        for method in (broker.preview_order,broker.place_order,broker.list_accounts,broker.get_balance,broker.get_option_chain):
+            method.assert_not_called()
+
+    def test_missing_put_marks_previous_overlay_stale_with_backoff(self):
+        state,broker,rows,now = self.fixture()
+        with patch.object(ui.st,"session_state",state), patch.object(ui.time,"time",return_value=now):
+            self.tick(state,broker,rows)
+        broker.get_quote.side_effect = lambda symbols, **kwargs:self.payload(symbols,now+11,omit_put=True)
+        with patch.object(ui.st,"session_state",state), patch.object(ui.time,"time",return_value=now+11):
+            overlay = self.tick(state,broker,rows,2)
+        self.assertTrue(overlay["markets"]["0"]["stale"])
+        self.assertEqual(overlay["markets"]["0"]["ask"],2.2)
+        self.assertGreaterEqual(overlay["next_due"],now+41)
+
+    def test_wrong_route_or_invalid_scope_never_queries_broker(self):
+        state,broker,rows,now = self.fixture()
+        state["terminal_tab_state"]["active"] = "VERTICAL OPTIONS"
+        with patch.object(ui.st,"session_state",state), patch.object(ui.time,"time",return_value=now):
+            self.tick(state,broker,rows)
+        broker.get_quote.assert_not_called()
+        state["terminal_tab_state"]["active"] = "R.I.C."
+        state["ric_scan_result"]["scope"] = "other"
+        with patch.object(ui.st,"session_state",state), patch.object(ui.time,"time",return_value=now):
+            self.tick(state,broker,rows,2)
+        broker.get_quote.assert_not_called()
+
+
+class PortfolioAndIsolationTests(unittest.TestCase):
+    def positions(self):
+        c, rows = quoted_condor()
+        return [{"Product": {"symbol":"SPY", "securityType":"OPTN", "callPut":row["call_put"],
+                              "expiryYear":row["expiry"].year,"expiryMonth":row["expiry"].month,
+                              "expiryDay":row["expiry"].day,"strikePrice":row["strike"]},
+                 "positionType":"LONG" if row["strike"] in (95,105) else "SHORT", "quantity":2,
+                 "osiKey":row["osi"],"totalCost":row["last"]*200,"totalGain":10,
+                 "Complete":{"optionMultiplier":100,"optionsAdjustedFlag":False}}
+                for row in rows]
+
+    def test_portfolio_pairs_only_unambiguous_four_leg_standard_condors(self):
+        positions = self.positions()
+        condors, unmatched = ui._portfolio_rics(positions)
+        self.assertEqual(len(condors), 1)
+        self.assertFalse(unmatched)
+        self.assertEqual(condors[0]["quantity"], 2)
+        self.assertEqual(condors[0]["lower_breakeven"], 94)
+        self.assertEqual(condors[0]["breakeven"], 106)
+        for bad in (positions[:3], positions+[deepcopy(positions[0])],
+                    [row | {"Complete":{"optionMultiplier":10}} if i == 0 else row for i,row in enumerate(positions)]):
+            paired, review = ui._portfolio_rics(bad)
+            self.assertFalse(paired)
+            self.assertTrue(review)
+
+    def test_repricing_retains_fee_snapshot_filters_and_independent_store(self):
+        c, rows = quoted_condor(fee=2.6)
+        now = time.time()
+        raw = {"symbol":"SPY", "spot":100, "rows":rows, "scan_id":123,
+               "loaded_at":now-40, "scan_complete":True,"loaded_expirations":1}
+        state = {"_ric_chain_cache":{"E*TRADE:SPY":raw},
+                 "_ric_column_filters":{"scope":"market-data", "filters":{"put_buy":{"min":94}}}}
+        before = deepcopy(state["_ric_column_filters"])
+        scan = result(2.6) | {"symbol":"SPY","raw_scan_id":123,"target":None,"scope":"old",
+                              "loaded_at":raw["loaded_at"],"capacity_limited":False}
+        with patch.object(ui.st,"session_state",state), patch.object(ui.st,"progress",return_value=MagicMock()):
+            normal, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6)
+            repriced = ui._reprice_cached_ric_scan(scan,"SMART FILL")
+        self.assertEqual(len(normal),1)
+        self.assertEqual(len(repriced["candidates"]),1)
+        self.assertIsNot(normal,repriced["candidates"])
+        self.assertEqual(repriced["fee_per_spread"],2.6)
+        self.assertEqual(repriced["loaded_at"],now-40)
+        self.assertEqual(repriced["candidates"].page()[0]["fee_per_spread"],2.6)
+        self.assertEqual(state["_ric_column_filters"],before)
+        self.assertNotEqual(repriced["scope"],"old")
+
+    def test_new_owner_preserves_original_features_and_private_keys(self):
+        from src import vertical_options_ui as desktop
+        self.assertIsNot(ui._scan_memory("ric-test"), desktop._scan_memory("ric-test"))
+        source = Path(ui.__file__).read_text()
+        for private in ('key="ric_accounts"', 'key="ric_live_confirm"', '"_ric_chain_cache"', '"_ric_live_quotes"'):
+            self.assertIn(private, source)
+        self.assertNotIn('key="vo_', source)
+        self.assertIn('@finance_callback\ndef _refresh_live_quotes', source)
+        self.assertIn('@finance_fragment\ndef _render_reverse_iron_condor_fragment', source)
+
+
+if __name__ == "__main__":
+    unittest.main()

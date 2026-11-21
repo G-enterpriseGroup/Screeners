@@ -48,6 +48,7 @@ These are durable terminal preferences and should be checked on every UI change:
 | App routing / tab dispatch | `streamlit_app.py` | `src/tab_bar_v4.py` | `src/terminal_core.py` unless changing legacy shared core behavior |
 | E*TRADE Risk Sizing production route | `src/risk_sizing_ui_v7.py` → `src/risk_sizing_ui_v10.py` | `src/risk_sizing_ui_v9.py`, `src/risk_sizing_ui_v2.py`, `src/ticker_autocomplete.py` | GEX, OAuth, Holdings, Schwab files |
 | Vertical Options live order ticket | `src/vertical_options_ui.py` | `src/vertical_options.py`, `src/yfinance_options.py` public chain fallback, read-only option-chain normalization from `src/option_book.py`, existing `src/etrade_client.py` Preview/Place transport | Risk Sizing, Option Book UI, OAuth, GEX, Holdings |
+| R.I.C. reverse iron condor scanner and order ticket | `src/reverse_iron_condor_ui.py` | `src/reverse_iron_condor.py`, `src/reverse_iron_condor_store.py`, private `ric_spread_scroller_v1` / `ric_pricing_preference_v1` components, unchanged quote bridge and existing market-data/E*TRADE transports | Original Vertical Options/Verti Phone owners, OAuth, Risk Sizing, shared theme |
 | Verti Phone independent mobile verticals | `src/verti_phone_ui.py` | `src/components/vp_spread_scroller_v1/index.html`, `src/components/vp_pricing_preference_v1/index.html`, unchanged canonical `src/vertical_options.py` math, `src/vertical_options_store.py` result storage, public fallback and E*TRADE transport | Original Vertical Options UI/components/state, Risk Sizing, OAuth, shared theme |
 | Protective Puts read-only analytics | `src/protective_puts_ui.py` | `src/protective_puts_portfolio_ui.py` portfolio proxy-put mode, `src/protective_puts.py` analytics/math, `src/protective_puts_sources.py` public fallback, read-only chain normalization from `src/option_book.py`, existing `src/etrade_client.py` quote/chain transport | Risk Sizing, Vertical Options ordering, OAuth, GEX, Holdings |
 | Schwab Risk Sizing shell / future broker route | `src/schwab_risk_sizing_ui.py` | `src/risk_sizing.py` formulas after Schwab API/holdings adapter is available | E*TRADE Risk Sizing, GEX, OAuth, Holdings files |
@@ -115,6 +116,16 @@ Production path:
 - Preserve fragment-scoped reruns for ticket edits; do not globally patch Streamlit or edit Risk Sizing to achieve live updates.
 - Reuse existing E*TRADE OAuth/session and `ETradeClient.preview_order/place_order` transport without changing OAuth UI.
 - Do not modify Option Book behavior; its existing UI remains disabled/preview-only unless separately requested.
+
+## R.I.C. edit map
+
+Production path: `streamlit_app.py` → `src/reverse_iron_condor_ui.py` → `src/reverse_iron_condor.py` + `src/reverse_iron_condor_store.py` + existing market-data and E*TRADE transports.
+
+- R.I.C. is an independently owned copy of the desktop Vertical Options workflow. Keep widget, result, selection, account, browser-preference and order-review identities separate from both vertical tabs.
+- Every candidate contains one same-expiry bear put debit spread below spot and bull call debit spread above spot: short put < long put < spot < long call < short call. The total four-leg debit funds both wings. Both directional profits, using their own width minus the total cost, must satisfy at least 1:2 risk:reward; use the narrower wing for the conservative displayed reward. Both breakevens include the total debit and any configured fee estimate.
+- Preserve complete qualifying result retention, column filters, year views, full exports, exact four-contract OptionStrat/TradingView links, public-price labeling and discrete fresh exact-leg requote → all-account preview → confirmation → explicit live Send. A scan, selection, refresh, chart link or export must never submit an order.
+- Account preferences stay R.I.C.-local, default to suffix `5474` when available and retain explicit empty selections. Never restore trading approvals from scan recovery. Styling belongs only to the R.I.C. owner and its private components.
+- Performance is temporarily hidden through `DISABLED_TAB_ROUTES`; preserve its renderer, header and implementation for later reactivation.
 
 ## Verti Phone edit map
 

@@ -88,6 +88,20 @@ FEATURE_ROUTES = {
             "src/etrade_client.py",
         ],
     },
+    "reverse_iron_condor": {
+        "entry": "src/reverse_iron_condor_ui.py",
+        "owner": "src/reverse_iron_condor_ui.py",
+        "support": [
+            "src/reverse_iron_condor.py",
+            "src/reverse_iron_condor_store.py",
+            "src/components/ric_spread_scroller_v1/index.html",
+            "src/components/ric_pricing_preference_v1/index.html",
+            "src/components/vertical_quote_bridge_v1/index.html",
+            "src/yfinance_options.py",
+            "src/option_book.py",
+            "src/etrade_client.py",
+        ],
+    },
     "option_book": {
         "entry": "src/option_book_ui.py",
         "owner": "src/option_book_ui.py",

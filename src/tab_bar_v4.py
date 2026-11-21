@@ -41,16 +41,16 @@ from src.layout_guardrails import install_layout_guardrails
 
 # Dormant routes stay implemented in streamlit_app.py and their feature modules.
 # Remove a key from this set and add it back to DEFAULT_TAB_ORDER when re-enabled.
-DISABLED_TAB_ROUTES = {"OPTION BOOK", "ORDERS", "MUNI SCREENERS", "BULL DEBIT SPREAD"}
+DISABLED_TAB_ROUTES = {"OPTION BOOK", "ORDERS", "MUNI SCREENERS", "BULL DEBIT SPREAD", "PERFORMANCE"}
 
 DEFAULT_TAB_ORDER = [
     "HOLDINGS",
     "NETWORTH",
-    "PERFORMANCE",
     "ACQUISITION",
     "RISK SIZING",
     "VERTICAL OPTIONS",
     "VERTI PHONE",
+    "R.I.C.",
     "PROTECTIVE PUTS",
     "SCHWAB RISK SIZING",
     "GEX",
@@ -173,6 +173,11 @@ def _clean_order(order: Iterable[str] | None) -> list[str]:
         out.insert(out.index("HOLDINGS") + 1, "NETWORTH")
     if "VERTI PHONE" not in out and "VERTICAL OPTIONS" in out:
         out.insert(out.index("VERTICAL OPTIONS") + 1, "VERTI PHONE")
+    if "R.I.C." not in out and "VERTICAL OPTIONS" in out:
+        insert_at = out.index("VERTICAL OPTIONS") + 1
+        if insert_at < len(out) and out[insert_at] == "VERTI PHONE":
+            insert_at += 1
+        out.insert(insert_at, "R.I.C.")
     for item in DEFAULT_TAB_ORDER:
         if item not in out:
             out.append(item)
