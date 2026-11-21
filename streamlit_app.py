@@ -117,6 +117,7 @@ from src.session_persistence import (
 from src.tab_bar_v4 import render_terminal_tab_bar
 from src.theme import install_typing_caret_theme
 from src.vertical_options_ui import render_vertical_options
+from src.reverse_iron_condor_ui import render_reverse_iron_condor
 from src.verti_phone_ui import render_verti_phone
 
 
@@ -581,6 +582,10 @@ _TERMINAL_PAGE_HEADERS = {
         "VERTICAL OPTIONS",
         "E*TRADE LIVE VERTICALS // CALL + PUT DEBIT SPREADS // NET DEBIT LIMIT // MULTI-ACCOUNT REVIEW + EXPLICIT SEND",
     ),
+    "R.I.C.": (
+        "R.I.C. // REVERSE IRON CONDOR",
+        "FOUR-LEG DEBIT CONDORS // MINIMUM RISK:REWARD 1:2 ON BOTH SIDES // MULTI-ACCOUNT REVIEW + EXPLICIT SEND",
+    ),
     "VERTI PHONE": (
         "VERTI PHONE",
         "PHONE VERTICALS // ALL YEARS // PORTFOLIO + SCANNER // REVIEW + EXPLICIT SEND",
@@ -803,6 +808,9 @@ with _terminal_tab_layout(_trade_access_code_hash()) as (tab_order, active_tab):
 
     elif active_tab == "VERTICAL OPTIONS":
         render_vertical_options(_etrade_client(), _touch_etrade_session, vault_key=_trade_access_code_hash())
+
+    elif active_tab == "R.I.C.":
+        render_reverse_iron_condor(_etrade_client(), _touch_etrade_session, vault_key=_trade_access_code_hash())
 
     elif active_tab == "VERTI PHONE":
         render_verti_phone(_etrade_client(), _touch_etrade_session, vault_key=_trade_access_code_hash())
