@@ -169,6 +169,9 @@ def _clean_order(order: Iterable[str] | None) -> list[str]:
     # An explicitly reordered Acquisition tab keeps the user's chosen position.
     if "ACQUISITION" not in out and "PERFORMANCE" in out:
         out.insert(out.index("PERFORMANCE") + 1, "ACQUISITION")
+    elif "ACQUISITION" not in out and "PERFORMANCE" in candidate:
+        before_performance = set(candidate[:candidate.index("PERFORMANCE")])
+        out.insert(sum(item in before_performance for item in out), "ACQUISITION")
     if "NETWORTH" not in out and "HOLDINGS" in out:
         out.insert(out.index("HOLDINGS") + 1, "NETWORTH")
     if "VERTI PHONE" not in out and "VERTICAL OPTIONS" in out:

@@ -172,6 +172,13 @@
       if (allowed.includes("ACQUISITION") && !out.includes("ACQUISITION")) {
         const performanceIndex = out.indexOf("PERFORMANCE");
         if (performanceIndex !== -1) out.splice(performanceIndex + 1, 0, "ACQUISITION");
+        else if (Array.isArray(candidate)) {
+          const prior = candidate.map(String), hiddenIndex = prior.indexOf("PERFORMANCE");
+          if (hiddenIndex !== -1) {
+            const before = new Set(prior.slice(0, hiddenIndex));
+            out.splice(out.filter(item => before.has(item)).length, 0, "ACQUISITION");
+          }
+        }
       }
       if (allowed.includes("NETWORTH") && !out.includes("NETWORTH")) {
         const holdingsIndex = out.indexOf("HOLDINGS");

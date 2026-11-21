@@ -245,11 +245,13 @@ class AcquisitionTests(unittest.TestCase):
         # Prior browser/server layouts lack the newly introduced route.
         old = ["GEX", "PERFORMANCE", "HOLDINGS", "RISK SIZING"]
         restored = _clean_order(old)
-        self.assertEqual(restored[:4], ["GEX", "PERFORMANCE", "ACQUISITION", "HOLDINGS"])
+        self.assertEqual(restored[:3], ["GEX", "ACQUISITION", "HOLDINGS"])
+        self.assertNotIn("PERFORMANCE", restored)
         self.assertEqual(restored.count("ACQUISITION"), 1)
         self.assertEqual(_clean_order([]), DEFAULT_TAB_ORDER)
         custom = ["GEX", "ACQUISITION", "PERFORMANCE", "HOLDINGS"]
-        self.assertEqual(_clean_order(custom)[:4], custom)
+        visible_custom = [tab for tab in custom if tab in DEFAULT_TAB_ORDER]
+        self.assertEqual(_clean_order(custom)[:len(visible_custom)], visible_custom)
 
     def test_browser_saved_order_migrates_acquisition_near_performance(self):
         if shutil.which("node") is None:
@@ -270,7 +272,8 @@ class AcquisitionTests(unittest.TestCase):
         )
         result = subprocess.run(["node", "-e", js], text=True, capture_output=True, check=True)
         migrated = json.loads(result.stdout)
-        self.assertEqual(migrated[:4], ["GEX", "PERFORMANCE", "ACQUISITION", "HOLDINGS"])
+        self.assertEqual(migrated[:3], ["GEX", "ACQUISITION", "HOLDINGS"])
+        self.assertNotIn("PERFORMANCE", migrated)
 
     def test_acquisition_default_raj_and_local_compact_theme(self):
         accounts = [
