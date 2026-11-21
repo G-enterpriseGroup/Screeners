@@ -21,11 +21,12 @@ if str(ROOT) not in sys.path:
 
 FIXTURE = r'''
 import ast
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 import os
 from pathlib import Path
 import time
+from zoneinfo import ZoneInfo
 import streamlit as st
 from src import reverse_iron_condor_ui as ric
 from src.etrade_data_cache import session_namespace
@@ -34,8 +35,9 @@ from src.theme import _TYPING_CARET_CSS
 from src.layout_guardrails import _LAYOUT_GUARDRAIL_CSS
 
 LOG = Path(os.environ['RIC_BROWSER_TEST_LOG'])
-EXPIRIES = [date.today() + timedelta(days=7)] + [
-    date(date.today().year + offset, 6, 18) for offset in (1, 2, 3)]
+TODAY = datetime.now(ZoneInfo('America/New_York')).date()
+EXPIRIES = [TODAY + timedelta(days=7)] + [
+    date(TODAY.year + offset, 6, 18) for offset in (1, 2, 3)]
 
 def record(event, **values):
     with LOG.open('a') as output:
@@ -71,7 +73,7 @@ class SyntheticBroker:
         record('expirations',symbol=symbol)
         return {'OptionExpireDateResponse':{'ExpirationDate':[
             {'year':expiry.year,'month':expiry.month,'day':expiry.day}
-            for expiry in [date.today()+timedelta(days=6)] + EXPIRIES]}}
+            for expiry in [TODAY+timedelta(days=6)] + EXPIRIES]}}
 
     def get_option_chain(self, symbol, year, month, day, **kwargs):
         record('chain',symbol=symbol,expiry=date(year,month,day).isoformat())
