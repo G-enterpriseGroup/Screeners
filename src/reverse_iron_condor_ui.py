@@ -34,6 +34,7 @@ import re
 import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from functools import partial, wraps
 from typing import Any
 from urllib.parse import quote as url_quote
@@ -1189,6 +1190,43 @@ def _entered_fee(value: Any) -> float:
     return fee
 
 
+def _entered_strike_distance(value: Any) -> float | None:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        distance = float(str(value).strip())
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError("Enter a positive max strike distance percentage, or leave blank for unlimited.") from exc
+    if not math.isfinite(distance) or distance <= 0:
+        raise ValueError("Max strike distance must be positive and finite, or blank for unlimited.")
+    return distance
+
+
+def _strike_scoped_rows(rows: list[dict[str, Any]], spot: float,
+                        max_strike_distance_pct: float | None) -> list[dict[str, Any]]:
+    """Restrict all four strikes before enumeration, preserving the raw chains."""
+    distance = _entered_strike_distance(max_strike_distance_pct)
+    if distance is None:
+        return rows
+    center = Decimal(str(_entered_price(spot, "scan spot")))
+    offset = center * Decimal(str(distance)) / 100
+    lower, upper = center - offset, center + offset
+    scoped = []
+    for row in rows:
+        try:
+            strike = Decimal(str(row["strike"]))
+            if strike.is_finite() and strike > 0 and lower <= strike <= upper:
+                scoped.append(row)
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            continue
+    return scoped
+
+
+def _strike_scope_label(max_strike_distance_pct: float | None) -> str:
+    return ("ALL FOUR STRIKES UNLIMITED" if max_strike_distance_pct is None else
+            f"ALL FOUR STRIKES WITHIN ±{max_strike_distance_pct:g}% OF SCAN SPOT")
+
+
 def _safe_ric_pair_limit(rows: list[dict[str, Any]]) -> tuple[None, int]:
     """Count potential four-leg structures without retaining their Cartesian set."""
     groups = {}
@@ -1344,12 +1382,16 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
                                  max_cost: float | None, mode: str,
                                  min_reward_risk: float = _DEFAULT_MIN_REWARD_RISK,
                                  fee_per_spread: float = 0,
+                                 max_strike_distance_pct: float | None = None,
                                  ) -> tuple[RICResultStore, set[str], None, int]:
     """Stream every qualifying pair to disk and reuse completed expirations."""
-    _, potential_pairs = _safe_ric_pair_limit(raw["rows"])
+    max_strike_distance_pct = _entered_strike_distance(max_strike_distance_pct)
+    scoped_rows = _strike_scoped_rows(raw["rows"], raw["spot"], max_strike_distance_pct)
+    _, potential_pairs = _safe_ric_pair_limit(scoped_rows)
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
-    policy = (target, max_cost, mode, min_reward_risk, fee_per_spread, RIC_PRICING_POLICY)
+    policy = (target, max_cost, mode, min_reward_risk, fee_per_spread, RIC_PRICING_POLICY,
+              max_strike_distance_pct)
     store = policies.pop(policy, None)
     if not isinstance(store, RICResultStore):
         store = RICResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
@@ -1361,7 +1403,10 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
     groups: dict[date, list[dict[str, Any]]] = {}
     for row in raw["rows"]:
         if row["expiry"] >= _minimum_expiry_date():
-            groups.setdefault(row["expiry"], []).append(row)
+            groups.setdefault(row["expiry"], [])
+    for row in scoped_rows:
+        if row["expiry"] in groups:
+            groups[row["expiry"]].append(row)
     progress = st.progress(0.0, text="RANKING FOUR-LEG REVERSE IRON CONDORS")
     started = time.monotonic()
     try:
@@ -1397,6 +1442,7 @@ def _continue_ric_scan(result: dict[str, Any], client, touch_session) -> dict[st
         raw, result["target"], result["max_cost"], result["pricing_mode"],
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
         result.get("fee_per_spread", 0),
+        result.get("max_strike_distance_pct"),
     )
     return {
         **result, "candidates": candidates, "annual_ids": annual_ids,
@@ -1902,7 +1948,8 @@ def _sort_qualified_spreads(
     )
 
 
-def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost):
+def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost,
+                   max_strike_distance_pct=None):
     record = {"Ticker": row["symbol"], "Strategy": "REVERSE IRON CONDOR", "Expiration": row["expiry"].isoformat()}
     for prefix, label in (("put_sell", "Short Put"), ("put_buy", "Long Put"), ("buy", "Long Call"), ("sell", "Short Call")):
         for field, suffix in (("strike", "Strike"), ("last", "Last"), ("bid", "Bid"), ("ask", "Ask"), ("osi", "OSI"), ("open_interest", "OI")):
@@ -1925,19 +1972,23 @@ def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost):
         "Liquidity": row.get("liquidity_signal"), "Minimum Leg OI": row.get("min_open_interest"),
         "Minimum Leg Volume": row.get("min_volume"),
     })
+    if max_strike_distance_pct is not None:
+        record["Max Strike Distance From Scan Spot (%)"] = max_strike_distance_pct
     for greek in ("delta", "gamma", "theta", "vega"):
         record["Net " + greek.title()] = row.get("net_" + greek)
     return record
 
 
 def _qualified_spreads_csv(rows, annual_ids: set[str], *, source: str, loaded_at: float,
-                            target: float | None, max_cost: float | None) -> str:
+                            target: float | None, max_cost: float | None,
+                            max_strike_distance_pct=None) -> str:
     output = io.StringIO(newline="")
     writer = None
     for row in rows:
         if row["expiry"] < _minimum_expiry_date():
             continue
-        record = _export_record(row, annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost)
+        record = _export_record(row, annual_ids, source=source, loaded_at=loaded_at, target=target,
+                                max_cost=max_cost, max_strike_distance_pct=max_strike_distance_pct)
         if writer is None:
             writer = csv.DictWriter(output, fieldnames=list(record))
             writer.writeheader()
@@ -1946,7 +1997,8 @@ def _qualified_spreads_csv(rows, annual_ids: set[str], *, source: str, loaded_at
 
 
 def _qualified_spreads_xlsx(rows, annual_ids: set[str], *, source: str, loaded_at: float,
-                             target: float | None, max_cost: float | None) -> bytes:
+                             target: float | None, max_cost: float | None,
+                             max_strike_distance_pct=None) -> bytes:
     """Stream every matching R.I.C., including both wings and exact chart links."""
     import xlsxwriter
     output = io.BytesIO()
@@ -1959,7 +2011,8 @@ def _qualified_spreads_xlsx(rows, annual_ids: set[str], *, source: str, loaded_a
         for row in rows:
             if row["expiry"] < _minimum_expiry_date():
                 continue
-            record = _export_record(row, annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost)
+            record = _export_record(row, annual_ids, source=source, loaded_at=loaded_at, target=target,
+                                    max_cost=max_cost, max_strike_distance_pct=max_strike_distance_pct)
             if sheet is None or data_rows >= 1_048_575:
                 if sheet is not None:
                     sheet.autofilter(0, 0, data_rows, len(headers) - 1)
@@ -1993,7 +2046,8 @@ def _qualified_spreads_xlsx(rows, annual_ids: set[str], *, source: str, loaded_a
 def _qualified_store_csv(store: RICResultStore, *, source: str, loaded_at: float,
                          target: float | None, max_cost: float | None, expiry="ALL",
                          side="RIC", sort_by="FILL + TARGET", direction="ASC",
-                         max_distance=None, column_filters=None, year=None) -> str:
+                         max_distance=None, column_filters=None, year=None,
+                         max_strike_distance_pct=None) -> str:
     """Generate the full CSV on click, off the UI thread, from one revision."""
     with store.snapshot():
         store.prune_before(_minimum_expiry_date())
@@ -2005,13 +2059,15 @@ def _qualified_store_csv(store: RICResultStore, *, source: str, loaded_at: float
             store.iter_rows(expiry=expiry, side=side, sort_by=sort_by, direction=direction,
                             max_distance=max_distance, column_filters=column_filters, year=year),
             annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
+            max_strike_distance_pct=max_strike_distance_pct,
         )
 
 
 def _qualified_store_xlsx(store: RICResultStore, *, source: str, loaded_at: float,
                           target: float | None, max_cost: float | None, expiry="ALL",
                           side="RIC", sort_by="FILL + TARGET", direction="ASC",
-                          max_distance=None, column_filters=None, year=None) -> bytes:
+                          max_distance=None, column_filters=None, year=None,
+                          max_strike_distance_pct=None) -> bytes:
     """Export all matching four-leg rows with retained colors and black text."""
     with store.snapshot():
         store.prune_before(_minimum_expiry_date())
@@ -2023,16 +2079,19 @@ def _qualified_store_xlsx(store: RICResultStore, *, source: str, loaded_at: floa
             store.iter_rows(expiry=expiry, side=side, sort_by=sort_by, direction=direction,
                             max_distance=max_distance, column_filters=column_filters, year=year),
             annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
+            max_strike_distance_pct=max_strike_distance_pct,
         )
 
 
 def _qualified_store_html(store: RICResultStore, *, source: str, loaded_at: float,
                           pricing_mode: str, column_filters=None, year=None,
                           sort_by="YEAR + FILL", direction="ASC",
-                          contract_open_interest=None) -> str:
+                          contract_open_interest=None, max_strike_distance_pct=None) -> str:
     """Build an offline copy of every retained spread only when downloaded."""
     store.prune_before(_minimum_expiry_date())
     lookup = contract_open_interest or {}
+    if max_strike_distance_pct is not None:
+        source += " // " + _strike_scope_label(max_strike_distance_pct)
     # iter_ranked's SQLite cursor owns a consistent read snapshot. Holding the
     # store lock through compression would stall interactive sort-index creation.
     return filterable_ric_html(
@@ -2060,11 +2119,13 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
         raw, result["target"], result["max_cost"], mode,
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
         result.get("fee_per_spread", 0),
+        result.get("max_strike_distance_pct"),
     )
     pricing_revision = int(result.get("pricing_revision", 0)) + 1
     scope = hashlib.sha256(
         repr((raw["scan_id"], result["target"], result["max_cost"],
               result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK), result.get("fee_per_spread", 0), mode,
+              result.get("max_strike_distance_pct"),
               pricing_revision, RIC_PRICING_POLICY, bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
@@ -2081,6 +2142,7 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
 _PRESENTATION_DEFAULTS = {
     "ric_symbol_value": "", "ric_target_breakeven": "",
     "ric_min_reward_risk": "2", "ric_fee_per_spread": "0",
+    "ric_max_strike_distance_pct": "",
     "ric_results_view": "BEST PER YEAR", "ric_be_filter_enabled": False,
     "ric_be_range_percent": 5.0, "ric_all_pair_sort": "FILL + TARGET",
     "ric_all_pair_direction": "ASC", "ric_best_pair_sort": "YEAR + FILL",
@@ -2129,7 +2191,8 @@ def _remember_presentation(key: str) -> None:
 
 
 def _remember_scan_inputs() -> None:
-    for key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread"):
+    for key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
+                "ric_max_strike_distance_pct"):
         _remember_presentation(key)
 
 
@@ -2446,7 +2509,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.html(_company_display_markup(symbol, ticker_quote.get("name", ""),
                                             ticker_quote.get("last"), quote_title))
         with fields[2], st.form("ric_scan_form", clear_on_submit=False, border=False):
-            scan_fields = st.columns([.8, .8, 1.1], gap="small", vertical_alignment="bottom")
+            scan_fields = st.columns([.8, .8, 1.0, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 ratio_text = st.text_input(
                     "MIN RISK:REWARD 1:", key="ric_min_reward_risk", placeholder="2",
@@ -2458,11 +2521,17 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     help="Total estimated fees for all four opening legs of ONE R.I.C. Enter 0 to screen before fees. Included in risk, both rewards and breakevens; excludes unknown closing/assignment costs.",
                 )
             with scan_fields[2]:
+                strike_distance_text = st.text_input(
+                    "MAX STRIKE DISTANCE %", key="ric_max_strike_distance_pct", placeholder="unlimited",
+                    help="Optional pre-scan scope for ALL FOUR strikes: each must be within this ±% of the fixed scan quote's Last. Blank scans unlimited strikes. All listed years are still loaded; every qualifying condor inside the scope is retained.",
+                )
+            with scan_fields[3]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
                     on_click=_remember_scan_inputs,
                 )
-        for form_key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread"):
+        for form_key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
+                         "ric_max_strike_distance_pct"):
             _remember_presentation(form_key)
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
@@ -2514,15 +2583,18 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     target = last_result["target"]
                     min_reward_risk = last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
                     fee_per_spread = float(last_result.get("fee_per_spread", 0))
+                    max_strike_distance_pct = _entered_strike_distance(last_result.get("max_strike_distance_pct"))
                 else:
                     # Target ranking is now a column-menu query over retained results.
                     target = None
                     min_reward_risk = _entered_reward_risk(ratio_text)
                     fee_per_spread = _entered_fee(fee_text)
+                    max_strike_distance_pct = _entered_strike_distance(strike_distance_text)
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
                     and last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK) == min_reward_risk
+                    and last_result.get("max_strike_distance_pct") == max_strike_distance_pct
                 )
                 with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
                     raw = _scan_all_years(
@@ -2539,15 +2611,18 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 }
                 candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_ric_chains(
                     raw, target, max_cost, pricing_mode, min_reward_risk, fee_per_spread,
+                    max_strike_distance_pct,
                 )
                 scope = hashlib.sha256(
                     repr((raw["scan_id"], target, max_cost, min_reward_risk, fee_per_spread, pricing_mode,
+                          max_strike_distance_pct,
                           RIC_PRICING_POLICY, safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["ric_scan_result"] = {
                     "symbol": symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
                     "min_reward_risk": min_reward_risk, "fee_per_spread": fee_per_spread,
+                    "max_strike_distance_pct": max_strike_distance_pct,
                     "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
                     "pricing_policy": RIC_PRICING_POLICY,
                     "target_defaulted": False,
@@ -2615,6 +2690,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 st.session_state["ric_scan_result"] = result
                 _remember_scan_snapshot()
             if not result.get("scan_complete", True):
+                st.caption(_strike_scope_label(result.get("max_strike_distance_pct")))
                 listed = max(1, int(result["listed_expirations"]))
                 st.progress(
                     min(1.0, result["ranked_expirations"] / listed),
@@ -2660,6 +2736,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.caption((
                 f'{result["source"]} // {stamp:%b %d, %I:%M %p %Z} // '
                 f'BOTH DIRECTIONS RISK:REWARD ≥ 1:{min_reward_risk:g} // EST. FEES {_money(result.get("fee_per_spread", 0))} // '
+                f'{_strike_scope_label(result.get("max_strike_distance_pct"))} // '
                 "DEBIT MIN / MAX IN COLUMN FILTER // 7+ DAYS TO EXPIRY"
             ).replace("$", r"\$"))
             snapshot_notice = st.empty()
@@ -2695,6 +2772,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 # Filters belong to the quote snapshot; pricing and order reviews do not.
                 filter_scope = hashlib.sha256(repr((
                     result["source"], result["symbol"], result.get("raw_scan_id"),
+                    result.get("max_strike_distance_pct"),
                 )).encode("utf-8")).hexdigest()[:16]
                 state = st.session_state.get("_ric_checked_spreads")
                 if not isinstance(state, dict) or state.get("scope") != scope:
@@ -2839,6 +2917,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                         target=effective_target, max_cost=active_max_cost,
                         sort_by=sort_filter, direction=sort_direction,
                         max_distance=max_distance, column_filters=query_filters, year=active_year,
+                        max_strike_distance_pct=result.get("max_strike_distance_pct"),
                     )
                     for column, label, exporter, extension, mime in (
                         (exports[0], "CSV", _qualified_store_csv, "csv", "text/csv"),
@@ -2862,6 +2941,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                                             for key, value in query_filters.items()},
                             year=active_year, sort_by=sort_filter, direction=sort_direction,
                             contract_open_interest=dict(contract_open_interest),
+                            max_strike_distance_pct=result.get("max_strike_distance_pct"),
                         ),
                         file_name=f'{result["symbol"]}_ric_ric_all.html', mime="text/html",
                         key="ric_export_qualified_html", on_click="ignore", use_container_width=True,
@@ -3184,7 +3264,7 @@ def _ric_preview_details(payload: dict[str, Any], *, gross_debit: float) -> dict
     if any(total < gross_debit - 1e-6 for total in totals):
         raise ETradeError("Broker-estimated debit total is below the reviewed premium; fee details need review.")
     charges = []
-    if commission is not None or fees is not None:
+    if totals or (commission is not None and fees is not None):
         charges.append((commission or 0) + (fees or 0))
     charges.extend(max(0, total - gross_debit) for total in totals)
     details.update({"estimated_commission": commission, "estimated_fees": fees,
@@ -3387,13 +3467,14 @@ def _render_selected_order(client, touch_session, candidate: dict[str, Any],
                 if details.get("preview_id") in (None, ""):
                     raise ETradeError("E*TRADE preview returned no preview ID.")
                 charges = details.get("estimated_total_charges")
-                if charges is not None:
-                    per_condor_fee = max(fee_per_spread, charges / quantity)
-                    risk = limit_price * 100 + per_condor_fee
-                    if candidate["width"] * 100 - risk + 1e-8 < min_reward_risk * risk:
-                        raise ETradeError("Broker-estimated commission and fees make the lower wing fail the strict risk/reward gate. Increase the scan fee estimate and rescan.")
-                    if result.get("max_cost") is not None and risk > result["max_cost"] + 1e-8:
-                        raise ETradeError("Broker-estimated commission and fees exceed the reviewed total-cost cap.")
+                if charges is None:
+                    raise ETradeError("Broker did not report complete opening charges; after-fee risk/reward cannot be verified. Review blocked.")
+                per_condor_fee = max(fee_per_spread, charges / quantity)
+                risk = limit_price * 100 + per_condor_fee
+                if candidate["width"] * 100 - risk + 1e-8 < min_reward_risk * risk:
+                    raise ETradeError("Broker-estimated commission and fees make the lower wing fail the strict risk/reward gate. Increase the scan fee estimate and rescan.")
+                if result.get("max_cost") is not None and risk > result["max_cost"] + 1e-8:
+                    raise ETradeError("Broker-estimated commission and fees exceed the reviewed total-cost cap.")
                 previews[account_key] = {
                     "preview_payload": preview_payload,
                     "place_payload": build_place_payload(preview_payload, details["preview_id"]),

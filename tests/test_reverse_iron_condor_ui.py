@@ -3,6 +3,7 @@ from copy import deepcopy
 import csv
 from datetime import date, timedelta
 import io
+import json
 from pathlib import Path
 import sys
 import time
@@ -221,7 +222,7 @@ class ReviewedOrderTests(unittest.TestCase):
         c, rows = quoted_condor(width)
         state = {"etrade_accounts": ACCOUNTS, "ric_accounts": accounts if accounts is not None else ["preferred"]}
         broker = MagicMock(is_offline=False)
-        broker.preview_order.return_value = {"PreviewOrderResponse": {"PreviewIds": [{"previewId": 123}], "estimatedCommission": 0}}
+        broker.preview_order.return_value = {"PreviewOrderResponse": {"PreviewIds": [{"previewId": 123}], "estimatedCommission": 0, "estimatedFees": 0}}
         broker.place_order.return_value = {"PlaceOrderResponse": {"OrderIds": [{"orderId": 456}]}}
         return c, rows, state, broker, result()
 
@@ -289,6 +290,43 @@ class ReviewedOrderTests(unittest.TestCase):
         payload["PreviewOrderResponse"]["Order"] = [{"estimatedCommission":8.44,"estimatedTotalAmount":508.4762}]
         details = ui._ric_preview_details(payload,gross_debit=500)
         self.assertAlmostEqual(details["estimated_total_charges"],8.4762)
+
+    def test_missing_or_partial_atomic_charges_block_every_account_even_with_scan_estimate(self):
+        incomplete = ({}, {"estimatedCommission":0}, {"estimatedFees":0},
+                      {"totalCommission":2.6}, {"totalFees":.1},
+                      {"Order":[{"Instrument":[{"estimatedCommission":0,"estimatedFees":0} for _ in range(4)]}]})
+        for scan_fee in (0, 10):
+            for evidence in incomplete:
+                with self.subTest(scan_fee=scan_fee,evidence=evidence):
+                    c,rows,state,broker,scan=self.setup_order(accounts=["preferred","other"])
+                    scan["fee_per_spread"]=scan_fee
+                    broker.preview_order.return_value = {"PreviewOrderResponse": {
+                        "PreviewIds":[{"previewId":123}], **evidence}}
+                    view=self.render(c,rows,state,broker,scan,clicked=("ric_preview",))
+                    self.assertEqual(broker.preview_order.call_count,2)
+                    self.assertNotIn("ric_review_bundle",state)
+                    self.assertNotIn("ric_live_confirm",state)
+                    self.assertTrue(any("complete opening charges" in str(call) for call in view.warning.call_args_list))
+                    broker.place_order.assert_not_called()
+
+    def test_complete_zero_or_total_derived_charges_allow_preview_without_sending(self):
+        for evidence,expected in (({"estimatedCommission":0,"estimatedFees":0},0),
+                                  ({"totalOrderValue":107},0),
+                                  ({"Order":[{"estimatedTotalAmount":109.7}]},2.7)):
+            with self.subTest(evidence=evidence):
+                c,rows,state,broker,scan=self.setup_order()
+                self.assertAlmostEqual(c["debit"]*100,107)
+                broker.preview_order.return_value = {"PreviewOrderResponse": {
+                    "PreviewIds":[{"previewId":123}], **evidence}}
+                self.render(c,rows,state,broker,scan,clicked=("ric_preview",))
+                details=state["ric_review_bundle"]["previews"]["preferred"]["details"]
+                self.assertAlmostEqual(details["estimated_total_charges"],expected)
+                broker.place_order.assert_not_called()
+
+    def test_total_evidence_preserves_larger_partial_charge_lower_bound(self):
+        details=ui._ric_preview_details({"PreviewOrderResponse": {
+            "totalCommission":3,"totalOrderValue":102.6}},gross_debit=100)
+        self.assertEqual(details["estimated_total_charges"],3)
 
     def test_invalid_fee_or_total_estimates_cannot_enable_preview(self):
         for key in ("estimatedFees","estimatedTotalAmount"):
@@ -456,6 +494,128 @@ class LiveQuoteOverlayTests(unittest.TestCase):
         with patch.object(ui.st,"session_state",state), patch.object(ui.time,"time",return_value=now):
             self.tick(state,broker,rows,2)
         broker.get_quote.assert_not_called()
+
+
+class StrikeDistanceScopeTests(unittest.TestCase):
+    def raw(self, rows):
+        return {"symbol":"SPY", "spot":100, "rows":rows, "scan_id":321,
+                "loaded_at":time.time(), "scan_complete":True, "loaded_expirations":1,
+                "expirations":[rows[0]["expiry"]], "errors":[], "next_expiry_index":1}
+
+    def test_optional_scope_is_positive_finite_and_remembers_explicit_blank(self):
+        self.assertIsNone(ui._entered_strike_distance(""))
+        self.assertIsNone(ui._entered_strike_distance("  "))
+        self.assertIsNone(ui._entered_strike_distance(None))
+        self.assertEqual(ui._entered_strike_distance("1"),1)
+        for invalid in ("0", "-1", "nan", "inf", "-inf", "bad", True):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                ui._entered_strike_distance(invalid)
+        state = {}
+        with patch.object(ui.st,"session_state",state), patch.object(ui,"_require_ric_access"):
+            ui._restore_presentation()
+            self.assertEqual(state["ric_max_strike_distance_pct"],"")
+            state["ric_max_strike_distance_pct"] = "1"
+            ui._remember_scan_inputs()
+            ui._restore_presentation()
+            self.assertEqual(state["ric_max_strike_distance_pct"],"1")
+            state["ric_max_strike_distance_pct"] = ""
+            ui._remember_scan_inputs()
+            ui._restore_presentation()
+            self.assertEqual(state["ric_max_strike_distance_pct"],"")
+
+    def test_decimal_boundaries_are_inclusive_for_every_contract(self):
+        rows = [{"strike":strike} for strike in
+                ("98.999999999", "99", "99.7", "100.3", "101", "101.000000001", "NaN", "bad")]
+        before = deepcopy(rows)
+        scoped = ui._strike_scoped_rows(rows,100,1)
+        self.assertEqual([row["strike"] for row in scoped],["99","99.7","100.3","101"])
+        self.assertEqual(rows,before)
+        self.assertIs(ui._strike_scoped_rows(rows,100,None),rows)
+        self.assertEqual(ui._strike_scoped_rows([{"strike":"99.00495"},{"strike":"101.00505"}],100.005,1),
+                         [{"strike":"99.00495"},{"strike":"101.00505"}])
+
+    def test_dense_chain_is_scoped_before_engine_enumeration_without_mutating_raw(self):
+        expiry = date.today()+timedelta(days=30)
+        rows = [{"expiry":expiry,"call_put":side,"strike":strike,"osi":f"{side}{strike}"}
+                for side in ("PUT","CALL") for strike in range(1,201)]
+        raw, received = self.raw(rows), []
+        before = deepcopy(rows)
+        def calculator(**kwargs):
+            received.append(kwargs["option_rows"])
+            return [],set()
+        with (patch.object(ui.st,"progress",return_value=MagicMock()),
+              patch.object(ui,"scan_ric_candidates",side_effect=calculator)):
+            store, _, _, potential = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,1)
+        self.assertEqual(len(received),1)
+        self.assertEqual(len(received[0]),6)
+        self.assertTrue(all(99<=row["strike"]<=101 for row in received[0]))
+        self.assertEqual(raw["rows"],before)
+        self.assertEqual(potential,9)
+        self.assertEqual(store.ranked_expirations,1)
+        self.assertEqual(len(store),0)
+
+    def test_unlimited_results_match_engine_and_scopes_have_separate_cached_stores(self):
+        candidate, rows = quoted_condor(fee=10)
+        raw = self.raw(rows)
+        with patch.object(ui.st,"progress",return_value=MagicMock()):
+            unrestricted, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10)
+            same, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,None)
+            scoped, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,10)
+            repeated, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,10)
+            narrower, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,9)
+        self.assertIs(unrestricted,same)
+        self.assertIsNot(unrestricted,scoped)
+        self.assertIs(scoped,repeated)
+        self.assertEqual(unrestricted.page(),[candidate])
+        self.assertEqual(scoped.page(),[candidate])
+        self.assertEqual(len(narrower),0)
+        self.assertEqual(narrower.ranked_expirations,1)
+
+    def test_continuation_and_mode_repricing_keep_fixed_spot_scope_and_fee(self):
+        _, rows = quoted_condor(fee=10)
+        raw = self.raw(rows)
+        state = {"_ric_chain_cache":{"E*TRADE:SPY":raw}}
+        scan = result(10) | {"symbol":"SPY","raw_scan_id":321,"target":None,
+                            "scope":"old","max_strike_distance_pct":10}
+        with (patch.object(ui.st,"session_state",state),
+              patch.object(ui.st,"progress",return_value=MagicMock()),
+              patch.object(ui,"_scan_all_years") as market_calls):
+            continued = ui._continue_ric_scan(scan,MagicMock(is_offline=False),lambda:None)
+            repriced = ui._reprice_cached_ric_scan(continued,"SMART FILL")
+        market_calls.assert_not_called()
+        for snapshot in (continued,repriced):
+            self.assertEqual(snapshot["max_strike_distance_pct"],10)
+            self.assertEqual(snapshot["fee_per_spread"],10)
+            self.assertTrue(snapshot["scan_complete"])
+            self.assertEqual(len(snapshot["candidates"]),1)
+            row = snapshot["candidates"].page()[0]
+            self.assertTrue(all(90<=row[key]<=110 for key in
+                                ("put_sell_strike","put_buy_strike","buy_strike","sell_strike")))
+        self.assertIsNot(continued["candidates"],repriced["candidates"])
+        self.assertNotEqual(repriced["scope"],"old")
+
+    def test_scoped_exports_label_scope_and_unlimited_csv_remains_identical(self):
+        candidate, rows = quoted_condor(fee=10)
+        raw = self.raw(rows)
+        options = dict(source="SYNTHETIC",loaded_at=1,target=None,max_cost=None)
+        legacy = ui._qualified_spreads_csv([candidate],set(),**options)
+        unlimited = ui._qualified_spreads_csv([candidate],set(),**options,max_strike_distance_pct=None)
+        self.assertEqual(unlimited,legacy)
+        self.assertNotIn("Max Strike Distance From Scan Spot (%)",unlimited)
+        with patch.object(ui.st,"progress",return_value=MagicMock()):
+            store, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,10)
+        scoped_csv = ui._qualified_store_csv(store,**options,max_strike_distance_pct=10)
+        record = list(csv.DictReader(io.StringIO(scoped_csv)))[0]
+        self.assertEqual(record["Max Strike Distance From Scan Spot (%)"],"10")
+        self.assertEqual(float(record["Estimated Fees Per RIC ($)"]),10)
+        book = ui._qualified_store_xlsx(store,**options,max_strike_distance_pct=10)
+        with zipfile.ZipFile(io.BytesIO(book)) as archive:
+            sheet = archive.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn("Max Strike Distance From Scan Spot (%)",sheet)
+        page = ui._qualified_store_html(store,source="SYNTHETIC",loaded_at=1,
+                                        pricing_mode="NORMAL",max_strike_distance_pct=10)
+        meta = json.loads(page.split('<script id="vertical-meta" type="application/json">',1)[1].split("</script>",1)[0])
+        self.assertIn("ALL FOUR STRIKES WITHIN ±10% OF SCAN SPOT",meta["source"])
 
 
 class PortfolioAndIsolationTests(unittest.TestCase):
