@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 from datetime import date, timedelta
+from decimal import Decimal
 import gzip
 import json
 from pathlib import Path
@@ -12,7 +13,7 @@ import subprocess
 import unittest
 
 from src.reverse_iron_condor import scan_ric_candidates
-from src.reverse_iron_condor_store import RICResultStore, filterable_ric_html, indicative_fill_score
+from src.reverse_iron_condor_store import RICResultStore, filterable_ric_html, indicative_fill_score, ric_strike_distance_pct
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +96,70 @@ class RICStoreTests(unittest.TestCase):
                 values = [row[key] for row in result]
                 self.assertEqual(values, sorted(values, reverse=direction == "DESC"))
                 self.assertEqual({row["id"] for row in result}, {row["id"] for row in original})
+
+    def test_strike_distance_helper_uses_all_four_strikes_and_fixed_spot(self):
+        row = {"spot_last":100, "put_buy_strike":98, "put_sell_strike":92,
+               "buy_strike":101, "sell_strike":104}
+        self.assertEqual(ric_strike_distance_pct(row),8)
+        self.assertEqual(ric_strike_distance_pct(row,200),54)
+        for key in ("spot_last","put_buy_strike","put_sell_strike","buy_strike","sell_strike"):
+            for invalid in (None,0,-1,True,float("nan"),float("inf"),"bad"):
+                with self.subTest(key=key,invalid=invalid):
+                    self.assertIsNone(ric_strike_distance_pct(row|{key:invalid}))
+
+    def test_strike_distance_numeric_filter_covers_all_rows_and_put_outer_wings(self):
+        store, _ = self.store()
+        all_rows = list(store.iter_rows())
+        def decimal_distance(row):
+            return max(abs(Decimal(str(row[key]))-Decimal("100")) for key in
+                       ("put_buy_strike","put_sell_strike","buy_strike","sell_strike"))
+        filters = {"strike_distance_pct":{"min":3,"max":5}}
+        expected = [row for row in all_rows if Decimal(3)<=decimal_distance(row)<=Decimal(5)]
+        found = list(store.iter_rows(column_filters=filters))
+        self.assertTrue(found)
+        self.assertEqual(found,expected)
+        self.assertEqual(store.count(column_filters=filters),len(expected))
+        self.assertEqual(sum(store.counts_by_year(column_filters=filters).values()),len(expected))
+        self.assertTrue(any(decimal_distance(row)==5 for row in found))
+        outside_put = next(row for row in all_rows if row["put_sell_strike"]<95 and row["sell_strike"]<=105)
+        self.assertNotIn(outside_put,found)
+        self.assertGreater(ric_strike_distance_pct(outside_put),5)
+        self.assertEqual(store.count(column_filters={"strike_distance_pct":{"max":4.999999995}}),
+                         store.count(column_filters={"strike_distance_pct":{"max":5}}))
+        self.assertLess(store.count(column_filters={"strike_distance_pct":{"max":4.99999}}),
+                        store.count(column_filters={"strike_distance_pct":{"max":5}}))
+
+    def test_strike_distance_sort_preserves_identity_ties_and_paged_order(self):
+        store, _ = self.store()
+        original = list(store.iter_rows())
+        for direction in ("ASC","DESC"):
+            expected = sorted(original,key=lambda row:row["id"])
+            expected.sort(key=ric_strike_distance_pct,reverse=direction=="DESC")
+            actual = list(store.iter_rows(sort_by="MAX STRIKE DISTANCE %",direction=direction))
+            self.assertEqual(actual,expected)
+            self.assertEqual(store.page(sort_by="MAX STRIKE DISTANCE %",direction=direction,offset=25,limit=30),
+                             expected[25:55])
+
+    def test_strike_distance_sql_uses_validated_decimal_spot_and_rejects_unsafe_filters(self):
+        store = RICResultStore("TEST",100.005,None,None,"NORMAL")
+        self.addCleanup(store._directory.cleanup)
+        store.add_expiration(self.expiry,chain(self.expiry,5),scan_ric_candidates)
+        rows = list(store.iter_rows())
+        row = rows[0]
+        expected = float(100*max(abs(Decimal(str(row[key]))-Decimal("100.005")) for key in
+                                ("put_buy_strike","put_sell_strike","buy_strike","sell_strike"))/Decimal("100.005"))
+        self.assertAlmostEqual(ric_strike_distance_pct(row),expected,places=12)
+        exact = {"strike_distance_pct":{"min":expected,"max":expected}}
+        self.assertIn(row,list(store.iter_rows(column_filters=exact)))
+        for bad in ({"max":True},{"max":"5"},{"max":"0); DROP TABLE spreads;--"},
+                    {"max":float("inf")},{"min":float("nan")},{"unknown":5},[],None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                store.count(column_filters={"strike_distance_pct":bad})
+        self.assertEqual(len(list(store.iter_rows())),len(rows))
+        for invalid in (0,True,float("nan"),"1); DROP TABLE spreads;--"):
+            store.spot = invalid
+            with self.subTest(spot=invalid), self.assertRaises(ValueError):
+                store.count(column_filters={"strike_distance_pct":{"max":5}})
 
     def test_put_last_sort_retains_missing_last_quotes_without_fabricating_values(self):
         rows = chain(self.expiry, 5)
@@ -194,11 +259,15 @@ class RICStoreTests(unittest.TestCase):
                                ("put_buy_bid", 41), ("put_sell_ask", 44)):
                 self.assertEqual(packed[index], candidate[key])
             self.assertEqual(packed[47], {key: value for key, value in candidate.items() if key != "expiry"})
+            self.assertEqual(packed[48],ric_strike_distance_pct(candidate))
             self.assertTrue(packed[45].startswith("https://optionstrat.com/build/long-iron-condor/"))
             self.assertTrue(packed[46].startswith("https://www.tradingview.com/chart/"))
         self.assertIn("LOWER BREAKEVEN", document)
         self.assertIn("PUT BUY OSI", document)
         self.assertIn("R.I.C. // OFFLINE", document)
+        self.assertIn('[48,"MAX STRIKE DISTANCE %"]',document)
+        self.assertNotIn('[1,"TYPE"]',document)
+        self.assertNotIn('id="side"',document)
 
     def test_offline_oi_keeps_all_four_scanner_normalized_whole_floats(self):
         store, _, _, _, rows = self.snapshot()
@@ -238,6 +307,67 @@ class RICStoreTests(unittest.TestCase):
         page = next(message for message in messages if message["type"] == "page")
         self.assertEqual(page["total"], len(expected))
         self.assertEqual([row[21] for row in page["rows"]], [row["id"] for row in expected[:100]])
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed to execute the actual offline worker")
+    def test_offline_strike_filter_sort_and_three_line_spot_cell_match_store(self):
+        store, document, data, metadata, _ = self.snapshot()
+        filters = {"strike_distance_pct":{"min":3,"max":4}}
+        expected = list(store.iter_rows(column_filters=filters,sort_by="MAX STRIKE DISTANCE %",direction="DESC"))
+        worker = document[document.index("function verticalsWorker(){"):document.index("\n(()=>{",document.index("function verticalsWorker(){"))]
+        script = "globalThis.onmessage=null;const output=[];globalThis.postMessage=value=>output.push(value);\n"+worker
+        script += "\nverticalsWorker();\n(async()=>{\n"
+        script += "await onmessage({data:{type:'init',meta:"+json.dumps(metadata)+",compressed:"+json.dumps(data)+"}});\n"
+        state = {"filters":filters,"sort_by":"MAX STRIKE DISTANCE %","direction":"DESC","page":0}
+        script += "await onmessage({data:{type:'query',revision:1,state:"+json.dumps(state)+"}});\n"
+        script += "await new Promise(resolve=>setTimeout(resolve,80));"
+        script += "await onmessage({data:{type:'query',revision:2,state:{filters:{strike_distance_pct:{max:'bad'}},page:0}}});"
+        script += "await new Promise(resolve=>setTimeout(resolve,80));"
+        script += "const row=Array(49).fill(null);row[33]=95;row[10]=106;"
+        script += "const edgeRow=Array(49).fill(null);edgeRow[33]=19.221;edgeRow[10]=20.779;"
+        script += "process.stdout.write(JSON.stringify({output,lines:ricBreakevenLines(row,100),rounding:ricBreakevenLines(edgeRow,20)}));})();"
+        execution = subprocess.run([shutil.which("node"),"-e",script],capture_output=True,text=True,check=True)
+        response = json.loads(execution.stdout)
+        page = next(message for message in response["output"] if message["type"]=="page")
+        self.assertEqual(page["total"],len(expected))
+        self.assertEqual([row[21] for row in page["rows"]],[row["id"] for row in expected[:100]])
+        self.assertTrue(any(message["type"]=="error" and "strike distance" in message["message"]
+                            for message in response["output"]))
+        self.assertEqual(response["lines"],[{"label":"L","price":95,"percent":"-5.00%"},
+                                            {"label":"SPOT","price":100,"percent":""},
+                                            {"label":"U","price":106,"percent":"+6.00%"}])
+        self.assertEqual([line["percent"] for line in response["rounding"]],["-3.90%","","+3.90%"])
+        self.assertIn('line.append(percent,price)',document)
+        script_body = re.search(r'<script>\n([\s\S]+)</script>',document).group(1)
+        subprocess.run([shutil.which("node"),"--check"],input=script_body,capture_output=True,text=True,check=True)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed to execute the actual offline worker")
+    def test_offline_blank_strike_bounds_match_sql_without_coercing_blank_to_zero(self):
+        store, document, data, metadata, _ = self.snapshot()
+        bounds = [{"max":""},{"min":""},{"min":"","max":3},
+                  {"min":3,"max":""},{"min":None,"max":""},{"min":0,"max":0}]
+        states = [{"filters":{"strike_distance_pct":value},"sort_by":"MAX STRIKE DISTANCE %",
+                   "direction":"ASC","page":0} for value in bounds]
+        expected = [list(store.iter_rows(column_filters=state["filters"],
+                                         sort_by=state["sort_by"],direction=state["direction"]))
+                    for state in states]
+        self.assertEqual(len(expected[0]),len(store))
+        self.assertEqual(expected[-1],[])
+        worker = document[document.index("function verticalsWorker(){"):document.index("\n(()=>{",document.index("function verticalsWorker(){"))]
+        script = "globalThis.onmessage=null;const output=[];globalThis.postMessage=value=>output.push(value);\n"+worker
+        script += "\nverticalsWorker();\n(async()=>{\n"
+        script += "await onmessage({data:{type:'init',meta:"+json.dumps(metadata)+",compressed:"+json.dumps(data)+"}});\n"
+        script += "let revision=0;for(const state of "+json.dumps(states)+"){"
+        script += "await onmessage({data:{type:'query',revision:++revision,state}});"
+        script += "await new Promise(resolve=>setTimeout(resolve,80));}"
+        script += "process.stdout.write(JSON.stringify(output));})();"
+        execution = subprocess.run([shutil.which("node"),"-e",script],capture_output=True,text=True,check=True)
+        messages = json.loads(execution.stdout)
+        self.assertFalse([message for message in messages if message["type"]=="error"])
+        pages = [message for message in messages if message["type"]=="page"]
+        self.assertEqual(len(pages),len(expected))
+        for page,rows in zip(pages,expected):
+            self.assertEqual(page["total"],len(rows))
+            self.assertEqual([row[21] for row in page["rows"]],[row["id"] for row in rows[:100]])
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed for component JavaScript checks")
     def test_private_components_parse_and_allow_only_exact_four_leg_tv_chart(self):

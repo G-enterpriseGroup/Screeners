@@ -64,7 +64,7 @@ from src.reverse_iron_condor import (
     validate_ric,
     ric_limit_bounds,
 )
-from src.reverse_iron_condor_store import RICResultStore, filterable_ric_html, indicative_fill_score
+from src.reverse_iron_condor_store import RICResultStore, filterable_ric_html, indicative_fill_score, ric_strike_distance_pct
 from src.risk_sizing_ui_v9 import _select_true_cash
 
 
@@ -1868,6 +1868,9 @@ def _spread_table_row(candidate: dict[str, Any], annual_ids: set[str], *, tv_exc
         "tradingview_url": _tradingview_spread_url(candidate, exchange=tv_exchange),
         "expiry_detail": _expiry_time_label(candidate["expiry"]), "ric_legs": legs,
         "lower_breakeven": candidate["lower_breakeven"],
+        "upper_breakeven": candidate.get("upper_breakeven", candidate["breakeven"]),
+        "scan_spot": _live_quote_number(candidate.get("spot_last"), positive=True),
+        "strike_distance_pct": ric_strike_distance_pct(candidate),
         "upside_profit": candidate["upside_profit"], "downside_profit": candidate["downside_profit"],
         "open_interest": {"buy": legs[2]["open_interest"], "sell": legs[3]["open_interest"]},
         "fill_market": {"bid": candidate.get("spread_bid"), "mid": candidate.get("spread_mid"),
@@ -1890,7 +1893,7 @@ _QUALIFIED_SORT_FIELDS = (
     "MAX PROFIT", "EXPIRATION", "BUY STRIKE", "SELL STRIKE",
     "BUY LAST", "SELL LAST", "SPREAD WIDTH", "FILL QUALITY",
     "TICKER", "TYPE", "FILL EST", "PUT BUY STRIKE", "PUT SELL STRIKE",
-    "PUT BUY LAST", "PUT SELL LAST", "LOWER BREAKEVEN",
+    "PUT BUY LAST", "PUT SELL LAST", "LOWER BREAKEVEN", "MAX STRIKE DISTANCE %",
 )
 
 
@@ -1923,6 +1926,15 @@ def _sort_qualified_spreads(
                 indicative_fill_score(row) is None,
                 -(indicative_fill_score(row) or 0) if direction == "DESC"
                 else (indicative_fill_score(row) or 0),
+            ),
+        )
+    elif sort_by == "MAX STRIKE DISTANCE %":
+        return sorted(
+            sorted(rows, key=lambda row: row["id"]),
+            key=lambda row: (
+                ric_strike_distance_pct(row) is None,
+                -(ric_strike_distance_pct(row) or 0) if direction == "DESC"
+                else (ric_strike_distance_pct(row) or 0),
             ),
         )
     else:
@@ -1966,6 +1978,7 @@ def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost,
         "Spread Mid": row.get("spread_mid"), "Spread Ask": row.get("spread_ask"),
         "Orderable": "YES" if row.get("orderable") else "NO", "Annual Best": "YES" if row["id"] in annual_ids else "NO",
         "Underlying Last": row.get("spot_last"), "Target Breakeven ($)": target,
+        "Max Actual Strike Distance (%)": ric_strike_distance_pct(row),
         "Max Cost Filter ($)": max_cost, "Quote Source": source,
         "Quote Snapshot": datetime.fromtimestamp(loaded_at).astimezone().isoformat(timespec="seconds") if loaded_at is not None else "",
         "OptionStrat URL": _optionstrat_url(row), "TradingView URL": _tradingview_spread_url(row),
@@ -2143,6 +2156,7 @@ _PRESENTATION_DEFAULTS = {
     "ric_symbol_value": "", "ric_target_breakeven": "",
     "ric_min_reward_risk": "2", "ric_fee_per_spread": "0",
     "ric_max_strike_distance_pct": "",
+    "ric_strike_distance_filter": {},
     "ric_results_view": "BEST PER YEAR", "ric_be_filter_enabled": False,
     "ric_be_range_percent": 5.0, "ric_all_pair_sort": "FILL + TARGET",
     "ric_all_pair_direction": "ASC", "ric_best_pair_sort": "YEAR + FILL",
@@ -2192,8 +2206,112 @@ def _remember_presentation(key: str) -> None:
 
 def _remember_scan_inputs() -> None:
     for key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
-                "ric_max_strike_distance_pct"):
+                "ric_max_strike_distance_pct", "ric_strike_distance_filter"):
         _remember_presentation(key)
+
+
+def _strike_distance_column_bounds(filters: dict[str, Any]) -> dict[str, float]:
+    bounds = filters.get("strike_distance_pct", {})
+    if not isinstance(bounds, dict) or set(bounds) - {"min", "max"}:
+        raise ValueError("Invalid strike-distance column filter.")
+    clean = {}
+    for key, value in bounds.items():
+        if value is None or value == "":
+            continue
+        if type(value) not in (int, float):
+            raise ValueError("Strike-distance bounds must be finite numbers.")
+        try:
+            number = float(value)
+        except OverflowError as exc:
+            raise ValueError("Strike-distance bounds must be finite numbers.") from exc
+        if not math.isfinite(number):
+            raise ValueError("Strike-distance bounds must be finite numbers.")
+        clean[key] = number
+    if "max" in clean:
+        _entered_strike_distance(clean["max"])
+    return clean
+
+
+def _remember_strike_distance_filter(filters: dict[str, Any]) -> None:
+    bounds = _strike_distance_column_bounds(filters)
+    if bounds != st.session_state.get("ric_strike_distance_filter", {}):
+        for key in ("ric_review_bundle", "ric_live_confirm", "_ric_order_candidate", "ric_last_send_results"):
+            st.session_state.pop(key, None)
+    st.session_state["ric_strike_distance_filter"] = bounds
+    maximum = bounds.get("max")
+    st.session_state["ric_max_strike_distance_pct"] = "" if maximum is None else f"{maximum:g}"
+    _remember_presentation("ric_strike_distance_filter")
+    _remember_presentation("ric_max_strike_distance_pct")
+
+
+def _with_saved_strike_distance_filter(filters: dict[str, Any]) -> dict[str, Any]:
+    filters = dict(filters)
+    bounds = _strike_distance_column_bounds({
+        "strike_distance_pct": st.session_state.get("ric_strike_distance_filter", {}),
+    })
+    if bounds:
+        filters["strike_distance_pct"] = bounds
+    else:
+        filters.pop("strike_distance_pct", None)
+    return filters
+
+
+def _apply_pre_scan_strike_filter(update: Any, state: dict[str, Any]) -> bool:
+    """Accept only the header's scoped, newer strike-filter message."""
+    allowed = {"scope", "filter_scope", "selected_ids", "revision", "column_filters",
+               "filter_revision", "sort_by", "sort_direction", "sort_view"}
+    if (not isinstance(update, dict) or set(update) - allowed
+            or update.get("scope") != state["scope"]
+            or update.get("filter_scope") != state["scope"]
+            or update.get("selected_ids", []) != []):
+        return False
+    revision = update.get("filter_revision")
+    if type(revision) is not int or not state["revision"] < revision <= 9_007_199_254_740_991:
+        return False
+    filters = update.get("column_filters")
+    state["revision"] = revision
+    try:
+        if not isinstance(filters, dict) or set(filters) - {"strike_distance_pct"}:
+            raise ValueError("Only the strike-distance column can be set before scanning.")
+        _remember_strike_distance_filter(filters)
+    except ValueError as exc:
+        state["error"] = str(exc)
+    else:
+        state.pop("error", None)
+    return True
+
+
+def _render_pre_scan_strike_header(symbol: str) -> None:
+    state = st.session_state.get("_ric_pre_scan_filter_state")
+    if not isinstance(state, dict) or state.get("symbol") != symbol:
+        state = {"symbol": symbol, "scope": "ric-prescan-" + secrets.token_hex(12), "revision": 0}
+        st.session_state["_ric_pre_scan_filter_state"] = state
+    update = _SPREAD_SCROLL_COMPONENT(
+        scope=state["scope"], filter_scope=state["scope"], sort_key="pre-scan", rows=[],
+        total_rows=0, row_offset=0, selected_ids=[], ack_revision=0,
+        column_filters=_with_saved_strike_distance_filter({}), filter_choices={}, fill_est_values=[],
+        sort_by="FILL + TARGET", sort_direction="ASC", sort_view="ALL QUALIFIED", sortable=False,
+        filter_ack_revision=state["revision"], has_target=False, pre_scan=True,
+        live_quotes_enabled=False, live_quote_channel="",
+        key="ric_pre_scan_" + state["scope"], default=None,
+    )
+    if state.get("error"):
+        st.warning(state["error"])
+    if _apply_pre_scan_strike_filter(update, state):
+        try:
+            st.rerun(scope="fragment")
+        except st.errors.StreamlitAPIException:
+            st.rerun()
+
+
+def _strike_scope_change_notice(scan_ceiling: Any, requested_ceiling: Any) -> str | None:
+    covered = _entered_strike_distance(scan_ceiling)
+    requested = _entered_strike_distance(requested_ceiling)
+    if covered is None or (requested is not None and requested <= covered):
+        return None
+    wanted = "UNLIMITED STRIKES" if requested is None else f"ALL FOUR STRIKES WITHIN ±{requested:g}%"
+    return (f"CURRENT RESULTS COVER ALL FOUR STRIKES WITHIN ±{covered:g}% OF SCAN SPOT. "
+            f"Press SCAN ALL YEARS to apply {wanted}. Column filtering does not extend the scanned universe.")
 
 
 def _remember_results_view(widget_key: str) -> None:
@@ -2239,6 +2357,17 @@ def _restore_presentation() -> None:
     saved = dict(st.session_state.get("_ric_presentation") or {})
     saved.pop("ric_max_cost", None)
     st.session_state.pop("ric_max_cost", None)
+    if "ric_strike_distance_filter" not in saved:
+        remembered = st.session_state.get("ric_strike_distance_filter")
+        if isinstance(remembered, dict):
+            saved["ric_strike_distance_filter"] = dict(remembered)
+        else:
+            try:
+                ceiling = _entered_strike_distance(saved.get(
+                    "ric_max_strike_distance_pct", st.session_state.get("ric_max_strike_distance_pct", "")))
+            except ValueError:
+                ceiling = None  # The scan parser still rejects the invalid saved ceiling.
+            saved["ric_strike_distance_filter"] = {} if ceiling is None else {"max": ceiling}
     if not st.session_state.get("_ric_best_default_initialized"):
         saved["ric_results_view"] = "BEST PER YEAR"
         st.session_state["_ric_best_default_initialized"] = True
@@ -2509,7 +2638,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.html(_company_display_markup(symbol, ticker_quote.get("name", ""),
                                             ticker_quote.get("last"), quote_title))
         with fields[2], st.form("ric_scan_form", clear_on_submit=False, border=False):
-            scan_fields = st.columns([.8, .8, 1.0, 1.1], gap="small", vertical_alignment="bottom")
+            scan_fields = st.columns([.8, .8, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 ratio_text = st.text_input(
                     "MIN RISK:REWARD 1:", key="ric_min_reward_risk", placeholder="2",
@@ -2521,17 +2650,12 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     help="Total estimated fees for all four opening legs of ONE R.I.C. Enter 0 to screen before fees. Included in risk, both rewards and breakevens; excludes unknown closing/assignment costs.",
                 )
             with scan_fields[2]:
-                strike_distance_text = st.text_input(
-                    "MAX STRIKE DISTANCE %", key="ric_max_strike_distance_pct", placeholder="unlimited",
-                    help="Optional pre-scan scope for ALL FOUR strikes: each must be within this ±% of the fixed scan quote's Last. Blank scans unlimited strikes. All listed years are still loaded; every qualifying condor inside the scope is retained.",
-                )
-            with scan_fields[3]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
                     on_click=_remember_scan_inputs,
                 )
         for form_key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
-                         "ric_max_strike_distance_pct"):
+                         "ric_max_strike_distance_pct", "ric_strike_distance_filter"):
             _remember_presentation(form_key)
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
@@ -2589,7 +2713,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     target = None
                     min_reward_risk = _entered_reward_risk(ratio_text)
                     fee_per_spread = _entered_fee(fee_text)
-                    max_strike_distance_pct = _entered_strike_distance(strike_distance_text)
+                    max_strike_distance_pct = _entered_strike_distance(
+                        st.session_state.get("ric_max_strike_distance_pct", ""))
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
@@ -2660,10 +2785,10 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
 
         with results_slot.container():
             result = st.session_state.get("ric_scan_result")
-            if not isinstance(result, dict):
+            if not isinstance(result, dict) or result.get("symbol") != symbol:
+                _render_pre_scan_strike_header(symbol)
                 return
-            if result.get("symbol") != symbol:
-                return
+            st.session_state.pop("_ric_pre_scan_filter_state", None)
             if result.get("max_cost") is not None:
                 st.session_state.pop("ric_review_bundle", None)
                 st.session_state.pop("ric_live_confirm", None)
@@ -2739,6 +2864,15 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 f'{_strike_scope_label(result.get("max_strike_distance_pct"))} // '
                 "DEBIT MIN / MAX IN COLUMN FILTER // 7+ DAYS TO EXPIRY"
             ).replace("$", r"\$"))
+            try:
+                scope_notice = _strike_scope_change_notice(
+                    result.get("max_strike_distance_pct"),
+                    st.session_state.get("ric_max_strike_distance_pct", ""))
+            except ValueError as exc:
+                st.warning(str(exc))
+            else:
+                if scope_notice:
+                    st.info(scope_notice)
             snapshot_notice = st.empty()
             if time.time() - result["loaded_at"] > _SCAN_CACHE_SECONDS:
                 snapshot_notice.warning("STALE SNAPSHOT // Results are historical. Rescan before evaluating an order.")
@@ -2785,8 +2919,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                                      and "filter_scope" not in filter_state
                                      and filter_state.get("raw_scan_id") == result.get("raw_scan_id"))
                     filters = (dict(filter_state["filters"]) if same_snapshot
-                               else _default_column_filters(filter_choices["expiry"],
-                                   st.session_state.get("ric_target_breakeven", "")))
+                               else _with_saved_strike_distance_filter(_default_column_filters(
+                                   filter_choices["expiry"], st.session_state.get("ric_target_breakeven", ""))))
                     filter_state = {"filter_scope": filter_scope,
                                     "raw_scan_id": result.get("raw_scan_id"), "filters": filters,
                                     "revision": int(filter_state.get("revision", 0)) if same_snapshot else 0}
@@ -2796,8 +2930,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     _remember_scan_snapshot()
                 if filter_state.get("defaults_pending") and filter_choices["expiry"]:
                     if int(filter_state["revision"]) == 0:
-                        filter_state["filters"] = _default_column_filters(
-                            filter_choices["expiry"], st.session_state.get("ric_target_breakeven", ""))
+                        filter_state["filters"] = _with_saved_strike_distance_filter(_default_column_filters(
+                            filter_choices["expiry"], st.session_state.get("ric_target_breakeven", "")))
                     filter_state.pop("defaults_pending", None)
                     _remember_scan_snapshot()
                 column_filters = dict(filter_state["filters"])
@@ -3017,9 +3151,11 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                         if isinstance(incoming_filters, dict):
                             try:
                                 candidates._where(column_filters=incoming_filters)
+                                _strike_distance_column_bounds(incoming_filters)
                             except ValueError:
                                 pass
                             else:
+                                _remember_strike_distance_filter(incoming_filters)
                                 incoming_max = (incoming_filters.get("cost") or {}).get("max")
                                 incoming_max = None if incoming_max in (None, "") else float(incoming_max)
                                 if incoming_max != active_max_cost:

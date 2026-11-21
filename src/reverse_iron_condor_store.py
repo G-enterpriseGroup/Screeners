@@ -55,6 +55,7 @@ _SORTS = {
                     ("expiry", False), ("side", False), ("buy", False),
                     ("sell", False), ("buy_osi", False), ("sell_osi", False)),
 }
+_SORTS["MAX STRIKE DISTANCE %"] = (("strike_distance_pct", False),)
 _DETAILS = (
     "buy_bid", "buy_ask", "sell_bid", "sell_ask", "debit", "basis", "orderable",
     "spread_bid", "spread_mid", "spread_ask", "last_debit", "liquidity_signal",
@@ -70,6 +71,7 @@ _NUMERIC_FILTERS.update({
     "put_buy_last": "json_extract(details, '$[12].put_buy_last')",
     "put_sell_last": "json_extract(details, '$[12].put_sell_last')",
     "lower_breakeven": "json_extract(details, '$[12].lower_breakeven')",
+    "strike_distance_pct": "strike_distance_pct",
 })
 _CHOICE_FILTERS = {
     "side": "side", "expiry": "expiry", "basis": "json_extract(details, '$[5]')",
@@ -105,6 +107,22 @@ def indicative_fill_score(row: dict[str, Any]) -> float | None:
     if not all(math.isfinite(value) for value in (bid, ask, debit)) or ask <= bid:
         return None
     return 5.0 + 90.0 * min(1.0, max(0.0, (debit - bid) / (ask - bid)))
+
+
+def ric_strike_distance_pct(row: dict[str, Any], spot=None) -> float | None:
+    """Largest absolute distance of the four strikes from the fixed scan spot."""
+    try:
+        values = [row.get("spot_last") if spot is None else spot]
+        values.extend(row[key] for key in ("put_buy_strike", "put_sell_strike", "buy_strike", "sell_strike"))
+        if any(isinstance(value, bool) for value in values):
+            return None
+        center, *strikes = map(float, values)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) and value > 0 for value in (center, *strikes)):
+        return None
+    distance = 100.0 * max(abs(strike - center) for strike in strikes) / center
+    return distance if math.isfinite(distance) else None
 
 
 # ==============================
@@ -323,6 +341,17 @@ class RICResultStore:
         # Only a validated finite float is interpolated into the SQL expression.
         return "0.0" if target is None else f"min(abs(breakeven - {target!r}), abs(json_extract(details, '$[12].lower_breakeven') - {target!r}))"
 
+    def _strike_distance_expression(self) -> str:
+        try:
+            spot = float(self.spot)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid fixed scan spot for strike distance.") from exc
+        if isinstance(self.spot, bool) or not math.isfinite(spot) or spot <= 0:
+            raise ValueError("Invalid fixed scan spot for strike distance.")
+        return (f"100.0 * max(abs(buy - {spot!r}), abs(sell - {spot!r}), "
+                f"abs(json_extract(details, '$[12].put_buy_strike') - {spot!r}), "
+                f"abs(json_extract(details, '$[12].put_sell_strike') - {spot!r})) / {spot!r}")
+
     def _where(self, expiry="ALL", side="CALL + PUT", max_distance=None, column_filters=None,
                year=None):
         clauses, args = [], []
@@ -388,6 +417,9 @@ class RICResultStore:
                         value = selected.get(limit)
                         if value is None or value == "":
                             continue
+                        if field == "strike_distance_pct" and (isinstance(value, bool) or
+                                                               not isinstance(value, (int, float))):
+                            raise ValueError("Invalid strike distance column filter.")
                         try:
                             value = float(value)
                         except (TypeError, ValueError, OverflowError) as exc:
@@ -397,11 +429,13 @@ class RICResultStore:
                         bounds[limit] = value
                     if "min" in bounds and "max" in bounds and bounds["min"] > bounds["max"]:
                         clauses.append("1=0")
+                    expression = (self._strike_distance_expression() if field == "strike_distance_pct"
+                                  else _NUMERIC_FILTERS[field])
                     if "min" in bounds:
-                        clauses.append(f"{_NUMERIC_FILTERS[field] if field != 'fill_scale' else _FILL_EST_SQL}>=?")
+                        clauses.append(f"{expression}>=?")
                         args.append(bounds["min"] - 1e-8)
                     if "max" in bounds:
-                        clauses.append(f"{_NUMERIC_FILTERS[field] if field != 'fill_scale' else _FILL_EST_SQL}<=?")
+                        clauses.append(f"{expression}<=?")
                         args.append(bounds["max"] + 1e-8)
                 elif field == "ticker" or field in _CHOICE_FILTERS:
                     if not isinstance(selected, list) or len(selected) > 1000 or any(
@@ -482,6 +516,8 @@ class RICResultStore:
             if column == "fill_est":
                 column = _FILL_EST_SQL
                 terms.append(f"({column} IS NULL) ASC")
+            if column == "strike_distance_pct":
+                column = self._strike_distance_expression()
             if column in {"buy_last", "sell_last",
                           "json_extract(details, '$[12].put_buy_last')",
                           "json_extract(details, '$[12].put_sell_last')"}:
@@ -625,7 +661,8 @@ def filterable_ric_html(store: RICResultStore, *, source, loaded_at, pricing_mod
                       candidate.get("put_sell_bid"), candidate.get("put_sell_ask"),
                       optionstrat_url(candidate) if optionstrat_url else "",
                       tradingview_url(candidate) if tradingview_url else "",
-                      {key: value for key, value in candidate.items() if key != "expiry"}]
+                      {key: value for key, value in candidate.items() if key != "expiry"},
+                      ric_strike_distance_pct(candidate, store.spot)]
             batch.append((b"," if count else b"") + json.dumps(
                 values, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii"))
             count += 1
@@ -654,6 +691,7 @@ select[multiple]{height:70px}button{cursor:pointer;font-weight:bold}button:disab
 #grid{overflow:auto;max-height:70vh;border:1px solid #a65c16}table{width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
 th{position:sticky;top:0;background:#fb8b1e;color:#000;text-align:right}th,td{border:1px solid #a65c16;padding:5px 7px;text-align:right}td:first-child,td:nth-child(2){text-align:left}
 tr.call{background:#a3e635;color:#000}tr.put{background:#ea0101;color:#000}td a{color:inherit;text-decoration:underline}#status{font-weight:bold}#active{overflow-wrap:anywhere;color:#f6b56a}#error{color:#ff5757}small{font-size:11px;color:#aaa}
+.breakevens>div{display:flex;justify-content:space-between;gap:8px;line-height:12px;font-size:11px}.breakevens small{font:inherit;color:inherit}
 @media(max-width:600px){body{padding:6px}h1{font-size:15px}#controls{grid-template-columns:repeat(2,minmax(0,1fr))}input,select,button{font-size:16px;min-height:40px}th,td{padding:5px}}
 </style></head><body>
 <h1 id="heading">R.I.C. // OFFLINE</h1><p id="meta"></p>
@@ -661,7 +699,6 @@ tr.call{background:#a3e635;color:#000}tr.put{background:#ea0101;color:#000}td a{
 <small>Read-only market data. Fill EST is an uncalibrated quote-position heuristic. Quotes do not update offline.</small>
 <div id="controls">
 <label>SEARCH<input id="search" type="search" placeholder="Ticker, contract, value"></label>
-<label>TYPE<select id="side"><option value="ALL">RIC</option><option>RIC</option><option value="NONE">NONE</option></select></label>
 <label>EXPIRATIONS<select id="expiry" multiple aria-label="Expiration choices"></select></label>
 <label>YEAR<select id="year"><option value="">ALL YEARS</option></select></label>
 <label>SORT<select id="sort"></select></label>
@@ -679,13 +716,17 @@ tr.call{background:#a3e635;color:#000}tr.put{background:#ea0101;color:#000}td a{
 function verticalsWorker(){
  "use strict";
  let rows=[],meta={},cachedKey="",matching=[],pending=null,timer=null,ready=false,fillValues=[];
- const numeric={buy:2,sell:3,buy_last:4,sell_last:5,buy_oi:6,sell_oi:7,debit:8,cost:9,breakeven:10,ratio:11,profit:12,fill_scale:17,width:22,buy_bid:23,buy_ask:24,sell_bid:25,sell_ask:26,put_buy:27,put_sell:28,put_buy_last:29,put_sell_last:30,put_buy_oi:31,put_sell_oi:32,lower_breakeven:33,upside_profit:34,downside_profit:35,call_width:36,put_width:37,fee_per_spread:38,put_buy_bid:41,put_buy_ask:42,put_sell_bid:43,put_sell_ask:44};
- const columns={"R:R":11,COST:9,BREAKEVEN:10,"MAX PROFIT":12,EXPIRATION:0,"BUY STRIKE":2,"SELL STRIKE":3,"BUY LAST":4,"SELL LAST":5,"SPREAD WIDTH":22,"FILL QUALITY":18,"FILL EST":17,TYPE:1,TICKER:21,"PUT BUY STRIKE":27,"PUT SELL STRIKE":28,"PUT BUY LAST":29,"PUT SELL LAST":30,"LOWER BREAKEVEN":33};
+ const numeric={buy:2,sell:3,buy_last:4,sell_last:5,buy_oi:6,sell_oi:7,debit:8,cost:9,breakeven:10,ratio:11,profit:12,fill_scale:17,width:22,buy_bid:23,buy_ask:24,sell_bid:25,sell_ask:26,put_buy:27,put_sell:28,put_buy_last:29,put_sell_last:30,put_buy_oi:31,put_sell_oi:32,lower_breakeven:33,upside_profit:34,downside_profit:35,call_width:36,put_width:37,fee_per_spread:38,put_buy_bid:41,put_buy_ask:42,put_sell_bid:43,put_sell_ask:44,strike_distance_pct:48};
+ const columns={"R:R":11,COST:9,BREAKEVEN:10,"MAX PROFIT":12,EXPIRATION:0,"BUY STRIKE":2,"SELL STRIKE":3,"BUY LAST":4,"SELL LAST":5,"SPREAD WIDTH":22,"FILL QUALITY":18,"FILL EST":17,TYPE:1,TICKER:21,"PUT BUY STRIKE":27,"PUT SELL STRIKE":28,"PUT BUY LAST":29,"PUT SELL LAST":30,"LOWER BREAKEVEN":33,"MAX STRIKE DISTANCE %":48};
  function target(filters){return Object.hasOwn(filters.breakeven||{},"target")?filters.breakeven.target:meta.target;}
  function distance(row,value){return value===null||value===undefined?0:Math.min(Math.abs(row[10]-value),Math.abs(row[33]-value));}
  function compare(a,b){return a<b?-1:a>b?1:0;}
  function run(request){
   const state=request.state,filters=state.filters||{},aim=target(filters),sign=state.direction==="DESC"?-1:1;
+  const strikeBound=filters.strike_distance_pct;
+  if(Object.hasOwn(filters,"strike_distance_pct")&&(!strikeBound||typeof strikeBound!=="object"||Array.isArray(strikeBound)||
+     Object.keys(strikeBound).some(key=>!['min','max'].includes(key))||Object.values(strikeBound).some(value=>
+      value!==null&&value!==""&&(typeof value!=="number"||!Number.isFinite(value)))))throw new Error("Invalid strike distance column filter.");
   const fillBound=filters.fill_scale;
   if(Object.hasOwn(filters,"fill_scale")&&(!fillBound||typeof fillBound!=="object"||Array.isArray(fillBound)||
      Object.keys(fillBound).length!==1||!Object.hasOwn(fillBound,"gt")||typeof fillBound.gt!=="number"||
@@ -703,7 +744,8 @@ function verticalsWorker(){
       const cell=field==="ticker"?meta.symbol:row[{side:1,expiry:0,basis:13}[field]];
       if(!value.includes(cell))keep=false;
      }else if(Object.hasOwn(numeric,field)){
-      const cell=row[numeric[field]],bounds=value||{};
+      const cell=row[numeric[field]];let bounds=value||{};
+      if(field==="strike_distance_pct")bounds=Object.fromEntries(Object.entries(bounds).filter(([,bound])=>bound!==""));
       if(field==="breakeven"&&Object.hasOwn(bounds,"percent")){
        if(aim!==null&&aim!==undefined){const band=aim*bounds.percent/100;keep=distance(row,aim)<=band+1e-8;}
       }else if((bounds.min!==undefined&&bounds.min!==null&&(cell===null||cell<bounds.min-1e-8))||(bounds.max!==undefined&&bounds.max!==null&&(cell===null||cell>bounds.max+1e-8)))keep=false;
@@ -750,18 +792,24 @@ function verticalsWorker(){
   }catch(error){postMessage({type:"error",message:String(error.message||error)});}
  };
 }
+function ricBreakevenLines(row,spot){
+ return [["L",row[33]],["SPOT",spot],["U",row[10]]].map(([label,price])=>{
+  const distance=Number.isFinite(price)&&Number.isFinite(spot)&&spot>0?(price-spot)/spot*100:null;
+  return {label,price,percent:label==="SPOT"?"":distance===null?"—":(distance>=0?"+":"")+distance.toFixed(2)+"%"};
+ });
+}
 (()=>{
  const $=id=>document.getElementById(id),meta=JSON.parse($("vertical-meta").textContent);
- const fields=[[0,"EXPIRATION"],[1,"TYPE"],[27,"PUT BUY STRIKE"],[28,"PUT SELL STRIKE"],[2,"CALL BUY STRIKE"],[3,"CALL SELL STRIKE"],[29,"PUT BUY LAST"],[30,"PUT SELL LAST"],[4,"CALL BUY LAST"],[5,"CALL SELL LAST"],[31,"PUT BUY OI"],[32,"PUT SELL OI"],[6,"CALL BUY OI"],[7,"CALL SELL OI"],[8,"DEBIT / SHARE"],[9,"COST $"],[33,"LOWER BREAKEVEN"],[10,"UPPER BREAKEVEN"],[11,"R:R"],[12,"MIN SIDE PROFIT"],[35,"PUT MAX PROFIT"],[34,"CALL MAX PROFIT"],[13,"FILL"],[14,"SPREAD BID"],[15,"SPREAD MID"],[16,"SPREAD ASK"],[17,"FILL EST %"],[22,"MIN WIDTH"],[37,"PUT WIDTH"],[36,"CALL WIDTH"],[38,"EST. FEES $"],[23,"BUY BID"],[24,"BUY ASK"],[25,"SELL BID"],[26,"SELL ASK"],[41,"PUT BUY BID"],[42,"PUT BUY ASK"],[43,"PUT SELL BID"],[44,"PUT SELL ASK"],[39,"PUT BUY OSI"],[40,"PUT SELL OSI"],[19,"CALL BUY OSI"],[20,"CALL SELL OSI"],[45,"OPTIONSTRAT"],[46,"TRADINGVIEW"],[21,"SPREAD ID"]];
- const numeric={buy:"BUY STRIKE",sell:"SELL STRIKE",buy_last:"BUY LAST",sell_last:"SELL LAST",buy_oi:"BUY OI",sell_oi:"SELL OI",debit:"DEBIT / SHARE",cost:"COST $",ratio:"R:R",profit:"MAX PROFIT",fill_scale:"FILL EST %",width:"WIDTH",buy_bid:"BUY BID",buy_ask:"BUY ASK",sell_bid:"CALL SELL BID",sell_ask:"CALL SELL ASK",put_buy:"PUT BUY STRIKE",put_sell:"PUT SELL STRIKE",put_buy_last:"PUT BUY LAST",put_sell_last:"PUT SELL LAST",put_buy_oi:"PUT BUY OI",put_sell_oi:"PUT SELL OI",lower_breakeven:"LOWER BREAKEVEN",upside_profit:"CALL MAX PROFIT",downside_profit:"PUT MAX PROFIT",call_width:"CALL WIDTH",put_width:"PUT WIDTH",fee_per_spread:"EST. FEES $",put_buy_bid:"PUT BUY BID",put_buy_ask:"PUT BUY ASK",put_sell_bid:"PUT SELL BID",put_sell_ask:"PUT SELL ASK"};
+ const fields=[[0,"EXPIRATION"],[27,"PUT BUY STRIKE"],[28,"PUT SELL STRIKE"],[2,"CALL BUY STRIKE"],[3,"CALL SELL STRIKE"],[48,"MAX STRIKE DISTANCE %"],[29,"PUT BUY LAST"],[30,"PUT SELL LAST"],[4,"CALL BUY LAST"],[5,"CALL SELL LAST"],[31,"PUT BUY OI"],[32,"PUT SELL OI"],[6,"CALL BUY OI"],[7,"CALL SELL OI"],[8,"DEBIT / SHARE"],[9,"COST $"],[33,"BREAKEVENS"],[11,"R:R"],[12,"MIN SIDE PROFIT"],[35,"PUT MAX PROFIT"],[34,"CALL MAX PROFIT"],[13,"FILL"],[14,"SPREAD BID"],[15,"SPREAD MID"],[16,"SPREAD ASK"],[17,"FILL EST %"],[22,"MIN WIDTH"],[37,"PUT WIDTH"],[36,"CALL WIDTH"],[38,"EST. FEES $"],[23,"BUY BID"],[24,"BUY ASK"],[25,"SELL BID"],[26,"SELL ASK"],[41,"PUT BUY BID"],[42,"PUT BUY ASK"],[43,"PUT SELL BID"],[44,"PUT SELL ASK"],[39,"PUT BUY OSI"],[40,"PUT SELL OSI"],[19,"CALL BUY OSI"],[20,"CALL SELL OSI"],[45,"OPTIONSTRAT"],[46,"TRADINGVIEW"],[21,"SPREAD ID"]];
+ const numeric={buy:"BUY STRIKE",sell:"SELL STRIKE",buy_last:"BUY LAST",sell_last:"SELL LAST",buy_oi:"BUY OI",sell_oi:"SELL OI",debit:"DEBIT / SHARE",cost:"COST $",ratio:"R:R",profit:"MAX PROFIT",fill_scale:"FILL EST %",width:"WIDTH",buy_bid:"BUY BID",buy_ask:"BUY ASK",sell_bid:"CALL SELL BID",sell_ask:"CALL SELL ASK",put_buy:"PUT BUY STRIKE",put_sell:"PUT SELL STRIKE",put_buy_last:"PUT BUY LAST",put_sell_last:"PUT SELL LAST",put_buy_oi:"PUT BUY OI",put_sell_oi:"PUT SELL OI",lower_breakeven:"LOWER BREAKEVEN",upside_profit:"CALL MAX PROFIT",downside_profit:"PUT MAX PROFIT",call_width:"CALL WIDTH",put_width:"PUT WIDTH",fee_per_spread:"EST. FEES $",put_buy_bid:"PUT BUY BID",put_buy_ask:"PUT BUY ASK",put_sell_bid:"PUT SELL BID",put_sell_ask:"PUT SELL ASK",strike_distance_pct:"MAX STRIKE DISTANCE %"};
  let filters=structuredClone(meta.filters),page=0,revision=0,worker=null,debounce=null,ready=false;
  function option(value,label=value){const node=document.createElement("option");node.value=value;node.textContent=label;return node;}
  $("heading").textContent=meta.symbol+" R.I.C. // OFFLINE";
  $("meta").textContent=meta.count.toLocaleString()+" QUALIFYING SPREADS // "+meta.source+" // "+meta.pricing_mode+" // MIN R:R 1:"+meta.min_reward_risk+" // QUOTE SNAPSHOT "+new Date(meta.loaded_at*1000).toLocaleString();
  const header=document.createElement("tr");for(const [,name] of fields){const cell=document.createElement("th");cell.textContent=name;header.appendChild(cell);}$("head").appendChild(header);
- for(const name of ["YEAR + FILL","FILL + TARGET","R:R","COST","BREAKEVEN","TARGET DISTANCE","MAX PROFIT","EXPIRATION","BUY STRIKE","SELL STRIKE","BUY LAST","SELL LAST","SPREAD WIDTH","FILL QUALITY","FILL EST","TYPE","TICKER","PUT BUY STRIKE","PUT SELL STRIKE","PUT BUY LAST","PUT SELL LAST","LOWER BREAKEVEN"])$("sort").appendChild(option(name));
+ for(const name of ["YEAR + FILL","FILL + TARGET","R:R","COST","BREAKEVEN","TARGET DISTANCE","MAX PROFIT","EXPIRATION","BUY STRIKE","SELL STRIKE","BUY LAST","SELL LAST","SPREAD WIDTH","FILL QUALITY","FILL EST","TICKER","PUT BUY STRIKE","PUT SELL STRIKE","PUT BUY LAST","PUT SELL LAST","LOWER BREAKEVEN","MAX STRIKE DISTANCE %"])$("sort").appendChild(option(name));
  for(const [key,name] of Object.entries(numeric))if(key!=="fill_scale")$("numeric").appendChild(option(key,name));
- $("sort").value=meta.sort_by;$("direction").value=meta.direction;
+ $("sort").value=meta.sort_by==="TYPE"?"YEAR + FILL":meta.sort_by;$("direction").value=meta.direction;
  const band=filters.breakeven||{};$("target").value=Object.hasOwn(band,"target")?band.target??"":meta.target??"";$("percent").value=band.percent??5;
  function rangeInputs(){const bounds=filters[$("numeric").value]||{};$("minimum").value=bounds.min??"";$("maximum").value=bounds.max??"";}
  let availableFillValues=[];
@@ -785,12 +833,19 @@ function verticalsWorker(){
   page=message.page;const fragment=document.createDocumentFragment();
   for(const row of message.rows){const line=document.createElement("tr");line.className="call";
    for(const [index] of fields){const cell=document.createElement("td"),value=row[index];
-    if(index===45||index===46){
+    if(index===33){
+     cell.className="breakevens";
+     for(const item of ricBreakevenLines(row,meta.spot)){
+      const line=document.createElement("div"),percent=document.createElement("small"),price=document.createElement("span");
+      percent.textContent=item.percent;price.textContent=item.label+" "+(Number.isFinite(item.price)?item.price.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"—");
+      line.append(percent,price);cell.appendChild(line);
+     }
+    }else if(index===45||index===46){
      try{const url=new URL(String(value||""));if(url.protocol==="https:"&&!url.username&&!url.password&&
        (index===45?url.hostname==="optionstrat.com":url.hostname==="www.tradingview.com")){
       const link=document.createElement("a");link.href=url.href;link.target="_blank";link.rel="noopener noreferrer";link.textContent=index===45?"OS":"TV";cell.appendChild(link);
      }else cell.textContent="—";}catch{cell.textContent="—";}
-    }else cell.textContent=value===null||value===undefined?"—":typeof value==="number"?([6,7,31,32].includes(index)?value.toLocaleString("en-US"):index===11?"1:"+value.toFixed(2):index===17?Math.round(value)+"%":value.toLocaleString("en-US",{maximumFractionDigits:6})):String(value);
+    }else cell.textContent=value===null||value===undefined?"—":typeof value==="number"?([6,7,31,32].includes(index)?value.toLocaleString("en-US"):index===11?"1:"+value.toFixed(2):index===17?Math.round(value)+"%":index===48?value.toFixed(2)+"%":value.toLocaleString("en-US",{maximumFractionDigits:6})):String(value);
     line.appendChild(cell);}fragment.appendChild(line);
   }$("body").replaceChildren(fragment);$("status").textContent=message.total.toLocaleString()+" / "+meta.count.toLocaleString()+" SPREADS // PAGE "+(page+1)+" / "+Math.max(1,Math.ceil(message.total/100));
   $("previous").disabled=page===0;$("next").disabled=(page+1)*100>=message.total;
@@ -807,7 +862,6 @@ function verticalsWorker(){
   if(Object.keys(bounds).length)filters[field]=bounds;else delete filters[field];submit();
  });
  for(const id of ["minimum","maximum"])$(id).addEventListener("keydown",event=>{if(event.key==="Enter")$("apply").click();});
- $("side").addEventListener("change",()=>{const value=$("side").value;if(value==="ALL")delete filters.side;else filters.side=value==="NONE"?[]:[value];submit();});
  $("expiry").addEventListener("change",()=>{const values=[...$("expiry").selectedOptions].map(item=>item.value);if(values.length===$("expiry").options.length)delete filters.expiry;else filters.expiry=values;submit();});
  for(const id of ["target","percent"])$(id).addEventListener("input",()=>{
   if(!$("target").validity.valid||!$("percent").validity.valid)return;
@@ -815,7 +869,7 @@ function verticalsWorker(){
  });
  for(const id of ["year","sort","direction"])$(id).addEventListener("change",()=>submit());$("search").addEventListener("input",()=>submit());
  $("previous").addEventListener("click",()=>{page--;submit(false);});$("next").addEventListener("click",()=>{page++;submit(false);});
- $("clear").addEventListener("click",()=>{filters={breakeven:{target:null}};$("search").value="";$("side").value="ALL";$("year").value="";$("target").value="";$("percent").value=5;for(const item of $("expiry").options)item.selected=true;rangeInputs();fillChoices(availableFillValues);submit();});
+ $("clear").addEventListener("click",()=>{filters={breakeven:{target:null}};$("search").value="";$("year").value="";$("target").value="";$("percent").value=5;for(const item of $("expiry").options)item.selected=true;rangeInputs();fillChoices(availableFillValues);submit();});
  if(typeof Worker!=="function"||typeof DecompressionStream!=="function"){fail("Open this offline snapshot in a current browser supporting Web Workers and DecompressionStream.");return;}
  try{
   const url=URL.createObjectURL(new Blob(["("+verticalsWorker.toString()+")()"],{type:"text/javascript"}));worker=new Worker(url);URL.revokeObjectURL(url);
@@ -825,7 +879,7 @@ function verticalsWorker(){
    if(message.type==="error"){fail(message.message);return;}
    if(message.type==="ready"){
     ready=true;for(const value of message.expiries){const node=option(value);node.selected=!Object.hasOwn(filters,"expiry")||filters.expiry.includes(value);$("expiry").appendChild(node);}for(const value of message.years)$("year").appendChild(option(value));
-    $("year").value=meta.year??"";$("side").value=!Object.hasOwn(filters,"side")||filters.side.length===1&&filters.side[0]==="RIC"?"ALL":filters.side[0]||"NONE";submit();
+    $("year").value=meta.year??"";submit();
    }else if(message.type==="page"&&message.revision===revision)render(message);
   };
   worker.postMessage({type:"init",meta,compressed:$("vertical-data").textContent});

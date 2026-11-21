@@ -618,6 +618,152 @@ class StrikeDistanceScopeTests(unittest.TestCase):
         self.assertIn("ALL FOUR STRIKES WITHIN ±10% OF SCAN SPOT",meta["source"])
 
 
+class TableStrikeDistanceControlTests(unittest.TestCase):
+    def message(self, *, scope="pre-scan", revision=1, filters=None):
+        return {"scope":scope,"filter_scope":scope,"filter_revision":revision,
+                "selected_ids":[],"revision":0,
+                "column_filters":{} if filters is None else filters}
+
+    def test_table_payload_and_export_use_fixed_scan_spot_without_mutating_candidate(self):
+        candidate, _ = quoted_condor()
+        before = deepcopy(candidate)
+        with patch.object(ui.st,"session_state",{"_ric_ticker_quotes":{"SPY":{"last":999}}}):
+            row = ui._spread_table_row(candidate,set())
+        self.assertEqual(row["scan_spot"],100)
+        self.assertEqual(row["lower_breakeven"],candidate["lower_breakeven"])
+        self.assertEqual(row["upper_breakeven"],candidate["breakeven"])
+        self.assertEqual(row["strike_distance_pct"],10)
+        exported = ui._export_record(candidate,set(),source="SYNTHETIC",loaded_at=1,
+                                     target=None,max_cost=None,max_strike_distance_pct=20)
+        self.assertEqual(exported["Max Actual Strike Distance (%)"],10)
+        self.assertEqual(exported["Max Strike Distance From Scan Spot (%)"],20)
+        self.assertEqual(exported["Underlying Last"],100)
+        self.assertEqual(candidate,before)
+        unknown = candidate | {"spot_last":None}
+        self.assertIsNone(ui._spread_table_row(unknown,set())["scan_spot"])
+        self.assertIsNone(ui._spread_table_row(unknown,set())["strike_distance_pct"])
+
+    def test_actual_distance_sort_matches_numeric_order_with_unknown_last(self):
+        first, _ = quoted_condor()
+        smaller = first | {"id":"smaller","put_sell_strike":98,"put_buy_strike":99,
+                            "buy_strike":101,"sell_strike":102}
+        unknown = first | {"id":"unknown","spot_last":None}
+        self.assertEqual([row["id"] for row in ui._sort_qualified_spreads(
+            [unknown,first,smaller],"MAX STRIKE DISTANCE %","ASC",None)],
+            ["smaller",first["id"],"unknown"])
+        self.assertEqual([row["id"] for row in ui._sort_qualified_spreads(
+            [unknown,first,smaller],"MAX STRIKE DISTANCE %","DESC",None)],
+            [first["id"],"smaller","unknown"])
+
+    def test_moved_ceiling_migrates_and_remembers_minimum_and_explicit_clear(self):
+        state = {"_ric_presentation":{"ric_max_strike_distance_pct":"8"}}
+        with patch.object(ui.st,"session_state",state), patch.object(ui,"_require_ric_access"):
+            ui._restore_presentation()
+            self.assertEqual(state["ric_strike_distance_filter"],{"max":8})
+            ui._remember_strike_distance_filter({"strike_distance_pct":{"min":2,"max":5}})
+            ui._restore_presentation()
+            self.assertEqual(state["ric_max_strike_distance_pct"],"5")
+            self.assertEqual(ui._with_saved_strike_distance_filter({"expiry":["2027-01-15"]}),
+                             {"expiry":["2027-01-15"],"strike_distance_pct":{"min":2,"max":5}})
+            ui._remember_strike_distance_filter({})
+            ui._restore_presentation()
+            self.assertEqual(state["ric_max_strike_distance_pct"],"")
+            self.assertEqual(state["ric_strike_distance_filter"],{})
+            self.assertEqual(ui._with_saved_strike_distance_filter(
+                {"strike_distance_pct":{"max":8},"expiry":[]}),{"expiry":[]})
+
+    def test_pre_scan_protocol_accepts_only_new_matching_filter_without_market_calls(self):
+        state = {"etrade_access_unlocked":True,"ric_max_strike_distance_pct":"8",
+                 "ric_strike_distance_filter":{"max":8},"ric_review_bundle":{"preview":"old"},
+                 "ric_live_confirm":True,"_ric_order_candidate":"old","ric_last_send_results":["old"]}
+        protocol = {"scope":"pre-scan","revision":0}
+        with (patch.object(ui.st,"session_state",state), patch.object(ui,"_require_ric_access"),
+              patch.object(ui,"_scan_all_years") as download,
+              patch.object(ui,"_rank_cached_ric_chains") as rank,
+              patch.object(ui,"options_market_client") as market,
+              patch.object(ui,"_render_selected_order") as ticket):
+            update = self.message(filters={"strike_distance_pct":{"min":2,"max":9}})
+            self.assertTrue(ui._apply_pre_scan_strike_filter(update,protocol))
+            self.assertEqual(state["ric_max_strike_distance_pct"],"9")
+            self.assertEqual(state["ric_strike_distance_filter"],{"min":2,"max":9})
+            for key in ("ric_review_bundle","ric_live_confirm","_ric_order_candidate","ric_last_send_results"):
+                self.assertNotIn(key,state)
+            self.assertEqual(protocol["revision"],1)
+            self.assertFalse(ui._apply_pre_scan_strike_filter(update,protocol))
+            self.assertTrue(ui._apply_pre_scan_strike_filter(self.message(revision=2),protocol))
+            self.assertEqual(state["ric_max_strike_distance_pct"],"")
+            for action in (download,rank,market,ticket):
+                action.assert_not_called()
+
+    def test_stale_context_selection_and_financial_injection_cannot_change_header(self):
+        for altered in (
+            {"scope":"old"}, {"filter_scope":"old"}, {"filter_revision":0},
+            {"filter_revision":True}, {"filter_revision":10**100}, {"selected_ids":["invented"]},
+            {"rows":[{"debit":0,"reward_risk":999}]}, {"scan_spot":1},
+            {"fee_per_spread":0}, {"max_strike_distance_pct":100},
+        ):
+            with self.subTest(altered=altered):
+                state = {"ric_max_strike_distance_pct":"8","ric_strike_distance_filter":{"max":8}}
+                protocol = {"scope":"pre-scan","revision":0}
+                before = deepcopy(state)
+                update = self.message(filters={"strike_distance_pct":{"max":9}}) | altered
+                with patch.object(ui.st,"session_state",state),patch.object(ui,"_require_ric_access"):
+                    self.assertFalse(ui._apply_pre_scan_strike_filter(update,protocol))
+                self.assertEqual(state,before)
+                self.assertEqual(protocol,{"scope":"pre-scan","revision":0})
+
+    def test_invalid_header_filters_are_acknowledged_without_adopting_values(self):
+        invalid = ({"cost":{"max":1}}, {"strike_distance_pct":{"max":0}},
+                   {"strike_distance_pct":{"max":-1}}, {"strike_distance_pct":{"max":True}},
+                   {"strike_distance_pct":{"max":"8"}}, {"strike_distance_pct":{"max":float("inf")}},
+                   {"strike_distance_pct":{"max":10**1000}},
+                   {"strike_distance_pct":{"min":float("nan")}},
+                   {"strike_distance_pct":{"target":8}})
+        for filters in invalid:
+            with self.subTest(filters=filters):
+                state = {"ric_max_strike_distance_pct":"8","ric_strike_distance_filter":{"max":8}}
+                protocol = {"scope":"pre-scan","revision":0}
+                before = deepcopy(state)
+                with patch.object(ui.st,"session_state",state),patch.object(ui,"_require_ric_access"):
+                    self.assertTrue(ui._apply_pre_scan_strike_filter(self.message(filters=filters),protocol))
+                self.assertEqual(state,before)
+                self.assertEqual(protocol["revision"],1)
+                self.assertIn("error",protocol)
+
+    def test_header_only_component_exists_before_scan_and_rejects_old_symbol_context(self):
+        view = MagicMock(session_state={"ric_strike_distance_filter":{"max":8}})
+        component = MagicMock(return_value=None)
+        with (patch.object(ui,"st",view),patch.object(ui,"_SPREAD_SCROLL_COMPONENT",component),
+              patch.object(ui,"_scan_all_years") as download,
+              patch.object(ui,"_rank_cached_ric_chains") as rank):
+            ui._render_pre_scan_strike_header("SPY")
+            first = component.call_args.kwargs
+            self.assertTrue(first["pre_scan"])
+            self.assertEqual(first["rows"],[])
+            self.assertEqual(first["total_rows"],0)
+            self.assertEqual(first["column_filters"],{"strike_distance_pct":{"max":8}})
+            self.assertFalse(first["sortable"])
+            self.assertFalse(first["live_quotes_enabled"])
+            ui._render_pre_scan_strike_header("SPY")
+            self.assertEqual(component.call_args.kwargs["scope"],first["scope"])
+            ui._render_pre_scan_strike_header("QQQ")
+            current = component.call_args.kwargs
+            self.assertNotEqual(current["scope"],first["scope"])
+            self.assertFalse(ui._apply_pre_scan_strike_filter(
+                self.message(scope=first["scope"],revision=3,filters={"strike_distance_pct":{"max":99}}),
+                view.session_state["_ric_pre_scan_filter_state"]))
+            download.assert_not_called()
+            rank.assert_not_called()
+
+    def test_widening_or_clearing_requires_explicit_scan_but_narrowing_is_complete(self):
+        for covered, requested in ((None,None),(None,8),(8,5),(8,8)):
+            self.assertIsNone(ui._strike_scope_change_notice(covered,requested))
+        self.assertIn("±8%",ui._strike_scope_change_notice(8,9))
+        self.assertIn("±9%",ui._strike_scope_change_notice(8,9))
+        self.assertIn("SCAN ALL YEARS",ui._strike_scope_change_notice(8,None))
+        self.assertIn("UNLIMITED",ui._strike_scope_change_notice(8,None))
+
+
 class PortfolioAndIsolationTests(unittest.TestCase):
     def positions(self):
         c, rows = quoted_condor()
