@@ -687,18 +687,31 @@ class _RICDescriptorChunk:
         self.cache = {}
         self.tables = tables if tables is not None else {}
 
-    def source(self,prefix,field):
+    def _source_table(self,prefix,field):
         isput = prefix.startswith('put_')
         pairs = self.m.put_pairs if isput else self.m.call_pairs
         role = 'buy' if prefix.endswith('buy') or prefix=='buy' else 'sell'
         key = prefix+'_'+field
+        if key not in self.tables:
+            raw = [pair['prepared'].buy_fields.get(key) if role=='buy'
+                   else pair['prepared'].sell_fields.get(key) for pair in pairs]
+            dtype = np.bytes_ if field=='osi' else np.float64
+            self.tables[key] = np.asarray([np.nan if v is None else v for v in raw],dtype=dtype)
+        return self.tables[key]
+
+    def source(self,prefix,field):
+        isput = prefix.startswith('put_')
+        key = prefix+'_'+field
         if key not in self.cache:
-            if key not in self.tables:
-                raw = [pair['prepared'].buy_fields.get(key) if role=='buy'
-                       else pair['prepared'].sell_fields.get(key) for pair in pairs]
-                dtype = np.bytes_ if field=='osi' else np.float64
-                self.tables[key] = np.asarray([np.nan if v is None else v for v in raw],dtype=dtype)
-            self.cache[key] = self.tables[key][self.pi if isput else self.ci]
+            self.cache[key] = self._source_table(prefix,field)[self.pi if isput else self.ci]
+        return self.cache[key]
+
+    def source_rank(self,prefix):
+        key = prefix+'_osi_rank'
+        if key not in self.tables:
+            _, self.tables[key] = np.unique(self._source_table(prefix,'osi'),return_inverse=True)
+        if key not in self.cache:
+            self.cache[key] = self.tables[key][self.pi if prefix.startswith('put_') else self.ci]
         return self.cache[key]
 
     def column(self,key):
@@ -786,7 +799,7 @@ class _RICDescriptorChunk:
                              for k in ('put_id_rank','call_id_rank')])
                 continue
             name=_RIC_DESCRIPTOR_ALIASES.get(column,column)
-            values=self.column(name)
+            values=self.source_rank(name[:-4]) if name.endswith('_osi') else self.column(name)
             nullable=name in ('buy_last','sell_last','put_buy_last','put_sell_last','fill_est')
             if nullable:
                 null=np.isnan(values)
@@ -875,6 +888,12 @@ def _ric_descriptor_index_key(view, index, sort_by, direction):
             value = view.m.expiry
         elif name == "side":
             value = "RIC"
+        elif name.endswith("_osi"):
+            prefix = name[:-4]
+            isput = prefix.startswith("put_")
+            pairs = view.m.put_pairs if isput else view.m.call_pairs
+            wing = pairs[int(view.pi[index] if isput else view.ci[index])]["prepared"]
+            value = (wing.buy_fields if prefix.endswith("buy") else wing.sell_fields)[name]
         else:
             value = view.column(name)[index].item()
             if isinstance(value, bytes):
@@ -1008,7 +1027,8 @@ class _RICDescriptorBackend:
                     or len({len(a) for a in arrays}) != 1
                     or any(len(a) and int(a.min()) < 0 for a in arrays)):
                 raise ValueError("Invalid exact R.I.C. descriptor batch.")
-            width = 8 if any(len(a) and int(a.max()) > np.iinfo(np.uint32).max for a in arrays) else 4
+            maximum = max((int(a.max()) for a in arrays if len(a)), default=0)
+            width = 2 if maximum <= np.iinfo(np.uint16).max else 4 if maximum <= np.iinfo(np.uint32).max else 8
             key = batch.manifest.root, width
             group = groups.get(key)
             if group is None:
@@ -1314,7 +1334,7 @@ class _RICDescriptorBackend:
                         handles.pop(next(iter(handles))).close()
                     width = state["width"]
                     handle.seek(3 * width * row_index)
-                    ci, pi, cents = struct.unpack("<III" if width == 4 else "<QQQ", handle.read(3 * width))
+                    ci, pi, cents = struct.unpack({2: "<HHH", 4: "<III", 8: "<QQQ"}[width], handle.read(3 * width))
                     row = _ric_store_candidate(owner, state["manifest"], ci, pi, cents)
                     key = _rank(row, target) if canonical else _ric_descriptor_sort_key(row, sort_by, direction, target)
                     heapq.heappush(heap, (key, number, row))

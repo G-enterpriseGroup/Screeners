@@ -14,6 +14,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 import io
+from itertools import combinations
+import numpy as np
 
 from src.reverse_iron_condor import scan_ric_candidates
 from src import reverse_iron_condor as math_module
@@ -332,6 +334,43 @@ class RICCompactBackendParityTests(unittest.TestCase):
             self.assertEqual([first]+list(iterator),list(legacy.iter_rows(sort_by="COST",direction="DESC")))
         finally:
             iterator.close()
+
+    def test_lossless_uint16_to_uint32_groups_preserve_all_79800_call_wings(self):
+        def leg(side,strike,premium):
+            return dict(expiry=self.expiry,call_put=side,strike=strike,bid=premium,ask=round(premium+.01,2),last=premium,
+                        volume=100,open_interest=1000,
+                        osi=f"TEST{self.expiry:%y%m%d}{side[0]}{strike*1000:08d}")
+        calls = [leg("CALL",105+5*index,round(5-.01*index,2)) for index in range(400)]
+        puts = [leg("PUT",80,.01),leg("PUT",95,.02)]
+        pairs = list(combinations(calls,2))
+        store = self.store()
+        store.add_expiration(self.expiry,calls+puts,scan_ric_candidates)
+        self.assertEqual(len(store),79800)
+        groups = store._descriptors.parts[0]["groups"]
+        self.assertEqual({group["width"] for group in groups},{2,4})
+        indices = []
+        for group in groups:
+            dtype = np.dtype([(key,f"<u{group['width']}") for key in ("call","put","cents")])
+            records = np.fromfile(store._descriptors.parts[0]["path"]/group["data"],dtype=dtype)
+            self.assertEqual(records["put"].max(),0)
+            self.assertTrue(np.all((records["cents"] > 0) & (records["cents"] <= 65535)))
+            indices.append(records["call"].astype(np.uint32))
+        np.testing.assert_array_equal(np.sort(np.concatenate(indices)),np.arange(79800,dtype=np.uint32))
+        expected = {}
+        for index in (0,65535,65536,79799):
+            rows, _ = scan_ric_candidates(symbol="TEST",spot_last=100,option_rows=list(pairs[index])+puts,
+                                           target_breakeven=95,max_cost=None,max_per_expiration=None,fee_per_spread=2.6)
+            self.assertEqual(len(rows),1)
+            expected[rows[0]["id"]] = rows[0]
+        self.assertEqual(store.get_many(expected),expected)
+        page = store.page(offset=1000,limit=12)
+        self.assertEqual(len(page),12)
+        self.assertEqual(store.page(offset=1000,limit=12),page)
+        for candidate in page:
+            wanted = [row for row in calls if row["strike"] in (candidate["buy_strike"],candidate["sell_strike"])]
+            rows, _ = scan_ric_candidates(symbol="TEST",spot_last=100,option_rows=wanted+puts,
+                                           target_breakeven=95,max_cost=None,max_per_expiration=None,fee_per_spread=2.6)
+            self.assertEqual(candidate,rows[0])
 
 
 class RICStoreTests(unittest.TestCase):
