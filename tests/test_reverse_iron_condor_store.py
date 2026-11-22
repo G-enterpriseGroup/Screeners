@@ -11,8 +11,12 @@ import re
 import shutil
 import subprocess
 import unittest
+from unittest.mock import patch
+import zipfile
+import io
 
 from src.reverse_iron_condor import scan_ric_candidates
+from src import reverse_iron_condor as math_module
 from src import reverse_iron_condor_store as store_module
 from src.reverse_iron_condor_store import RICResultStore, filterable_ric_html, indicative_fill_score, ric_strike_distance_pct
 
@@ -37,15 +41,308 @@ def chain(expiry, count=9):
     return rows
 
 
+def scalar_only(**kwargs):
+    return scan_ric_candidates(**kwargs)
+
+
+def typed_chain(expiry, count=5):
+    return [row | {"bid":round(row["last"]-.01,2),"ask":round(row["last"]+.01,2)}
+            for row in chain(expiry,count)]
+
+
+class RICCompactBackendParityTests(unittest.TestCase):
+    def setUp(self):
+        self.expiry = date.today()+timedelta(days=45)
+        self.later = self.expiry+timedelta(days=400)
+
+    def store(self, *, mode="NORMAL", target=95, fee=2.6):
+        store = RICResultStore("TEST",100,target,None,mode,fee_per_spread=fee)
+        self.addCleanup(store._directory.cleanup)
+        return store
+
+    def pair(self, *, mode="NORMAL", count=5, missing=False):
+        fast, legacy = self.store(mode=mode), self.store(mode=mode)
+        for expiry in (self.expiry,self.later):
+            rows = typed_chain(expiry,count)
+            rows += [row | {"osi":row["osi"].replace("TEST","TESTW",1)}
+                     for row in typed_chain(expiry,3)]
+            if missing:
+                rows[0] = rows[0] | {"last":None,"volume":None,"delta":None}
+            for store, calculator in ((fast,scan_ric_candidates),(legacy,scalar_only)):
+                store.add_expiration(expiry,rows,calculator)
+        return fast, legacy
+
+    def protocol(self, scalar, batched):
+        scalar._ric_batch_calculator = batched
+        batched._ric_scalar_calculator = scalar
+        return scalar
+
+    def assert_empty_expiry(self, store):
+        self.assertEqual((len(store),store.ranked_expirations),(0,0))
+        self.assertEqual(store.annual_ids,set())
+        self.assertEqual(store.expirations,[])
+        self.assertEqual(store.page(),[])
+        self.assertEqual(store.count(column_filters={"side":["RIC"]}),0)
+        self.assertEqual(store.column_filter_choices()["expiry"],[])
+
+    def test_canonical_batch_scan_avoids_per_candidate_json_and_keeps_complete_dicts(self):
+        rows = typed_chain(self.expiry)
+        store = self.store()
+        expected, annual = scan_ric_candidates(symbol="TEST",spot_last=100,option_rows=rows,
+                                               target_breakeven=95,max_cost=None,
+                                               max_per_expiration=None,fee_per_spread=2.6)
+        self.assertTrue(expected)
+        with patch.object(store_module,"_stored_extras",side_effect=AssertionError("Per-candidate JSON hot path was used")):
+            store.add_expiration(self.expiry,rows,scan_ric_candidates)
+        self.assertEqual(store.get_many([row["id"] for row in expected]),{row["id"]:row for row in expected})
+        self.assertEqual(store.annual_ids,annual)
+        self.assertEqual(store.ranked_expirations,1)
+
+    def test_complete_dictionary_queries_and_metadata_match_legacy_in_both_modes(self):
+        for mode in ("NORMAL","SMART FILL"):
+            with self.subTest(mode=mode):
+                fast, legacy = self.pair(mode=mode,missing=True)
+                expected = list(legacy.iter_ranked())
+                self.assertTrue(expected)
+                actual = list(fast.iter_ranked())
+                self.assertEqual(actual,expected)
+                self.assertEqual(json.dumps(actual,default=str,sort_keys=True),json.dumps(expected,default=str,sort_keys=True))
+                self.assertEqual((len(fast),fast.ranked_expirations,fast.expirations),
+                                 (len(legacy),legacy.ranked_expirations,legacy.expirations))
+                self.assertEqual(fast.annual_rows,legacy.annual_rows)
+                self.assertEqual(fast.annual_ids,legacy.annual_ids)
+                self.assertEqual(fast.column_filter_choices(),legacy.column_filter_choices())
+                self.assertEqual(fast.fill_est_values(),legacy.fill_est_values())
+                wanted = [expected[-1]["id"],expected[0]["id"],"NOT-A-CONTRACT"]
+                self.assertEqual(fast.get_many(wanted),legacy.get_many(wanted))
+                self.assertTrue(all(row["reward_risk"] >= 2 and row["fee_per_spread"] == 2.6 for row in expected))
+
+    def test_every_sort_direction_and_middle_last_page_matches_legacy(self):
+        fast, legacy = self.pair(missing=True)
+        for sort in store_module._SORTS:
+            for direction in ("ASC","DESC"):
+                with self.subTest(sort=sort,direction=direction):
+                    options = dict(sort_by=sort,direction=direction)
+                    expected = list(legacy.iter_rows(**options))
+                    self.assertEqual(list(fast.iter_rows(**options)),expected)
+                    for offset in (0,17,len(expected)-1,len(expected)):
+                        self.assertEqual(fast.page(offset=offset,limit=23,**options),
+                                         legacy.page(offset=offset,limit=23,**options))
+
+    def test_typed_expiration_beyond_cached_200_rows_keeps_late_pages_and_filter_matches(self):
+        fast, legacy = self.pair(count=9)
+        options = dict(year=self.expiry.year,sort_by="YEAR + FILL")
+        expected = list(legacy.iter_rows(**options))
+        self.assertGreater(len(expected),1000)
+        self.assertEqual(list(fast.iter_rows(**options)),expected)
+        for offset in (190,200,400,len(expected)-1):
+            self.assertEqual(fast.page(offset=offset,limit=73,**options),legacy.page(offset=offset,limit=73,**options))
+        tail = expected[-1]
+        fields = {"buy":"buy_strike","sell":"sell_strike","put_buy":"put_buy_strike","put_sell":"put_sell_strike"}
+        selected = {key:{"min":tail[field],"max":tail[field]} for key,field in fields.items()}
+        self.assertFalse(any(all(row[field] == tail[field] for field in fields.values()) for row in expected[:200]))
+        options["column_filters"] = selected
+        self.assertGreater(legacy.count(year=self.expiry.year,column_filters=selected),0)
+        self.assertEqual(fast.page(limit=1000,**options),legacy.page(limit=1000,**options))
+        self.assertEqual(fast.counts_by_year(),legacy.counts_by_year())
+
+    def test_filters_counts_years_annual_and_fill_choices_match_legacy(self):
+        fast, legacy = self.pair()
+        filters = ({}, {"ticker":["TEST"]}, {"ticker":[]}, {"side":["RIC"]},
+                   {"expiry":[self.later.isoformat()]}, {"basis":["LIMIT"]},
+                   {"put_buy":{"min":97},"put_sell":{"max":96}},
+                   {"buy_last":{"min":2.88},"sell_last":{"max":2.94}},
+                   {"lower_breakeven":{"min":96,"max":99}},
+                   {"cost":{"min":10,"max":30},"ratio":{"min":3}},
+                   {"strike_distance_pct":{"min":3,"max":5}},
+                   {"breakeven":{"target":97,"percent":1}},
+                   {"breakeven":{"target":None}}, {"fill_scale":{"gt":40}})
+        for selected in filters:
+            with self.subTest(filters=selected):
+                options = dict(column_filters=selected)
+                self.assertEqual(fast.count(**options),legacy.count(**options))
+                self.assertEqual(fast.counts_by_year(**options),legacy.counts_by_year(**options))
+                self.assertEqual(fast.best_by_year(**options),legacy.best_by_year(**options))
+                self.assertEqual(list(fast.iter_rows(**options)),list(legacy.iter_rows(**options)))
+                self.assertEqual(fast.fill_est_values(**options),legacy.fill_est_values(**options))
+                self.assertEqual(fast.page(offset=2,limit=11,**options),legacy.page(offset=2,limit=11,**options))
+        for options in (dict(expiry=self.expiry),dict(year=self.later.year),dict(side="RIC"),dict(max_distance=.5)):
+            with self.subTest(query=options):
+                self.assertEqual(fast.count(**options),legacy.count(**options))
+                self.assertEqual(list(fast.iter_rows(**options)),list(legacy.iter_rows(**options)))
+
+    def test_full_exports_match_legacy_rows_cells_and_offline_contracts(self):
+        from src import reverse_iron_condor_ui as ui
+        fast, legacy = self.pair(count=4)
+        options = dict(source="SYNTHETIC",loaded_at=100,target=95,max_cost=None)
+        self.assertEqual(ui._qualified_store_csv(fast,**options),ui._qualified_store_csv(legacy,**options))
+        books = [ui._qualified_store_xlsx(store,**options) for store in (fast,legacy)]
+        with zipfile.ZipFile(io.BytesIO(books[0])) as first,zipfile.ZipFile(io.BytesIO(books[1])) as second:
+            for name in first.namelist():
+                if name.startswith("xl/worksheets/") or name == "xl/sharedStrings.xml":
+                    self.assertEqual(first.read(name),second.read(name),name)
+        def packed(store):
+            document = filterable_ric_html(store,source="SYNTHETIC",loaded_at=100,pricing_mode="NORMAL",
+                                           optionstrat_url=ui._optionstrat_url,tradingview_url=ui._tradingview_spread_url)
+            payload = re.search(r'<script id="vertical-data"[^>]*>(.*?)</script>',document).group(1)
+            return json.loads(gzip.decompress(base64.b64decode(payload)))
+        fast_rows, legacy_rows = packed(fast), packed(legacy)
+        self.assertEqual(fast_rows,legacy_rows)
+        self.assertEqual(len(fast_rows),len(fast))
+        self.assertTrue(all(len(row)==49 and row[45] and row[46] for row in fast_rows))
+
+    def test_mixed_compact_and_custom_legacy_expirations_keep_all_unknown_extras(self):
+        store = self.store()
+        store.add_expiration(self.expiry,typed_chain(self.expiry),scan_ric_candidates)
+        before = list(store.iter_rows())
+        future = {"future_metric":{"proof":[1,None,True]},"future_integer":1 << 90}
+        rows = typed_chain(self.later)
+        expected, _ = scan_ric_candidates(symbol="TEST",spot_last=100,option_rows=rows,
+                                           target_breakeven=95,max_cost=None,max_per_expiration=None,fee_per_spread=2.6)
+        def custom(**kwargs):
+            for row in expected:
+                kwargs["candidate_sink"](row | future)
+        store.add_expiration(self.later,rows,custom)
+        all_rows = {row["id"]:row for row in store.iter_rows()}
+        self.assertEqual(all_rows,{row["id"]:row for row in before} | {row["id"]:row | future for row in expected})
+        self.assertEqual(store.ranked_expirations,2)
+        self.assertEqual(set(store.expirations),{self.expiry,self.later})
+        self.assertEqual(store.prune_before(self.later),len(before))
+        self.assertEqual(store.get_many([row["id"] for row in before]),{})
+        self.assertEqual({row["id"]:row for row in store.iter_rows()},
+                         {row["id"]:row | future for row in expected})
+
+    def test_error_after_typed_chunk_aborts_every_row_metadata_and_file_before_retry(self):
+        for failure in (RuntimeError,TimeoutError):
+            with self.subTest(failure=failure.__name__):
+                store, rows, calls = self.store(), typed_chain(self.expiry), []
+                original = math_module.scan_ric_batches
+                def scalar(**kwargs):
+                    calls.append("scalar")
+                    return scan_ric_candidates(**kwargs)
+                def batched(**kwargs):
+                    sink = kwargs.pop("batch_sink")
+                    def abort(batch):
+                        calls.append("batch")
+                        sink(batch)
+                        raise failure("Synthetic failure after a written typed chunk")
+                    return original(batch_sink=abort,**kwargs)
+                before = {path.relative_to(store.path.parent) for path in store.path.parent.rglob("*")
+                          if path.is_file() and not path.name.endswith(("-wal","-shm"))}
+                with self.assertRaisesRegex(failure,"written typed chunk"):
+                    store.add_expiration(self.expiry,rows,self.protocol(scalar,batched))
+                self.assertEqual(calls,["batch"])
+                self.assert_empty_expiry(store)
+                after = {path.relative_to(store.path.parent) for path in store.path.parent.rglob("*")
+                         if path.is_file() and not path.name.endswith(("-wal","-shm"))}
+                self.assertEqual(after,before)
+                self.assertTrue(store.add_expiration(self.expiry,rows,scan_ric_candidates))
+                expected, _ = scan_ric_candidates(symbol="TEST",spot_last=100,option_rows=rows,
+                                                   target_breakeven=95,max_cost=None,max_per_expiration=None,fee_per_spread=2.6)
+                self.assertEqual(store.get_many([row["id"] for row in expected]),{row["id"]:row for row in expected})
+
+    def test_final_deadline_check_rolls_back_both_typed_and_legacy_paths(self):
+        for typed in (False,True):
+            with self.subTest(typed=typed):
+                store, rows, returned = self.store(), typed_chain(self.expiry), [False]
+                def scalar(**kwargs):
+                    value = scan_ric_candidates(**kwargs)
+                    returned[0] = True
+                    return value
+                def batched(**kwargs):
+                    value = math_module.scan_ric_batches(**kwargs)
+                    returned[0] = True
+                    return value
+                def final_check(checked):
+                    if returned[0]:
+                        raise TimeoutError("Synthetic deadline before expiry commit")
+                calculator = self.protocol(scalar,batched) if typed else scalar
+                with self.assertRaisesRegex(TimeoutError,"before expiry commit"):
+                    store.add_expiration(self.expiry,rows,calculator,final_check)
+                self.assert_empty_expiry(store)
+
+    def test_unsupported_after_written_batch_restarts_whole_expiry_in_scalar_fallback(self):
+        store, rows, calls = self.store(), typed_chain(self.expiry), []
+        expected, _ = scan_ric_candidates(symbol="TEST",spot_last=100,option_rows=rows,
+                                           target_breakeven=95,max_cost=None,max_per_expiration=None,fee_per_spread=2.6)
+        extra = {"future_metric":{"exact":[None,True,7]}}
+        def scalar(**kwargs):
+            calls.append("scalar")
+            for row in expected:
+                kwargs["candidate_sink"](row | extra)
+        def batched(**kwargs):
+            sink = kwargs.pop("batch_sink")
+            def unsupported(batch):
+                calls.append("batch")
+                sink(batch)
+                raise math_module.RICBatchUnsupported("Synthetic scalar-only extra")
+            return math_module.scan_ric_batches(batch_sink=unsupported,**kwargs)
+        self.assertTrue(store.add_expiration(self.expiry,rows,self.protocol(scalar,batched)))
+        self.assertEqual(calls,["batch","scalar"])
+        self.assertEqual(len(store),len(expected))
+        self.assertEqual(store.get_many([row["id"] for row in expected]),{row["id"]:row | extra for row in expected})
+        self.assertEqual(store.ranked_expirations,1)
+
+    def test_deep_pages_reuse_the_same_sorted_descriptor_index(self):
+        fast, legacy = self.pair(count=9)
+        options = dict(sort_by="LOWER BREAKEVEN",direction="DESC")
+        with patch.object(fast._descriptors,"chunks",wraps=fast._descriptors.chunks) as chunks:
+            self.assertEqual(fast.page(offset=1100,limit=23,**options),legacy.page(offset=1100,limit=23,**options))
+            built = chunks.call_count
+            self.assertGreater(built,0)
+            original_path = next(iter(fast._descriptors._index_cache.values()))["index_path"]
+            self.assertEqual(fast.page(offset=1200,limit=23,**options),legacy.page(offset=1200,limit=23,**options))
+            self.assertEqual(chunks.call_count,built,"Scrolling rebuilt the complete descriptor sort")
+            self.assertEqual(next(iter(fast._descriptors._index_cache.values()))["index_path"],original_path)
+
+    def test_changed_query_sort_insert_and_prune_invalidate_sorted_indexes(self):
+        fast, legacy = self.pair(count=9)
+        with patch.object(fast._descriptors,"chunks",wraps=fast._descriptors.chunks) as chunks:
+            before = 0
+            for options in (dict(sort_by="COST"),dict(sort_by="COST",column_filters={"cost":{"min":0}}),
+                            dict(sort_by="COST",direction="DESC")):
+                self.assertEqual(fast.page(offset=1100,limit=13,**options),legacy.page(offset=1100,limit=13,**options))
+                self.assertGreater(chunks.call_count,before)
+                before = chunks.call_count
+            expiry = self.later+timedelta(days=400)
+            rows = typed_chain(expiry,9)+[row | {"osi":row["osi"].replace("TEST","TESTW",1)}
+                                         for row in typed_chain(expiry,3)]
+            for store, calculator in ((fast,scan_ric_candidates),(legacy,scalar_only)):
+                store.add_expiration(expiry,rows,calculator)
+            self.assertEqual(fast.page(offset=1100,limit=13,sort_by="COST",direction="DESC"),
+                             legacy.page(offset=1100,limit=13,sort_by="COST",direction="DESC"))
+            self.assertGreater(chunks.call_count,before)
+            before = chunks.call_count
+            self.assertEqual(fast.prune_before(self.later),legacy.prune_before(self.later))
+            self.assertEqual(fast.page(offset=1100,limit=13,sort_by="COST",direction="DESC"),
+                             legacy.page(offset=1100,limit=13,sort_by="COST",direction="DESC"))
+            self.assertGreater(chunks.call_count,before)
+
+    def test_live_iterator_keeps_its_index_when_later_queries_evict_it(self):
+        fast, legacy = self.pair(count=9)
+        iterator = fast.iter_rows(sort_by="COST",direction="DESC")
+        first = next(iterator)
+        original_path = next(iter(fast._descriptors._index_cache.values()))["index_path"]
+        try:
+            for sort in ("R:R","LOWER BREAKEVEN","BUY STRIKE","PUT SELL STRIKE"):
+                self.assertEqual(fast.page(offset=1100,limit=11,sort_by=sort),legacy.page(offset=1100,limit=11,sort_by=sort))
+                self.assertLessEqual(len(fast._descriptors._index_cache),3)
+            self.assertTrue(all(entry["index_path"] != original_path for entry in fast._descriptors._index_cache.values()))
+            self.assertTrue(original_path.exists(),"Eviction removed the active iterator's index")
+            self.assertEqual([first]+list(iterator),list(legacy.iter_rows(sort_by="COST",direction="DESC")))
+        finally:
+            iterator.close()
+
+
 class RICStoreTests(unittest.TestCase):
     def setUp(self):
         self.expiry = date.today() + timedelta(days=45)
 
-    def store(self, *, target=None, fee=0, count=9):
+    def store(self, *, target=None, fee=0, count=9, legacy=False):
         rows = chain(self.expiry, count)
         result = RICResultStore("TEST", 100, target, None, "NORMAL", fee_per_spread=fee)
         self.addCleanup(result._directory.cleanup)
-        result.add_expiration(self.expiry, rows, scan_ric_candidates)
+        result.add_expiration(self.expiry, rows, scalar_only if legacy else scan_ric_candidates)
         return result, rows
 
     def test_complete_mult_page_retention_and_exact_four_leg_roundtrip(self):
@@ -67,7 +364,7 @@ class RICStoreTests(unittest.TestCase):
         self.assertEqual(len(list(store.iter_ranked())), len(store))
 
     def test_compact_details_omit_reconstructed_copies_and_keep_financial_extras(self):
-        store, _ = self.store(fee=2.6, count=5)
+        store, _ = self.store(fee=2.6, count=5, legacy=True)
         candidate = store.page(limit=1)[0]
         with store._connect() as db:
             packed = db.execute("SELECT details FROM spreads WHERE id=?", [candidate["id"]]).fetchone()[0]
@@ -101,7 +398,7 @@ class RICStoreTests(unittest.TestCase):
         self.assertEqual(restored, {candidate["id"]: candidate | extras for candidate in expected})
 
     def test_legacy_and_compact_json_rows_share_unchanged_decoder_and_queries(self):
-        store, _ = self.store(count=5)
+        store, _ = self.store(count=5, legacy=True)
         expected = list(store.iter_rows())
         candidate = expected[0]
         legacy = json.dumps([candidate.get(key) for key in store_module._DETAILS]

@@ -6,8 +6,12 @@ from decimal import Decimal
 from itertools import combinations, product
 import math
 import random
+import gc
+import weakref
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 
 from src import reverse_iron_condor as ric
 from src.reverse_iron_condor import (
@@ -666,6 +670,172 @@ class ReverseIronCondorPreparedScanTests(unittest.TestCase):
                     scan(list(example().values()),max_breakeven_move_pct=value)
                 with self.assertRaises(ValueError):
                     ric.ric_breakeven_max_cost(**values,max_breakeven_move_pct=value)
+
+
+class ReverseIronCondorBatchTests(unittest.TestCase):
+    def batches(self, rows, **options):
+        batches, stats = [], {}
+        ric.scan_ric_batches(symbol="XYZ",spot_last=options.pop("spot_last",100),option_rows=rows,
+                             batch_sink=batches.append,scan_stats=stats,**options)
+        return batches,stats
+
+    def decoded(self, batches):
+        rows = []
+        for batch in batches:
+            self.assertTrue(all(not value.flags.writeable for value in
+                                (batch.call_wing,batch.put_wing,batch.debit_cents,*batch.scalars.values())))
+            for index in range(batch.count):
+                row = ric.ric_batch_candidate(batch.manifest,batch.call_wing[index],batch.put_wing[index],batch.debit_cents[index])
+                for key,values in batch.scalars.items():
+                    if key != "basis_code":
+                        self.assertEqual(row[key],values[index],key)
+                rows.append(row)
+        return rows
+
+    def test_typed_rows_match_independent_full_quote_oracle_across_scopes_and_fees(self):
+        rows = ReverseIronCondorPreparedScanTests().varied_chain()
+        before = repr(rows)
+        seen = 0
+        for mode,fee,minimum,scope,budget in product(("NORMAL","SMART FILL"),(0,2.6),(2,3.25),(None,3),(None,40)):
+            with self.subTest(mode=mode,fee=fee,minimum=minimum,scope=scope,budget=budget):
+                options = dict(pricing_mode=mode,fee_per_spread=fee,min_reward_risk=minimum,
+                               max_breakeven_move_pct=scope,max_cost=budget,max_chunk=17)
+                batches,stats = self.batches(rows,**options)
+                actual = self.decoded(batches)
+                expected = reference_candidates(rows,mode=mode,fee=fee,minimum=minimum,
+                                                  max_breakeven_move_pct=scope,budget=budget)
+                self.assertEqual(sorted(actual,key=lambda row:reference_rank(row,None)),expected)
+                self.assertEqual(stats["qualified_condors"],len(expected))
+                self.assertTrue(all(batch.count<=17 for batch in batches))
+                seen += len(actual)
+        self.assertGreater(seen,0)
+        self.assertEqual(repr(rows),before)
+
+    def test_cent_grid_and_float_fallback_preserve_exact_fields_and_sink_order(self):
+        rng = random.Random(99573)
+        seen = grid = 0
+        for case in range(30):
+            rows = []
+            for side in ("CALL","PUT"):
+                for index,distance in enumerate((1,2.25,4.5,7.75,10.5,15)):
+                    premium,gap = 200-25*index,rng.randrange(5)
+                    rows.append(contract(side,100+distance if side=="CALL" else 100-distance,
+                                         (premium-gap)/100,(premium+gap)/100))
+            options = dict(pricing_mode=rng.choice(("NORMAL","SMART FILL")),
+                           fee_per_spread=rng.choice((0,.01,1,2.6)),
+                           min_reward_risk=rng.choice((2,3,7)),max_cost=rng.choice((None,100,250)))
+            if case%3==0:
+                rows[0]["ask"] += .005
+            batches,stats = self.batches(rows,max_chunk=31,**options)
+            actual = self.decoded(batches)
+            expected,expected_stats = [],{}
+            scan(rows,max_per_expiration=None,candidate_sink=expected.append,scan_stats=expected_stats,**options)
+            self.assertEqual(actual,expected)
+            self.assertTrue(all(stats[key]==value for key,value in expected_stats.items()))
+            grid += stats["grid_classes"]
+            seen += len(actual)
+        self.assertGreater(grid,0)
+        self.assertGreater(seen,0)
+        dense = [contract(side,100+step if side=="CALL" else 100-step,(17-step)/100,(17-step)/100)
+                 for side in ("CALL","PUT") for step in range(1,17)]
+        expected = []
+        scan(dense,max_per_expiration=None,candidate_sink=expected.append)
+        batches,_ = self.batches(dense,max_chunk=97)
+        self.assertEqual(self.decoded(batches),expected)
+        self.assertEqual(len(expected),14400)
+
+    def test_round8_matches_python_bits_at_half_boundaries_and_extremes(self):
+        rng = random.Random(4107)
+        values = [0.0,-0.0,float("inf"),-float("inf"),float("nan"),1e300,-1e-300]
+        for _ in range(2000):
+            value = (rng.randrange(-10**14,10**14)+.5)/1e8
+            values.extend((value,math.nextafter(value,-math.inf),math.nextafter(value,math.inf)))
+        expected = np.asarray([round(float(value),8) for value in values])
+        actual = ric._ric_round8(np.asarray(values))
+        self.assertTrue(np.all((expected.view(np.uint64)==actual.view(np.uint64))
+                               | (np.isnan(expected)&np.isnan(actual))))
+        rows = [contract("CALL",105,.3,.5),contract("CALL",110,.1,.2),
+                contract("PUT",95,.1,.3),contract("PUT",90,.05,.2)]
+        batches,_ = self.batches(rows)
+        self.assertEqual(len(batches),1)
+        self.assertTrue(np.signbit(batches[0].scalars["spread_bid"][0]))
+        row = self.decoded(batches)[0]
+        self.assertTrue(np.signbit(row["spread_bid"]))
+
+    def test_fast_grid_avoids_per_candidate_scalar_pricing_and_fields_are_lazy(self):
+        rows = [contract(side,100+step if side=="CALL" else 100-step,(9-step)/100,(9-step)/100)
+                for side in ("CALL","PUT") for step in range(1,9)]
+        with (patch.object(ric,"_price_prepared_ric",side_effect=AssertionError("scalar row materialized")),
+              patch.object(ric,"_ric_round8",side_effect=AssertionError("unused float rounding"))):
+            batches,stats = self.batches(rows,scalar_fields={"cost","reward_risk"})
+        self.assertEqual(stats["qualified_condors"],784)
+        self.assertTrue(all(set(batch.scalars)=={"cost","reward_risk"} for batch in batches))
+        batch = batches[0]
+        for fields in ({"cost"},{"spread_mid"},{"lower_breakeven","reward_risk"}):
+            values = ric.ric_batch_values(batch.manifest,batch.call_wing,batch.put_wing,batch.debit_cents,fields=fields)
+            self.assertEqual(set(values),fields)
+            for key,array in values.items():
+                self.assertEqual(array[0],ric.ric_batch_candidate(batch.manifest,batch.call_wing[0],batch.put_wing[0],batch.debit_cents[0])[key])
+
+    def test_checkpoint_reports_live_counts_and_cancels_without_false_completion(self):
+        rows = [contract(side,100+step if side=="CALL" else 100-step,(13-step)/100,(13-step)/100)
+                for side in ("CALL","PUT") for step in range(1,13)]
+        stats,observed,retained = {},[],[]
+        def checkpoint():
+            observed.append(stats.get("priced_condors",0))
+            if retained:
+                raise TimeoutError("two-minute budget expired")
+        with self.assertRaisesRegex(TimeoutError,"budget expired"):
+            ric.scan_ric_batches(symbol="XYZ",spot_last=100,option_rows=rows,batch_sink=retained.append,
+                                 max_chunk=31,scan_stats=stats,checkpoint=checkpoint)
+        self.assertGreater(stats["priced_condors"],0)
+        self.assertEqual(observed,sorted(observed))
+        self.assertEqual(len(retained),1)
+        self.assertLess(stats["qualified_condors"],4356)
+
+    def test_field_helper_does_not_retain_native_arrays_until_cyclic_gc(self):
+        rows = [contract(side,100+step if side=="CALL" else 100-step,(9-step)/100,(9-step)/100)
+                for side in ("CALL","PUT") for step in range(1,9)]
+        batches,_ = self.batches(rows,scalar_fields={"cost"})
+        batch = batches[0]
+        indices = batch.call_wing[:2].copy()
+        reference = weakref.ref(indices)
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            result = ric.ric_batch_values(batch.manifest,indices,batch.put_wing[:2],
+                                         batch.debit_cents[:2],fields={"cost","reward_risk"})
+            del result,indices
+            self.assertIsNone(reference())
+        finally:
+            if enabled:
+                gc.enable()
+
+    def test_unsupported_magnitude_and_id_collision_request_legacy_fallback(self):
+        source = list(example().values())
+        with self.assertRaises(ric.RICBatchUnsupported):
+            self.batches(source,spot_last=2000000)
+        high_quotes = list(example(locked=True).values())
+        for row in high_quotes:
+            row["bid"] += 100000000
+            row["ask"] += 100000000
+        self.assertEqual(len(scan(high_quotes,max_per_expiration=None)[0]),1)
+        with self.assertRaises(ric.RICBatchUnsupported):
+            self.batches(high_quotes)
+        expiry = EXPIRY
+        rows = [contract("PUT",95,1.05,1.15),contract("PUT",90,.4,.5),
+                contract("CALL",105.0000001,1.05,1.15),contract("CALL",105.0000002,1.05,1.15),
+                contract("CALL",110,.4,.5)]
+        for row in rows[2:4]:
+            row["osi"] = f"XYZ{expiry:%y%m%d}C{row['strike']}"
+        expected,_ = scan(rows,max_per_expiration=None)
+        self.assertGreater(len(expected),len({row["id"] for row in expected}))
+        emitted = []
+        with self.assertRaises(ric.RICBatchUnsupported):
+            ric.scan_ric_batches(symbol="XYZ",spot_last=100,option_rows=rows,batch_sink=emitted.append)
+        self.assertEqual(emitted,[])
+        self.assertIs(ric.scan_ric_candidates._ric_batch_calculator,ric.scan_ric_batches)
+        self.assertIs(ric.scan_ric_batches._ric_scalar_calculator,ric.scan_ric_candidates)
 
 
 class ReverseIronCondorPayloadTests(unittest.TestCase):

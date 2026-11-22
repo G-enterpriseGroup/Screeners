@@ -28,6 +28,7 @@ import csv
 import html
 import hashlib
 import io
+import json
 import math
 from pathlib import Path
 import re
@@ -124,9 +125,79 @@ _SCAN_CACHE_SECONDS = 300.0
 _SCAN_BATCH_SECONDS = 4.0  # Yield between requests; a single source request may take longer.
 _SCAN_BATCH_EXPIRATIONS = 4
 _SCAN_RANK_SECONDS = 4.0
+_RIC_SCAN_SECONDS = 120.0
 _NO_BREAKEVEN = "no break even provided"
 _NO_COST_CEILING = "no ceiling cost provided"
 _DEFAULT_MIN_REWARD_RISK = 2.0
+
+
+def _new_scan_clock() -> dict[str, Any]:
+    started = time.monotonic()
+    return {"started_at": started, "deadline_at": started + _RIC_SCAN_SECONDS,
+            "started_wall": time.time(), "request_id": time.time_ns(), "outcome": None}
+
+
+def _scan_clock_snapshot(clock, now=None) -> dict[str, Any]:
+    current = time.monotonic() if now is None else float(now)
+    outcome = clock.get("outcome")
+    ended = float(outcome[1]) if outcome is not None else current
+    status = outcome[0] if outcome is not None else (
+        "timed_out" if current >= float(clock["deadline_at"]) else "running")
+    return {"elapsed": max(0.0, ended - float(clock["started_at"])),
+            "remaining": max(0.0, float(clock["deadline_at"]) - ended), "status": status}
+
+
+def _finish_scan_clock(clock, status, finished_at=None) -> None:
+    if clock is None:
+        return
+    if status not in {"complete", "timed_out", "cancelled", "failed"}:
+        raise ValueError("Invalid scan clock outcome.")
+    ended = time.monotonic() if finished_at is None else float(finished_at)
+    if status == "complete" and ended >= float(clock["deadline_at"]):
+        status = "timed_out"
+    with clock.setdefault("_outcome_lock", threading.Lock()):
+        if clock.get("outcome") is None:
+            # Publish the outcome and its time together for UI/worker readers.
+            clock["outcome"] = (status, ended)
+
+
+def _check_scan_clock(clock, now=None) -> None:
+    if clock is None:
+        return
+    state = _scan_clock_snapshot(clock, now)
+    if state["status"] == "timed_out":
+        _finish_scan_clock(clock, "timed_out", finished_at=now)
+        if _scan_clock_snapshot(clock, now)["status"] == "timed_out":
+            raise TimeoutError("2:00 SCAN LIMIT REACHED // Scan incomplete. Start a new scan to retry.")
+
+
+def _scan_clock_html(clock, now=None) -> str:
+    state = _scan_clock_snapshot(clock, now)
+    labels = {"running": "SCANNING", "complete": "COMPLETE",
+              "timed_out": "TIME LIMIT REACHED // INCOMPLETE", "cancelled": "CANCELLED", "failed": "INCOMPLETE"}
+    return '''<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:transparent;color:#fb8b1e;font:700 14px "Courier New",monospace}
+#clock{display:flex;gap:16px;align-items:center;min-height:28px;white-space:nowrap;flex-wrap:wrap}
+</style></head><body><div id="clock" role="timer" aria-label="R.I.C. scan timer">
+<span>ELAPSED <b id="elapsed"></b></span><span>TIME LEFT TO 2:00 LIMIT <b id="left"></b></span>
+<span id="state"></span></div><script>
+const initial=''' + json.dumps(state["elapsed"]) + ''', limit=120;
+const frozen=''' + json.dumps(clock.get("outcome") is not None) + ''', origin=performance.now();
+const label=''' + json.dumps(labels[state["status"]]) + ''';
+function format(seconds){seconds=Math.max(0,Math.floor(seconds));return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');}
+function tick(){const elapsed=initial+(frozen?0:(performance.now()-origin)/1000);
+document.getElementById('elapsed').textContent=format(elapsed);
+document.getElementById('left').textContent=format(Math.max(0,limit-elapsed));
+document.getElementById('state').textContent=!frozen&&elapsed>=limit?'TIME LIMIT REACHED // INCOMPLETE':label;}
+tick();if(!frozen)setInterval(tick,250);
+</script></body></html>'''
+
+
+def _render_scan_clock(clock) -> None:
+    if isinstance(clock, dict):
+        components.html(_scan_clock_html(clock), height=34, scrolling=False)
+
+
 _SPREAD_SCROLL_COMPONENT = components.declare_component(
     "raj_ric_spread_scroller_v1",
     path=str(Path(__file__).parent / "components" / "ric_spread_scroller_v1"),
@@ -1284,7 +1355,12 @@ def _safe_ric_pair_limit(rows: list[dict[str, Any]]) -> tuple[None, int]:
                      * (len(g["PUT"]) * (len(g["PUT"]) - 1) // 2) for g in groups.values())
 
 
-def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False) -> dict[str, Any]:
+def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False,
+                    scan_clock=None) -> dict[str, Any]:
+    _check_scan_clock(scan_clock)
+    def touch_source():
+        _check_scan_clock(scan_clock)
+        touch_session()
     source = "E*TRADE" if client is not None and not bool(getattr(client, "is_offline", False)) else "PUBLIC"
     cache_key = f"{source}:{symbol}"
     cache = st.session_state.setdefault("_ric_chain_cache", {})
@@ -1329,20 +1405,24 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         start_index = int(cached["next_expiry_index"])
         tv_exchange = cached.get("tv_exchange", "")
     else:
+        _check_scan_clock(scan_clock)
         quote_payload = market_client.get_quote(symbol, **({"force_refresh": True} if refresh_broker else {}))
+        _check_scan_clock(scan_clock)
         if refresh_broker and (st.session_state.get("_etrade_offline_mode")
                                or (st.session_state.get("_etrade_cache_last_event") or {}).get("stale")):
             raise ValueError("REFRESH UNAVAILABLE // Broker returned cached quotes. Last results retained; retry when connected.")
         quote = quote_summary(quote_payload)
-        touch_session()
+        touch_source()
         spot = _entered_price(
             find_number(quote_payload, "lastTrade", "lastPrice"),
             "E*TRADE Last price" if source == "E*TRADE" else "public Last price",
         )
         name = str(quote.get("description") or company_name(symbol) or "").strip()
         record_lookup(symbol, name)
-        expirations = [item for item in _expirations(market_client, symbol, touch_session)
+        _check_scan_clock(scan_clock)
+        expirations = [item for item in _expirations(market_client, symbol, touch_source)
                        if item >= _minimum_expiry_date()]
+        _check_scan_clock(scan_clock)
         if not expirations:
             raise ValueError(f"No listed option expirations at least 7 days away are available for {symbol}.")
         rows, errors, failed_expirations, loaded, start_index = [], [], [], 0, 0
@@ -1357,14 +1437,16 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
     )
     try:
         for index in range(start_index, len(expirations)):
+            _check_scan_clock(scan_clock)
             expiry = expirations[index]
             progress.progress(
                 index / len(expirations),
                 text=f"LOADING {index + 1}/{len(expirations)} // {_date_label(expiry)} // {symbol}",
             )
             try:
-                chain_rows = _chain(market_client, symbol, expiry, touch_session,
+                chain_rows = _chain(market_client, symbol, expiry, touch_source,
                                     **({"fresh_broker_quote": True} if refresh_broker else {}))
+                _check_scan_clock(scan_clock)
                 if refresh_broker and (st.session_state.get("_etrade_offline_mode")
                                        or (st.session_state.get("_etrade_cache_last_event") or {}).get("stale")):
                     raise ValueError("Broker returned cached contracts during refresh; retry when connected.")
@@ -1377,6 +1459,8 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
                     # expirations can still have valid contracts.
                     consecutive_failures = 0
                     errors.append(f"{_date_label(expiry)} // no quoted contracts returned")
+            except TimeoutError:
+                raise
             except Exception as exc:
                 consecutive_failures += 1
                 errors.append(f"{_date_label(expiry)} // {exc}")
@@ -1412,6 +1496,7 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
         "result_stores": cached.get("result_stores", {}) if fresh_cached else {},
     }
     cache[cache_key] = result
+    _check_scan_clock(scan_clock)
     # Bound multi-ticker session memory as well as per-expiry pair retention.
     while len(cache) > 3:
         cache.pop(next(key for key in cache if key != cache_key))
@@ -1430,9 +1515,10 @@ class _RICRankingCancelled(Exception):
 
 class _RICRankingJob:
     """Retained pure calculation; Streamlit reruns only read its small snapshot."""
-    def __init__(self, store, groups, cutoff, calculator, potential_pairs):
+    def __init__(self, store, groups, cutoff, calculator, potential_pairs, scan_clock=None):
         self.store, self.groups, self.cutoff = store, groups, cutoff
         self.calculator, self.potential_pairs = calculator, potential_pairs
+        self.scan_clock, self.finished_at = scan_clock, None
         self._lock, self._cancel, self._pause = threading.Lock(), threading.Event(), threading.Event()
         self._finished = threading.Event()
         self._status, self._error, self._index = "ready", "", 0
@@ -1443,13 +1529,14 @@ class _RICRankingJob:
         with self._lock:
             return {"status":self._status,"error":self._error,"ranked":self._ranked,
                     "annual_ids":set(self._annual_ids),"progress":self._progress,"total":len(self.groups),
-                    "cancel_requested":self._cancel.is_set()}
+                    "cancel_requested":self._cancel.is_set(),"finished_at":self.finished_at}
 
     def cancel(self):
         self._cancel.set()
         with self._lock:
             if self._status != "running" and self._status != "complete":
                 self._status = "cancelled"
+                _finish_scan_clock(self.scan_clock, "cancelled")
                 self._finished.set()
 
     def pause_after_expiration(self, paused):
@@ -1459,16 +1546,19 @@ class _RICRankingJob:
         with self._lock:
             if self._status not in {"ready","yielded"} or self._cancel.is_set():
                 return
+            _check_scan_clock(self.scan_clock)
             if not _RIC_RANKING_SLOTS.acquire(blocking=False):
                 self._status = "ready"
                 return  # A later UI poll retries; never accumulate queued threads.
             self._status = "running"
+            self.finished_at = None
             self._finished.clear()
         try:
             threading.Thread(target=self._run, name="ric-ranking", daemon=True).start()
         except Exception as exc:
             with self._lock:
                 self._status, self._error = "failed", str(exc)
+            _finish_scan_clock(self.scan_clock, "failed")
             self._finished.set()
             _RIC_RANKING_SLOTS.release()
 
@@ -1476,15 +1566,18 @@ class _RICRankingJob:
         started = time.monotonic()
         try:
             while self._index < len(self.groups):
+                _check_scan_clock(self.scan_clock)
                 index = self._index
                 expiry, rows = self.groups[index]
                 def update(checked):
                     if self._cancel.is_set():
                         raise _RICRankingCancelled()
+                    _check_scan_clock(self.scan_clock)
                     with self._lock:
                         self._progress = (index, expiry, checked)
                 update(0)
                 added = self.store.add_expiration(expiry, rows, self.calculator, update)
+                _check_scan_clock(self.scan_clock)
                 if self._cancel.is_set():
                     raise _RICRankingCancelled()
                 with self._lock:
@@ -1492,15 +1585,27 @@ class _RICRankingJob:
                     self._ranked, self._annual_ids = self.store.ranked_expirations, self.store.annual_ids
                 if self._pause.is_set() or (added and time.monotonic() - started >= _SCAN_RANK_SECONDS):
                     break
+            complete = self._index == len(self.groups)
+            if complete:
+                self.finished_at = time.monotonic()
+                _finish_scan_clock(self.scan_clock, "complete", self.finished_at)
+                _check_scan_clock(self.scan_clock)
             with self._lock:
-                self._status = "complete" if self._index == len(self.groups) else "yielded"
+                self._status = "complete" if complete else "yielded"
+        except TimeoutError as exc:
+            with self._lock:
+                self._status, self._error = "timed_out", str(exc)
         except _RICRankingCancelled:
             with self._lock:
                 self._status = "cancelled"
+            _finish_scan_clock(self.scan_clock, "cancelled")
         except Exception as exc:
             with self._lock:
                 self._status, self._error = "failed", str(exc)
+            _finish_scan_clock(self.scan_clock, "failed")
         finally:
+            if self.finished_at is None:
+                self.finished_at = time.monotonic()
             self._finished.set()
             _RIC_RANKING_SLOTS.release()
 
@@ -1545,8 +1650,10 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
                                  max_strike_distance_pct: float | None = None,
                                  max_breakeven_move_pct: float | None = None,
                                  *, restart: bool = False, start: bool = True, new_scan: bool = False,
+                                 scan_clock=None,
                                  ) -> tuple[RICResultStore, set[str], None, int]:
     """Stream every qualifying pair to disk and reuse completed expirations."""
+    _check_scan_clock(scan_clock)
     max_strike_distance_pct = _entered_strike_distance(max_strike_distance_pct)
     max_breakeven_move_pct = _entered_breakeven_move(max_breakeven_move_pct)
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
@@ -1577,14 +1684,14 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
         if job.cutoff != cutoff and not new_scan:
             job.cancel()
             raise ValueError("EXPIRY CUTOFF CHANGED // Press SCAN ALL YEARS again.")
-        if job.cutoff != cutoff or (restart and (state["status"] in {"failed","cancelled"}
+        if (new_scan and job.scan_clock is not scan_clock) or job.cutoff != cutoff or (restart and (state["status"] in {"failed","cancelled","timed_out"}
                                                 or state["cancel_requested"])):
             job.cancel()
             if state["status"] == "running" or job.cutoff != cutoff:
                 policies.pop(policy, None)
             jobs.pop(policy, None)
             job = None
-        elif state["status"] in {"failed","cancelled"}:
+        elif state["status"] in {"failed","cancelled","timed_out"}:
             raise ValueError("CALCULATION " + state["status"].upper() + " // " + (state["error"] or "Press SCAN ALL YEARS again."))
     if isinstance(job, _RICRankingJob):
         active["job"] = job
@@ -1624,7 +1731,8 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
         raise ValueError("ELIGIBLE EXPIRATIONS CHANGED // Press SCAN ALL YEARS again.")
     job = _RICRankingJob(store, sorted(groups.items()), cutoff,
                          partial(scan_ric_candidates, desktop_fast_fill=True,
-                                 max_breakeven_move_pct=max_breakeven_move_pct), potential_pairs)
+                                 max_breakeven_move_pct=max_breakeven_move_pct), potential_pairs,
+                         scan_clock=scan_clock)
     jobs[policy] = job
     active["job"] = job
     job.pause_after_expiration(not st.session_state.get("ric_auto_finish", True))
@@ -1637,6 +1745,8 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
 
 def _continue_ric_scan(result: dict[str, Any], client, touch_session, *, start: bool | None = None) -> dict[str, Any]:
     """Advance this snapshot only; preserve views, filters and checked identities."""
+    scan_clock = result.get("scan_clock")
+    _check_scan_clock(scan_clock)
     raw = (st.session_state.get("_ric_chain_cache") or {}).get(f'{result["source"]}:{result["symbol"]}')
     source = "E*TRADE" if client is not None and not bool(getattr(client, "is_offline", False)) else "PUBLIC"
     if not isinstance(raw, dict) or raw.get("scan_id") != result.get("raw_scan_id"):
@@ -1647,13 +1757,14 @@ def _continue_ric_scan(result: dict[str, Any], client, touch_session, *, start: 
         raise ValueError("QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED // Press SCAN ALL YEARS again.")
     started = time.monotonic()
     if not ranking_only:
-        raw = _scan_all_years(client, result["symbol"], touch_session)
+        raw = _scan_all_years(client, result["symbol"], touch_session, scan_clock=scan_clock)
     candidates, annual_ids, _, potential_pairs = _rank_cached_ric_chains(
         raw, result["target"], result["max_cost"], result["pricing_mode"],
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
         result.get("fee_per_spread", 0),
         result.get("max_strike_distance_pct"),
         result.get("max_breakeven_move_pct"),
+        scan_clock=scan_clock,
         start=((st.session_state.get("ric_auto_finish", True)
                or (isinstance(result.get("ranking_job"), _RICRankingJob)
                    and result["ranking_job"].snapshot()["status"] == "ready")) if start is None else start),
@@ -2357,6 +2468,10 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
     )
     if not isinstance(raw, dict) or raw.get("scan_id") != result.get("raw_scan_id"):
         return None
+    scan_clock = result.get("scan_clock")
+    if result.get("pricing_mode") != mode or result.get("scan_complete", True):
+        scan_clock = _new_scan_clock()
+        st.session_state["_ric_scan_clock"] = scan_clock
     candidates, annual_ids, _, _ = _rank_cached_ric_chains(
         raw, result["target"], result["max_cost"], mode,
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
@@ -2364,6 +2479,7 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
         result.get("max_strike_distance_pct"),
         result.get("max_breakeven_move_pct"),
         restart=True,
+        scan_clock=scan_clock,
     )
     ranking = _ric_result_ranking(raw, candidates)
     pricing_revision = int(result.get("pricing_revision", 0)) + 1
@@ -2377,6 +2493,7 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
     return {
         **result, "pricing_mode": mode, "scope": scope, "pricing_revision": pricing_revision,
         "pricing_policy": RIC_PRICING_POLICY,
+        "scan_clock": scan_clock,
         "candidates": candidates, "annual_ids": annual_ids,
         "ranked_expirations": ranking["ranked"], "ranking_job":ranking["job"],
         "ranking_status":ranking["status"],"ranking_progress":ranking.get("progress"),
@@ -2412,11 +2529,14 @@ def _restore_scan_memory(vault_key: str) -> None:
         return
     memory = _scan_memory(vault_key)
     st.session_state["_ric_memory"] = memory
+    if "_ric_scan_pending" in memory and "_ric_scan_pending" not in st.session_state:
+        st.session_state["_ric_scan_pending"] = memory["_ric_scan_pending"]
     for key, value in memory.items():
         if key == "ric_scan_result" and st.session_state.get("_ric_scan_pending"):
             continue  # A submitted replacement must not resurrect the old grid.
         if key not in st.session_state:
-            st.session_state[key] = dict(value) if isinstance(value, dict) else value
+            st.session_state[key] = (value if key == "_ric_scan_clock" else
+                                     dict(value) if isinstance(value, dict) else value)
 
 
 def _remember_scan_snapshot() -> None:
@@ -2429,6 +2549,12 @@ def _remember_scan_snapshot() -> None:
         if key in st.session_state:
             value = st.session_state[key]
             memory[key] = dict(value) if isinstance(value, dict) else value
+    if "_ric_scan_clock" in st.session_state:
+        memory["_ric_scan_clock"] = st.session_state["_ric_scan_clock"]
+    if "_ric_scan_pending" in st.session_state:
+        memory["_ric_scan_pending"] = st.session_state["_ric_scan_pending"]
+    else:
+        memory.pop("_ric_scan_pending", None)
 
 
 @finance_callback
@@ -2450,6 +2576,8 @@ def _remember_scan_inputs() -> None:
 @finance_callback
 def _queue_ric_scan() -> None:
     _remember_scan_inputs()
+    scan_clock = _new_scan_clock()
+    st.session_state["_ric_scan_clock"] = scan_clock
     owner = _ric_job_owner()
     with owner.setdefault("_ric_ranking_lock", threading.RLock()):
         active = owner.get("_ric_ranking_owner") or {}
@@ -2467,11 +2595,13 @@ def _queue_ric_scan() -> None:
         "breakeven": st.session_state.get("ric_max_breakeven_move_pct", ""),
         "pricing_mode": st.session_state.get("_ric_pricing_mode_preference", "NORMAL"),
         "submitted_at": time.time(),
+        "scan_clock": scan_clock,
         "cache_ids": {key: value.get("scan_id") for key, value in
                       (st.session_state.get("_ric_chain_cache") or {}).items()
                       if isinstance(value, dict)},
     }
     st.session_state.pop("_ric_scan_error", None)
+    _remember_scan_snapshot()
 
 
 def _strike_distance_column_bounds(filters: dict[str, Any]) -> dict[str, float]:
@@ -2724,6 +2854,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
         st.html(_RIC_CSS)
         for switch in ("ric_smart_fill", "ric_auto_finish"):
             install_native_switch_theme(switch)
+        _render_scan_clock(st.session_state.get("_ric_scan_clock"))
         _render_saved_spread_drafts()
         st.html(
             '<div class="ric-note">ALL-YEAR R.I.C. SCANNER // '
@@ -2946,7 +3077,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
         if (not scan_clicked and last_result.get("symbol") == symbol
                 and last_result.get("max_cost") is None
                 and not last_result.get("scan_complete", True)
-                and not last_result.get("failed_expirations")):
+                and not last_result.get("failed_expirations")
+                and (not last_result.get("scan_clock") or _scan_clock_snapshot(last_result["scan_clock"])["status"] == "running")):
             auto_finish = st.toggle("AUTO FINISH SCAN", key="ric_auto_finish",
                 on_change=_remember_presentation, args=("ric_auto_finish",),
                 help="Continue in short batches while this page is open. Turn off to pause after the current batch. Never places orders.")
@@ -2972,7 +3104,9 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.session_state.pop("_ric_order_candidate", None)
             st.session_state.pop("ric_last_send_results", None)
             scan_started = time.monotonic()
+            scan_clock = request.get("scan_clock") if scan_clicked else last_result.get("scan_clock")
             try:
+                _check_scan_clock(scan_clock)
                 if not scan_symbol:
                     raise ValueError("Enter a ticker to scan.")
                 max_cost = None
@@ -3019,7 +3153,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     if scan_clicked:
                         request["source_started"] = True
                     with st.spinner(f"LOADING {scan_symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
-                        raw = _scan_all_years(client, scan_symbol, touch_session, refresh=refresh)
+                        raw = _scan_all_years(client, scan_symbol, touch_session, refresh=refresh,
+                                              scan_clock=scan_clock)
                     if scan_clicked:
                         request["raw"] = raw
                 if (scan_clicked and not (raw["scan_complete"] and not raw.get("failed_expirations"))
@@ -3034,6 +3169,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     raw, target, max_cost, scan_mode, min_reward_risk, fee_per_spread,
                     max_strike_distance_pct, max_breakeven_move_pct,
                     restart=scan_clicked, new_scan=scan_clicked,
+                    scan_clock=scan_clock,
                 )
                 ranking = _ric_result_ranking(raw, candidates)
                 if scan_clicked and st.session_state.get("_ric_scan_pending") is not request:
@@ -3072,6 +3208,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     "pass_seconds": time.monotonic() - scan_started,
                     "tv_exchange": raw.get("tv_exchange", ""),
                     "stopped_on_errors": raw.get("stopped_on_errors", False),
+                    "scan_clock": scan_clock,
                 }
                 st.session_state.pop("_ric_auto_target", None)
                 if scan_clicked:
@@ -3085,6 +3222,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 if scan_clicked and st.session_state.get("_ric_scan_pending") is not request:
                     st.rerun()
                 st.session_state["_ric_scan_error"] = f"R.I.C. SCAN UNAVAILABLE // {scan_symbol} // {exc}"
+                _finish_scan_clock(scan_clock, "timed_out" if isinstance(exc, TimeoutError) else "failed")
                 # Preserve the last successful snapshot if a new scan fails.
                 if scan_clicked:
                     st.session_state.pop("_ric_scan_pending", None)
@@ -3097,6 +3235,15 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.error(st.session_state["_ric_scan_error"])
 
         with results_slot.container():
+            current_clock = st.session_state.get("_ric_scan_clock")
+            try:
+                _check_scan_clock(current_clock)
+            except TimeoutError:
+                active = _ric_job_owner().get("_ric_ranking_owner") or {}
+                if active.get("job"):
+                    active["job"].cancel()
+                st.error("2:00 SCAN LIMIT REACHED // INCOMPLETE // No partial results are shown. Press SCAN ALL YEARS to retry.")
+                return
             result = st.session_state.get("ric_scan_result")
             if not isinstance(result, dict) or result.get("symbol") != symbol:
                 _render_pre_scan_strike_header(symbol)
@@ -4103,6 +4250,7 @@ def _render_ric_scan_continuation(client, touch_session) -> None:
         st.session_state["ric_scan_result"] = updated
         _remember_scan_snapshot()
     except Exception as exc:
+        _finish_scan_clock(result.get("scan_clock"), "timed_out" if isinstance(exc, TimeoutError) else "failed")
         st.session_state["_ric_auto_scan_error"] = f"AUTO SCAN PAUSED // {exc}"
         st.rerun()
         return

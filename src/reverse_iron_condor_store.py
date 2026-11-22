@@ -13,19 +13,28 @@ The canonical scanner streams each result here; no result-count cutoff exists.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from functools import partial
 import base64
 from datetime import date
 import gzip
+import heapq
 import io
+from itertools import islice
 import json
 import math
 from pathlib import Path
 import sqlite3
+import pickle
+import shutil
+import struct
 import tempfile
 import threading
 import weakref
 from typing import Any, Callable, Iterable
 
+import numpy as np
+
+from src.reverse_iron_condor import RICBatchUnsupported, ric_batch_values, ric_batch_candidate
 from src.vertical_options import _MIN_REWARD_RISK, _reward_risk_floor
 
 
@@ -162,7 +171,7 @@ def _rank(row: dict[str, Any], target: float | None) -> tuple:
             row["put_sell_strike"], row.get("option_root", ""), row["id"])
 
 
-class RICResultStore:
+class _RICSQLResultStore:
     """Bound Python memory by the input chain, write batch and visible page.
 
     SQLite's page cache is 4 MiB and sort scratch stays on disk. A separate
@@ -302,6 +311,7 @@ class RICResultStore:
                 return False
             annual = dict(self._annual)
             batch = []
+            checked = 0
             with self._connect() as db:
                 if expiry in self._completed:
                     raise ValueError("An already ranked expiration changed; start a fresh scan.")
@@ -326,12 +336,20 @@ class RICResultStore:
                     if len(batch) >= 512:
                         flush()
 
+                def update(value):
+                    nonlocal checked
+                    checked = value
+                    if progress is not None:
+                        progress(value)
+
                 calculator(symbol=self.symbol, spot_last=self.spot, option_rows=rows,
                            target_breakeven=self.target, max_cost=self.max_cost,
                            pricing_mode=self.mode, min_reward_risk=self.min_reward_risk,
                            max_per_expiration=None, fee_per_spread=self.fee_per_spread,
-                           candidate_sink=retain, progress=progress)
+                           candidate_sink=retain, progress=update if progress is not None else None)
                 flush()
+                if progress is not None:
+                    progress(checked)
                 added = db.total_changes
             # Publish metadata only after successful transaction commit.
             self._count += added
@@ -633,6 +651,825 @@ class RICResultStore:
             while batch := cursor.fetchmany(256):
                 for row in batch:
                     yield self._decode(row)
+
+
+
+# Exact typed retention is opt-in for the canonical scanner only. Legacy
+# calculators keep the original SQL/JSON path, including unknown-field checks.
+_RIC_ECONOMIC_FIELDS = frozenset((
+    "debit", "cost", "gross_cost", "max_loss", "downside_profit", "upside_profit",
+    "max_profit", "reward_risk", "lower_breakeven", "upper_breakeven",
+    "breakeven", "width", "call_width", "put_width", "spread_bid", "spread_mid",
+    "spread_ask", "basis_code",
+))
+
+
+def _ric_store_candidate(owner, *descriptor):
+    row = ric_batch_candidate(*descriptor)
+    row.update(symbol=owner.symbol, spot_last=owner.spot, pricing_mode=owner.mode)
+    return row
+_RIC_DESCRIPTOR_ALIASES = {
+    "json_extract(details, '$[12].put_buy_strike')":'put_buy',
+    "json_extract(details, '$[12].put_sell_strike')":'put_sell',
+    "json_extract(details, '$[12].put_buy_last')":'put_buy_last',
+    "json_extract(details, '$[12].put_sell_last')":'put_sell_last',
+    "json_extract(details, '$[12].lower_breakeven')":'lower_breakeven',
+    'substr(expiry, 1, 4)':'year',
+}
+
+
+class _RICDescriptorChunk:
+    def __init__(self, manifest, call, put, cents, *, target=None, tables=None, fields=()):
+        self.m, self.ci, self.pi, self.cents = manifest,np.asarray(call),np.asarray(put),np.asarray(cents)
+        self.n = len(cents)
+        self.values = ric_batch_values(manifest,self.ci,self.pi,cents,fields=set(fields))
+        self.target = target
+        self.cache = {}
+        self.tables = tables if tables is not None else {}
+
+    def source(self,prefix,field):
+        isput = prefix.startswith('put_')
+        pairs = self.m.put_pairs if isput else self.m.call_pairs
+        role = 'buy' if prefix.endswith('buy') or prefix=='buy' else 'sell'
+        key = prefix+'_'+field
+        if key not in self.cache:
+            if key not in self.tables:
+                raw = [pair['prepared'].buy_fields.get(key) if role=='buy'
+                       else pair['prepared'].sell_fields.get(key) for pair in pairs]
+                dtype = np.bytes_ if field=='osi' else np.float64
+                self.tables[key] = np.asarray([np.nan if v is None else v for v in raw],dtype=dtype)
+            self.cache[key] = self.tables[key][self.pi if isput else self.ci]
+        return self.cache[key]
+
+    def column(self,key):
+        key = _RIC_DESCRIPTOR_ALIASES.get(key,key)
+        key = {'ratio':'reward_risk','profit':'max_profit','fill_scale':'fill_est'}.get(key,key)
+        if key in self.cache:
+            return self.cache[key]
+        if key in self.values:
+            return self.values[key]
+        if key in _RIC_ECONOMIC_FIELDS:
+            self.values.update(ric_batch_values(self.m,self.ci,self.pi,self.cents,fields={key}))
+            return self.values[key]
+        if key in ('buy','sell','put_buy','put_sell'):
+            return self.source(key,'strike')
+        for suffix in ('_last','_osi'):
+            if key.endswith(suffix):
+                return self.source(key[:-len(suffix)],suffix[1:])
+        if key=='grade':
+            return np.zeros(self.n)
+        if key=='year':
+            return np.full(self.n,self.m.expiry.year)
+        if key in ('expiry','side'):
+            return np.zeros(self.n) # Per-chunk constant; global merge adds metadata.
+        if key=='distance':
+            return (np.zeros(self.n) if self.target is None else np.minimum(
+                np.abs(self.column('breakeven')-self.target),np.abs(self.column('lower_breakeven')-self.target)))
+        if key=='strike_distance_pct':
+            result=100.0*np.maximum.reduce([np.abs(self.column(p)-self.m.spot)
+                for p in ('buy','sell','put_buy','put_sell')])/self.m.spot
+        elif key=='fill_est':
+            bid,ask,debit=(self.column(k) for k in ('spread_bid','spread_ask','debit'))
+            with np.errstate(divide='ignore',invalid='ignore'):
+                result=5.0+90.0*np.minimum(1.0,np.maximum(0.0,(debit-bid)/(ask-bid)))
+            result=np.where(ask>bid,result,np.nan)
+        elif key in ('call_id_rank','put_id_rank'):
+            isput=key.startswith('put')
+            pairs=self.m.put_pairs if isput else self.m.call_pairs
+            if key not in self.tables:
+                text=np.asarray([p['prepared'].identity.encode() for p in pairs])
+                self.tables[key]=np.argsort(np.argsort(text))
+            result=self.tables[key][self.pi if isput else self.ci]
+        else:
+            raise KeyError(key)
+        self.cache[key]=result
+        return result
+
+    def mask(self, validator, *, expiry='ALL',side='CALL + PUT',max_distance=None,column_filters=None,year=None):
+        validator._where(expiry,side,max_distance,column_filters,year)
+        target=validator.effective_target(column_filters)
+        self.target=target
+        keep=np.ones(self.n,dtype=np.bool_)
+        if (year is not None and self.m.expiry.year!=year) or (expiry!='ALL' and self.m.expiry!=expiry):
+            keep[:]=False
+        if max_distance is not None and target is not None:
+            keep &= self.column('distance')<=max_distance+1e-8
+        for key,selected in (column_filters or {}).items():
+            if key=='fill_scale':
+                keep &= np.floor(self.column('fill_est')+.5)>selected['gt']
+            elif key in ('ticker','side','expiry','basis'):
+                if key=='basis':
+                    allowed=[i for i,label in enumerate(('LIMIT','SMART','ASK')) if label in selected]
+                    keep &= np.isin(self.column('basis_code'),allowed)
+                else:
+                    actual={'ticker':validator.symbol,'side':'RIC','expiry':self.m.expiry.isoformat()}[key]
+                    if actual not in selected: keep[:]=False
+            elif key=='breakeven' and 'percent' in selected:
+                if target is not None:
+                    keep &= self.column('distance')<=target*float(selected['percent'])/100.0+1e-8
+            else:
+                for bound,operator in (('min',np.greater_equal),('max',np.less_equal)):
+                    value=selected.get(bound)
+                    if value is None or value=='': continue
+                    threshold=float(value)+(-1e-8 if bound=='min' else 1e-8)
+                    keep &= operator(self.column(key),threshold)
+        return keep
+
+    def order(self,sort_by='FILL + TARGET',direction='ASC'):
+        if sort_by not in _SORTS or direction not in ('ASC','DESC'):
+            raise ValueError('Invalid qualified-spread sorting controls.')
+        keys=[]
+        for column,reverse in _SORTS[sort_by]:
+            descending=reverse != (direction=='DESC')
+            if column=='id':
+                keys.extend([-self.column(k) if descending else self.column(k)
+                             for k in ('put_id_rank','call_id_rank')])
+                continue
+            name=_RIC_DESCRIPTOR_ALIASES.get(column,column)
+            values=self.column(name)
+            nullable=name in ('buy_last','sell_last','put_buy_last','put_sell_last','fill_est')
+            if nullable:
+                null=np.isnan(values)
+                keys.append(-null.astype(np.int8) if direction=='DESC' and name!='fill_est' else null.astype(np.int8))
+                values=np.where(null,0,values)
+            if values.dtype.kind in 'SU':
+                _,values=np.unique(values,return_inverse=True)
+            keys.append(-values if descending else values)
+        keys.extend((self.column('put_id_rank'),self.column('call_id_rank')))
+        return tuple(keys)
+
+    def ordered_indices(self,mask=None,sort_by='FILL + TARGET',direction='ASC'):
+        indices=np.arange(self.n) if mask is None else np.flatnonzero(mask)
+        keys=self.order(sort_by,direction)
+        return indices[np.lexsort(tuple(key[indices] for key in reversed(keys)))]
+
+
+def _ric_top_indices(keys, limit):
+    """Exact bounded lexicographic selection without sorting a whole batch."""
+    if not keys or not len(keys[0]):
+        return np.empty(0, dtype=np.int64)
+    active = np.arange(len(keys[0]))
+    picked = []
+    left = min(limit, len(active))
+    for key in keys:
+        if len(active) <= left:
+            picked.extend(active.tolist())
+            left = 0
+            break
+        values = key[active]
+        boundary = np.partition(values, left-1)[left-1]
+        lower = active[values < boundary]
+        picked.extend(lower.tolist())
+        left -= len(lower)
+        if not left:
+            break
+        active = active[values == boundary]
+    if left:
+        picked.extend(active[:left].tolist())
+    selected = np.asarray(picked, dtype=np.int64)
+    return selected[np.lexsort(tuple(key[selected] for key in reversed(keys)))]
+
+
+class _RICDescending:
+    def __init__(self,value): self.value=value
+    def __lt__(self,other): return self.value>other.value
+    def __eq__(self,other): return isinstance(other,_RICDescending) and self.value==other.value
+
+
+def _ric_descriptor_sort_key(row,sort_by,direction,target):
+    key=[]
+    fields={'buy':'buy_strike','sell':'sell_strike','ratio':'reward_risk','profit':'max_profit',
+            'put_buy':'put_buy_strike','put_sell':'put_sell_strike','side':'call_put'}
+    for column,reverse in _SORTS[sort_by]:
+        name=_RIC_DESCRIPTOR_ALIASES.get(column,column)
+        if name=='distance':
+            value=min(abs(row['breakeven']-target),abs(row['lower_breakeven']-target)) if target is not None else 0
+        elif name=='fill_est': value=indicative_fill_score(row)
+        elif name=='strike_distance_pct': value=ric_strike_distance_pct(row)
+        elif name=='year': value=row['expiry'].year
+        else: value=row[fields.get(name,name)]
+        if name in ('buy_last','sell_last','put_buy_last','put_sell_last','fill_est'):
+            key.append(-(value is None) if direction=='DESC' and name!='fill_est' else value is None)
+            if value is None:value=0
+        key.append(_RICDescending(value) if reverse!=(direction=='DESC') else value)
+    return tuple(key+[row['id']])
+
+
+def _ric_descriptor_identity(view, index):
+    m = view.m
+    return "|".join((m.symbol, m.expiry.isoformat(), "RIC", m.root,
+        m.put_pairs[int(view.pi[index])]["prepared"].identity,
+        m.call_pairs[int(view.ci[index])]["prepared"].identity))
+
+
+def _ric_descriptor_index_key(view, index, sort_by, direction):
+    key = []
+    identity = _ric_descriptor_identity(view, index)
+    for column, reverse in _SORTS[sort_by]:
+        name = _RIC_DESCRIPTOR_ALIASES.get(column, column)
+        if name == "id":
+            value = identity
+        elif name == "year":
+            value = view.m.expiry.year
+        elif name == "expiry":
+            value = view.m.expiry
+        elif name == "side":
+            value = "RIC"
+        else:
+            value = view.column(name)[index].item()
+            if isinstance(value, bytes):
+                value = value.decode()
+        if name in ("buy_last", "sell_last", "put_buy_last", "put_sell_last", "fill_est"):
+            missing = value is None or isinstance(value, float) and math.isnan(value)
+            key.append(-missing if direction == "DESC" and name != "fill_est" else missing)
+            if missing:
+                value = 0
+        key.append(_RICDescending(value) if reverse != (direction == "DESC") else value)
+    return tuple(key + [identity])
+
+
+class _RICExpirySummary:
+    """Small exact summaries; none limits the complete descriptor stream."""
+    def __init__(self, owner):
+        self.owner = owner
+        self.target = owner.target
+        self.best = []
+        self.annual = None
+        self.fill_values = set()
+        self.basis = set()
+        self.tables = {}
+
+    def retain(self, batch):
+        m, values = batch.manifest, batch.scalars
+        n = batch.count
+        view = _RICDescriptorChunk(m, batch.call_wing, batch.put_wing,
+                                   batch.debit_cents, target=self.target,
+                                   tables=self.tables.setdefault(m.root, {}))
+        view.values.update(values)
+        scores = view.column("fill_est")
+        rounded = np.floor(scores[np.isfinite(scores)] + .5).astype(np.int64)
+        self.fill_values.update(np.flatnonzero(np.bincount(rounded, minlength=96)).tolist())
+        self.basis.update(("LIMIT", "SMART", "ASK")[int(v)]
+                          for v in np.unique(view.column("basis_code")))
+        distance, cost, ratio = view.column("distance"), values["cost"], values["reward_risk"]
+        active = np.arange(n)
+        for key in (distance, cost, -ratio):
+            selected = key[active]
+            active = active[selected == selected.min()]
+        primary = (0, float(distance[active[0]]), float(cost[active[0]]),
+                   -float(ratio[active[0]]), m.expiry)
+        if self.annual is None or primary <= self.annual[0][:5]:
+            for name in ("buy", "sell", "put_buy", "put_sell"):
+                if len(active) == 1:
+                    break
+                key = view.column(name)[active]
+                active = active[key == key.min()]
+            i = int(active[0])
+            descriptor = self._descriptor(view, i)
+            rank = (0, float(distance[i]), float(cost[i]), -float(ratio[i]), m.expiry, "RIC",
+                    float(view.column("buy")[i]), float(view.column("sell")[i]),
+                    float(view.column("put_buy")[i]), float(view.column("put_sell")[i]),
+                    m.root, _ric_descriptor_identity(view, i))
+            if self.annual is None or rank < self.annual[0]:
+                self.annual = rank, descriptor
+        eligible = np.arange(n)
+        if len(self.best) == 200:
+            worst = self.best[-1][0]
+            equal, better = np.ones(n, dtype=np.bool_), np.zeros(n, dtype=np.bool_)
+            for key, limit in zip((distance, cost, -ratio), (worst[2], worst[3], -worst[4].value)):
+                better |= equal & (key < limit)
+                equal &= key == limit
+            eligible = np.flatnonzero(better | equal)
+            if not len(eligible):
+                return
+        keys = view.order("YEAR + FILL", "ASC")
+        local = _ric_top_indices(tuple(key[eligible] for key in keys), 200)
+        additions = []
+        for i in eligible[local]:
+            descriptor = self._descriptor(view, int(i))
+            additions.append((_ric_descriptor_index_key(view, int(i), "YEAR + FILL", "ASC"), descriptor))
+        self.best = heapq.nsmallest(200, self.best + additions, key=lambda item: item[0])
+
+    @staticmethod
+    def _descriptor(view, index):
+        return view.m, int(view.ci[index]), int(view.pi[index]), int(view.cents[index])
+
+    def page(self):
+        return [_ric_store_candidate(self.owner, *descriptor) for key, descriptor in self.best]
+
+
+def _ric_batch_adapter(calculator):
+    keywords = {}
+    while isinstance(calculator, partial):
+        if calculator.args:
+            return None
+        keywords = {**calculator.keywords, **keywords}
+        calculator = calculator.func
+    adapter = getattr(calculator, "_ric_batch_calculator", None)
+    if getattr(adapter, "_ric_scalar_calculator", None) is not calculator:
+        return None
+    return adapter, keywords
+
+
+class _RICDescriptorBackend:
+    """Immutable expiry manifests, bounded numeric chunks and disk merge runs."""
+    chunk_size = 65536
+
+    def __init__(self, owner):
+        self.owner = weakref.proxy(owner)
+        self.parts = ()
+        self._revision = 0
+        self._index_cache = {}
+        self._cache_lock = threading.RLock()
+        self._manifests = weakref.WeakValueDictionary()
+
+    def invalidate_indexes(self):
+        with self._cache_lock:
+            self._revision += 1
+            self._index_cache.clear()
+
+    def add_expiration(self, expiry, rows, adapter, keywords, progress):
+        owner = self.owner
+        stage = Path(tempfile.mkdtemp(prefix="ric-pending-", dir=owner.path.parent))
+        final = stage.with_name(stage.name.replace("pending", "complete", 1))
+        groups, stats, count = {}, {}, 0
+        summary = _RICExpirySummary(owner)
+        def check():
+            if progress is not None:
+                progress(int(stats.get("priced_condors", 0)))
+        def retain(batch):
+            nonlocal count
+            check()
+            if batch.manifest.expiry != expiry:
+                raise ValueError("Typed batch crossed expiration boundaries.")
+            arrays = tuple(np.asarray(v) for v in
+                           (batch.call_wing, batch.put_wing, batch.debit_cents))
+            if (any(a.ndim != 1 or not np.issubdtype(a.dtype, np.integer) for a in arrays)
+                    or len({len(a) for a in arrays}) != 1
+                    or any(len(a) and int(a.min()) < 0 for a in arrays)):
+                raise ValueError("Invalid exact R.I.C. descriptor batch.")
+            width = 8 if any(len(a) and int(a.max()) > np.iinfo(np.uint32).max for a in arrays) else 4
+            key = batch.manifest.root, width
+            group = groups.get(key)
+            if group is None:
+                stem = "group_" + str(len(groups))
+                group = {"manifest": batch.manifest, "count": 0, "width": width,
+                         "data": stem + ".bin", "metadata": stem + ".pickle"}
+                group["handle"] = (stage / group["data"]).open("wb", buffering=1024 * 1024)
+                groups[key] = group
+            elif group["manifest"] is not batch.manifest:
+                raise ValueError("A contract snapshot changed within an expiration.")
+            dtype = np.dtype([(name, f"<u{width}") for name in ("call", "put", "cents")])
+            records = np.empty(len(arrays[0]), dtype=dtype)
+            for name, array in zip(dtype.names, arrays):
+                records[name] = array
+            group["handle"].write(records.tobytes())
+            group["count"] += len(records)
+            count += len(records)
+            summary.retain(batch)
+            check()
+        try:
+            check()
+            fields = {"cost", "reward_risk", "spread_bid", "spread_ask", "debit", "basis_code"}
+            if owner.target is not None:
+                fields.update(("lower_breakeven", "upper_breakeven"))
+            adapter(**{**keywords, "symbol": owner.symbol, "spot_last": owner.spot,
+                       "option_rows": rows, "target_breakeven": owner.target,
+                       "max_cost": owner.max_cost, "pricing_mode": owner.mode,
+                       "min_reward_risk": owner.min_reward_risk,
+                       "fee_per_spread": owner.fee_per_spread, "batch_sink": retain,
+                       "checkpoint": check, "scalar_fields": fields, "scan_stats": stats})
+            saved = []
+            for group in groups.values():
+                group["handle"].close()
+                with (stage / group["metadata"]).open("wb") as handle:
+                    pickle.dump(group["manifest"], handle, protocol=pickle.HIGHEST_PROTOCOL)
+                saved.append({k: v for k, v in group.items() if k not in {"handle", "manifest"}})
+            annual = (_ric_store_candidate(owner, *summary.annual[1]) if summary.annual else None)
+            page = summary.page()
+            with (stage / "manifest.pickle").open("wb") as handle:
+                pickle.dump({"expiry": expiry, "count": count, "groups": saved}, handle,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+            check()  # Closing/flushing/metadata serialization count against the deadline.
+            stage.replace(final)
+            check()
+            part = {"expiry": expiry, "count": count, "path": final, "groups": tuple(saved),
+                    "annual": annual, "page": page, "fill": tuple(sorted(summary.fill_values)),
+                    "basis": tuple(sorted(summary.basis))}
+            self.parts = self.parts + (part,)
+            self.invalidate_indexes()
+            owner._count += count
+            owner._completed[expiry] = len(rows)
+            if annual is not None:
+                old = owner._annual.get(expiry.year)
+                if old is None or _rank(annual, owner.target) < _rank(old, owner.target):
+                    owner._annual[expiry.year] = annual
+            owner._choices_cache = None
+            owner._fill_values_cache.clear()
+            return True
+        except BaseException:
+            for group in groups.values():
+                group["handle"].close()
+            shutil.rmtree(stage, ignore_errors=True)
+            shutil.rmtree(final, ignore_errors=True)
+            raise
+
+    def metadata_parts(self, query):
+        owner = self.owner
+        owner._where(**query)
+        target = owner.effective_target(query.get("column_filters"))
+        if query.get("max_distance") is not None and target is not None:
+            return None
+        filters = query.get("column_filters") or {}
+        for field, selected in filters.items():
+            if field in {"ticker", "side", "expiry"}:
+                continue
+            if field == "breakeven":
+                if "percent" in selected and target is not None:
+                    return None
+                if any(selected.get(k) not in (None, "") for k in ("min", "max")):
+                    return None
+            elif field == "basis" or any(value not in (None, "") for value in selected.values()):
+                return None
+        parts = []
+        for part in self.parts:
+            expiry = part["expiry"]
+            if query.get("expiry", "ALL") != "ALL" and expiry != query["expiry"]:
+                continue
+            if query.get("year") is not None and expiry.year != query["year"]:
+                continue
+            actual = {"ticker": owner.symbol, "side": "RIC", "expiry": expiry.isoformat()}
+            if any(actual[field] not in selected for field, selected in filters.items()
+                   if field in actual):
+                continue
+            parts.append(part)
+        return parts
+
+    def chunks(self, query, *, fields=()):
+        owner = self.owner
+        owner._where(**query)
+        target = owner.effective_target(query.get("column_filters"))
+        for part in self.parts:
+            if query.get("year") is not None and part["expiry"].year != query["year"]:
+                continue
+            if query.get("expiry", "ALL") != "ALL" and part["expiry"] != query["expiry"]:
+                continue
+            for group in part["groups"]:
+                manifest_path = part["path"] / group["metadata"]
+                manifest = self._manifests.get(manifest_path)
+                if manifest is None:
+                    with manifest_path.open("rb") as handle:
+                        manifest = pickle.load(handle)
+                    try:
+                        self._manifests[manifest_path] = manifest
+                    except TypeError:
+                        pass  # Explicit compatible custom manifests need not support weak references.
+                width = group["width"]
+                dtype = np.dtype([(name, f"<u{width}") for name in ("call", "put", "cents")])
+                tables, offset = {}, 0
+                with (part["path"] / group["data"]).open("rb") as handle:
+                    while data := handle.read(self.chunk_size * dtype.itemsize):
+                        records = np.frombuffer(data, dtype=dtype)
+                        view = _RICDescriptorChunk(manifest, records["call"], records["put"],
+                            records["cents"], target=target, tables=tables, fields=fields)
+                        mask = view.mask(owner, **query)
+                        yield part, group, offset, view, mask
+                        offset += len(records)
+
+    def count(self, query):
+        parts = self.metadata_parts(query)
+        return (sum(p["count"] for p in parts) if parts is not None else
+                sum(int(mask.sum()) for p, g, o, v, mask in self.chunks(query)))
+
+    def best_by_year(self, query):
+        target = self.owner.effective_target(query.get("column_filters"))
+        parts = self.metadata_parts(query)
+        best = {}
+        def retain(row):
+            old = best.get(row["year"])
+            if old is None or _rank(row, target) < _rank(old, target):
+                best[row["year"]] = row
+        if parts is not None and target == self.owner.target:
+            for part in parts:
+                if part["annual"] is not None:
+                    retain(part["annual"])
+        else:
+            for p, g, o, v, mask in self.chunks(query):
+                active = np.flatnonzero(mask)
+                if not len(active):
+                    continue
+                for name, reverse in (("distance", False), ("cost", False), ("ratio", True),
+                                      ("buy", False), ("sell", False), ("put_buy", False), ("put_sell", False)):
+                    key = v.column(name)[active]
+                    limit = key.max() if reverse else key.min()
+                    active = active[key == limit]
+                for i in active:
+                    retain(_ric_store_candidate(self.owner, v.m, int(v.ci[i]), int(v.pi[i]), int(v.cents[i])))
+        return sorted(best.values(), key=lambda row: _rank(row, target))
+
+    def fill_values(self, query):
+        parts = self.metadata_parts(query)
+        if parts is not None:
+            return sorted({value for p in parts for value in p["fill"]})
+        values = set()
+        for p, g, o, v, mask in self.chunks(query):
+            score = v.column("fill_est")[mask]
+            values.update(np.floor(score[np.isfinite(score)] + .5).astype(int).tolist())
+        return sorted(values)
+
+    def get_many(self, identities):
+        requested = {i for i in identities if isinstance(i, str)}
+        found, maps = {}, {}
+        if not requested:
+            return found
+        for part, group, offset, view, mask in self.chunks({}):
+            key = str(part["path"]), group["data"]
+            if key not in maps:
+                prefix = "|".join((view.m.symbol, view.m.expiry.isoformat(), "RIC", view.m.root)) + "|"
+                calls = {p["prepared"].identity: i for i, p in enumerate(view.m.call_pairs)}
+                puts = {p["prepared"].identity: i for i, p in enumerate(view.m.put_pairs)}
+                targets = []
+                for identity in requested:
+                    if not identity.startswith(prefix):
+                        continue
+                    fields = identity[len(prefix):].split("|")
+                    if len(fields) != 4:
+                        continue
+                    ci, pi = calls.get("|".join(fields[2:])), puts.get("|".join(fields[:2]))
+                    if ci is not None and pi is not None:
+                        targets.append((identity, ci, pi))
+                maps[key] = targets
+            for identity, ci, pi in maps[key]:
+                if identity in found:
+                    continue
+                positions = np.flatnonzero((view.ci == ci) & (view.pi == pi))
+                if len(positions):
+                    row = _ric_store_candidate(self.owner, view.m, ci, pi, int(view.cents[positions[0]]))
+                    if row["id"] != identity:
+                        raise ValueError("Stored R.I.C. identity changed.")
+                    found[identity] = row
+            if len(found) == len(requested):
+                break
+        return found
+
+    def page(self, query, sort_by, direction, offset, limit):
+        owner = self.owner
+        target = owner.effective_target(query.get("column_filters"))
+        parts = self.metadata_parts(query)
+        if (parts is not None and target == owner.target and sort_by == "YEAR + FILL"
+                and direction == "ASC" and offset + limit <= 200):
+            rows = [row for p in parts for row in p["page"]]
+            return heapq.nsmallest(offset + limit, rows,
+                key=lambda row: _ric_descriptor_sort_key(row, sort_by, direction, target))[offset:]
+        if offset + limit <= 1000:
+            size, best = offset + limit, []
+            for p, g, o, view, mask in self.chunks(query):
+                active = np.flatnonzero(mask)
+                if not len(active):
+                    continue
+                keys = view.order(sort_by, direction)
+                positions = active[_ric_top_indices(tuple(key[active] for key in keys), size)]
+                descriptors = [(_ric_descriptor_index_key(view, int(i), sort_by, direction),
+                    (view.m, int(view.ci[i]), int(view.pi[i]), int(view.cents[i]))) for i in positions]
+                best = heapq.nsmallest(size, best + descriptors, key=lambda item: item[0])
+            return [_ric_store_candidate(owner, *descriptor) for key, descriptor in best[offset:]]
+        return list(islice(self.iter_rows(query, sort_by, direction), offset, offset + limit))
+
+    def _sorted_index(self, query, sort_by="FILL + TARGET", direction="ASC", canonical=False):
+        """Reuse at most three immutable disk indexes; active readers own their files."""
+        owner = self.owner
+        owner._where(**query)
+        if not canonical:
+            owner._order(sort_by, direction, query.get("column_filters"))
+        with self._cache_lock:
+            revision = self._revision
+            key = (revision, sort_by, direction, canonical,
+                   json.dumps(query, sort_keys=True, default=str, separators=(",", ":"), allow_nan=False))
+            cached = self._index_cache.pop(key, None)
+            if cached is not None:
+                self._index_cache[key] = cached
+                return cached
+        scratch = tempfile.TemporaryDirectory(prefix="ric-sort-", dir=owner.path.parent)
+        states = []
+        index_path = Path(scratch.name) / "indices.bin"
+        try:
+            with index_path.open("wb") as output:
+                for part, group, offset, view, mask in self.chunks(query):
+                    active = np.flatnonzero(mask)
+                    if not len(active):
+                        continue
+                    if canonical:
+                        keys = tuple(view.column(k) for k in
+                            ("grade", "distance", "cost", "ratio", "buy", "sell", "put_buy", "put_sell",
+                             "put_id_rank", "call_id_rank"))
+                        keys = keys[:3] + (-keys[3],) + keys[4:]
+                    else:
+                        keys = view.order(sort_by, direction)
+                    order = active[np.lexsort(tuple(key[active] for key in reversed(keys)))].astype(np.uint32)
+                    start = output.tell()
+                    output.write(order.tobytes())
+                    states.append({"manifest": view.m, "data": part["path"] / group["data"],
+                        "width": group["width"], "start": start, "count": len(order),
+                        "offset": offset})
+            entry = {"directory": scratch, "index_path": index_path, "states": tuple(states)}
+            with self._cache_lock:
+                if self._revision == revision:
+                    self._index_cache[key] = entry
+                    while len(self._index_cache) > 3:
+                        self._index_cache.pop(next(iter(self._index_cache)))
+            return entry
+        except BaseException:
+            scratch.cleanup()
+            raise
+
+    def iter_rows(self, query, sort_by="FILL + TARGET", direction="ASC", *, canonical=False):
+        """One shared disk index and bounded independent reader buffers."""
+        owner = self.owner
+        target = owner.effective_target(query.get("column_filters"))
+        entry = self._sorted_index(query, sort_by, direction, canonical)
+        states = [{**state, "cursor": 0, "buffer": (), "position": 0} for state in entry["states"]]
+        heap, handles = [], {}
+        try:
+            # Keep entry alive here when another query evicts its cache reference.
+            index_path = entry["index_path"]
+            with index_path.open("rb") as index_file:
+                def advance(number):
+                    state = states[number]
+                    if state["cursor"] == state["count"]:
+                        return
+                    if state["position"] == len(state["buffer"]):
+                        index_file.seek(state["start"] + 4 * state["cursor"])
+                        state["buffer"] = np.frombuffer(index_file.read(
+                            4 * min(1024, state["count"] - state["cursor"])), dtype="<u4")
+                        state["position"] = 0
+                    row_index = int(state["buffer"][state["position"]]) + state["offset"]
+                    state["position"] += 1
+                    state["cursor"] += 1
+                    path = state["data"]
+                    handle = handles.pop(path, None)
+                    if handle is None:
+                        handle = path.open("rb")
+                    handles[path] = handle
+                    while len(handles) > 4:
+                        handles.pop(next(iter(handles))).close()
+                    width = state["width"]
+                    handle.seek(3 * width * row_index)
+                    ci, pi, cents = struct.unpack("<III" if width == 4 else "<QQQ", handle.read(3 * width))
+                    row = _ric_store_candidate(owner, state["manifest"], ci, pi, cents)
+                    key = _rank(row, target) if canonical else _ric_descriptor_sort_key(row, sort_by, direction, target)
+                    heapq.heappush(heap, (key, number, row))
+                for number in range(len(states)):
+                    advance(number)
+                while heap:
+                    key, number, row = heapq.heappop(heap)
+                    yield row
+                    advance(number)
+        finally:
+            for handle in handles.values():
+                handle.close()
+
+
+class RICResultStore(_RICSQLResultStore):
+    """Complete public store API with exact canonical typed retention."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._descriptors = _RICDescriptorBackend(self)
+
+    def add_expiration(self, expiry, rows, calculator, progress=None):
+        capability = _ric_batch_adapter(calculator)
+        if capability is None:
+            added = super().add_expiration(expiry, rows, calculator, progress)
+            if added:
+                self._descriptors.invalidate_indexes()
+            return added
+        with self._lock:
+            if self._minimum_expiry is not None and expiry < self._minimum_expiry:
+                return False
+            if self._completed.get(expiry) == len(rows):
+                return False
+            if expiry in self._completed:
+                raise ValueError("An already ranked expiration changed; start a fresh scan.")
+            try:
+                return self._descriptors.add_expiration(expiry, rows, *capability, progress)
+            except RICBatchUnsupported:
+                added = super().add_expiration(expiry, rows, calculator, progress)
+                if added:
+                    self._descriptors.invalidate_indexes()
+                return added
+
+    @property
+    def expirations(self):
+        return sorted(set(super().expirations) | {p["expiry"] for p in self._descriptors.parts if p["count"]})
+
+    def count(self, *, expiry="ALL", side="CALL + PUT", max_distance=None, column_filters=None, year=None):
+        query = dict(expiry=expiry, side=side, max_distance=max_distance, column_filters=column_filters, year=year)
+        if not self._where(**query)[0]:
+            return len(self)
+        return super().count(**query) + self._descriptors.count(query)
+
+    def counts_by_year(self, *, max_distance=None, column_filters=None):
+        query = dict(max_distance=max_distance, column_filters=column_filters)
+        counts = super().counts_by_year(**query)
+        parts = self._descriptors.metadata_parts(query)
+        if parts is not None:
+            for part in parts:
+                if part["count"]:
+                    year = part["expiry"].year
+                    counts[year] = counts.get(year, 0) + part["count"]
+        else:
+            for part, group, offset, view, mask in self._descriptors.chunks(query):
+                size = int(mask.sum())
+                if size:
+                    year = part["expiry"].year
+                    counts[year] = counts.get(year, 0) + size
+        return dict(sorted(counts.items()))
+
+    def best_by_year(self, *, max_distance=None, column_filters=None, year=None):
+        query = dict(max_distance=max_distance, column_filters=column_filters, year=year)
+        target = self.effective_target(column_filters)
+        if not self._where(**query)[0] and target == self.target:
+            return self.annual_rows
+        rows = super().best_by_year(**query) + self._descriptors.best_by_year(query)
+        best = {}
+        for row in rows:
+            old = best.get(row["year"])
+            if old is None or _rank(row, target) < _rank(old, target):
+                best[row["year"]] = row
+        return sorted(best.values(), key=lambda row: _rank(row, target))
+
+    def column_filter_choices(self):
+        choices = {key: set(values) for key, values in super().column_filter_choices().items()}
+        for part in self._descriptors.parts:
+            if part["count"]:
+                choices["side"].add("RIC")
+                choices["expiry"].add(part["expiry"].isoformat())
+                choices["basis"].update(part["basis"])
+        return {key: sorted(values) for key, values in choices.items()}
+
+    def fill_est_values(self, *, column_filters=None, max_distance=None, year=None):
+        self._where(column_filters=column_filters, max_distance=max_distance, year=year)
+        filters = {key: value for key, value in (column_filters or {}).items() if key != "fill_scale"}
+        query = dict(column_filters=filters, max_distance=max_distance, year=year)
+        return sorted(set(super().fill_est_values(**query)) | set(self._descriptors.fill_values(query)))
+
+    def page(self, *, expiry="ALL", side="CALL + PUT", sort_by="FILL + TARGET", direction="ASC",
+             offset=0, limit=200, max_distance=None, column_filters=None, year=None):
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Invalid spread page.")
+        query = dict(expiry=expiry, side=side, max_distance=max_distance, column_filters=column_filters, year=year)
+        self._where(**query)
+        self._order(sort_by, direction, column_filters)
+        if not self._descriptors.parts:
+            return super().page(sort_by=sort_by, direction=direction, offset=offset, limit=limit, **query)
+        if offset + limit <= 1000:
+            target = self.effective_target(column_filters)
+            size = offset + limit
+            legacy = super().page(sort_by=sort_by, direction=direction, offset=0, limit=size, **query)
+            typed = self._descriptors.page(query, sort_by, direction, 0, size)
+            return heapq.nsmallest(size, legacy + typed,
+                key=lambda row: _ric_descriptor_sort_key(row, sort_by, direction, target))[offset:]
+        return list(islice(self.iter_rows(sort_by=sort_by, direction=direction, **query), offset, offset + limit))
+
+    def get_many(self, identities):
+        identities = tuple(identities)
+        rows = super().get_many(identities)
+        rows.update(self._descriptors.get_many(identities))
+        return dict(sorted(rows.items(), key=lambda item: _rank(item[1], self.target)))
+
+    def iter_rows(self, *, expiry="ALL", side="CALL + PUT", sort_by="FILL + TARGET", direction="ASC",
+                  max_distance=None, column_filters=None, year=None):
+        query = dict(expiry=expiry, side=side, max_distance=max_distance, column_filters=column_filters, year=year)
+        self._where(**query)
+        self._order(sort_by, direction, column_filters)
+        target = self.effective_target(column_filters)
+        yield from heapq.merge(super().iter_rows(sort_by=sort_by, direction=direction, **query),
+            self._descriptors.iter_rows(query, sort_by, direction),
+            key=lambda row: _ric_descriptor_sort_key(row, sort_by, direction, target))
+
+    def iter_ranked(self):
+        yield from heapq.merge(super().iter_ranked(), self._descriptors.iter_rows({}, canonical=True),
+                              key=lambda row: _rank(row, self.target))
+
+    def prune_before(self, cutoff):
+        with self._lock:
+            removed = super().prune_before(cutoff)
+            parts = self._descriptors.parts
+            expired = sum(p["count"] for p in parts if p["expiry"] < cutoff)
+            self._descriptors.parts = tuple(p for p in parts if p["expiry"] >= cutoff)
+            self._count -= expired
+            if removed or expired or len(self._descriptors.parts) != len(parts):
+                self._descriptors.invalidate_indexes()
+            if removed or expired:
+                # Retained file references remain valid for existing read cursors;
+                # the owning TemporaryDirectory reclaims them with the scan.
+                rows = super().best_by_year(column_filters={"ticker": [self.symbol]})
+                rows += [p["annual"] for p in self._descriptors.parts if p["annual"] is not None]
+                self._annual = {}
+                for row in rows:
+                    old = self._annual.get(row["year"])
+                    if old is None or _rank(row, self.target) < _rank(old, self.target):
+                        self._annual[row["year"]] = row
+            return removed + expired
 
 
 def filterable_ric_html(store: RICResultStore, *, source, loaded_at, pricing_mode,

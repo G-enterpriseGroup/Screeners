@@ -17,6 +17,8 @@ import math
 import re
 from typing import Any, Callable, Iterable
 
+import numpy as np
+
 from src.vertical_options import (
     build_place_payload,
     extract_order_id,
@@ -371,7 +373,8 @@ def _parsed_contract_root(osi: str, expiry: date, side: str, strike: float) -> s
 
 
 def _wing_pairs(rows: list[dict[str, Any]], side: str, *,
-                breakeven_band: tuple[Decimal, Decimal] | None = None) -> list[dict[str, Any]]:
+                breakeven_band: tuple[Decimal, Decimal] | None = None,
+                checkpoint: Callable[[], None] | None = None) -> list[dict[str, Any]]:
     prefixes = ("buy", "sell") if side == "CALL" else ("put_buy", "put_sell")
     fields = ("strike", "osi", "last", "bid", "ask", "open_interest", "volume")
     # These records and two small export maps are per contract, not per wing
@@ -387,8 +390,12 @@ def _wing_pairs(rows: list[dict[str, Any]], side: str, *,
     ]
     pairs = []
     for index, lower_leg in enumerate(legs):
+        if checkpoint is not None:
+            checkpoint()
         lower = lower_leg[0]
-        for higher_leg in legs[index + 1:]:
+        for higher_index, higher_leg in enumerate(legs[index + 1:]):
+            if checkpoint is not None and higher_index % 1024 == 0:
+                checkpoint()
             higher = higher_leg[0]
             if lower["strike"] == higher["strike"]:
                 continue
@@ -462,6 +469,43 @@ def _compatible_puts(node: dict[str, Any], call: dict[str, Any], *, minimum: flo
                                     max_cost=max_cost, smart=smart)
 
 
+def _ric_normalized_groups(option_rows, ticker, spot, checkpoint=None):
+    groups: dict[tuple[date, str], dict[tuple[str, float], dict[str, Any] | None]] = {}
+    input_contracts = 0
+    for raw in option_rows:
+        input_contracts += 1
+        if checkpoint is not None and input_contracts % 64 == 0:
+            checkpoint()
+        if not isinstance(raw, dict):
+            continue
+        expiry = raw.get("expiry")
+        if isinstance(expiry, datetime):
+            expiry = expiry.date()
+        side, strike = str(raw.get("call_put") or "").upper(), _number(raw.get("strike"), positive=True)
+        quotes = _quotes(raw)
+        if not isinstance(expiry, date) or side not in {"CALL", "PUT"} or strike is None or quotes is None:
+            continue
+        if (side == "CALL" and strike <= spot) or (side == "PUT" and strike >= spot):
+            continue
+        root = _contract_root(raw.get("osi", ""), expiry, side, strike)
+        if root is None:
+            continue
+        if any(str(raw[key]).strip().upper() != ticker for key in
+               ("underlying", "underlying_symbol") if raw.get(key)):
+            continue
+        row = {**raw, "strike": strike, "bid": quotes[0], "ask": quotes[1],
+               "last": _number(raw.get("last"), positive=True),
+               "open_interest": _number(raw.get("open_interest")),
+               "volume": _number(raw.get("volume")),
+               "osi": str(raw["osi"]).strip(), "expiry": expiry, "call_put": side}
+        group, key = groups.setdefault((expiry, root), {}), (side, strike)
+        if key not in group:
+            group[key] = row
+        elif group[key] is not None and (group[key]["bid"], group[key]["ask"], group[key]["osi"]) != (row["bid"], row["ask"], row["osi"]):
+            group[key] = None  # Conflicting exact-contract quotes cannot approve a trade.
+    return groups, input_contracts
+
+
 def scan_ric_candidates(
     *, symbol: str, spot_last: float, option_rows: Iterable[dict[str, Any]],
     target_breakeven: float | None, max_cost: float | None,
@@ -490,37 +534,7 @@ def scan_ric_candidates(
     breakeven_percent = _breakeven_move(max_breakeven_move_pct)
     breakeven_band = (_breakeven_band(spot, breakeven_percent)
                       if breakeven_percent is not None else None)
-    groups: dict[tuple[date, str], dict[tuple[str, float], dict[str, Any] | None]] = {}
-    input_contracts = 0
-    for raw in option_rows:
-        input_contracts += 1
-        if not isinstance(raw, dict):
-            continue
-        expiry = raw.get("expiry")
-        if isinstance(expiry, datetime):
-            expiry = expiry.date()
-        side, strike = str(raw.get("call_put") or "").upper(), _number(raw.get("strike"), positive=True)
-        quotes = _quotes(raw)
-        if not isinstance(expiry, date) or side not in {"CALL", "PUT"} or strike is None or quotes is None:
-            continue
-        if (side == "CALL" and strike <= spot) or (side == "PUT" and strike >= spot):
-            continue
-        root = _contract_root(raw.get("osi", ""), expiry, side, strike)
-        if root is None:
-            continue
-        if any(str(raw[key]).strip().upper() != ticker for key in
-               ("underlying", "underlying_symbol") if raw.get(key)):
-            continue
-        row = {**raw, "strike": strike, "bid": quotes[0], "ask": quotes[1],
-               "last": _number(raw.get("last"), positive=True),
-               "open_interest": _number(raw.get("open_interest")),
-               "volume": _number(raw.get("volume")),
-               "osi": str(raw["osi"]).strip(), "expiry": expiry, "call_put": side}
-        group, key = groups.setdefault((expiry, root), {}), (side, strike)
-        if key not in group:
-            group[key] = row
-        elif group[key] is not None and (group[key]["bid"], group[key]["ask"], group[key]["osi"]) != (row["bid"], row["ask"], row["osi"]):
-            group[key] = None  # Conflicting exact-contract quotes cannot approve a trade.
+    groups, input_contracts = _ric_normalized_groups(option_rows, ticker, spot)
 
     retained: dict[date, list[tuple[tuple, dict[str, Any]]]] = {}
     annual: dict[int, tuple[tuple, str]] = {}
@@ -648,3 +662,365 @@ def build_ric_preview_payload(
                    "stopPrice": 0.0, "orderTerm": term, "marketSession": "REGULAR",
                    "Instrument": instruments}],
     }}
+
+
+# Exact opt-in typed retention; public scalar quote/review math remains above.
+class RICBatchUnsupported(ValueError):
+    """Request atomic legacy fallback, never omission of an unsupported row."""
+
+
+@dataclass(frozen=True)
+class RICBatchManifest:
+    symbol: str
+    spot: float
+    expiry: date
+    root: str
+    mode: str
+    minimum: float
+    fee: float
+    target: float | None
+    budget: float | None
+    max_breakeven_move_pct: float | None
+    call_pairs: tuple
+    put_pairs: tuple
+    call_values: dict
+    put_values: dict
+    grid: dict | None = None
+
+
+@dataclass(frozen=True)
+class RICBatch:
+    manifest: RICBatchManifest
+    call_wing: np.ndarray
+    put_wing: np.ndarray
+    debit_cents: np.ndarray
+    scalars: dict
+
+    @property
+    def count(self):
+        return len(self.debit_cents)
+
+
+def _ric_round8(values):
+    """Python-_ric_round8-equivalent vector division, scalar on ambiguous products.
+
+    For a normal scaled product below 2**50, correctly rounded multiplication
+    can change integer rounding only next to a half-integer. Two product ulps
+    conservatively isolate that ambiguity. Extreme/nonfinite values are scalar.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    with np.errstate(over='ignore', invalid='ignore'):
+        scaled = values * 100000000.0
+        result = np.rint(scaled) / 100000000.0
+        fraction = scaled - np.floor(scaled)
+        hazard = (~np.isfinite(scaled) | (np.abs(scaled) >= 2**50)
+                  | (np.abs(fraction - .5) <= 2*np.spacing(np.abs(scaled))))
+    for index in np.flatnonzero(hazard):
+        result[index] = round(float(values[index]), 8)
+    return result
+
+
+def _ric_pair_values(pairs, minimum, fee):
+    def array(fn, dtype=np.float64):
+        return np.asarray([fn(pair) for pair in pairs], dtype=dtype)
+    return {
+        'mid': array(lambda p:p['mid']), 'ask':array(lambda p:p['ask']),
+        'cap': array(lambda p:_wing_debit_cap(p,minimum,fee)),
+        'width': array(lambda p:p['prepared'].width),
+        'market_valid':array(lambda p:p['prepared'].market_valid,np.bool_),
+        'buy_bid':array(lambda p:p['prepared'].buy.bid),
+        'buy_ask':array(lambda p:p['prepared'].buy.ask),
+        'sell_bid':array(lambda p:p['prepared'].sell.bid),
+        'sell_ask':array(lambda p:p['prepared'].sell.ask),
+        'buy_strike':array(lambda p:p['prepared'].buy.strike),
+        'sell_strike':array(lambda p:p['prepared'].sell.strike),
+        'be_cap':array(lambda p:p.get('breakeven_max_cost',math.inf)),
+    }
+
+
+def ric_batch_values(manifest, call_indices, put_indices, debit_cents, fields=None, _quotes=None, _core=None):
+    """Exact canonical numeric fields, no dictionaries per candidate."""
+    c,p=manifest.call_values,manifest.put_values
+    ci,pi=np.asarray(call_indices),np.asarray(put_indices)
+    all_fields={'debit','cost','gross_cost','max_loss','downside_profit','upside_profit','max_profit',
+                'reward_risk','lower_breakeven','upper_breakeven','breakeven','width','call_width',
+                'put_width','spread_bid','spread_ask','spread_mid','basis_code'}
+    wanted=all_fields if fields is None else set(fields)
+    if wanted-all_fields:raise ValueError('Unknown descriptor scalar field')
+    if manifest.grid is not None:
+        provided=dict(_core or {})
+        if _quotes is not None:provided.update(zip(('spread_bid','spread_ask','spread_mid'),_quotes))
+        return _ric_grid_values(manifest,ci,pi,debit_cents,wanted,provided)
+    cache=dict(_core or {})
+    if _quotes is not None:cache.update(zip(('spread_bid','spread_ask','spread_mid'),_quotes))
+    def value(key):
+        if key in cache:return cache[key]
+        if key=='debit':answer=np.asarray(debit_cents,dtype=np.float64)/100
+        elif key=='gross_cost':answer=np.asarray(debit_cents,dtype=np.float64)
+        elif key=='call_width':answer=c['width'][ci]
+        elif key=='put_width':answer=p['width'][pi]
+        elif key=='width':answer=np.minimum(value('call_width'),value('put_width'))
+        elif key=='cost':answer=_ric_round8(100*value('debit')+manifest.fee)
+        elif key=='max_loss':answer=value('cost')
+        elif key=='downside_profit':answer=_ric_round8(100*(value('put_width')-value('debit'))-manifest.fee)
+        elif key=='upside_profit':answer=_ric_round8(100*(value('call_width')-value('debit'))-manifest.fee)
+        elif key=='max_profit':answer=np.minimum(value('downside_profit'),value('upside_profit'))
+        elif key=='reward_risk':answer=value('max_profit')/value('cost')
+        elif key=='lower_breakeven':answer=_ric_round8((p['buy_strike'][pi]-value('debit'))-manifest.fee/100)
+        elif key in {'upper_breakeven','breakeven'}:answer=_ric_round8((c['buy_strike'][ci]+value('debit'))+manifest.fee/100)
+        elif key=='spread_bid':answer=_ric_round8(((c['buy_bid'][ci]-c['sell_ask'][ci])+p['buy_bid'][pi])-p['sell_ask'][pi])
+        elif key=='spread_ask':answer=_ric_round8(((c['buy_ask'][ci]-c['sell_bid'][ci])+p['buy_ask'][pi])-p['sell_bid'][pi])
+        elif key=='spread_mid':answer=_ric_round8((value('spread_bid')+value('spread_ask'))/2)
+        elif key=='basis_code':answer=(np.where(np.abs(value('debit')-value('spread_ask'))<1e-8,2,1).astype(np.uint8)
+                                      if manifest.mode=='SMART FILL' else np.zeros(len(ci),dtype=np.uint8))
+        cache[key]=answer
+        return answer
+    try:
+        return {key:value(key) for key in wanted}
+    finally:
+        del value  # Break recursive closure cycles retaining native arrays.
+
+
+def _ric_grid_values(manifest,ci,pi,cents,wanted,provided=None):
+    grid=manifest.grid;c,p=grid['call'],grid['put'];fee=grid['fee_c']
+    n=np.asarray(cents,dtype=np.int64);cache=dict(provided or {})
+    def value(key):
+        if key in cache:return cache[key]
+        if key=='debit':answer=n/100
+        elif key=='gross_cost':answer=n.astype(np.float64)
+        elif key=='call_width':answer=c['width'][ci]/100
+        elif key=='put_width':answer=p['width'][pi]/100
+        elif key=='width':answer=np.minimum(c['width'][ci],p['width'][pi])/100
+        elif key in {'cost','max_loss'}:answer=(100*n+fee)/100
+        elif key=='downside_profit':answer=(100*(p['width'][pi]-n)-fee)/100
+        elif key=='upside_profit':answer=(100*(c['width'][ci]-n)-fee)/100
+        elif key=='max_profit':answer=np.minimum(value('downside_profit'),value('upside_profit'))
+        elif key=='reward_risk':answer=value('max_profit')/value('cost')
+        elif key=='lower_breakeven':answer=(100*p['buy_strike'][pi]-100*n-fee)/10000
+        elif key in {'upper_breakeven','breakeven'}:answer=(100*c['buy_strike'][ci]+100*n+fee)/10000
+        elif key=='spread_bid':answer=_ric_grid_bid(manifest,ci,pi,c['buy_bid'][ci]-c['sell_ask'][ci]+p['buy_bid'][pi]-p['sell_ask'][pi])
+        elif key=='spread_ask':answer=(c['buy_ask'][ci]-c['sell_bid'][ci]+p['buy_ask'][pi]-p['sell_bid'][pi])/100
+        elif key=='spread_mid':answer=((c['buy_bid'][ci]-c['sell_ask'][ci]+p['buy_bid'][pi]-p['sell_ask'][pi])+
+                                       (c['buy_ask'][ci]-c['sell_bid'][ci]+p['buy_ask'][pi]-p['sell_bid'][pi]))/200
+        elif key=='basis_code':answer=(np.where(value('debit')==value('spread_ask'),2,1).astype(np.uint8)
+                                      if manifest.mode=='SMART FILL' else np.zeros(len(n),dtype=np.uint8))
+        cache[key]=answer;return answer
+    try:
+        return {key:value(key) for key in wanted}
+    finally:
+        del value  # Reclaim native arrays immediately on success or failure.
+
+
+def _ric_grid_bid(manifest,ci,pi,integer_bid):
+    """Keep the scalar round8 sign when a mathematically zero bid cancels."""
+    answer=integer_bid/100
+    zero=integer_bid==0
+    if np.any(zero):
+        c,p=manifest.call_values,manifest.put_values
+        cidx,pidx=ci[zero],pi[zero]
+        raw=((c['buy_bid'][cidx]-c['sell_ask'][cidx])+p['buy_bid'][pidx])-p['sell_ask'][pidx]
+        answer[zero]=np.copysign(0.0,raw)
+    return answer
+
+
+def _ric_cent_grid(c,p,spot,minimum,fee,budget,percent):
+    """Conservative proved domain; all other inputs use the exact float lane.
+
+    Bounds keep all normal quote/width operations below _ric_round8's5e-9 half-step
+    and all integer-cent ceil/floor residual errors below the1e-8 correction.
+    """
+    if percent is not None or spot>2048 or not minimum.is_integer() or minimum>16 or fee>100:
+        return None
+    fee_c=round(fee*100)
+    if fee_c/100!=fee:return None
+    budget_c=None
+    if budget is not None:
+        if budget>1000000:return None
+        budget_c=round(budget*100)
+        if budget_c/100!=budget:return None
+    output={}
+    for label,values in (('call',c),('put',p)):
+        grid={}
+        for key in ('buy_bid','buy_ask','sell_bid','sell_ask','buy_strike','sell_strike'):
+            numbers=values[key]
+            limit=8192 if key.endswith('strike') else 4096
+            if np.any(np.abs(numbers)>limit):return None
+            integers=np.rint(numbers*100).astype(np.int64)
+            if not np.array_equal(integers/100,numbers):return None
+            grid[key]=integers
+        widths=np.abs(grid['buy_strike']-grid['sell_strike'])
+        if not np.array_equal(widths/100,values['width']):return None
+        grid['width']=widths;output[label]=grid
+    return dict(**output,fee_c=fee_c,budget_c=budget_c,ratio=int(minimum))
+
+
+def _ric_price_grid(manifest,ci,pi,fields):
+    grid=manifest.grid;c,p=grid['call'],grid['put'];fee_c=grid['fee_c'];r=grid['ratio']
+    b=c['buy_bid'][ci]-c['sell_ask'][ci]+p['buy_bid'][pi]-p['sell_ask'][pi]
+    a=c['buy_ask'][ci]-c['sell_bid'][ci]+p['buy_ask'][pi]-p['sell_bid'][pi]
+    width=np.minimum(c['width'][ci],p['width'][pi])
+    lower=np.maximum(1,(b+a+1)//2)
+    if manifest.mode=='SMART FILL':lower=np.maximum(lower,(97*a+99)//100)
+    upper=np.minimum(a,(100*width-(1+r)*fee_c)//(100*(1+r)))
+    if grid['budget_c'] is not None:upper=np.minimum(upper,(grid['budget_c']-fee_c)//100)
+    cents=np.minimum(upper,np.maximum(lower,(13*b+27*a+39)//40))
+    keep=(manifest.call_values['market_valid'][ci]&manifest.put_values['market_valid'][pi]
+          &(b+a>=0)&(a>0)&(lower<=upper)&(cents>0))
+    ci,pi,n=ci[keep],pi[keep],cents[keep]
+    cost_c=100*n+fee_c
+    down_c=100*(p['width'][pi]-n)-fee_c
+    up_c=100*(c['width'][ci]-n)-fee_c
+    good=np.minimum(down_c,up_c)>=r*cost_c
+    ci,pi,n=ci[good],pi[good],n[good]
+    core={'cost':cost_c[good]/100,'downside_profit':down_c[good]/100,'upside_profit':up_c[good]/100}
+    core['max_profit']=np.minimum(core['downside_profit'],core['upside_profit'])
+    quote=(_ric_grid_bid(manifest,ci,pi,b[keep][good]),a[keep][good]/100,(b[keep][good]+a[keep][good])/200)
+    values=ric_batch_values(manifest,ci,pi,n,fields=fields,_quotes=quote,_core=core)
+    return ci,pi,n.astype(np.uint32),values
+
+
+def _ric_batch_cost_cap(manifest, ci, pi):
+    cap=np.full(len(ci),math.inf if manifest.budget is None else manifest.budget)
+    if manifest.max_breakeven_move_pct is not None:
+        cap=np.minimum(cap,np.minimum(manifest.call_values['be_cap'][ci],manifest.put_values['be_cap'][pi]))
+    return cap
+
+
+def _ric_price_batch(manifest, ci, pi, fields=None):
+    if manifest.grid is not None:return _ric_price_grid(manifest,ci,pi,fields)
+    c,p=manifest.call_values,manifest.put_values
+    bid=_ric_round8(((c['buy_bid'][ci]-c['sell_ask'][ci])+p['buy_bid'][pi])-p['sell_ask'][pi])
+    ask=_ric_round8(((c['buy_ask'][ci]-c['sell_bid'][ci])+p['buy_ask'][pi])-p['sell_bid'][pi])
+    mid=_ric_round8((bid+ask)/2)
+    width=np.minimum(c['width'][ci],p['width'][pi])
+    cap=_ric_batch_cost_cap(manifest,ci,pi)
+    # Exact arithmetic order of ric_limit_bounds -> vertical_limit_bounds.
+    adjusted_width=width-(1+manifest.minimum)*manifest.fee/100
+    adjusted_budget=cap-manifest.fee
+    lower=np.maximum(.01,mid)
+    if manifest.mode=='SMART FILL': lower=np.maximum(lower,.97*ask)
+    upper=np.minimum(ask,adjusted_width/(1+manifest.minimum))
+    upper=np.minimum(upper,adjusted_budget/100)
+    with np.errstate(invalid='ignore',over='ignore'):
+        lower_cents=np.ceil(lower*100-1e-8)
+        upper_cents=np.floor(upper*100+1e-8)
+        preferred=np.ceil((mid+.35*(ask-mid))*100-1e-8)
+        cents=np.minimum(upper_cents,np.maximum(lower_cents,preferred))
+    keep=(c['market_valid'][ci]&p['market_valid'][pi]&np.isfinite(mid)&np.isfinite(ask)
+          &(mid>=0)&(ask>0)&(mid<=ask)&(adjusted_width>0)&(adjusted_budget>0)
+          &(lower_cents<=upper_cents)&np.isfinite(cents)&(cents>0))
+    ci,pi,cents=ci[keep],pi[keep],cents[keep]
+    if np.any(cents>=2**64):
+        raise RICBatchUnsupported('Cent limit requires arbitrary-precision scalar retention.')
+    cents=cents.astype(np.uint32 if not len(cents) or cents.max()<=np.iinfo(np.uint32).max else np.uint64)
+    core=ric_batch_values(manifest,ci,pi,cents,fields={'cost','downside_profit','upside_profit'})
+    profit=np.minimum(core['downside_profit'],core['upside_profit'])
+    good=(np.isfinite(core['cost'])&np.isfinite(core['downside_profit'])&np.isfinite(core['upside_profit'])
+          &(profit+1e-8>=manifest.minimum*core['cost']))
+    original_keep=np.flatnonzero(keep)[good]
+    ci,pi,cents=ci[good],pi[good],cents[good]
+    core={key:value[good] for key,value in core.items()};core['max_profit']=profit[good]
+    values=ric_batch_values(manifest,ci,pi,cents,fields=fields,
+                              _quotes=(bid[original_keep],ask[original_keep],mid[original_keep]),_core=core)
+    return ci,pi,cents,values
+
+
+def ric_batch_candidate(manifest, call_index, put_index, debit_cents):
+    call=manifest.call_pairs[int(call_index)]['prepared']
+    put=manifest.put_pairs[int(put_index)]['prepared']
+    cap=manifest.budget
+    if manifest.max_breakeven_move_pct is not None:
+        cap=min(manifest.call_pairs[int(call_index)]['breakeven_max_cost'],
+                manifest.put_pairs[int(put_index)]['breakeven_max_cost'],
+                cap if cap is not None else math.inf)
+    price=_price_prepared_ric(call,put,minimum=manifest.minimum,fee=manifest.fee,
+                                   max_cost=cap,pricing_mode=manifest.mode)
+    if price is None or int(round(price['debit']*100))!=int(debit_cents):
+        raise AssertionError('Vector descriptor disagrees with frozen canonical scalar price')
+    candidate=dict(symbol=manifest.symbol,spot_last=manifest.spot,expiry=manifest.expiry,
+                   year=manifest.expiry.year,call_put='RIC',option_root=manifest.root,
+                   pricing_mode=manifest.mode,**price)
+    candidate.update(call.buy_fields);candidate.update(call.sell_fields)
+    candidate.update(put.buy_fields);candidate.update(put.sell_fields)
+    candidate['id']='|'.join((manifest.symbol,manifest.expiry.isoformat(),'RIC',manifest.root,put.identity,call.identity))
+    return candidate
+
+
+def scan_ric_batches(*,symbol,spot_last,option_rows,batch_sink,pricing_mode='NORMAL',
+                 min_reward_risk=2,fee_per_spread=0,max_cost=None,target_breakeven=None,
+                 max_breakeven_move_pct=None,checkpoint=None,max_chunk=65536,scalar_fields=None,
+                 desktop_fast_fill=True,scan_stats=None):
+    """Opt-in exact typed joins; preserve every qualifier without row dictionaries."""
+    del desktop_fast_fill
+    if checkpoint is not None and not callable(checkpoint):
+        raise ValueError("Checkpoint must be callable.")
+    if type(max_chunk) is not int or not 1 <= max_chunk <= 65536:
+        raise ValueError("Typed join chunks must contain 1..65536 combinations.")
+    if not callable(batch_sink):
+        raise ValueError("Typed scanning requires a batch sink.")
+    checkpoint=checkpoint or (lambda:None)
+    ticker=str(symbol or '').strip().upper();spot=_number(spot_last,positive=True)
+    minimum=_minimum(min_reward_risk);fee=_fee(fee_per_spread)
+    target=None if target_breakeven is None else _number(target_breakeven,positive=True)
+    budget=None if max_cost is None else _number(max_cost,positive=True)
+    percent=_breakeven_move(max_breakeven_move_pct)
+    if not ticker or spot is None or (target_breakeven is not None and target is None) or (max_cost is not None and budget is None):
+        raise ValueError('Invalid canonical parameters')
+    if pricing_mode not in {'NORMAL','SMART FILL'}: raise ValueError('Invalid mode')
+    if spot>1000000 or minimum>1000000 or fee>1000000000:
+        raise RICBatchUnsupported('Magnitude requires the canonical scalar fallback.')
+    band=_breakeven_band(spot,percent) if percent is not None else None
+    groups,input_count=_ric_normalized_groups(option_rows,ticker,spot,checkpoint)
+    stats=scan_stats if scan_stats is not None else {}
+    stats.update(input_contracts=input_count,valid_contracts=sum(row is not None for g in groups.values() for row in g.values()),
+               option_classes=len(groups),call_wings=0,put_wings=0,possible_condors=0,market_combinations=0,
+               priced_condors=0,qualified_condors=0,pruned_combinations=0,batches=0,grid_classes=0,grid_qualified=0)
+    for (expiry,root),group in sorted(groups.items()):
+        checkpoint()
+        calls=sorted((r for r in group.values() if r and r['call_put']=='CALL'),key=lambda r:r['strike'])
+        puts=sorted((r for r in group.values() if r and r['call_put']=='PUT'),key=lambda r:r['strike'])
+        if any(row['strike']>1000000000 or max(row['bid'],row['ask'])>1000000 for row in calls+puts):
+            raise RICBatchUnsupported('Extreme contract values require the canonical scalar fallback.')
+        cp=_wing_pairs(calls,'CALL',breakeven_band=band,checkpoint=checkpoint);checkpoint()
+        pp=_wing_pairs(puts,'PUT',breakeven_band=band,checkpoint=checkpoint);checkpoint()
+        # This is exactly the leaf traversal order of the canonical midpoint tree.
+        if len(pp)>32:pp=sorted(pp,key=lambda p:p['mid'])
+        if (len({pair['prepared'].identity for pair in cp})!=len(cp)
+                or len({pair['prepared'].identity for pair in pp})!=len(pp)):
+            raise RICBatchUnsupported('Formatted strike identities require atomic scalar fallback.')
+        stats['possible_condors']+=math.comb(len(calls),2)*math.comb(len(puts),2)
+        stats['call_wings']+=len(cp);stats['put_wings']+=len(pp)
+        stats['market_combinations']+=len(cp)*len(pp)
+        if not cp or not pp:continue
+        c,p=_ric_pair_values(cp,minimum,fee),_ric_pair_values(pp,minimum,fee)
+        grid=_ric_cent_grid(c,p,spot,minimum,fee,budget,percent)
+        stats['grid_classes']+=grid is not None
+        manifest=RICBatchManifest(ticker,spot,expiry,root,pricing_mode,minimum,fee,target,budget,percent,tuple(cp),tuple(pp),c,p,grid)
+        cbatch=max(1,max_chunk//len(pp))
+        for ca in range(0,len(cp),cbatch):
+            cz=min(len(cp),ca+cbatch)
+            for pa in range(0,len(pp),max_chunk):
+                checkpoint();pz=min(len(pp),pa+max_chunk)
+                ci=np.arange(ca,cz,dtype=np.uint32 if len(cp)<=np.iinfo(np.uint32).max else np.uint64)
+                pi=np.arange(pa,pz,dtype=np.uint32 if len(pp)<=np.iinfo(np.uint32).max else np.uint64)
+                callcap=np.minimum(c['cap'][ci],math.inf if budget is None else budget/100-fee/100)
+                jointcap=np.minimum(callcap[:,None],p['cap'][pi][None,:])
+                eligible=c['mid'][ci,None]+p['mid'][pi][None,:]<=jointcap+1e-8
+                if pricing_mode=='SMART FILL':eligible&=.97*(c['ask'][ci,None]+p['ask'][pi][None,:])<=jointcap+1e-8
+                local_c,local_p=np.nonzero(eligible)
+                count=len(local_c);stats['priced_condors']+=count
+                if count:
+                    cc,pc,dc,values=_ric_price_batch(manifest,ci[local_c],pi[local_p],scalar_fields)
+                    if len(dc):
+                        arrays=[cc,pc,dc,*values.values()]
+                        for array in arrays:array.flags.writeable=False
+                        batch_sink(RICBatch(manifest,cc,pc,dc,values))
+                        stats['qualified_condors']+=len(dc);stats['batches']+=1
+                        if grid is not None:stats['grid_qualified']+=len(dc)
+                checkpoint()
+    stats['pruned_combinations']=stats['market_combinations']-stats['priced_condors']
+    return stats
+
+
+scan_ric_batches._ric_scalar_calculator = scan_ric_candidates
+scan_ric_candidates._ric_batch_calculator = scan_ric_batches

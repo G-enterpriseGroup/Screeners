@@ -8,6 +8,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import time
 import tempfile
@@ -90,6 +92,323 @@ def completed_continue(*args, **kwargs):
 def completed_reprice(*args, **kwargs):
     value = ui._reprice_cached_ric_scan(*args, **kwargs)
     return None if value is None else settled_result(value)
+
+
+class ScanBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.now, self.state, self.jobs, self.stores = [1000.0], {}, [], []
+        self.slots = threading.BoundedSemaphore(2)
+        self.timer = MagicMock(wraps=time)
+        self.timer.monotonic.side_effect = lambda: self.now[0]
+        self.patches = [patch.object(ui, "time", self.timer),
+                        patch.object(ui.st, "session_state", self.state),
+                        patch.object(ui, "_RIC_RANKING_SLOTS", self.slots),
+                        patch.object(ui, "_SCAN_RANK_SECONDS", 100000)]
+        for item in self.patches:
+            item.start()
+
+    def tearDown(self):
+        for job in self.jobs:
+            job.cancel()
+            job._finished.wait(3)
+        for store in self.stores:
+            store._directory.cleanup()
+        for item in reversed(self.patches):
+            item.stop()
+
+    def clock(self):
+        return ui._new_scan_clock()
+
+    def raw(self, count=1):
+        dates = [ui._minimum_expiry_date()+timedelta(days=index) for index in range(count)]
+        _, template = quoted_condor()
+        rows = [row | {"expiry":expiry,
+                       "osi":f"SPY{expiry:%y%m%d}{row['call_put'][0]}{round(row['strike']*1000):08d}"}
+                for expiry in dates for row in template]
+        raw = dict(symbol="SPY",name="Synthetic",source="E*TRADE",spot=100,rows=rows,
+                   scan_id=81234,loaded_at=time.time(),scan_complete=True,loaded_expirations=count,
+                   expirations=dates,errors=[],failed_expirations=[],next_expiry_index=count)
+        self.state.setdefault("_ric_chain_cache", {})["E*TRADE:SPY"] = raw
+        return raw
+
+    def retain(self, raw, clock, **kwargs):
+        store, annual, cap, pairs = ui._rank_cached_ric_chains(
+            raw,None,None,"NORMAL",2,2.6,scan_clock=clock,**kwargs)
+        job = raw["_ric_ranking_state"]["job"]
+        if store not in self.stores:
+            self.stores.append(store)
+        if job is not None and job not in self.jobs:
+            self.jobs.append(job)
+        return store, job
+
+    def test_clock_has_one_120_second_deadline_and_freezes_real_completion(self):
+        self.assertEqual(ui._RIC_SCAN_SECONDS,120)
+        clock = self.clock()
+        self.assertEqual(ui._scan_clock_snapshot(clock,now=1000)["elapsed"],0)
+        self.assertEqual(ui._scan_clock_snapshot(clock,now=1000)["remaining"],120)
+        ui._check_scan_clock(clock,now=1119.999)
+        with self.assertRaises(TimeoutError):
+            ui._check_scan_clock(clock,now=1120)
+        completed = self.clock()
+        ui._finish_scan_clock(completed,"complete",finished_at=1119)
+        snapshot = ui._scan_clock_snapshot(completed,now=1250)
+        self.assertEqual((snapshot["elapsed"],snapshot["remaining"],snapshot["status"]),(119,1,"complete"))
+        ui._finish_scan_clock(completed,"timed_out",finished_at=1250)
+        self.assertEqual(ui._scan_clock_snapshot(completed,now=2000),snapshot)
+
+    def test_explicit_submit_captures_clock_once_with_immutable_blank_scope(self):
+        self.state.update(ric_symbol_value="QQQ",ric_min_reward_risk="2",ric_fee_per_spread="2.6",
+                          ric_max_breakeven_move_pct="",ric_max_strike_distance_pct="",
+                          ric_target_breakeven="",ric_strike_distance_filter={})
+        with patch.object(ui,"_require_ric_access"):
+            ui._queue_ric_scan()
+            first = self.state["_ric_scan_pending"]
+            clock = first["scan_clock"]
+            self.assertIs(self.state["_ric_scan_clock"],clock)
+            self.now[0] = 1050
+            self.state["ric_max_breakeven_move_pct"] = "5"
+            self.assertEqual(first["breakeven"],"")
+            self.assertEqual(ui._scan_clock_snapshot(clock)["remaining"],70)
+            ui._queue_ric_scan()
+        self.assertIsNot(self.state["_ric_scan_pending"]["scan_clock"],clock)
+        self.assertEqual(ui._scan_clock_snapshot(self.state["_ric_scan_clock"])["remaining"],120)
+
+    def test_twenty_fifth_late_expiration_rolls_back_and_never_becomes_complete(self):
+        clock, raw = self.clock(), self.raw(25)
+        calls = []
+        def late(**kwargs):
+            calls.append(kwargs["option_rows"][0]["expiry"])
+            if len(calls) == 25:
+                self.now[0] = 1120
+                kwargs["progress"](0)
+            return scan_ric_candidates(**kwargs)
+        with patch.object(ui,"scan_ric_candidates",side_effect=late):
+            store, job = self.retain(raw,clock)
+            self.assertTrue(job._finished.wait(3))
+        self.assertEqual(job.snapshot()["status"],"timed_out")
+        self.assertEqual(store.ranked_expirations,24)
+        self.assertEqual(len(store),24)
+        self.assertTrue(all(row["expiry"] != raw["expirations"][-1] for row in store.iter_rows()))
+        self.assertEqual(ui._scan_clock_snapshot(clock)["status"],"timed_out")
+        with patch.object(ui,"scan_ric_candidates") as calculator:
+            with self.assertRaises(TimeoutError):
+                self.retain(raw,clock)
+            calculator.assert_not_called()
+
+    def test_worker_observes_deadline_without_ui_poll_and_releases_slot(self):
+        clock, raw = self.clock(), self.raw()
+        entered, release = threading.Event(), threading.Event()
+        def blocked(**kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Deadline test was not released")
+            kwargs["progress"](0)
+            return scan_ric_candidates(**kwargs)
+        with patch.object(ui,"scan_ric_candidates",side_effect=blocked):
+            store, job = self.retain(raw,clock)
+            try:
+                self.assertTrue(entered.wait(1))
+                self.now[0] = 1120
+            finally:
+                release.set()
+            self.assertTrue(job._finished.wait(3))
+        self.assertEqual(job.snapshot()["status"],"timed_out")
+        self.assertEqual((len(store),store.ranked_expirations),(0,0))
+        self.assertEqual(self.slots._value,2)
+
+    def test_completed_119_second_job_is_not_relabelled_by_late_ui_poll(self):
+        clock, raw = self.clock(), self.raw()
+        def finishes(**kwargs):
+            self.now[0] = 1119
+            return scan_ric_candidates(**kwargs)
+        with patch.object(ui,"scan_ric_candidates",side_effect=finishes):
+            store, job = self.retain(raw,clock)
+            self.assertTrue(job._finished.wait(3))
+        self.assertEqual(job.snapshot()["status"],"complete")
+        self.now[0] = 1125
+        snapshot = ui._scan_clock_snapshot(clock)
+        self.assertEqual((snapshot["elapsed"],snapshot["status"]),(119,"complete"))
+        repeated, same_job = self.retain(raw,clock)
+        self.assertIs(repeated,store)
+        self.assertIs(same_job,job)
+        self.assertEqual(len(store),1)
+        self.assertGreaterEqual(store.page()[0]["reward_risk"],2)
+
+    def test_each_late_source_phase_rejects_publication_without_starting_more_calls(self):
+        for phase in ("quote","expirations","chain"):
+            with self.subTest(phase=phase):
+                self.now[0] = 1000
+                self.state.clear()
+                clock, raw = self.clock(), self.raw()
+                self.state.clear()
+                broker = MagicMock(is_offline=False)
+                def quote(*args,**kwargs):
+                    if phase == "quote": self.now[0] = 1125
+                    return {"lastTrade":100}
+                def expirations(*args,**kwargs):
+                    if phase == "expirations": self.now[0] = 1125
+                    return raw["expirations"]
+                def chain(*args,**kwargs):
+                    if phase == "chain": self.now[0] = 1125
+                    return raw["rows"]
+                broker.get_quote.side_effect = quote
+                with (patch.object(ui,"options_market_client",return_value=broker),
+                      patch.object(ui,"_expirations",side_effect=expirations) as listed,
+                      patch.object(ui,"_chain",side_effect=chain) as chains,
+                      patch.object(ui,"quote_summary",return_value={"description":"Synthetic SPY"}),
+                      patch.object(ui,"record_lookup"),
+                      patch.object(ui.st,"progress",return_value=MagicMock())):
+                    with self.assertRaises(TimeoutError):
+                        ui._scan_all_years(broker,"SPY",lambda:None,scan_clock=clock)
+                self.assertEqual(broker.get_quote.call_count,1)
+                self.assertEqual(listed.call_count,int(phase != "quote"))
+                self.assertEqual(chains.call_count,int(phase == "chain"))
+                self.assertFalse(self.state.get("_ric_chain_cache",{}))
+                snapshot = ui._scan_clock_snapshot(clock)
+                self.assertEqual((snapshot["elapsed"],snapshot["remaining"],snapshot["status"]),(125,0,"timed_out"))
+
+    def test_expired_slot_wait_does_not_launch_a_worker_or_gain_another_budget(self):
+        clock, raw = self.clock(), self.raw()
+        self.slots.acquire(); self.slots.acquire()
+        try:
+            store, job = self.retain(raw,clock)
+            self.assertEqual(job.snapshot()["status"],"ready")
+            self.now[0] = 1120
+        finally:
+            self.slots.release(); self.slots.release()
+        with patch.object(ui,"scan_ric_candidates") as calculator:
+            with self.assertRaises(TimeoutError):
+                self.retain(raw,clock)
+            calculator.assert_not_called()
+        self.assertEqual((len(store),store.ranked_expirations),(0,0))
+        self.assertEqual(ui._scan_clock_snapshot(clock)["remaining"],0)
+
+    def test_inline_timer_is_local_bounded_and_uses_the_submitted_clock(self):
+        clock = self.clock()
+        page = ui._scan_clock_html(clock,now=1030)
+        for label in ("ELAPSED","TIME LEFT TO 2:00 LIMIT","performance.now()","setInterval(tick,250)"):
+            self.assertIn(label,page)
+        self.assertNotIn("fetch(",page)
+        self.assertNotIn("XMLHttpRequest",page)
+        self.assertNotIn("estimated",page.lower())
+        self.assertNotIn("http",page.lower())
+        with patch.object(ui.components,"html") as render:
+            ui._render_scan_clock(clock)
+        self.assertEqual(render.call_args.kwargs,{"height":34,"scrolling":False})
+
+    @unittest.skipUnless(shutil.which("node"),"Node is required to execute the actual timer script")
+    def test_actual_timer_script_counts_locally_and_freezes_completed_duration(self):
+        clock = self.clock()
+        running = ui._scan_clock_html(clock,now=1030).split("<script>",1)[1].split("</script>",1)[0]
+        ui._finish_scan_clock(clock,"complete",finished_at=1119)
+        frozen = ui._scan_clock_html(clock,now=1250).split("<script>",1)[1].split("</script>",1)[0]
+        program = r'''
+const vm=require('vm');
+function execute(source,delta){
+  let now=0,callback=null;const nodes={elapsed:{},left:{},state:{}};
+  const context={performance:{now:()=>now},document:{getElementById:id=>nodes[id]},
+    setInterval:(fn,delay)=>{if(delay!==250)throw Error('Unexpected timer interval');callback=fn;}};
+  vm.runInNewContext(source,context);now=delta;if(callback)callback();
+  return {elapsed:nodes.elapsed.textContent,left:nodes.left.textContent,state:nodes.state.textContent};
+}
+console.log(JSON.stringify([execute(RUNNING,0),execute(RUNNING,90000),execute(RUNNING,150000),execute(FROZEN,150000)]));
+'''.replace("RUNNING",json.dumps(running)).replace("FROZEN",json.dumps(frozen))
+        execution = subprocess.run([shutil.which("node"),"-e",program],capture_output=True,text=True,check=True,timeout=5)
+        first,expired,later,completed = json.loads(execution.stdout)
+        self.assertEqual((first["elapsed"],first["left"]),("00:30","01:30"))
+        self.assertEqual((expired["elapsed"],expired["left"]),("02:00","00:00"))
+        self.assertIn("INCOMPLETE",expired["state"])
+        self.assertEqual((later["elapsed"],later["left"]),("03:00","00:00"))
+        self.assertEqual((completed["elapsed"],completed["left"],completed["state"]),("01:59","00:01","COMPLETE"))
+
+    def test_continuation_and_recovery_reuse_the_same_request_deadline(self):
+        clock, raw = self.clock(), self.raw()
+        memory = {}
+        self.state["_ric_memory"] = memory
+        store, job = self.retain(raw,clock,start=False)
+        scan = result(2.6) | {"symbol":"SPY","raw_scan_id":raw["scan_id"],"target":None,
+                              "ranking_job":job,"ranking_status":"ready","ranked_expirations":0,
+                              "scan_complete":False,"scan_clock":clock,"loaded_at":raw["loaded_at"]}
+        self.state["ric_scan_result"] = scan
+        ui._remember_scan_snapshot()
+        self.state.clear()
+        with patch.object(ui,"_scan_memory",return_value=memory):
+            ui._restore_scan_memory("synthetic-deadline-recovery")
+        recovered = self.state["ric_scan_result"]
+        self.assertIs(recovered["scan_clock"],clock)
+        self.now[0] = 1050
+        with (patch.object(ui,"_new_scan_clock",side_effect=AssertionError("Continuation renewed its budget")),
+              patch.object(ui,"_scan_all_years") as source):
+            continued = ui._continue_ric_scan(recovered,MagicMock(is_offline=False),lambda:None,start=False)
+        source.assert_not_called()
+        self.assertIs(continued["scan_clock"],clock)
+        self.assertEqual(ui._scan_clock_snapshot(clock)["remaining"],70)
+        self.assertEqual(raw["loaded_at"],continued["loaded_at"])
+
+    def test_actual_renderer_timeout_is_incomplete_without_false_zero_or_exports(self):
+        self.patches[1].stop()  # AppTest supplies its actual Streamlit session state.
+        fixture = SubmittedScanRecoveryTests()
+        with fixture.app(None,initial="") as (app,events):
+            entered, release = threading.Event(), threading.Event()
+            app.session_state["fixture_worker_entered"] = entered
+            app.session_state["fixture_worker_release"] = release
+            app.text_input(key="ric_max_breakeven_move_pct").set_value("5")
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            job = app.session_state["ric_scan_result"]["ranking_job"]
+            try:
+                self.assertTrue(entered.wait(2))
+                self.now[0] = 1120
+            finally:
+                release.set()
+                self.assertTrue(job._finished.wait(3))
+            app.run()
+            messages = " ".join(element.value for group in (app.error,app.warning,app.info,app.caption) for element in group)
+            self.assertIn("2:00",messages)
+            self.assertIn("INCOMPLETE",messages.upper())
+            self.assertNotIn("No reverse iron condors met",messages)
+            self.assertFalse(any("EXPORT CSV" in element.label for element in app.get("download_button")))
+            self.assertFalse(app.session_state["ric_scan_result"]["scan_complete"])
+            self.assertFalse(any(json.loads(line)["event"] in {"preview","place"} for line in events.read_text().splitlines()))
+
+    def test_only_explicit_retry_gets_a_new_budget_for_the_same_source_and_policy(self):
+        clock, raw = self.clock(), self.raw()
+        def expired(**kwargs):
+            self.now[0] = 1120
+            kwargs["progress"](0)
+            return scan_ric_candidates(**kwargs)
+        with patch.object(ui,"scan_ric_candidates",side_effect=expired):
+            _, first = self.retain(raw,clock)
+            self.assertTrue(first._finished.wait(3))
+        self.assertEqual(first.snapshot()["status"],"timed_out")
+        self.now[0] = 1121
+        retry_clock = self.clock()
+        store, retried = self.retain(raw,retry_clock,restart=True,new_scan=True)
+        self.assertTrue(retried._finished.wait(3))
+        self.assertIsNot(retried,first)
+        self.assertEqual(retried.snapshot()["status"],"complete")
+        self.assertEqual(ui._scan_clock_snapshot(clock)["status"],"timed_out")
+        self.assertEqual(ui._scan_clock_snapshot(retry_clock)["status"],"complete")
+        self.assertEqual(len(store),1)
+
+    def test_resumed_batch_timeout_records_its_actual_finish_time(self):
+        clock, raw = self.clock(), self.raw(2)
+        calls = []
+        def timed(**kwargs):
+            calls.append(1)
+            self.now[0] = 1001 if len(calls) == 1 else 1120
+            kwargs["progress"](0)
+            return scan_ric_candidates(**kwargs)
+        with patch.object(ui,"_SCAN_RANK_SECONDS",0),patch.object(ui,"scan_ric_candidates",side_effect=timed):
+            store, job = self.retain(raw,clock)
+            self.assertTrue(job._finished.wait(3))
+            self.assertEqual(job.snapshot()["status"],"yielded")
+            self.now[0] = 1119
+            _, resumed = self.retain(raw,clock)
+            self.assertIs(resumed,job)
+            self.assertTrue(job._finished.wait(3))
+        self.assertEqual(job.snapshot()["status"],"timed_out")
+        self.assertEqual(job.snapshot()["finished_at"],1120)
+        self.assertEqual(store.ranked_expirations,1)
 
 
 class LocalAccessCompatibilityTests(unittest.TestCase):
