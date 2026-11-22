@@ -163,6 +163,12 @@ def main():
         assert any(value.label == 'Ticker' for value in app.text_input)
         app.text_input(key='ric_symbol_value').set_value('SPY')
         next(button for button in app.button if button.label == 'SCAN ALL YEARS').click().run()
+        import time
+        deadline = time.monotonic() + 10
+        while (not app.exception and not app.session_state['ric_scan_result']['scan_complete']
+               and time.monotonic() < deadline):
+            time.sleep(.02)
+            app.run()
         assert not app.exception, [value.message for value in app.exception]
         result = app.session_state['ric_scan_result']
         assert result['scan_complete'] and result['loaded_expirations'] == 4

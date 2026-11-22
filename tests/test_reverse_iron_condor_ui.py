@@ -1,5 +1,6 @@
 """Independent R.I.C. interaction, four-leg links and reviewed-order regressions."""
 from copy import deepcopy
+from collections import Counter
 from contextlib import contextmanager
 import csv
 from datetime import date, timedelta
@@ -10,6 +11,7 @@ from pathlib import Path
 import sys
 import time
 import tempfile
+import threading
 from types import ModuleType
 import unittest
 from unittest.mock import MagicMock, patch
@@ -58,6 +60,36 @@ def result(fee=0):
     return {"pricing_policy": RIC_PRICING_POLICY, "loaded_at": time.time(),
             "source": "E*TRADE", "max_cost": None, "min_reward_risk": 2,
             "pricing_mode": "NORMAL", "fee_per_spread": fee}
+
+
+def completed_rank(*args, **kwargs):
+    """Existing financial assertions await the newly asynchronous calculation."""
+    kwargs.setdefault("restart", True)
+    for _ in range(100):
+        value = ui._rank_cached_ric_chains(*args, **kwargs)
+        job = args[0].get("_ric_ranking_state", {}).get("job")
+        if job is None or job.snapshot()["status"] == "complete":
+            return value
+        job._finished.wait(3)
+        kwargs["restart"] = False
+    raise AssertionError("Ranking did not complete")
+
+
+def settled_result(value, client=None):
+    job = value.get("ranking_job")
+    if isinstance(job, ui._RICRankingJob):
+        job._finished.wait(3)
+        value = ui._continue_ric_scan(value,client,lambda:None,start=False)
+    return value
+
+
+def completed_continue(*args, **kwargs):
+    return settled_result(ui._continue_ric_scan(*args, **kwargs),args[1])
+
+
+def completed_reprice(*args, **kwargs):
+    value = ui._reprice_cached_ric_scan(*args, **kwargs)
+    return None if value is None else settled_result(value)
 
 
 class LocalAccessCompatibilityTests(unittest.TestCase):
@@ -544,8 +576,8 @@ class AcquisitionBeforeRankingTests(unittest.TestCase):
             with patch.object(ui,"scan_ric_candidates") as calculator:
                 for scope,potential in ((None,36),(10,4)):
                     with self.subTest(scope=scope):
-                        first,annual,cap,count = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,scope)
-                        repeated,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,scope)
+                        first,annual,cap,count = completed_rank(raw,None,None,"NORMAL",2,10,scope)
+                        repeated,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,10,scope)
                         self.assertIs(first,repeated)
                         self.assertEqual((len(first),first.ranked_expirations),(0,0))
                         self.assertEqual(annual,set())
@@ -567,9 +599,9 @@ class AcquisitionBeforeRankingTests(unittest.TestCase):
                     return added
                 with patch.object(ui.RICResultStore,"add_expiration",new=slow_first):
                     raw = ui._scan_all_years(broker,"SPY",lambda:None)
-                    empty,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,scope)
+                    empty,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,10,scope)
                     self.assertEqual(empty.ranked_expirations,0)
-                    advanced = ui._continue_ric_scan(self.scan_result(raw,scope),broker,lambda:None)
+                    advanced = completed_continue(self.scan_result(raw,scope),broker,lambda:None)
                     self.assertEqual(events[:6],[("chain",expiry) for expiry in expiries])
                     self.assertEqual(events[6],("rank",expiries[0]))
                     self.assertTrue(advanced["chains_complete"])
@@ -577,7 +609,7 @@ class AcquisitionBeforeRankingTests(unittest.TestCase):
                     self.assertEqual(advanced["ranked_expirations"],1)
                     self.assertEqual(clock[0],1301)
                     with patch.object(ui,"_scan_all_years") as new_source:
-                        finished = ui._continue_ric_scan(advanced,broker,lambda:None)
+                        finished = completed_continue(advanced,broker,lambda:None)
                     new_source.assert_not_called()
                 self.assertTrue(finished["scan_complete"])
                 self.assertEqual(finished["ranked_expirations"],len(expiries))
@@ -607,7 +639,7 @@ class AcquisitionBeforeRankingTests(unittest.TestCase):
                 with (patch.object(ui,"_scan_all_years") as source,
                       patch.object(ui,"scan_ric_candidates") as calculator):
                     with self.assertRaisesRegex(ValueError,"QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED"):
-                        ui._continue_ric_scan(scan,broker,lambda:None)
+                        completed_continue(scan,broker,lambda:None)
                 source.assert_not_called()
                 calculator.assert_not_called()
                 self.assertEqual(len(events),4)
@@ -619,7 +651,7 @@ class AcquisitionBeforeRankingTests(unittest.TestCase):
             self.assertFalse(raw["scan_complete"])
             self.assertTrue(raw["stopped_on_errors"])
             with patch.object(ui,"scan_ric_candidates") as calculator:
-                store,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10)
+                store,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,10)
             calculator.assert_not_called()
             self.assertEqual(store.ranked_expirations,0)
             completed_source = ui._scan_all_years(broker,"SPY",lambda:None)
@@ -627,13 +659,13 @@ class AcquisitionBeforeRankingTests(unittest.TestCase):
             self.assertEqual(completed_source["loaded_expirations"],4)
             self.assertEqual(completed_source["failed_expirations"],expiries[1:3])
             self.assertTrue(any("synthetic source failure" in error for error in completed_source["errors"]))
-            failed = ui._continue_ric_scan(self.scan_result(completed_source),broker,lambda:None)
+            failed = completed_continue(self.scan_result(completed_source),broker,lambda:None)
             self.assertEqual(failed["failed_expirations"],expiries[1:3])
             self.assertEqual(failed["errors"],completed_source["errors"])
             clock[0]=1300
             with patch.object(ui,"_scan_all_years") as source:
                 with self.assertRaisesRegex(ValueError,"QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED"):
-                    ui._continue_ric_scan(failed,broker,lambda:None)
+                    completed_continue(failed,broker,lambda:None)
             source.assert_not_called()
 
     def test_order_review_keeps_300_second_guard_before_and_during_requote(self):
@@ -703,7 +735,7 @@ class StrikeDistanceScopeTests(unittest.TestCase):
             return [],set()
         with (patch.object(ui.st,"progress",return_value=MagicMock()),
               patch.object(ui,"scan_ric_candidates",side_effect=calculator)):
-            store, _, _, potential = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,1)
+            store, _, _, potential = completed_rank(raw,None,None,"NORMAL",2,10,1)
         self.assertEqual(len(received),1)
         self.assertEqual(len(received[0]),6)
         self.assertTrue(all(99<=row["strike"]<=101 for row in received[0]))
@@ -716,11 +748,11 @@ class StrikeDistanceScopeTests(unittest.TestCase):
         candidate, rows = quoted_condor(fee=10)
         raw = self.raw(rows)
         with patch.object(ui.st,"progress",return_value=MagicMock()):
-            unrestricted, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10)
-            same, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,None)
-            scoped, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,10)
-            repeated, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,10)
-            narrower, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,9)
+            unrestricted, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,10)
+            same, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,10,None)
+            scoped, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,10,10)
+            repeated, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,10,10)
+            narrower, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,10,9)
         self.assertIs(unrestricted,same)
         self.assertIsNot(unrestricted,scoped)
         self.assertIs(scoped,repeated)
@@ -738,8 +770,8 @@ class StrikeDistanceScopeTests(unittest.TestCase):
         with (patch.object(ui.st,"session_state",state),
               patch.object(ui.st,"progress",return_value=MagicMock()),
               patch.object(ui,"_scan_all_years") as market_calls):
-            continued = ui._continue_ric_scan(scan,MagicMock(is_offline=False),lambda:None)
-            repriced = ui._reprice_cached_ric_scan(continued,"SMART FILL")
+            continued = completed_continue(scan,MagicMock(is_offline=False),lambda:None)
+            repriced = completed_reprice(continued,"SMART FILL")
         market_calls.assert_not_called()
         for snapshot in (continued,repriced):
             self.assertEqual(snapshot["max_strike_distance_pct"],10)
@@ -761,7 +793,7 @@ class StrikeDistanceScopeTests(unittest.TestCase):
         self.assertEqual(unlimited,legacy)
         self.assertNotIn("Max Strike Distance From Scan Spot (%)",unlimited)
         with patch.object(ui.st,"progress",return_value=MagicMock()):
-            store, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,10)
+            store, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,10,10)
         scoped_csv = ui._qualified_store_csv(store,**options,max_strike_distance_pct=10)
         record = list(csv.DictReader(io.StringIO(scoped_csv)))[0]
         self.assertEqual(record["Max Strike Distance From Scan Spot (%)"],"10")
@@ -817,12 +849,12 @@ class BreakevenMoveScopeTests(unittest.TestCase):
         with (patch.object(ui.st,"session_state",state),
               patch.object(ui.st,"progress",return_value=MagicMock()),
               patch.object(ui,"scan_ric_candidates",wraps=scan_ric_candidates) as calculator):
-            unrestricted,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6)
-            same,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,None)
-            bounded,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,3)
-            repeated,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,3)
+            unrestricted,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,2.6)
+            same,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,2.6,None,None)
+            bounded,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,2.6,None,3)
+            repeated,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,2.6,None,3)
             self.assertEqual(calculator.call_args.kwargs["max_breakeven_move_pct"],3)
-            tighter,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,2.98)
+            tighter,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,2.6,None,2.98)
             self.assertIs(unrestricted,same)
             self.assertIs(bounded,repeated)
             self.assertIsNot(unrestricted,bounded)
@@ -834,9 +866,10 @@ class BreakevenMoveScopeTests(unittest.TestCase):
             self.assertGreater(candidate["sell_strike"],103)
             scan = result(2.6) | {"symbol":"SPY","spot":100,"raw_scan_id":987,"target":None,
                                   "loaded_at":raw["loaded_at"],"scope":"original","max_breakeven_move_pct":3.2}
+            completed_rank(raw,None,None,"NORMAL",2,2.6,None,3.2)
             with patch.object(ui,"_scan_all_years") as source:
-                continued = ui._continue_ric_scan(scan,MagicMock(is_offline=False),lambda:None)
-                repriced = ui._reprice_cached_ric_scan(continued,"SMART FILL")
+                continued = completed_continue(scan,MagicMock(is_offline=False),lambda:None)
+                repriced = completed_reprice(continued,"SMART FILL")
             source.assert_not_called()
         self.assertEqual(rows,before)
         for snapshot in (continued,repriced):
@@ -859,7 +892,7 @@ class BreakevenMoveScopeTests(unittest.TestCase):
                                                   max_breakeven_move_pct=None),original)
         self.assertNotIn("Max Breakeven Move From Scan Spot (%)",original)
         with patch.object(ui.st,"progress",return_value=MagicMock()):
-            store,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,3)
+            store,_,_,_ = completed_rank(raw,None,None,"NORMAL",2,2.6,None,3)
         record = list(csv.DictReader(io.StringIO(ui._qualified_store_csv(
             store,**options,max_breakeven_move_pct=3))))[0]
         self.assertEqual(record["Max Breakeven Move From Scan Spot (%)"],"3")
@@ -1087,15 +1120,16 @@ class PortfolioAndIsolationTests(unittest.TestCase):
         c, rows = quoted_condor(fee=2.6)
         now = time.time()
         raw = {"symbol":"SPY", "spot":100, "rows":rows, "scan_id":123,
-               "loaded_at":now-40, "scan_complete":True,"loaded_expirations":1}
+               "loaded_at":now-40, "scan_complete":True,"loaded_expirations":1,
+               "errors":[],"failed_expirations":[],"next_expiry_index":1}
         state = {"_ric_chain_cache":{"E*TRADE:SPY":raw},
                  "_ric_column_filters":{"scope":"market-data", "filters":{"put_buy":{"min":94}}}}
         before = deepcopy(state["_ric_column_filters"])
         scan = result(2.6) | {"symbol":"SPY","raw_scan_id":123,"target":None,"scope":"old",
                               "loaded_at":raw["loaded_at"],"capacity_limited":False}
         with patch.object(ui.st,"session_state",state), patch.object(ui.st,"progress",return_value=MagicMock()):
-            normal, _, _, _ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6)
-            repriced = ui._reprice_cached_ric_scan(scan,"SMART FILL")
+            normal, _, _, _ = completed_rank(raw,None,None,"NORMAL",2,2.6)
+            repriced = completed_reprice(scan,"SMART FILL")
         self.assertEqual(len(normal),1)
         self.assertEqual(len(repriced["candidates"]),1)
         self.assertIsNot(normal,repriced["candidates"])
@@ -1116,6 +1150,269 @@ class PortfolioAndIsolationTests(unittest.TestCase):
         self.assertIn('@finance_fragment\ndef _render_reverse_iron_condor_fragment', source)
 
 
+class RetainedRankingJobTests(unittest.TestCase):
+    def test_blocked_expiration_is_started_once_and_ui_polls_do_not_wait(self):
+        candidate, rows = quoted_condor()
+        expiry = rows[0]["expiry"]
+        raw = {"symbol":"SPY","spot":100,"rows":rows,"scan_id":4321,
+               "loaded_at":time.time(),"scan_complete":True,"loaded_expirations":1,
+               "expirations":[expiry],"errors":[],"failed_expirations":[],"next_expiry_index":1}
+        state = {}
+        entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+        calls, results = [], []
+        def blocked(**kwargs):
+            calls.append(kwargs)
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Test worker was not released")
+            return scan_ric_candidates(**kwargs)
+        def dispatch():
+            results.append(ui._rank_cached_ric_chains(raw,None,None,"NORMAL"))
+            returned.set()
+        with patch.object(ui.st,"session_state",state),patch.object(ui.st,"progress",return_value=MagicMock()),patch.object(ui,"scan_ric_candidates",side_effect=blocked):
+            caller = threading.Thread(target=dispatch)
+            caller.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(returned.wait(1),"The UI is blocked by the whole-expiration calculation")
+                for _ in range(12):
+                    store,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL")
+                    self.assertIs(store,results[0][0])
+                self.assertEqual(len(calls),1)
+            finally:
+                release.set()
+                caller.join(3)
+            deadline = time.monotonic()+3
+            while not results[0][0].ranked_expirations and time.monotonic()<deadline:
+                time.sleep(.01)
+            self.assertEqual(results[0][0].page(),[candidate])
+
+
+def retained_chain(expiry):
+    rows = []
+    for side, strikes in (('PUT',(90,92,94,96)),('CALL',(104,106,108,110))):
+        for strike in strikes:
+            last = (strike-87)/10 if side == 'PUT' else (113-strike)/10
+            rows.append(dict(expiry=expiry,call_put=side,strike=strike,last=last,
+                             bid=last-.02,ask=last+.02,open_interest=1000,volume=100,
+                             osi=f'SPY{expiry:%y%m%d}{side[0]}{strike*1000:08d}'))
+    return rows
+
+
+class RetainedRankingLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.state, self.jobs, self.stores = {}, [], []
+        self.slots = threading.BoundedSemaphore(2)
+        self.patches = [patch.object(ui.st,'session_state',self.state),
+                        patch.object(ui,'_RIC_RANKING_SLOTS',self.slots),
+                        patch.object(ui,'_SCAN_RANK_SECONDS',0)]
+        for item in self.patches:item.start()
+
+    def tearDown(self):
+        for job in self.jobs:job.cancel()
+        deadline = time.monotonic()+6
+        while self.slots._value != 2 and time.monotonic()<deadline:
+            time.sleep(.005)
+        for store in self.stores:store._directory.cleanup()
+        for item in reversed(self.patches):item.stop()
+
+    def raw(self,count=1,identity=8001):
+        dates = [ui._minimum_expiry_date()+timedelta(days=7*i) for i in range(count)]
+        raw = dict(symbol='SPY',name='Synthetic',source='E*TRADE',spot=100,
+                   rows=[row for expiry in dates for row in retained_chain(expiry)],scan_id=identity,
+                   loaded_at=time.time(),scan_complete=True,loaded_expirations=count,
+                   expirations=dates,errors=[],failed_expirations=[],next_expiry_index=count)
+        self.state.setdefault('_ric_chain_cache',{})['E*TRADE:SPY']=raw
+        return raw
+
+    def retain(self,raw,**kwargs):
+        result = ui._rank_cached_ric_chains(raw,None,None,'NORMAL',**kwargs)
+        job = raw['_ric_ranking_state']['job']
+        if job not in self.jobs:self.jobs.append(job)
+        if result[0] not in self.stores:self.stores.append(result[0])
+        return result,job
+
+    def finish(self,raw,timeout=8):
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            value,job=self.retain(raw)
+            state=job.snapshot()
+            if state['status']=='complete':return value,job
+            self.assertNotIn(state['status'],{'failed','cancelled'},state)
+            job._finished.wait(.05)
+        self.fail('Retained job did not complete')
+
+    def test_25_expiration_rows_and_annual_ids_equal_synchronous_canonical_scan(self):
+        raw=self.raw(25)
+        expected,annual=scan_ric_candidates(symbol='SPY',spot_last=100,option_rows=raw['rows'],
+                                            target_breakeven=None,max_cost=None,max_per_expiration=None)
+        calls=Counter()
+        def counted(**kwargs):
+            calls[kwargs['option_rows'][0]['expiry']]+=1
+            return scan_ric_candidates(**kwargs)
+        with patch.object(ui,'scan_ric_candidates',side_effect=counted):
+            (store,_,_,_),job=self.finish(raw)
+        actual={row['id']:row for row in store.iter_rows()}
+        self.assertTrue(actual)
+        self.assertEqual(set(actual),{row['id'] for row in expected})
+        for row in expected:
+            for field in ('expiry','put_buy_strike','put_sell_strike','buy_strike','sell_strike',
+                          'cost','max_loss','downside_profit','upside_profit','reward_risk',
+                          'lower_breakeven','breakeven','debit'):
+                self.assertEqual(actual[row['id']][field],row[field],(row['id'],field))
+        self.assertEqual(store.annual_ids,annual)
+        self.assertEqual(job.snapshot()['ranked'],25)
+        self.assertEqual(len(calls),25)
+        self.assertTrue(all(value==1 for value in calls.values()))
+
+    def test_worker_error_remains_failed_and_poll_does_not_retry(self):
+        raw=self.raw()
+        calls=[]
+        def fail(**kwargs):
+            calls.append(1)
+            raise ValueError('SYNTHETIC WORKER FAILURE')
+        with patch.object(ui,'scan_ric_candidates',side_effect=fail):
+            (_,_,_,_),job=self.retain(raw)
+            self.assertTrue(job._finished.wait(2))
+            self.assertEqual(job.snapshot()['status'],'failed')
+            self.assertIn('SYNTHETIC WORKER FAILURE',job.snapshot()['error'])
+            for _ in range(3):
+                with self.assertRaisesRegex(ValueError,'SYNTHETIC WORKER FAILURE'):
+                    self.retain(raw)
+            self.assertEqual(len(calls),1)
+
+    def test_cancelled_expiry_rolls_back_already_flushed_sql_rows(self):
+        raw=self.raw()
+        expected,_=scan_ric_candidates(symbol='SPY',spot_last=100,option_rows=raw['rows'],
+                                       target_breakeven=None,max_cost=None,max_per_expiration=None)
+        entered,release=threading.Event(),threading.Event()
+        def blocked(**kwargs):
+            for i in range(600):kwargs['candidate_sink'](expected[0]|{'id':f'rollback-{i}'})
+            entered.set()
+            if not release.wait(3):raise AssertionError('Worker not released')
+            kwargs['progress'](600)
+        with patch.object(ui,'scan_ric_candidates',side_effect=blocked):
+            (store,_,_,_),job=self.retain(raw)
+            try:
+                self.assertTrue(entered.wait(2))
+                job.cancel()
+            finally:release.set()
+            self.assertTrue(job._finished.wait(2))
+        self.assertEqual(job.snapshot()['status'],'cancelled')
+        self.assertEqual(len(store),0)
+        self.assertEqual(store.ranked_expirations,0)
+        self.assertEqual(store.annual_ids,set())
+        with store._connect() as db:self.assertEqual(db.execute('SELECT count(*) FROM spreads').fetchone()[0],0)
+
+    def test_two_slot_bound_never_launches_third_worker_until_release(self):
+        expiry=ui._minimum_expiry_date()
+        gates=[threading.Event() for _ in range(3)]
+        entered=[threading.Event() for _ in range(3)]
+        jobs=[]
+        for index in range(3):
+            store=ui.RICResultStore('SPY',100,None,None,'NORMAL')
+            self.stores.append(store)
+            def block(index=index,**kwargs):
+                entered[index].set()
+                if not gates[index].wait(3):raise AssertionError('Bound test worker not released')
+                return scan_ric_candidates(**kwargs)
+            job=ui._RICRankingJob(store,[(expiry,retained_chain(expiry))],expiry,block,1)
+            jobs.append(job);self.jobs.append(job)
+        try:
+            jobs[0].start();jobs[1].start()
+            self.assertTrue(entered[0].wait(2));self.assertTrue(entered[1].wait(2))
+            jobs[2].start()
+            self.assertFalse(entered[2].wait(.1))
+            self.assertEqual(self.slots._value,0)
+            gates[0].set();self.assertTrue(jobs[0]._finished.wait(2))
+            deadline=time.monotonic()+1
+            while self.slots._value<1 and time.monotonic()<deadline:time.sleep(.005)
+            jobs[2].start();self.assertTrue(entered[2].wait(2))
+            self.assertEqual(self.slots._value,0)
+        finally:
+            for gate in gates:gate.set()
+
+    def test_auto_off_manual_resume_survives_temporarily_busy_slots(self):
+        self.state['ric_auto_finish']=False
+        raw=self.raw(2)
+        (_,_,_,_),job=self.retain(raw)
+        self.assertTrue(job._finished.wait(2))
+        self.assertEqual(job.snapshot()['status'],'yielded')
+        deadline=time.monotonic()+1
+        while self.slots._value!=2 and time.monotonic()<deadline:time.sleep(.005)
+        self.assertTrue(self.slots.acquire(timeout=1));self.assertTrue(self.slots.acquire(timeout=1))
+        try:
+            self.retain(raw,start=True)
+            queued=job.snapshot()
+            result=dict(symbol='SPY',source='E*TRADE',raw_scan_id=raw['scan_id'],target=None,max_cost=None,
+                        pricing_mode='NORMAL',min_reward_risk=2,fee_per_spread=0,loaded_at=raw['loaded_at'],
+                        ranking_job=job,ranking_status=queued['status'],ranked_expirations=queued['ranked'],
+                        scan_complete=False)
+            self.assertTrue(ui._ric_job_needs_poll(result),'Manual resume was forgotten while both slots were busy')
+        finally:self.slots.release();self.slots.release()
+        with patch.object(ui,'_scan_all_years',side_effect=AssertionError('Research poll must not call broker')):
+            result=ui._continue_ric_scan(result,MagicMock(is_offline=False),lambda:None)
+            self.assertTrue(job._finished.wait(2))
+            result=ui._continue_ric_scan(result,MagicMock(is_offline=False),lambda:None)
+        self.assertTrue(result['scan_complete'])
+        self.assertEqual(result['ranked_expirations'],2)
+
+    def test_thread_start_failure_releases_slot_and_keeps_visible_error(self):
+        expiry=ui._minimum_expiry_date()
+        store=ui.RICResultStore('SPY',100,None,None,'NORMAL');self.stores.append(store)
+        job=ui._RICRankingJob(store,[(expiry,retained_chain(expiry))],expiry,scan_ric_candidates,1);self.jobs.append(job)
+        fake=MagicMock();fake.start.side_effect=RuntimeError('SYNTHETIC THREAD START FAILURE')
+        with patch.object(ui.threading,'Thread',return_value=fake):job.start()
+        self.assertEqual(job.snapshot()['status'],'failed')
+        self.assertIn('THREAD START FAILURE',job.snapshot()['error'])
+        self.assertEqual(self.slots._value,2)
+
+    def test_same_owner_concurrent_dispatch_creates_only_one_store_and_worker(self):
+        raw = self.raw()
+        self.state['_ric_memory'] = {}
+        barrier, entered, release = threading.Barrier(3), threading.Event(), threading.Event()
+        created, calculated, returned, errors = [], [], [], []
+        original, case = ui.RICResultStore, self
+        class SlowStore(original):
+            def __init__(self,*args,**kwargs):
+                created.append(1)
+                time.sleep(.05)
+                super().__init__(*args,**kwargs)
+                case.stores.append(self)
+        def calculator(**kwargs):
+            calculated.append(1)
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('Concurrent test worker was not released')
+            return scan_ric_candidates(**kwargs)
+        def dispatch():
+            try:
+                barrier.wait(2)
+                returned.append(ui._rank_cached_ric_chains(raw,None,None,'NORMAL')[0])
+            except Exception as exc:
+                errors.append(exc)
+        with patch.object(ui,'RICResultStore',SlowStore),patch.object(ui,'scan_ric_candidates',side_effect=calculator):
+            threads = [threading.Thread(target=dispatch) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            try:
+                barrier.wait(2)
+                for thread in threads:
+                    thread.join(2)
+                self.assertFalse(any(thread.is_alive() for thread in threads))
+                self.assertFalse(errors)
+                self.assertTrue(entered.wait(1))
+                self.assertEqual(len(created),1)
+                self.assertIs(returned[0],returned[1])
+                self.assertEqual(len(calculated),1)
+            finally:
+                release.set()
+                for job in raw.get('ranking_jobs',{}).values():
+                    self.jobs.append(job)
+                    job._finished.wait(2)
+
+
+
 class SubmittedScanRecoveryTests(unittest.TestCase):
     @contextmanager
     def app(self, stage, *, initial="5"):
@@ -1124,6 +1421,15 @@ class SubmittedScanRecoveryTests(unittest.TestCase):
         injected = '''
 from unittest.mock import patch
 original_source, original_rank = ric._scan_all_years, ric._rank_cached_ric_chains
+original_calculator = ric.scan_ric_candidates
+blocked, release = st.session_state.get('fixture_worker_entered'), st.session_state.get('fixture_worker_release')
+def calculator(*args,_original=original_calculator,_entered=blocked,_release=release,**kwargs):
+    record('calculator',expiry=str(kwargs['option_rows'][0]['expiry']) if kwargs['option_rows'] else None)
+    if _release is not None:
+        _entered.set()
+        if not _release.wait(5):
+            raise AssertionError('Test calculation was not released')
+    return _original(*args,**kwargs)
 def interrupt(stage):
     if st.session_state.get('fixture_interrupt') == stage and not st.session_state.get('fixture_interrupted'):
         st.session_state['fixture_interrupted'] = True
@@ -1157,7 +1463,7 @@ def rank(*args,**kwargs):
             fixture, events = directory / "app.py", directory / "events.jsonl"
             call = "    ric.render_reverse_iron_condor(SyntheticBroker(),lambda:None,vault_key='ric-synthetic-browser')"
             code = FIXTURE.replace("order,active=render_terminal_tab_bar", injected + "\norder,active=render_terminal_tab_bar")
-            code = code.replace(call, "    with patch.object(ric,'_scan_all_years',source), patch.object(ric,'_rank_cached_ric_chains',rank):\n    " + call)
+            code = code.replace(call, "    with patch.object(ric,'_scan_all_years',source), patch.object(ric,'_rank_cached_ric_chains',rank), patch.object(ric,'scan_ric_candidates',calculator):\n    " + call)
             fixture.write_text(code.replace("ric-synthetic-browser", directory.name))
             with (patch.dict(os.environ,{"RIC_BROWSER_ROOT":str(Path(__file__).resolve().parents[1]),"RIC_BROWSER_TEST_LOG":str(events)}),
                   patch("requests.sessions.Session.request",side_effect=AssertionError("Network disabled")),
@@ -1260,6 +1566,45 @@ def rank(*args,**kwargs):
             self.assertFalse(app.exception)
             self.assertEqual(app.session_state["ric_scan_result"]["max_breakeven_move_pct"],10)
             self.assertEqual(len(app.session_state["ric_scan_result"]["candidates"]),8)
+
+    def test_live_renderer_and_recovered_session_reattach_to_one_blocked_calculation(self):
+        from streamlit.testing.v1 import AppTest
+        with self.app(None) as (app,events):
+            entered, release = threading.Event(), threading.Event()
+            app.session_state["fixture_worker_entered"] = entered
+            app.session_state["fixture_worker_release"] = release
+            before = len([line for line in events.read_text().splitlines()
+                          if json.loads(line)["event"] == "calculator"])
+            app.text_input(key="ric_max_breakeven_move_pct").set_value("")
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            job = app.session_state["ric_scan_result"]["ranking_job"]
+            try:
+                self.assertTrue(entered.wait(1))
+                self.assertFalse(app.session_state["ric_scan_result"]["scan_complete"])
+                for _ in range(4):
+                    app.run()
+                    self.assertIs(app.session_state["ric_scan_result"]["ranking_job"],job)
+                recovered = AppTest.from_file(str(events.parent/"app.py"),default_timeout=30).run()
+                self.assertIs(recovered.session_state["ric_scan_result"]["ranking_job"],job)
+                self.assertEqual(len([line for line in events.read_text().splitlines()
+                                     if json.loads(line)["event"] == "calculator"]),before+1)
+                self.assertFalse(app.exception)
+                self.assertFalse(recovered.exception)
+            finally:
+                release.set()
+                job._finished.wait(3)
+            for _ in range(30):
+                recovered.run()
+                if recovered.session_state["ric_scan_result"]["scan_complete"]:
+                    break
+                time.sleep(.01)
+            result = recovered.session_state["ric_scan_result"]
+            self.assertTrue(result["scan_complete"])
+            self.assertIsNone(result["max_breakeven_move_pct"])
+            self.assertEqual(len(result["candidates"]),20)
+            self.assertTrue(all(row["reward_risk"] >= 2 for row in result["candidates"].iter_rows()))
+            self.assertFalse(any(json.loads(line)["event"] in {"preview","place"}
+                                 for line in events.read_text().splitlines()))
 
 
 if __name__ == "__main__":

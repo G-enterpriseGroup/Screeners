@@ -32,6 +32,7 @@ import math
 from pathlib import Path
 import re
 import secrets
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -1420,33 +1421,197 @@ def _scan_all_years(client, symbol: str, touch_session, *, refresh: bool = False
     return result
 
 
+_RIC_RANKING_SLOTS = threading.BoundedSemaphore(2)
+
+
+class _RICRankingCancelled(Exception):
+    pass
+
+
+class _RICRankingJob:
+    """Retained pure calculation; Streamlit reruns only read its small snapshot."""
+    def __init__(self, store, groups, cutoff, calculator, potential_pairs):
+        self.store, self.groups, self.cutoff = store, groups, cutoff
+        self.calculator, self.potential_pairs = calculator, potential_pairs
+        self._lock, self._cancel, self._pause = threading.Lock(), threading.Event(), threading.Event()
+        self._finished = threading.Event()
+        self._status, self._error, self._index = "ready", "", 0
+        self._ranked, self._annual_ids = store.ranked_expirations, store.annual_ids
+        self._progress = (0, None, 0)
+
+    def snapshot(self):
+        with self._lock:
+            return {"status":self._status,"error":self._error,"ranked":self._ranked,
+                    "annual_ids":set(self._annual_ids),"progress":self._progress,"total":len(self.groups),
+                    "cancel_requested":self._cancel.is_set()}
+
+    def cancel(self):
+        self._cancel.set()
+        with self._lock:
+            if self._status != "running" and self._status != "complete":
+                self._status = "cancelled"
+                self._finished.set()
+
+    def pause_after_expiration(self, paused):
+        self._pause.set() if paused else self._pause.clear()
+
+    def start(self):
+        with self._lock:
+            if self._status not in {"ready","yielded"} or self._cancel.is_set():
+                return
+            if not _RIC_RANKING_SLOTS.acquire(blocking=False):
+                self._status = "ready"
+                return  # A later UI poll retries; never accumulate queued threads.
+            self._status = "running"
+            self._finished.clear()
+        try:
+            threading.Thread(target=self._run, name="ric-ranking", daemon=True).start()
+        except Exception as exc:
+            with self._lock:
+                self._status, self._error = "failed", str(exc)
+            self._finished.set()
+            _RIC_RANKING_SLOTS.release()
+
+    def _run(self):
+        started = time.monotonic()
+        try:
+            while self._index < len(self.groups):
+                index = self._index
+                expiry, rows = self.groups[index]
+                def update(checked):
+                    if self._cancel.is_set():
+                        raise _RICRankingCancelled()
+                    with self._lock:
+                        self._progress = (index, expiry, checked)
+                update(0)
+                added = self.store.add_expiration(expiry, rows, self.calculator, update)
+                if self._cancel.is_set():
+                    raise _RICRankingCancelled()
+                with self._lock:
+                    self._index = index + 1
+                    self._ranked, self._annual_ids = self.store.ranked_expirations, self.store.annual_ids
+                if self._pause.is_set() or (added and time.monotonic() - started >= _SCAN_RANK_SECONDS):
+                    break
+            with self._lock:
+                self._status = "complete" if self._index == len(self.groups) else "yielded"
+        except _RICRankingCancelled:
+            with self._lock:
+                self._status = "cancelled"
+        except Exception as exc:
+            with self._lock:
+                self._status, self._error = "failed", str(exc)
+        finally:
+            self._finished.set()
+            _RIC_RANKING_SLOTS.release()
+
+
+def _ric_job_owner():
+    memory = st.session_state.get("_ric_memory")
+    return memory if isinstance(memory, dict) else st.session_state
+
+
+def _serialize_ric_ranking(calculate):
+    @wraps(calculate)
+    def coordinated(*args, **kwargs):
+        owner = _ric_job_owner()
+        with owner.setdefault("_ric_ranking_lock", threading.RLock()):
+            return calculate(*args, **kwargs)
+    return coordinated
+
+
+def _ric_result_ranking(raw, store):
+    state = raw.get("_ric_ranking_state")
+    if isinstance(state, dict) and isinstance(state.get("job"), _RICRankingJob):
+        return {**state["job"].snapshot(),"job":state["job"]}
+    return state if isinstance(state, dict) else {"ranked":store.ranked_expirations,
+                                                 "status":"complete","job":None}
+
+
+def _ric_job_needs_poll(result):
+    job = result.get("ranking_job")
+    if not isinstance(job, _RICRankingJob):
+        return False
+    state = job.snapshot()
+    return (state["status"] in {"ready","running"}
+            or state["status"] != result.get("ranking_status")
+            or state["ranked"] != result.get("ranked_expirations"))
+
+
+@_serialize_ric_ranking
 def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
                                  max_cost: float | None, mode: str,
                                  min_reward_risk: float = _DEFAULT_MIN_REWARD_RISK,
                                  fee_per_spread: float = 0,
                                  max_strike_distance_pct: float | None = None,
                                  max_breakeven_move_pct: float | None = None,
+                                 *, restart: bool = False, start: bool = True, new_scan: bool = False,
                                  ) -> tuple[RICResultStore, set[str], None, int]:
     """Stream every qualifying pair to disk and reuse completed expirations."""
     max_strike_distance_pct = _entered_strike_distance(max_strike_distance_pct)
     max_breakeven_move_pct = _entered_breakeven_move(max_breakeven_move_pct)
-    scoped_rows = _strike_scoped_rows(raw["rows"], raw["spot"], max_strike_distance_pct)
-    _, potential_pairs = _safe_ric_pair_limit(scoped_rows)
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
     policy = (target, max_cost, mode, min_reward_risk, fee_per_spread, RIC_PRICING_POLICY,
               max_strike_distance_pct, max_breakeven_move_pct)
+    cutoff = _minimum_expiry_date()
+    identity = (raw["scan_id"], policy, cutoff)
+    owner = _ric_job_owner()
+    active = owner.get("_ric_ranking_owner") or {}
+    if active.get("job") and active["job"].cutoff != cutoff and not new_scan:
+        active["job"].cancel()
+        raise ValueError("EXPIRY CUTOFF CHANGED // Press SCAN ALL YEARS again.")
+    if active.get("identity") != identity:
+        if active and not restart:
+            if active.get("job") and active["job"].cutoff != cutoff:
+                active["job"].cancel()
+                raise ValueError("EXPIRY CUTOFF CHANGED // Press SCAN ALL YEARS again.")
+            raise ValueError("CALCULATION SUPERSEDED // Press SCAN ALL YEARS to start this scan again.")
+        if active.get("job"):
+            active["job"].cancel()
+        active = {"identity":identity,"job":None}
+        owner["_ric_ranking_owner"] = active
+    jobs = raw.setdefault("ranking_jobs", {})
+    job = jobs.get(policy)
+    if isinstance(job, _RICRankingJob):
+        state = job.snapshot()
+        if job.cutoff != cutoff and not new_scan:
+            job.cancel()
+            raise ValueError("EXPIRY CUTOFF CHANGED // Press SCAN ALL YEARS again.")
+        if job.cutoff != cutoff or (restart and (state["status"] in {"failed","cancelled"}
+                                                or state["cancel_requested"])):
+            job.cancel()
+            if state["status"] == "running" or job.cutoff != cutoff:
+                policies.pop(policy, None)
+            jobs.pop(policy, None)
+            job = None
+        elif state["status"] in {"failed","cancelled"}:
+            raise ValueError("CALCULATION " + state["status"].upper() + " // " + (state["error"] or "Press SCAN ALL YEARS again."))
+    if isinstance(job, _RICRankingJob):
+        active["job"] = job
+        job.pause_after_expiration(not st.session_state.get("ric_auto_finish", True))
+        if start:
+            job.start()
+        state = job.snapshot()
+        raw["_ric_ranking_state"] = {**state,"job":job}
+        return job.store, state["annual_ids"], None, job.potential_pairs
+    scoped_rows = _strike_scoped_rows(raw["rows"], raw["spot"], max_strike_distance_pct)
+    _, potential_pairs = _safe_ric_pair_limit(scoped_rows)
     store = policies.pop(policy, None)
     if not isinstance(store, RICResultStore):
         store = RICResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
                                     min_reward_risk=min_reward_risk, fee_per_spread=fee_per_spread)
-    store.prune_before(_minimum_expiry_date())
+    store.prune_before(cutoff)
     policies[policy] = store
     while len(policies) > 2:
-        policies.pop(next(iter(policies)))
+        old = next(iter(policies))
+        policies.pop(old)
+        old_job = jobs.pop(old, None)
+        if old_job:
+            old_job.cancel()
     # A whole expiry can outlast source freshness. Finish acquisition first so
     # long calculations can use the existing ranking-only continuation path.
     if not raw["scan_complete"]:
+        raw["_ric_ranking_state"] = {"ranked":store.ranked_expirations,"status":"acquiring","job":None}
         return store, store.annual_ids, None, potential_pairs
     groups: dict[date, list[dict[str, Any]]] = {}
     for row in raw["rows"]:
@@ -1454,27 +1619,23 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
             groups.setdefault(row["expiry"], [])
     for row in scoped_rows:
         if row["expiry"] in groups:
-            groups[row["expiry"]].append(row)
-    progress = st.progress(0.0, text="RANKING FOUR-LEG REVERSE IRON CONDORS")
-    started = time.monotonic()
-    try:
-        for index, (expiry, rows) in enumerate(sorted(groups.items())):
-            def update(checked, index=index, expiry=expiry):
-                progress.progress(index / len(groups),
-                    text=f"SCANNING {_date_label(expiry)} // {checked:,} PAIRS CHECKED // {raw['symbol']}")
-            update(0)
-            added = store.add_expiration(
-                expiry, rows, partial(scan_ric_candidates, desktop_fast_fill=True,
-                                     max_breakeven_move_pct=max_breakeven_move_pct), update
-            )
-            if added and time.monotonic() - started >= _SCAN_RANK_SECONDS:
-                break  # Resume calculation from disk without dropping a pair.
-    finally:
-        progress.empty()
-    return store, store.annual_ids, None, potential_pairs
+            groups[row["expiry"]].append(dict(row))
+    if len(groups) != raw["loaded_expirations"]:
+        raise ValueError("ELIGIBLE EXPIRATIONS CHANGED // Press SCAN ALL YEARS again.")
+    job = _RICRankingJob(store, sorted(groups.items()), cutoff,
+                         partial(scan_ric_candidates, desktop_fast_fill=True,
+                                 max_breakeven_move_pct=max_breakeven_move_pct), potential_pairs)
+    jobs[policy] = job
+    active["job"] = job
+    job.pause_after_expiration(not st.session_state.get("ric_auto_finish", True))
+    if start:
+        job.start()
+    state = job.snapshot()
+    raw["_ric_ranking_state"] = {**state,"job":job}
+    return store, state["annual_ids"], None, potential_pairs
 
 
-def _continue_ric_scan(result: dict[str, Any], client, touch_session) -> dict[str, Any]:
+def _continue_ric_scan(result: dict[str, Any], client, touch_session, *, start: bool | None = None) -> dict[str, Any]:
     """Advance this snapshot only; preserve views, filters and checked identities."""
     raw = (st.session_state.get("_ric_chain_cache") or {}).get(f'{result["source"]}:{result["symbol"]}')
     source = "E*TRADE" if client is not None and not bool(getattr(client, "is_offline", False)) else "PUBLIC"
@@ -1493,14 +1654,21 @@ def _continue_ric_scan(result: dict[str, Any], client, touch_session) -> dict[st
         result.get("fee_per_spread", 0),
         result.get("max_strike_distance_pct"),
         result.get("max_breakeven_move_pct"),
+        start=((st.session_state.get("ric_auto_finish", True)
+               or (isinstance(result.get("ranking_job"), _RICRankingJob)
+                   and result["ranking_job"].snapshot()["status"] == "ready")) if start is None else start),
     )
+    ranking = _ric_result_ranking(raw, candidates)
     return {
         **result, "candidates": candidates, "annual_ids": annual_ids,
         "loaded_expirations": raw["loaded_expirations"], "contract_count": len(raw["rows"]),
         "errors": raw["errors"], "failed_expirations": raw.get("failed_expirations", []),
         "potential_pairs": potential_pairs,
-        "chains_complete": raw["scan_complete"], "ranked_expirations": candidates.ranked_expirations,
-        "scan_complete": raw["scan_complete"] and candidates.ranked_expirations == raw["loaded_expirations"],
+        "chains_complete": raw["scan_complete"], "ranked_expirations": ranking["ranked"],
+        "ranking_job":ranking["job"],
+        "ranking_status":ranking["status"],"ranking_progress":ranking.get("progress"),
+        "scan_complete": (raw["scan_complete"] and ranking["status"] == "complete"
+                          and ranking["ranked"] == raw["loaded_expirations"]),
         "next_expiry_index": raw["next_expiry_index"], "pass_seconds": time.monotonic() - started,
         "stopped_on_errors": raw.get("stopped_on_errors", False),
     }
@@ -2195,7 +2363,9 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
         result.get("fee_per_spread", 0),
         result.get("max_strike_distance_pct"),
         result.get("max_breakeven_move_pct"),
+        restart=True,
     )
+    ranking = _ric_result_ranking(raw, candidates)
     pricing_revision = int(result.get("pricing_revision", 0)) + 1
     scope = hashlib.sha256(
         repr((raw["scan_id"], result["target"], result["max_cost"],
@@ -2208,10 +2378,11 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
         **result, "pricing_mode": mode, "scope": scope, "pricing_revision": pricing_revision,
         "pricing_policy": RIC_PRICING_POLICY,
         "candidates": candidates, "annual_ids": annual_ids,
-        "ranked_expirations": candidates.ranked_expirations,
+        "ranked_expirations": ranking["ranked"], "ranking_job":ranking["job"],
+        "ranking_status":ranking["status"],"ranking_progress":ranking.get("progress"),
         "chains_complete": raw["scan_complete"],
         "scan_complete": (raw["scan_complete"]
-                          and candidates.ranked_expirations == raw["loaded_expirations"]),
+                          and ranking["status"] == "complete" and ranking["ranked"] == raw["loaded_expirations"]),
     }
 
 
@@ -2279,6 +2450,12 @@ def _remember_scan_inputs() -> None:
 @finance_callback
 def _queue_ric_scan() -> None:
     _remember_scan_inputs()
+    owner = _ric_job_owner()
+    with owner.setdefault("_ric_ranking_lock", threading.RLock()):
+        active = owner.get("_ric_ranking_owner") or {}
+        if active.get("job"):
+            active["job"].cancel()
+        owner["_ric_ranking_owner"] = {"identity":("pending",time.time_ns()),"job":None}
     previous = st.session_state.pop("ric_scan_result", None)
     if previous is not None:
         st.session_state["_ric_previous_scan_result"] = previous
@@ -2774,6 +2951,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 on_change=_remember_presentation, args=("ric_auto_finish",),
                 help="Continue in short batches while this page is open. Turn off to pause after the current batch. Never places orders.")
             if auto_finish != st.session_state.get("_ric_auto_finish_previous", True):
+                if isinstance(last_result.get("ranking_job"), _RICRankingJob):
+                    last_result["ranking_job"].pause_after_expiration(not auto_finish)
                 st.session_state["_ric_auto_finish_previous"] = auto_finish
                 st.rerun()
             resume_clicked = st.button(
@@ -2820,6 +2999,14 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 refresh = scan_clicked and ((repeat_scan and bool(last_result.get("scan_complete", True)))
                                             or bool(last_result.get("failed_expirations")))
                 raw = request.get("raw") if scan_clicked else None
+                if resume_clicked:
+                    cached = (st.session_state.get("_ric_chain_cache") or {}).get(f'{last_result["source"]}:{scan_symbol}')
+                    if not isinstance(cached, dict) or cached.get("scan_id") != last_result.get("raw_scan_id"):
+                        raise ValueError("QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED // Press SCAN ALL YEARS again.")
+                    if cached["scan_complete"] and not cached.get("failed_expirations"):
+                        raw = cached  # Completed research may finish without renewing quotes.
+                    elif time.time() - cached["loaded_at"] >= _SCAN_CACHE_SECONDS:
+                        raise ValueError("QUOTE SNAPSHOT EXPIRED // Press SCAN ALL YEARS again.")
                 if raw is None:
                     if scan_clicked and request.get("source_started") and refresh:
                         source_key = f'{"E*TRADE" if broker_live else "PUBLIC"}:{scan_symbol}'
@@ -2846,7 +3033,9 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_ric_chains(
                     raw, target, max_cost, scan_mode, min_reward_risk, fee_per_spread,
                     max_strike_distance_pct, max_breakeven_move_pct,
+                    restart=scan_clicked, new_scan=scan_clicked,
                 )
+                ranking = _ric_result_ranking(raw, candidates)
                 if scan_clicked and st.session_state.get("_ric_scan_pending") is not request:
                     st.rerun()  # A newer explicit submission owns the results.
                 scope = hashlib.sha256(
@@ -2875,9 +3064,10 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     "capacity_limited": safe_limit is not None,
                     "potential_pairs": potential_pairs,
                     "chains_complete": raw["scan_complete"],
-                    "ranked_expirations": candidates.ranked_expirations,
+                    "ranked_expirations": ranking["ranked"], "ranking_job":ranking["job"],
+                    "ranking_status":ranking["status"],"ranking_progress":ranking.get("progress"),
                     "scan_complete": (raw["scan_complete"]
-                                      and candidates.ranked_expirations == raw["loaded_expirations"]),
+                                      and ranking["status"] == "complete" and ranking["ranked"] == raw["loaded_expirations"]),
                     "next_expiry_index": raw["next_expiry_index"],
                     "pass_seconds": time.monotonic() - scan_started,
                     "tv_exchange": raw.get("tv_exchange", ""),
@@ -2948,6 +3138,13 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 st.session_state["ric_scan_result"] = result
                 _remember_scan_snapshot()
             if not result.get("scan_complete", True):
+                job = result.get("ranking_job")
+                if isinstance(job, _RICRankingJob):
+                    state = job.snapshot()
+                    index, expiry, checked = state["progress"]
+                    pricing_progress.progress(index / max(1,state["total"]),
+                        text=(f"SCANNING {_date_label(expiry)} // {checked:,} PAIRS CHECKED // {result['symbol']}"
+                              if expiry is not None else "CALCULATION WAITING // Retained job will start when a worker is available."))
                 st.caption(_strike_scope_label(result.get("max_strike_distance_pct")))
                 if result.get("max_breakeven_move_pct") is not None:
                     st.caption(_breakeven_scope_label(result["max_breakeven_move_pct"]))
@@ -2978,6 +3175,11 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 return
             if result["source"] == "E*TRADE" and not broker_live:
                 st.warning("E*TRADE disconnected since this scan. Reconnect and rescan before order review.")
+            if (isinstance(result.get("ranking_job"), _RICRankingJob)
+                    and result["ranking_job"].cutoff != _minimum_expiry_date()):
+                result["ranking_job"].cancel()
+                st.error("EXPIRY CUTOFF CHANGED // Press SCAN ALL YEARS again.")
+                return
             result["candidates"].prune_before(_minimum_expiry_date())
             result["annual_ids"] = result["candidates"].annual_ids
             st.html(
@@ -3892,16 +4094,22 @@ def _render_ric_scan_continuation(client, touch_session) -> None:
     if (not result or result.get("max_cost") is not None or result.get("scan_complete", True)
             or st.session_state.get("_ric_scan_pending") or st.session_state.get("_ric_scan_error")
             or result.get("symbol") != str(st.session_state.get("ric_symbol_value") or "").strip().upper()
-            or not st.session_state.get("ric_auto_finish", True)
+            or (not st.session_state.get("ric_auto_finish", True) and not _ric_job_needs_poll(result))
             or result.get("stopped_on_errors")
             or st.session_state.get("_ric_auto_scan_error")):
         return
     try:
-        st.session_state["ric_scan_result"] = _continue_ric_scan(result, client, touch_session)
+        updated = _continue_ric_scan(result, client, touch_session)
+        st.session_state["ric_scan_result"] = updated
         _remember_scan_snapshot()
     except Exception as exc:
         st.session_state["_ric_auto_scan_error"] = f"AUTO SCAN PAUSED // {exc}"
-    st.rerun()  # Redraw the workspace, or remove this timer when finished/paused.
+        st.rerun()
+        return
+    if any(updated.get(key) != result.get(key) for key in
+           ("next_expiry_index","loaded_expirations","ranked_expirations","scan_complete",
+            "errors","failed_expirations","ranking_status","ranking_progress")):
+        st.rerun()  # Unchanged polls wait for the fragment's next one-second tick.
 
 
 def render_reverse_iron_condor(client, touch_session, *, vault_key: str = "default") -> None:
@@ -3921,7 +4129,8 @@ def render_reverse_iron_condor(client, touch_session, *, vault_key: str = "defau
     if (result.get("max_cost") is None
             and not st.session_state.get("_ric_scan_pending") and not st.session_state.get("_ric_scan_error")
             and result.get("symbol") == str(st.session_state.get("ric_symbol_value") or "").strip().upper()
-            and not result.get("scan_complete", True) and st.session_state.get("ric_auto_finish", True)
+            and not result.get("scan_complete", True)
+            and (st.session_state.get("ric_auto_finish", True) or _ric_job_needs_poll(result))
             and not result.get("stopped_on_errors")
             and not st.session_state.get("_ric_auto_scan_error")):
         _render_ric_scan_continuation(client, touch_session)
