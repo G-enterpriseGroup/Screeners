@@ -1414,6 +1414,19 @@ class RetainedRankingLifecycleTests(unittest.TestCase):
 
 
 class SubmittedScanRecoveryTests(unittest.TestCase):
+    def settle_scan(self, app, *, previous_raw_id=None):
+        deadline = time.monotonic() + 30
+        while True:
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            result = app.session_state["ric_scan_result"]
+            if (not app.session_state.get("_ric_scan_pending") and result["scan_complete"]
+                    and (previous_raw_id is None or result["raw_scan_id"] != previous_raw_id)):
+                return result
+            self.assertLess(time.monotonic(),deadline,"Production renderer did not publish the completed requested scan")
+            time.sleep(.02)
+            app.run()
+
     @contextmanager
     def app(self, stage, *, initial="5"):
         from streamlit.testing.v1 import AppTest
@@ -1427,7 +1440,7 @@ def calculator(*args,_original=original_calculator,_entered=blocked,_release=rel
     record('calculator',expiry=str(kwargs['option_rows'][0]['expiry']) if kwargs['option_rows'] else None)
     if _release is not None:
         _entered.set()
-        if not _release.wait(5):
+        if not _release.wait(30):
             raise AssertionError('Test calculation was not released')
     return _original(*args,**kwargs)
 def interrupt(stage):
@@ -1473,7 +1486,7 @@ def rank(*args,**kwargs):
                 app.text_input(key="ric_symbol_value").set_value("QQQ")
                 app.text_input(key="ric_max_breakeven_move_pct").set_value(initial)
                 next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
-                self.assertFalse(app.exception)
+                self.settle_scan(app)
                 app.session_state["fixture_interrupt"] = stage
                 yield app, events
 
@@ -1484,7 +1497,7 @@ def rank(*args,**kwargs):
                     app.text_input(key="ric_max_breakeven_move_pct").set_value(entered)
                     next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
                     self.assertFalse(app.exception)
-                    result = app.session_state["ric_scan_result"]
+                    result = self.settle_scan(app)
                     self.assertEqual(result["max_breakeven_move_pct"],expected)
                     self.assertEqual(len(result["candidates"]),rows)
                     self.assertTrue(result["scan_complete"])
@@ -1506,7 +1519,8 @@ def rank(*args,**kwargs):
                 old_id = app.session_state["ric_scan_result"]["raw_scan_id"]
                 next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
                 self.assertFalse(app.exception)
-                self.assertNotEqual(app.session_state["ric_scan_result"]["raw_scan_id"],old_id)
+                result = self.settle_scan(app,previous_raw_id=old_id)
+                self.assertNotEqual(result["raw_scan_id"],old_id)
                 logged = [json.loads(line) for line in events.read_text().splitlines()]
                 self.assertEqual(sum(event["event"] == "chain" for event in logged),8)
                 self.assertFalse(any(event["event"] in {"preview","place"} for event in logged))
@@ -1525,6 +1539,7 @@ def rank(*args,**kwargs):
                               if json.loads(line)["event"] in {"rank_policy","chain","expirations"}],before)
             app.session_state["fixture_interrupt"] = None
             next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            self.settle_scan(app)
             self.assertFalse(app.exception)
             self.assertFalse(app.error)
             self.assertIsNone(app.session_state["ric_scan_result"]["max_breakeven_move_pct"])
@@ -1554,6 +1569,7 @@ def rank(*args,**kwargs):
                     self.assertTrue(any("QUOTE SNAPSHOT EXPIRED" in value.value for value in app.error))
                     self.assertEqual(app.session_state["ric_scan_result"]["max_breakeven_move_pct"],5)
                 else:
+                    self.settle_scan(app)
                     self.assertFalse(app.error)
                     self.assertIsNone(app.session_state["ric_scan_result"]["max_breakeven_move_pct"])
                     self.assertLessEqual(app.session_state["ric_scan_result"]["loaded_at"],old_time-300)
@@ -1564,6 +1580,7 @@ def rank(*args,**kwargs):
             app.text_input(key="ric_max_breakeven_move_pct").set_value("")
             next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
             self.assertFalse(app.exception)
+            self.settle_scan(app)
             self.assertEqual(app.session_state["ric_scan_result"]["max_breakeven_move_pct"],10)
             self.assertEqual(len(app.session_state["ric_scan_result"]["candidates"]),8)
 
@@ -1579,7 +1596,7 @@ def rank(*args,**kwargs):
             next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
             job = app.session_state["ric_scan_result"]["ranking_job"]
             try:
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(5))
                 self.assertFalse(app.session_state["ric_scan_result"]["scan_complete"])
                 for _ in range(4):
                     app.run()
@@ -1593,12 +1610,7 @@ def rank(*args,**kwargs):
             finally:
                 release.set()
                 job._finished.wait(3)
-            for _ in range(30):
-                recovered.run()
-                if recovered.session_state["ric_scan_result"]["scan_complete"]:
-                    break
-                time.sleep(.01)
-            result = recovered.session_state["ric_scan_result"]
+            result = self.settle_scan(recovered)
             self.assertTrue(result["scan_complete"])
             self.assertIsNone(result["max_breakeven_move_pct"])
             self.assertEqual(len(result["candidates"]),20)
