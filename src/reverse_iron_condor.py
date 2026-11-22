@@ -11,6 +11,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, localcontext
 from functools import lru_cache
 import math
 import re
@@ -51,6 +52,58 @@ def _fee(value: Any) -> float:
     if result is None:
         raise ValueError("Fee per spread must be nonnegative and finite.")
     return result
+
+
+def _breakeven_move(value: Any) -> float | None:
+    if value is None:
+        return None
+    result = _number(value, positive=True)
+    if isinstance(value, bool) or result is None:
+        raise ValueError("Maximum breakeven move must be positive and finite, or None for unlimited.")
+    return result
+
+
+def _breakeven_band(spot: float, percent: float) -> tuple[Decimal, Decimal]:
+    with localcontext() as context:
+        context.prec = 50
+        center = Decimal(str(spot))
+        offset = center * Decimal(str(percent)) / 100
+        return center - offset, center + offset
+
+
+def _breakeven_risk_cost(strike: float, side: str,
+                         band: tuple[Decimal, Decimal]) -> float:
+    with localcontext() as context:
+        context.prec = 50
+        value = Decimal(str(strike))
+        available = value - band[0] if side == "PUT" else band[1] - value
+        cost = float(available * 100)
+    if not math.isfinite(cost):
+        raise ValueError("Maximum breakeven move produces a nonfinite risk ceiling.")
+    return cost
+
+
+def ric_breakeven_max_cost(
+    *, spot_last: float, put_buy_strike: float, buy_strike: float,
+    max_breakeven_move_pct: float | None = None,
+) -> float | None:
+    """Total per-condor risk ceiling keeping BOTH breakevens in the fixed spot band.
+
+    The returned dollars include debit and fees, so callers intersect this with
+    any existing cost ceiling. None means unlimited; a nonpositive value means
+    the inner strikes leave no room for a positive-debit qualifying condor.
+    """
+    percent = _breakeven_move(max_breakeven_move_pct)
+    if percent is None:
+        return None
+    values = (spot_last, put_buy_strike, buy_strike)
+    numbers = [_number(value, positive=True) for value in values]
+    if any(isinstance(value, bool) for value in values) or any(value is None for value in numbers):
+        raise ValueError("Fixed scan spot and both long strikes must be positive and finite.")
+    spot, put, call = numbers
+    band = _breakeven_band(spot, percent)
+    return min(_breakeven_risk_cost(put, "PUT", band),
+               _breakeven_risk_cost(call, "CALL", band))
 
 
 def new_ric_client_order_id(prefix: str = "RIC") -> str:
@@ -317,7 +370,8 @@ def _parsed_contract_root(osi: str, expiry: date, side: str, strike: float) -> s
     return root
 
 
-def _wing_pairs(rows: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
+def _wing_pairs(rows: list[dict[str, Any]], side: str, *,
+                breakeven_band: tuple[Decimal, Decimal] | None = None) -> list[dict[str, Any]]:
     prefixes = ("buy", "sell") if side == "CALL" else ("put_buy", "put_sell")
     fields = ("strike", "osi", "last", "bid", "ask", "open_interest", "volume")
     # These records and two small export maps are per contract, not per wing
@@ -326,7 +380,9 @@ def _wing_pairs(rows: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
         (row, _prepare_leg(row, (row["bid"], row["ask"])),
          {prefixes[0] + "_" + field: row.get(field) for field in fields},
          {prefixes[1] + "_" + field: row.get(field) for field in fields},
-         f'{row["strike"]:.6f}')
+         f'{row["strike"]:.6f}',
+         _breakeven_risk_cost(row["strike"], side, breakeven_band)
+         if breakeven_band is not None else None)
         for row in rows
     ]
     pairs = []
@@ -337,6 +393,8 @@ def _wing_pairs(rows: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
             if lower["strike"] == higher["strike"]:
                 continue
             buy_leg, sell_leg = (lower_leg, higher_leg) if side == "CALL" else (higher_leg, lower_leg)
+            if buy_leg[5] is not None and buy_leg[5] <= 0:
+                continue  # This long strike already lies on/outside its breakeven boundary.
             buy, sell = buy_leg[0], sell_leg[0]
             bid = buy["bid"] - sell["ask"]
             ask = buy["ask"] - sell["bid"]
@@ -344,12 +402,21 @@ def _wing_pairs(rows: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
             if ask <= 0 or midpoint <= 0:
                 continue
             width = higher["strike"] - lower["strike"]
-            pairs.append({"buy": buy, "sell": sell, "mid": midpoint, "ask": ask,
-                          "width": width,
-                          "prepared": _prepared_wing(
-                              buy_leg[1], sell_leg[1], width, buy_leg[2], sell_leg[3],
-                              lower_leg[4] + "|" + higher_leg[4])})
+            pair = {"buy": buy, "sell": sell, "mid": midpoint, "ask": ask,
+                    "width": width,
+                    "prepared": _prepared_wing(
+                        buy_leg[1], sell_leg[1], width, buy_leg[2], sell_leg[3],
+                        lower_leg[4] + "|" + higher_leg[4])}
+            if buy_leg[5] is not None:
+                pair["breakeven_max_cost"] = buy_leg[5]
+            pairs.append(pair)
     return pairs
+
+
+def _wing_debit_cap(pair: dict[str, Any], minimum: float, fee: float) -> float:
+    cap = pair["width"] / (1 + minimum) - fee / 100
+    breakeven_cost = pair.get("breakeven_max_cost")
+    return cap if breakeven_cost is None else min(cap, breakeven_cost / 100 - fee / 100)
 
 
 def _pair_tree(pairs: list[dict[str, Any]], minimum: float, fee: float) -> dict[str, Any]:
@@ -362,8 +429,8 @@ def _pair_tree(pairs: list[dict[str, Any]], minimum: float, fee: float) -> dict[
     node = {
         "mid": min(pair["mid"] for pair in pairs),
         "ask": min(.97 * pair["ask"] for pair in pairs),
-        "headroom": max(pair["width"] / (1 + minimum) - fee / 100 - pair["mid"] for pair in pairs),
-        "smart_headroom": max(pair["width"] / (1 + minimum) - fee / 100 - .97 * pair["ask"] for pair in pairs),
+        "headroom": max(_wing_debit_cap(pair, minimum, fee) - pair["mid"] for pair in pairs),
+        "smart_headroom": max(_wing_debit_cap(pair, minimum, fee) - .97 * pair["ask"] for pair in pairs),
     }
     if len(pairs) <= 32:
         node["pairs"] = pairs
@@ -377,7 +444,7 @@ def _pair_tree(pairs: list[dict[str, Any]], minimum: float, fee: float) -> dict[
 
 def _compatible_puts(node: dict[str, Any], call: dict[str, Any], *, minimum: float,
                      fee: float, max_cost: float | None, smart: bool):
-    cap = min(call["width"] / (1 + minimum) - fee / 100,
+    cap = min(_wing_debit_cap(call, minimum, fee),
               max_cost / 100 - fee / 100 if max_cost is not None else math.inf)
     if (call["mid"] + node["mid"] > cap + 1e-8
             or node["headroom"] + 1e-8 < call["mid"]):
@@ -387,7 +454,7 @@ def _compatible_puts(node: dict[str, Any], call: dict[str, Any], *, minimum: flo
         return
     for pair in node.get("pairs", ()):
         joint_mid = call["mid"] + pair["mid"]
-        joint_cap = min(cap, pair["width"] / (1 + minimum) - fee / 100)
+        joint_cap = min(cap, _wing_debit_cap(pair, minimum, fee))
         if joint_mid <= joint_cap + 1e-8 and (not smart or .97 * (call["ask"] + pair["ask"]) <= joint_cap + 1e-8):
             yield pair
     for child in node.get("children", ()):
@@ -404,6 +471,7 @@ def scan_ric_candidates(
     progress: Callable[[int], None] | None = None,
     desktop_fast_fill: bool = True, fee_per_spread: float = 0.0,
     scan_stats: dict[str, int] | None = None,
+    max_breakeven_move_pct: float | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Exhaustively join OTM call/put debit wings of each standard option class."""
     ticker, spot = str(symbol or "").strip().upper(), _number(spot_last, positive=True)
@@ -419,6 +487,9 @@ def scan_ric_candidates(
         raise ValueError("max_per_expiration must be a positive integer or None.")
     if candidate_sink is not None and max_per_expiration is not None:
         raise ValueError("Streaming requires exhaustive scanning without a retention limit.")
+    breakeven_percent = _breakeven_move(max_breakeven_move_pct)
+    breakeven_band = (_breakeven_band(spot, breakeven_percent)
+                      if breakeven_percent is not None else None)
     groups: dict[tuple[date, str], dict[tuple[str, float], dict[str, Any] | None]] = {}
     input_contracts = 0
     for raw in option_rows:
@@ -457,7 +528,8 @@ def scan_ric_candidates(
     for (expiry, root), group in sorted(groups.items()):
         calls = sorted((row for row in group.values() if row and row["call_put"] == "CALL"), key=lambda row: row["strike"])
         puts = sorted((row for row in group.values() if row and row["call_put"] == "PUT"), key=lambda row: row["strike"])
-        call_pairs, put_pairs = _wing_pairs(calls, "CALL"), _wing_pairs(puts, "PUT")
+        call_pairs = _wing_pairs(calls, "CALL", breakeven_band=breakeven_band)
+        put_pairs = _wing_pairs(puts, "PUT", breakeven_band=breakeven_band)
         possible += len(calls) * (len(calls) - 1) // 2 * (len(puts) * (len(puts) - 1) // 2)
         call_wings += len(call_pairs)
         put_wings += len(put_pairs)
@@ -475,8 +547,12 @@ def scan_ric_candidates(
                 if progress is not None and checked % 4096 == 0:
                     progress(checked)
                 prepared_put = put["prepared"]
+                cost_cap = budget
+                if breakeven_band is not None:
+                    cost_cap = min(call["breakeven_max_cost"], put["breakeven_max_cost"],
+                                   budget if budget is not None else math.inf)
                 price = _price_prepared_ric(
-                    prepared_call, prepared_put, max_cost=budget,
+                    prepared_call, prepared_put, max_cost=cost_cap,
                     pricing_mode=pricing_mode, minimum=minimum, fee=fee,
                 )
                 if price is None:

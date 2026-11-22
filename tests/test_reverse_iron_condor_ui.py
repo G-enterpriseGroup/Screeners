@@ -1,5 +1,6 @@
 """Independent R.I.C. interaction, four-leg links and reviewed-order regressions."""
 from copy import deepcopy
+from contextlib import contextmanager
 import csv
 from datetime import date, timedelta
 import io
@@ -496,6 +497,161 @@ class LiveQuoteOverlayTests(unittest.TestCase):
         broker.get_quote.assert_not_called()
 
 
+class AcquisitionBeforeRankingTests(unittest.TestCase):
+    @contextmanager
+    def market(self, failed_indexes=()):
+        clock, state, events = [1000.0], {}, []
+        expiries = [ui._minimum_expiry_date()+timedelta(days=180*index) for index in range(6)]
+        chains = {}
+        for expiry in expiries:
+            specs = (("PUT",85,.5),("PUT",90,1),("PUT",95,1.5),
+                     ("CALL",105,1.5),("CALL",110,1),("CALL",115,.5))
+            chains[expiry] = [dict(expiry=expiry,call_put=side,strike=strike,last=last,
+                                  bid=last-.05,ask=last+.05,open_interest=1000,
+                                  osi=f"SPY{expiry:%y%m%d}{side[0]}{strike*1000:08d}")
+                              for side,strike,last in specs]
+        broker = MagicMock(is_offline=False)
+        broker.get_quote.return_value = {"lastTrade":100}
+        def chain(client, symbol, expiry, touch_session, **kwargs):
+            events.append(("chain",expiry))
+            if expiries.index(expiry) in failed_indexes:
+                raise RuntimeError("synthetic source failure")
+            return chains[expiry]
+        with (patch.object(ui.st,"session_state",state),
+              patch.object(ui.st,"progress",return_value=MagicMock()),
+              patch.object(ui,"options_market_client",return_value=broker),
+              patch.object(ui,"_expirations",return_value=expiries),
+              patch.object(ui,"_chain",side_effect=chain),
+              patch.object(ui,"quote_summary",return_value={"description":"Synthetic SPY"}),
+              patch.object(ui,"record_lookup"),
+              patch.object(ui.time,"time",side_effect=lambda:clock[0]),
+              patch.object(ui.time,"monotonic",side_effect=lambda:clock[0])):
+            yield state,broker,clock,expiries,chains,events
+
+    def scan_result(self, raw, scope=None):
+        return result(10) | {"symbol":"SPY","raw_scan_id":raw["scan_id"],
+                             "loaded_at":raw["loaded_at"],"target":None,
+                             "max_strike_distance_pct":scope,"scope":"original"}
+
+    def test_partial_source_never_prices_or_marks_an_expiration_ranked(self):
+        with self.market() as (_,broker,_,_,_,events):
+            raw = ui._scan_all_years(broker,"SPY",lambda:None)
+            self.assertFalse(raw["scan_complete"])
+            self.assertEqual(raw["next_expiry_index"],4)
+            before = deepcopy(raw["rows"])
+            with patch.object(ui,"scan_ric_candidates") as calculator:
+                for scope,potential in ((None,36),(10,4)):
+                    with self.subTest(scope=scope):
+                        first,annual,cap,count = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,scope)
+                        repeated,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,scope)
+                        self.assertIs(first,repeated)
+                        self.assertEqual((len(first),first.ranked_expirations),(0,0))
+                        self.assertEqual(annual,set())
+                        self.assertIsNone(cap)
+                        self.assertEqual(count,potential)
+                calculator.assert_not_called()
+            self.assertEqual(raw["rows"],before)
+            self.assertTrue(all(event[0]=="chain" for event in events))
+
+    def test_all_chains_precede_slow_ranking_and_old_snapshot_finishes_exactly(self):
+        add_expiration = ui.RICResultStore.add_expiration
+        for scope in (None,10):
+            with self.subTest(scope=scope),self.market() as (_,broker,clock,expiries,chains,events):
+                def slow_first(store, expiry, rows, calculator, progress):
+                    events.append(("rank",expiry))
+                    added = add_expiration(store,expiry,rows,calculator,progress)
+                    if added and store.ranked_expirations==1:
+                        clock[0]+=301
+                    return added
+                with patch.object(ui.RICResultStore,"add_expiration",new=slow_first):
+                    raw = ui._scan_all_years(broker,"SPY",lambda:None)
+                    empty,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10,scope)
+                    self.assertEqual(empty.ranked_expirations,0)
+                    advanced = ui._continue_ric_scan(self.scan_result(raw,scope),broker,lambda:None)
+                    self.assertEqual(events[:6],[("chain",expiry) for expiry in expiries])
+                    self.assertEqual(events[6],("rank",expiries[0]))
+                    self.assertTrue(advanced["chains_complete"])
+                    self.assertFalse(advanced["scan_complete"])
+                    self.assertEqual(advanced["ranked_expirations"],1)
+                    self.assertEqual(clock[0],1301)
+                    with patch.object(ui,"_scan_all_years") as new_source:
+                        finished = ui._continue_ric_scan(advanced,broker,lambda:None)
+                    new_source.assert_not_called()
+                self.assertTrue(finished["scan_complete"])
+                self.assertEqual(finished["ranked_expirations"],len(expiries))
+                self.assertEqual(finished["loaded_at"],1000)
+                self.assertEqual(finished["raw_scan_id"],raw["scan_id"])
+                self.assertEqual(finished["max_strike_distance_pct"],scope)
+                self.assertEqual(finished["contract_count"],36)
+                self.assertEqual([expiry for kind,expiry in events if kind=="chain"],expiries)
+                broker.get_quote.assert_called_once_with("SPY")
+                all_rows = [row for expiry in expiries for row in chains[expiry]
+                            if scope is None or 90<=row["strike"]<=110]
+                expected,annual = scan_ric_candidates(
+                    symbol="SPY",spot_last=100,option_rows=all_rows,target_breakeven=None,
+                    max_cost=None,max_per_expiration=None,desktop_fast_fill=True,fee_per_spread=10)
+                self.assertEqual(list(finished["candidates"].iter_ranked()),expected)
+                self.assertEqual(finished["annual_ids"],annual)
+                self.assertGreater(len(expected),0)
+                self.assertGreater(len(annual),1)
+
+    def test_incomplete_sources_keep_exact_age_and_source_guards(self):
+        for elapsed,offline in ((300,False),(299,True)):
+            with self.subTest(elapsed=elapsed,offline=offline),self.market() as (_,broker,clock,_,_,events):
+                raw = ui._scan_all_years(broker,"SPY",lambda:None)
+                scan = self.scan_result(raw)
+                clock[0]+=elapsed
+                broker.is_offline = offline
+                with (patch.object(ui,"_scan_all_years") as source,
+                      patch.object(ui,"scan_ric_candidates") as calculator):
+                    with self.assertRaisesRegex(ValueError,"QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED"):
+                        ui._continue_ric_scan(scan,broker,lambda:None)
+                source.assert_not_called()
+                calculator.assert_not_called()
+                self.assertEqual(len(events),4)
+                self.assertEqual(raw["loaded_at"],1000)
+
+    def test_failed_chains_remain_incomplete_evidence_and_cannot_bypass_age(self):
+        with self.market((1,2)) as (_,broker,clock,expiries,_,_):
+            raw = ui._scan_all_years(broker,"SPY",lambda:None)
+            self.assertFalse(raw["scan_complete"])
+            self.assertTrue(raw["stopped_on_errors"])
+            with patch.object(ui,"scan_ric_candidates") as calculator:
+                store,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,10)
+            calculator.assert_not_called()
+            self.assertEqual(store.ranked_expirations,0)
+            completed_source = ui._scan_all_years(broker,"SPY",lambda:None)
+            self.assertTrue(completed_source["scan_complete"])
+            self.assertEqual(completed_source["loaded_expirations"],4)
+            self.assertEqual(completed_source["failed_expirations"],expiries[1:3])
+            self.assertTrue(any("synthetic source failure" in error for error in completed_source["errors"]))
+            failed = ui._continue_ric_scan(self.scan_result(completed_source),broker,lambda:None)
+            self.assertEqual(failed["failed_expirations"],expiries[1:3])
+            self.assertEqual(failed["errors"],completed_source["errors"])
+            clock[0]=1300
+            with patch.object(ui,"_scan_all_years") as source:
+                with self.assertRaisesRegex(ValueError,"QUOTE SNAPSHOT EXPIRED OR SOURCE CHANGED"):
+                    ui._continue_ric_scan(failed,broker,lambda:None)
+            source.assert_not_called()
+
+    def test_order_review_keeps_300_second_guard_before_and_during_requote(self):
+        candidate,rows = quoted_condor()
+        for during_requote in (False,True):
+            with self.subTest(during_requote=during_requote):
+                clock = [1299 if during_requote else 1300]
+                scan = result() | {"loaded_at":1000}
+                def requote(*args,**kwargs):
+                    clock[0]=1300
+                    return rows
+                with (patch.object(ui.st,"session_state",{}),
+                      patch.object(ui.time,"time",side_effect=lambda:clock[0]),
+                      patch.object(ui,"_chain",side_effect=requote) as chain):
+                    with self.assertRaisesRegex(ValueError,"Market snapshot expired"):
+                        ui._validate_current_ric_limit(MagicMock(is_offline=False),lambda:None,
+                                                       candidate,scan,candidate["debit"])
+                self.assertEqual(chain.call_count,int(during_requote))
+
+
 class StrikeDistanceScopeTests(unittest.TestCase):
     def raw(self, rows):
         return {"symbol":"SPY", "spot":100, "rows":rows, "scan_id":321,
@@ -616,6 +772,142 @@ class StrikeDistanceScopeTests(unittest.TestCase):
                                         pricing_mode="NORMAL",max_strike_distance_pct=10)
         meta = json.loads(page.split('<script id="vertical-meta" type="application/json">',1)[1].split("</script>",1)[0])
         self.assertIn("ALL FOUR STRIKES WITHIN ±10% OF SCAN SPOT",meta["source"])
+
+
+class BreakevenMoveScopeTests(unittest.TestCase):
+    def fixture(self):
+        _,rows = quoted_condor()
+        mapping = {90:93,95:98,105:102,110:110}
+        rows = [row | {"strike":mapping[row["strike"]],
+                        "osi":f"SPY{row['expiry']:%y%m%d}{row['call_put'][0]}{mapping[row['strike']]*1000:08d}",
+                        **{key:row[key]-(.05 if row["strike"] in (95,105) else 0)
+                           for key in ("bid","ask","last")}}
+                for row in rows]
+        candidates,_ = scan_ric_candidates(symbol="SPY",spot_last=100,option_rows=rows,
+                                           target_breakeven=None,max_cost=None,fee_per_spread=2.6)
+        raw = {"symbol":"SPY","spot":100,"rows":rows,"scan_id":987,
+               "loaded_at":time.time(),"scan_complete":True,"loaded_expirations":1,
+               "expirations":[rows[0]["expiry"]],"errors":[],"failed_expirations":[],"next_expiry_index":1}
+        return candidates[0],rows,raw
+
+    def test_optional_input_and_local_memory_preserve_an_explicit_blank(self):
+        for value in (None,"","  "):
+            self.assertIsNone(ui._entered_breakeven_move(value))
+        self.assertEqual(ui._entered_breakeven_move("3"),3)
+        for value in (0,-1,True,"nan","inf","-inf","bad"):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                ui._entered_breakeven_move(value)
+        state = {}
+        with patch.object(ui.st,"session_state",state),patch.object(ui,"_require_ric_access"):
+            ui._restore_presentation()
+            self.assertEqual(state["ric_max_breakeven_move_pct"],"")
+            for value in ("3",""):
+                state["ric_max_breakeven_move_pct"] = value
+                ui._remember_scan_inputs()
+                del state["ric_max_breakeven_move_pct"]
+                ui._restore_presentation()
+                self.assertEqual(state["ric_max_breakeven_move_pct"],value)
+
+    def test_search_scope_has_independent_stores_and_continues_through_mode_flip(self):
+        candidate,rows,raw = self.fixture()
+        before = deepcopy(rows)
+        state = {"_ric_chain_cache":{"E*TRADE:SPY":raw},"ric_max_breakeven_move_pct":"99"}
+        with (patch.object(ui.st,"session_state",state),
+              patch.object(ui.st,"progress",return_value=MagicMock()),
+              patch.object(ui,"scan_ric_candidates",wraps=scan_ric_candidates) as calculator):
+            unrestricted,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6)
+            same,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,None)
+            bounded,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,3)
+            repeated,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,3)
+            self.assertEqual(calculator.call_args.kwargs["max_breakeven_move_pct"],3)
+            tighter,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,2.98)
+            self.assertIs(unrestricted,same)
+            self.assertIs(bounded,repeated)
+            self.assertIsNot(unrestricted,bounded)
+            self.assertIsNot(bounded,tighter)
+            self.assertEqual(unrestricted.page(),[candidate])
+            self.assertEqual(bounded.page(),[candidate])
+            self.assertLess(tighter.page()[0]["debit"],candidate["debit"])
+            self.assertLess(candidate["put_sell_strike"],97)
+            self.assertGreater(candidate["sell_strike"],103)
+            scan = result(2.6) | {"symbol":"SPY","spot":100,"raw_scan_id":987,"target":None,
+                                  "loaded_at":raw["loaded_at"],"scope":"original","max_breakeven_move_pct":3.2}
+            with patch.object(ui,"_scan_all_years") as source:
+                continued = ui._continue_ric_scan(scan,MagicMock(is_offline=False),lambda:None)
+                repriced = ui._reprice_cached_ric_scan(continued,"SMART FILL")
+            source.assert_not_called()
+        self.assertEqual(rows,before)
+        for snapshot in (continued,repriced):
+            self.assertEqual(snapshot["max_breakeven_move_pct"],3.2)
+            self.assertEqual(snapshot["fee_per_spread"],2.6)
+            self.assertEqual(snapshot["loaded_at"],raw["loaded_at"])
+            self.assertTrue(snapshot["scan_complete"])
+            self.assertEqual(len(snapshot["candidates"]),1)
+            row = snapshot["candidates"].page()[0]
+            self.assertGreaterEqual(row["lower_breakeven"],96.8)
+            self.assertLessEqual(row["upper_breakeven"],103.2)
+        self.assertIsNot(continued["candidates"],repriced["candidates"])
+
+    def test_exports_label_both_breakeven_scope_and_leave_unlimited_bytes_unchanged(self):
+        candidate,rows,raw = self.fixture()
+        before = deepcopy(candidate)
+        options = dict(source="SYNTHETIC",loaded_at=1,target=None,max_cost=None)
+        original = ui._qualified_spreads_csv([candidate],set(),**options)
+        self.assertEqual(ui._qualified_spreads_csv([candidate],set(),**options,
+                                                  max_breakeven_move_pct=None),original)
+        self.assertNotIn("Max Breakeven Move From Scan Spot (%)",original)
+        with patch.object(ui.st,"progress",return_value=MagicMock()):
+            store,_,_,_ = ui._rank_cached_ric_chains(raw,None,None,"NORMAL",2,2.6,None,3)
+        record = list(csv.DictReader(io.StringIO(ui._qualified_store_csv(
+            store,**options,max_breakeven_move_pct=3))))[0]
+        self.assertEqual(record["Max Breakeven Move From Scan Spot (%)"],"3")
+        self.assertEqual(float(record["Underlying Last"]),100)
+        book = ui._qualified_store_xlsx(store,**options,max_breakeven_move_pct=3)
+        with zipfile.ZipFile(io.BytesIO(book)) as archive:
+            self.assertIn("Max Breakeven Move From Scan Spot (%)",archive.read("xl/worksheets/sheet1.xml").decode())
+        page = ui._qualified_store_html(store,source="SYNTHETIC",loaded_at=1,
+                                        pricing_mode="NORMAL",max_breakeven_move_pct=3)
+        meta = json.loads(page.split('<script id="vertical-meta" type="application/json">',1)[1].split("</script>",1)[0])
+        self.assertIn(ui._breakeven_scope_label(3),meta["source"])
+        self.assertEqual(candidate,before)
+
+    def test_review_fixed_spot_cap_fingerprint_and_fee_boundary_despite_passing_ratio(self):
+        candidate,rows,_ = self.fixture()
+        scan = result(2.6) | {"spot":100,"max_breakeven_move_pct":3}
+        self.assertEqual(candidate["debit"],.97)
+        self.assertEqual(ui._ric_review_max_cost(candidate,scan,None),100)
+        self.assertEqual(ui._ric_review_max_cost(candidate,scan,99),99)
+        self.assertEqual(ui._ric_review_max_cost(candidate,scan,200),100)
+        self.assertEqual(ui._ric_review_max_cost(candidate,scan | {"max_breakeven_move_pct":None},200),200)
+        state = {"etrade_accounts":ACCOUNTS,"ric_accounts":["preferred"]}
+        broker = MagicMock(is_offline=False)
+        broker.preview_order.return_value = {"PreviewOrderResponse":{
+            "PreviewIds":[{"previewId":123}],"estimatedCommission":3,"estimatedFees":0}}
+        def render(clicked=()):
+            view = order_ui(state,clicked)
+            effective = scan | {"max_cost":ui._ric_review_max_cost(candidate,scan,scan["max_cost"])}
+            with patch.object(ui,"st",view),patch.object(ui,"_chain",return_value=rows):
+                ui._render_selected_order(broker,lambda:None,candidate,effective,True)
+            return view
+        render(("ric_preview",))
+        self.assertIn("ric_review_bundle",state)
+        expected = ui._review_fingerprint(candidate=candidate,quantity=1,limit_price=candidate["debit"],
+                                          min_reward_risk=2,order_term="GOOD_FOR_DAY",
+                                          account_keys=["preferred"],max_cost=100,fee_per_spread=2.6)
+        self.assertEqual(state["ric_review_bundle"]["fingerprint"],expected)
+        scan["max_breakeven_move_pct"] = 3.2
+        render()
+        self.assertNotIn("ric_review_bundle",state)
+        scan["max_breakeven_move_pct"] = 3
+        broker.preview_order.return_value["PreviewOrderResponse"]["estimatedFees"] = .01
+        risk = candidate["debit"]*100+3.01
+        self.assertGreater((candidate["width"]*100-risk)/risk,2)
+        self.assertGreater(candidate["buy_strike"]+risk/100,103)
+        view = render(("ric_preview",))
+        self.assertNotIn("ric_review_bundle",state)
+        self.assertTrue(any("reviewed total-cost cap" in str(call).lower() for call in view.warning.call_args_list))
+        self.assertIsNone(scan["max_cost"])
+        broker.place_order.assert_not_called()
 
 
 class TableStrikeDistanceControlTests(unittest.TestCase):

@@ -50,7 +50,8 @@ def identity(row):
                                       "put_buy_strike", "put_sell_strike"))
 
 
-def reference_candidates(rows, *, mode="NORMAL", fee=0, budget=None, minimum=2, target=None):
+def reference_candidates(rows, *, mode="NORMAL", fee=0, budget=None, minimum=2, target=None,
+                         max_breakeven_move_pct=None, spot=100):
     """Unpruned public-price oracle for unique, standard test contracts."""
     def number(value, *, positive=False):
         try:
@@ -66,18 +67,29 @@ def reference_candidates(rows, *, mode="NORMAL", fee=0, budget=None, minimum=2, 
         classes.setdefault((expiry, root), []).append(row)
     expected = []
     for (expiry, root), contracts in classes.items():
-        calls = sorted((row for row in contracts if row["call_put"].upper() == "CALL" and float(row["strike"]) > 100),
+        calls = sorted((row for row in contracts if row["call_put"].upper() == "CALL" and float(row["strike"]) > spot),
                        key=lambda row: float(row["strike"]))
-        puts = sorted((row for row in contracts if row["call_put"].upper() == "PUT" and float(row["strike"]) < 100),
+        puts = sorted((row for row in contracts if row["call_put"].upper() == "PUT" and float(row["strike"]) < spot),
                       key=lambda row: -float(row["strike"]))
         for cb, cs in combinations(calls, 2):
             for pb, ps in combinations(puts, 2):
+                candidate_budget = budget
+                if max_breakeven_move_pct is not None:
+                    center = Decimal(str(spot))
+                    move = center*Decimal(str(max_breakeven_move_pct))/100
+                    cap = min(Decimal(str(pb["strike"]))-center+move,
+                              center+move-Decimal(str(cb["strike"])))*100
+                    if budget is not None:
+                        cap = min(cap,Decimal(str(budget)))
+                    if cap <= 0:
+                        continue
+                    candidate_budget = float(cap)
                 price = price_ric_quote(buy_call=cb, sell_call=cs, buy_put=pb, sell_put=ps,
-                                        spot_last=100, max_cost=budget, pricing_mode=mode,
+                                        spot_last=spot, max_cost=candidate_budget, pricing_mode=mode,
                                         min_reward_risk=minimum, fee_per_spread=fee)
                 if price is None:
                     continue
-                row = {"symbol":"XYZ", "spot_last":100.0, "expiry":expiry, "year":expiry.year,
+                row = {"symbol":"XYZ", "spot_last":float(spot), "expiry":expiry, "year":expiry.year,
                        "call_put":"RIC", "option_root":root, "pricing_mode":mode, **price}
                 for prefix, leg in (("buy", cb), ("sell", cs), ("put_buy", pb), ("put_sell", ps)):
                     row[prefix+"_strike"] = float(leg["strike"])
@@ -541,6 +553,119 @@ class ReverseIronCondorPreparedScanTests(unittest.TestCase):
             self.assertLessEqual(greeks.call_count,4*len(rows))
             self.assertLessEqual(identities.call_count,len(rows))
             self.assertLessEqual(strikes.call_count,len(rows))
+
+    def test_breakeven_scope_matches_unpruned_public_price_and_geometry(self):
+        rows = self.varied_chain()
+        before = repr(rows)
+        seen = 0
+        for mode,fee,minimum,move,budget in product(
+                ("NORMAL","SMART FILL"),(0,2.6),(2,3),(1.5,3,7),(None,40)):
+            with self.subTest(mode=mode,fee=fee,minimum=minimum,move=move,budget=budget):
+                expected = reference_candidates(rows,mode=mode,fee=fee,minimum=minimum,
+                                                 budget=budget,max_breakeven_move_pct=move)
+                actual,annual = scan(rows,pricing_mode=mode,fee_per_spread=fee,
+                                     min_reward_risk=minimum,max_cost=budget,
+                                     max_breakeven_move_pct=move,max_per_expiration=None)
+                self.assertEqual(actual,expected)
+                self.assertEqual(annual,{expected[0]["id"]} if expected else set())
+                for row in actual:
+                    risk = Decimal(str(row["debit"]))*100+Decimal(str(fee))
+                    self.assertGreaterEqual(Decimal(str(row["put_buy_strike"]))-risk/100,100-Decimal(str(move)))
+                    self.assertLessEqual(Decimal(str(row["buy_strike"]))+risk/100,100+Decimal(str(move)))
+                seen += len(actual)
+        self.assertGreater(seen,0)
+        self.assertEqual(repr(rows),before)
+        shifted = deepcopy(rows)
+        for row in shifted:
+            row["strike"] = float(Decimal(str(row["strike"]))+Decimal(".005"))
+            row["osi"] = f"XYZ{row['expiry']:%y%m%d}{row['call_put'][0]}{round(row['strike']*1000):08d}"
+        for mode,fee in product(("NORMAL","SMART FILL"),(0,2.6)):
+            expected = reference_candidates(shifted,spot=100.005,mode=mode,fee=fee,
+                                             minimum=3,budget=40,max_breakeven_move_pct=3)
+            actual,_ = scan_ric_candidates(symbol="XYZ",spot_last=100.005,option_rows=shifted,
+                                            target_breakeven=None,max_cost=40,min_reward_risk=3,
+                                            pricing_mode=mode,fee_per_spread=fee,
+                                            max_breakeven_move_pct=3,max_per_expiration=None)
+            self.assertEqual(actual,expected)
+
+    def test_breakeven_scope_unlimited_preserves_full_rows_annual_and_sink(self):
+        rows = self.varied_chain()+self.varied_chain(expiry=date(2030,1,18))
+        for mode,fee in product(("NORMAL","SMART FILL"),(0,2.6)):
+            with self.subTest(mode=mode,fee=fee):
+                options = dict(pricing_mode=mode,fee_per_spread=fee,max_per_expiration=None)
+                baseline,annual = scan(rows,**options)
+                explicit,explicit_annual = scan(rows,max_breakeven_move_pct=None,**options)
+                self.assertEqual((explicit,explicit_annual),(baseline,annual))
+                self.assertEqual(baseline,reference_candidates(rows,mode=mode,fee=fee))
+                expected = reference_candidates(rows,mode=mode,fee=fee,max_breakeven_move_pct=3)
+                streamed = []
+                retained,sink_annual = scan(rows,max_breakeven_move_pct=3,candidate_sink=streamed.append,**options)
+                self.assertEqual(retained,[])
+                self.assertEqual(sorted(streamed,key=lambda row:reference_rank(row,None)),expected)
+                self.assertEqual(sink_annual,{next(row["id"] for row in expected if row["year"]==year)
+                                              for year in {row["year"] for row in expected}})
+
+    def test_breakeven_scope_inclusive_cent_boundary_and_asymmetric_wings(self):
+        rows = [contract("PUT",93,.5,.5),contract("PUT",98,1,1),
+                contract("CALL",102,1,1),contract("CALL",110,.5,.5)]
+        for mode in ("NORMAL","SMART FILL"):
+            with self.subTest(mode=mode):
+                exact,_ = scan(rows,fee_per_spread=2.6,pricing_mode=mode,
+                               max_breakeven_move_pct=3.026,max_per_expiration=None)
+                self.assertEqual(len(exact),1)
+                self.assertEqual(exact[0]["cost"],102.6)
+                self.assertEqual((exact[0]["lower_breakeven"],exact[0]["upper_breakeven"]),(96.974,103.026))
+                self.assertEqual(scan(rows,fee_per_spread=2.6,pricing_mode=mode,
+                                      max_breakeven_move_pct=3.025999999)[0],[])
+                self.assertEqual(scan(rows,fee_per_spread=2.6,pricing_mode=mode,
+                                      max_breakeven_move_pct=3.026,max_cost=102.59)[0],[])
+        variable = [dict(row,bid=row["bid"]-.05,ask=row["ask"]+.05) for row in rows]
+        clipped,_ = scan(variable,fee_per_spread=2.6,max_breakeven_move_pct=3.056,max_per_expiration=None)
+        ordinary,_ = scan(variable,fee_per_spread=2.6,max_per_expiration=None)
+        self.assertEqual(len(clipped),1)
+        self.assertLess(clipped[0]["debit"],ordinary[0]["debit"])
+        self.assertEqual(clipped,reference_candidates(variable,fee=2.6,max_breakeven_move_pct=3.056))
+        distant_shorts = [dict(row,bid=.9) if row["strike"] in (98,102) else row for row in rows]
+        for mode in ("NORMAL","SMART FILL"):
+            scoped,_ = scan(distant_shorts,fee_per_spread=2.6,pricing_mode=mode,
+                            max_breakeven_move_pct=3,max_per_expiration=None)
+            self.assertEqual(len(scoped),1)
+            self.assertGreaterEqual(scoped[0]["lower_breakeven"],97)
+            self.assertLessEqual(scoped[0]["upper_breakeven"],103)
+            self.assertLess(scoped[0]["put_sell_strike"],97)
+            self.assertGreater(scoped[0]["sell_strike"],103)
+
+    def test_breakeven_scope_reduces_pricing_without_capping_qualifying_rows(self):
+        rows = [contract(side,100+step*.25 if side=="CALL" else 100-step*.25,
+                         .01*(17-step),.01*(17-step))
+                for side in ("CALL","PUT") for step in range(1,17)]
+        all_stats,scope_stats = {},{}
+        full,_ = scan(rows,max_per_expiration=None,scan_stats=all_stats)
+        scoped,_ = scan(rows,max_per_expiration=None,scan_stats=scope_stats,max_breakeven_move_pct=3)
+        expected = reference_candidates(rows,max_breakeven_move_pct=3)
+        self.assertEqual(scoped,expected)
+        self.assertGreater(len(scoped),200)
+        self.assertLess(len(scoped),len(full))
+        self.assertEqual(scope_stats["qualified_condors"],len(scoped))
+        self.assertLess(scope_stats["priced_condors"],all_stats["priced_condors"])
+        self.assertEqual(scope_stats["input_contracts"],len(rows))
+
+    def test_breakeven_cap_helper_uses_fixed_spot_and_strict_positive_scope(self):
+        values = dict(spot_last=100,put_buy_strike=98,buy_strike=102)
+        self.assertIsNone(ric.ric_breakeven_max_cost(**values))
+        self.assertEqual(ric.ric_breakeven_max_cost(**values,max_breakeven_move_pct=3.026),102.6)
+        self.assertEqual(ric.ric_breakeven_max_cost(spot_last=100.005,put_buy_strike=99.005,
+                                                 buy_strike=101.005,max_breakeven_move_pct=2),100.01)
+        self.assertEqual(ric.ric_breakeven_max_cost(spot_last=100,put_buy_strike=99,
+                                                 buy_strike=102,max_breakeven_move_pct=3),100)
+        self.assertLessEqual(ric.ric_breakeven_max_cost(**values,max_breakeven_move_pct=2),0)
+        self.assertEqual(scan(list(example().values()),max_breakeven_move_pct=3)[0],[])
+        for value in (0,-1,True,"",float("nan"),float("inf"),"bad"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    scan(list(example().values()),max_breakeven_move_pct=value)
+                with self.assertRaises(ValueError):
+                    ric.ric_breakeven_max_cost(**values,max_breakeven_move_pct=value)
 
 
 class ReverseIronCondorPayloadTests(unittest.TestCase):

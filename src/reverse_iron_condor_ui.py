@@ -61,6 +61,7 @@ from src.reverse_iron_condor import (
     preview_details,
     price_ric_quote,
     scan_ric_candidates,
+    ric_breakeven_max_cost,
     validate_ric,
     ric_limit_bounds,
 )
@@ -1202,6 +1203,47 @@ def _entered_strike_distance(value: Any) -> float | None:
     return distance
 
 
+def _entered_breakeven_move(value: Any) -> float | None:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    try:
+        percent = float(text)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError("Enter a positive max breakeven move percentage, or leave blank for unlimited.") from exc
+    if not math.isfinite(percent) or percent <= 0:
+        raise ValueError("Max breakeven move must be positive and finite, or blank for unlimited.")
+    return percent
+
+
+def _breakeven_scope_label(max_breakeven_move_pct: float | None) -> str:
+    return ("BOTH BREAKEVEN MOVES UNLIMITED" if max_breakeven_move_pct is None else
+            f"BOTH BREAKEVENS WITHIN ±{max_breakeven_move_pct:g}% OF FIXED SCAN SPOT")
+
+
+def _breakeven_scope_change_notice(scanned: float | None, entered: Any) -> str:
+    requested = _entered_breakeven_move(entered)
+    if requested == scanned:
+        return ""
+    return ("MAX BREAKEVEN MOVE CHANGED // Press SCAN ALL YEARS to apply. "
+            "Current results retain their displayed scan scope; blank means unlimited.")
+
+
+def _ric_review_max_cost(candidate: dict[str, Any], result: dict[str, Any],
+                         max_cost: float | None) -> float | None:
+    scope = _entered_breakeven_move(result.get("max_breakeven_move_pct"))
+    if scope is None:
+        return max_cost
+    geometry_cap = ric_breakeven_max_cost(
+        spot_last=result["spot"], put_buy_strike=candidate["put_buy_strike"],
+        buy_strike=candidate["buy_strike"],
+        max_breakeven_move_pct=scope,
+    )
+    return max_cost if geometry_cap is None else (geometry_cap if max_cost is None else min(max_cost, geometry_cap))
+
+
 def _strike_scoped_rows(rows: list[dict[str, Any]], spot: float,
                         max_strike_distance_pct: float | None) -> list[dict[str, Any]]:
     """Restrict all four strikes before enumeration, preserving the raw chains."""
@@ -1383,15 +1425,17 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
                                  min_reward_risk: float = _DEFAULT_MIN_REWARD_RISK,
                                  fee_per_spread: float = 0,
                                  max_strike_distance_pct: float | None = None,
+                                 max_breakeven_move_pct: float | None = None,
                                  ) -> tuple[RICResultStore, set[str], None, int]:
     """Stream every qualifying pair to disk and reuse completed expirations."""
     max_strike_distance_pct = _entered_strike_distance(max_strike_distance_pct)
+    max_breakeven_move_pct = _entered_breakeven_move(max_breakeven_move_pct)
     scoped_rows = _strike_scoped_rows(raw["rows"], raw["spot"], max_strike_distance_pct)
     _, potential_pairs = _safe_ric_pair_limit(scoped_rows)
     raw.pop("rank_cache", None)  # Release older, truncated in-memory snapshots.
     policies = raw.setdefault("result_stores", {})
     policy = (target, max_cost, mode, min_reward_risk, fee_per_spread, RIC_PRICING_POLICY,
-              max_strike_distance_pct)
+              max_strike_distance_pct, max_breakeven_move_pct)
     store = policies.pop(policy, None)
     if not isinstance(store, RICResultStore):
         store = RICResultStore(raw["symbol"], raw["spot"], target, max_cost, mode,
@@ -1400,6 +1444,10 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
     policies[policy] = store
     while len(policies) > 2:
         policies.pop(next(iter(policies)))
+    # A whole expiry can outlast source freshness. Finish acquisition first so
+    # long calculations can use the existing ranking-only continuation path.
+    if not raw["scan_complete"]:
+        return store, store.annual_ids, None, potential_pairs
     groups: dict[date, list[dict[str, Any]]] = {}
     for row in raw["rows"]:
         if row["expiry"] >= _minimum_expiry_date():
@@ -1416,7 +1464,8 @@ def _rank_cached_ric_chains(raw: dict[str, Any], target: float | None,
                     text=f"SCANNING {_date_label(expiry)} // {checked:,} PAIRS CHECKED // {raw['symbol']}")
             update(0)
             added = store.add_expiration(
-                expiry, rows, partial(scan_ric_candidates, desktop_fast_fill=True), update
+                expiry, rows, partial(scan_ric_candidates, desktop_fast_fill=True,
+                                     max_breakeven_move_pct=max_breakeven_move_pct), update
             )
             if added and time.monotonic() - started >= _SCAN_RANK_SECONDS:
                 break  # Resume calculation from disk without dropping a pair.
@@ -1443,6 +1492,7 @@ def _continue_ric_scan(result: dict[str, Any], client, touch_session) -> dict[st
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
         result.get("fee_per_spread", 0),
         result.get("max_strike_distance_pct"),
+        result.get("max_breakeven_move_pct"),
     )
     return {
         **result, "candidates": candidates, "annual_ids": annual_ids,
@@ -1961,7 +2011,7 @@ def _sort_qualified_spreads(
 
 
 def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost,
-                   max_strike_distance_pct=None):
+                   max_strike_distance_pct=None, max_breakeven_move_pct=None):
     record = {"Ticker": row["symbol"], "Strategy": "REVERSE IRON CONDOR", "Expiration": row["expiry"].isoformat()}
     for prefix, label in (("put_sell", "Short Put"), ("put_buy", "Long Put"), ("buy", "Long Call"), ("sell", "Short Call")):
         for field, suffix in (("strike", "Strike"), ("last", "Last"), ("bid", "Bid"), ("ask", "Ask"), ("osi", "OSI"), ("open_interest", "OI")):
@@ -1987,6 +2037,10 @@ def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost,
     })
     if max_strike_distance_pct is not None:
         record["Max Strike Distance From Scan Spot (%)"] = max_strike_distance_pct
+    breakeven_scope = (row.get("max_breakeven_move_pct") if max_breakeven_move_pct is None
+                       else max_breakeven_move_pct)
+    if breakeven_scope is not None:
+        record["Max Breakeven Move From Scan Spot (%)"] = breakeven_scope
     for greek in ("delta", "gamma", "theta", "vega"):
         record["Net " + greek.title()] = row.get("net_" + greek)
     return record
@@ -1994,14 +2048,15 @@ def _export_record(row, annual_ids, *, source, loaded_at, target, max_cost,
 
 def _qualified_spreads_csv(rows, annual_ids: set[str], *, source: str, loaded_at: float,
                             target: float | None, max_cost: float | None,
-                            max_strike_distance_pct=None) -> str:
+                            max_strike_distance_pct=None, max_breakeven_move_pct=None) -> str:
     output = io.StringIO(newline="")
     writer = None
     for row in rows:
         if row["expiry"] < _minimum_expiry_date():
             continue
         record = _export_record(row, annual_ids, source=source, loaded_at=loaded_at, target=target,
-                                max_cost=max_cost, max_strike_distance_pct=max_strike_distance_pct)
+                                max_cost=max_cost, max_strike_distance_pct=max_strike_distance_pct,
+                                max_breakeven_move_pct=max_breakeven_move_pct)
         if writer is None:
             writer = csv.DictWriter(output, fieldnames=list(record))
             writer.writeheader()
@@ -2011,7 +2066,7 @@ def _qualified_spreads_csv(rows, annual_ids: set[str], *, source: str, loaded_at
 
 def _qualified_spreads_xlsx(rows, annual_ids: set[str], *, source: str, loaded_at: float,
                              target: float | None, max_cost: float | None,
-                             max_strike_distance_pct=None) -> bytes:
+                             max_strike_distance_pct=None, max_breakeven_move_pct=None) -> bytes:
     """Stream every matching R.I.C., including both wings and exact chart links."""
     import xlsxwriter
     output = io.BytesIO()
@@ -2025,7 +2080,8 @@ def _qualified_spreads_xlsx(rows, annual_ids: set[str], *, source: str, loaded_a
             if row["expiry"] < _minimum_expiry_date():
                 continue
             record = _export_record(row, annual_ids, source=source, loaded_at=loaded_at, target=target,
-                                    max_cost=max_cost, max_strike_distance_pct=max_strike_distance_pct)
+                                    max_cost=max_cost, max_strike_distance_pct=max_strike_distance_pct,
+                                    max_breakeven_move_pct=max_breakeven_move_pct)
             if sheet is None or data_rows >= 1_048_575:
                 if sheet is not None:
                     sheet.autofilter(0, 0, data_rows, len(headers) - 1)
@@ -2060,7 +2116,7 @@ def _qualified_store_csv(store: RICResultStore, *, source: str, loaded_at: float
                          target: float | None, max_cost: float | None, expiry="ALL",
                          side="RIC", sort_by="FILL + TARGET", direction="ASC",
                          max_distance=None, column_filters=None, year=None,
-                         max_strike_distance_pct=None) -> str:
+                         max_strike_distance_pct=None, max_breakeven_move_pct=None) -> str:
     """Generate the full CSV on click, off the UI thread, from one revision."""
     with store.snapshot():
         store.prune_before(_minimum_expiry_date())
@@ -2073,6 +2129,7 @@ def _qualified_store_csv(store: RICResultStore, *, source: str, loaded_at: float
                             max_distance=max_distance, column_filters=column_filters, year=year),
             annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
             max_strike_distance_pct=max_strike_distance_pct,
+            max_breakeven_move_pct=max_breakeven_move_pct,
         )
 
 
@@ -2080,7 +2137,7 @@ def _qualified_store_xlsx(store: RICResultStore, *, source: str, loaded_at: floa
                           target: float | None, max_cost: float | None, expiry="ALL",
                           side="RIC", sort_by="FILL + TARGET", direction="ASC",
                           max_distance=None, column_filters=None, year=None,
-                          max_strike_distance_pct=None) -> bytes:
+                          max_strike_distance_pct=None, max_breakeven_move_pct=None) -> bytes:
     """Export all matching four-leg rows with retained colors and black text."""
     with store.snapshot():
         store.prune_before(_minimum_expiry_date())
@@ -2093,18 +2150,22 @@ def _qualified_store_xlsx(store: RICResultStore, *, source: str, loaded_at: floa
                             max_distance=max_distance, column_filters=column_filters, year=year),
             annual_ids, source=source, loaded_at=loaded_at, target=target, max_cost=max_cost,
             max_strike_distance_pct=max_strike_distance_pct,
+            max_breakeven_move_pct=max_breakeven_move_pct,
         )
 
 
 def _qualified_store_html(store: RICResultStore, *, source: str, loaded_at: float,
                           pricing_mode: str, column_filters=None, year=None,
                           sort_by="YEAR + FILL", direction="ASC",
-                          contract_open_interest=None, max_strike_distance_pct=None) -> str:
+                          contract_open_interest=None, max_strike_distance_pct=None,
+                          max_breakeven_move_pct=None) -> str:
     """Build an offline copy of every retained spread only when downloaded."""
     store.prune_before(_minimum_expiry_date())
     lookup = contract_open_interest or {}
     if max_strike_distance_pct is not None:
         source += " // " + _strike_scope_label(max_strike_distance_pct)
+    if max_breakeven_move_pct is not None:
+        source += " // " + _breakeven_scope_label(max_breakeven_move_pct)
     # iter_ranked's SQLite cursor owns a consistent read snapshot. Holding the
     # store lock through compression would stall interactive sort-index creation.
     return filterable_ric_html(
@@ -2133,12 +2194,14 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
         result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK),
         result.get("fee_per_spread", 0),
         result.get("max_strike_distance_pct"),
+        result.get("max_breakeven_move_pct"),
     )
     pricing_revision = int(result.get("pricing_revision", 0)) + 1
     scope = hashlib.sha256(
         repr((raw["scan_id"], result["target"], result["max_cost"],
               result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK), result.get("fee_per_spread", 0), mode,
               result.get("max_strike_distance_pct"),
+              result.get("max_breakeven_move_pct"),
               pricing_revision, RIC_PRICING_POLICY, bool(result.get("capacity_limited")))).encode("utf-8")
     ).hexdigest()[:16]
     return {
@@ -2155,6 +2218,7 @@ def _reprice_cached_ric_scan(result: dict[str, Any], mode: str) -> dict[str, Any
 _PRESENTATION_DEFAULTS = {
     "ric_symbol_value": "", "ric_target_breakeven": "",
     "ric_min_reward_risk": "2", "ric_fee_per_spread": "0",
+    "ric_max_breakeven_move_pct": "",
     "ric_max_strike_distance_pct": "",
     "ric_strike_distance_filter": {},
     "ric_results_view": "BEST PER YEAR", "ric_be_filter_enabled": False,
@@ -2206,7 +2270,7 @@ def _remember_presentation(key: str) -> None:
 
 def _remember_scan_inputs() -> None:
     for key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
-                "ric_max_strike_distance_pct", "ric_strike_distance_filter"):
+                "ric_max_strike_distance_pct", "ric_strike_distance_filter", "ric_max_breakeven_move_pct"):
         _remember_presentation(key)
 
 
@@ -2638,7 +2702,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.html(_company_display_markup(symbol, ticker_quote.get("name", ""),
                                             ticker_quote.get("last"), quote_title))
         with fields[2], st.form("ric_scan_form", clear_on_submit=False, border=False):
-            scan_fields = st.columns([.8, .8, 1.1], gap="small", vertical_alignment="bottom")
+            scan_fields = st.columns([.8, .8, 1.15, 1.1], gap="small", vertical_alignment="bottom")
             with scan_fields[0]:
                 ratio_text = st.text_input(
                     "MIN RISK:REWARD 1:", key="ric_min_reward_risk", placeholder="2",
@@ -2650,12 +2714,17 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     help="Total estimated fees for all four opening legs of ONE R.I.C. Enter 0 to screen before fees. Included in risk, both rewards and breakevens; excludes unknown closing/assignment costs.",
                 )
             with scan_fields[2]:
+                breakeven_move_text = st.text_input(
+                    "MAX BREAKEVEN MOVE %", key="ric_max_breakeven_move_pct", placeholder="Unlimited",
+                    help="Optional pre-scan limit for BOTH lower and upper breakevens relative to the FIXED scan spot. Includes total premium and entered fees. Blank is unlimited. Press SCAN ALL YEARS to apply changes.",
+                )
+            with scan_fields[3]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
                     on_click=_remember_scan_inputs,
                 )
         for form_key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
-                         "ric_max_strike_distance_pct", "ric_strike_distance_filter"):
+                         "ric_max_strike_distance_pct", "ric_strike_distance_filter", "ric_max_breakeven_move_pct"):
             _remember_presentation(form_key)
         if symbol:
             st.html(_cboe_wall_markup(symbol, vault_key))
@@ -2708,6 +2777,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     min_reward_risk = last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK)
                     fee_per_spread = float(last_result.get("fee_per_spread", 0))
                     max_strike_distance_pct = _entered_strike_distance(last_result.get("max_strike_distance_pct"))
+                    max_breakeven_move_pct = _entered_breakeven_move(last_result.get("max_breakeven_move_pct"))
                 else:
                     # Target ranking is now a column-menu query over retained results.
                     target = None
@@ -2715,11 +2785,13 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     fee_per_spread = _entered_fee(fee_text)
                     max_strike_distance_pct = _entered_strike_distance(
                         st.session_state.get("ric_max_strike_distance_pct", ""))
+                    max_breakeven_move_pct = _entered_breakeven_move(breakeven_move_text)
                 repeat_scan = (
                     last_result.get("symbol") == symbol
                     and last_result.get("max_cost") == max_cost
                     and last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK) == min_reward_risk
                     and last_result.get("max_strike_distance_pct") == max_strike_distance_pct
+                    and last_result.get("max_breakeven_move_pct") == max_breakeven_move_pct
                 )
                 with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
                     raw = _scan_all_years(
@@ -2736,11 +2808,12 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 }
                 candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_ric_chains(
                     raw, target, max_cost, pricing_mode, min_reward_risk, fee_per_spread,
-                    max_strike_distance_pct,
+                    max_strike_distance_pct, max_breakeven_move_pct,
                 )
                 scope = hashlib.sha256(
                     repr((raw["scan_id"], target, max_cost, min_reward_risk, fee_per_spread, pricing_mode,
                           max_strike_distance_pct,
+                          max_breakeven_move_pct,
                           RIC_PRICING_POLICY, safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["ric_scan_result"] = {
@@ -2748,6 +2821,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
                     "min_reward_risk": min_reward_risk, "fee_per_spread": fee_per_spread,
                     "max_strike_distance_pct": max_strike_distance_pct,
+                    "max_breakeven_move_pct": max_breakeven_move_pct,
                     "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
                     "pricing_policy": RIC_PRICING_POLICY,
                     "target_defaulted": False,
@@ -2789,6 +2863,16 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 _render_pre_scan_strike_header(symbol)
                 return
             st.session_state.pop("_ric_pre_scan_filter_state", None)
+            breakeven_notice = st.empty()
+            try:
+                notice = _breakeven_scope_change_notice(
+                    result.get("max_breakeven_move_pct"),
+                    st.session_state.get("ric_max_breakeven_move_pct", ""))
+            except ValueError as exc:
+                breakeven_notice.warning(str(exc))
+            else:
+                if notice:
+                    breakeven_notice.info(notice)
             if result.get("max_cost") is not None:
                 st.session_state.pop("ric_review_bundle", None)
                 st.session_state.pop("ric_live_confirm", None)
@@ -2816,6 +2900,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 _remember_scan_snapshot()
             if not result.get("scan_complete", True):
                 st.caption(_strike_scope_label(result.get("max_strike_distance_pct")))
+                if result.get("max_breakeven_move_pct") is not None:
+                    st.caption(_breakeven_scope_label(result["max_breakeven_move_pct"]))
                 listed = max(1, int(result["listed_expirations"]))
                 st.progress(
                     min(1.0, result["ranked_expirations"] / listed),
@@ -2862,6 +2948,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 f'{result["source"]} // {stamp:%b %d, %I:%M %p %Z} // '
                 f'BOTH DIRECTIONS RISK:REWARD ≥ 1:{min_reward_risk:g} // EST. FEES {_money(result.get("fee_per_spread", 0))} // '
                 f'{_strike_scope_label(result.get("max_strike_distance_pct"))} // '
+                f'{_breakeven_scope_label(result.get("max_breakeven_move_pct"))} // '
                 "DEBIT MIN / MAX IN COLUMN FILTER // 7+ DAYS TO EXPIRY"
             ).replace("$", r"\$"))
             try:
@@ -2899,6 +2986,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             qualification_notice = st.empty()
             if not candidates:
                 qualification_notice.info(f"No reverse iron condors met the 1:{min_reward_risk:g} minimum in BOTH directions"
+                                          + (" and " + _breakeven_scope_label(result["max_breakeven_move_pct"])
+                                             if result.get("max_breakeven_move_pct") is not None else "")
                                           + " at a qualifying quoted price across the loaded years.")
             if isinstance(candidates, RICResultStore):
                 annual_ids = set(result["annual_ids"])
@@ -2907,6 +2996,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 filter_scope = hashlib.sha256(repr((
                     result["source"], result["symbol"], result.get("raw_scan_id"),
                     result.get("max_strike_distance_pct"),
+                    result.get("max_breakeven_move_pct"),
                 )).encode("utf-8")).hexdigest()[:16]
                 state = st.session_state.get("_ric_checked_spreads")
                 if not isinstance(state, dict) or state.get("scope") != scope:
@@ -3052,6 +3142,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                         sort_by=sort_filter, direction=sort_direction,
                         max_distance=max_distance, column_filters=query_filters, year=active_year,
                         max_strike_distance_pct=result.get("max_strike_distance_pct"),
+                        max_breakeven_move_pct=result.get("max_breakeven_move_pct"),
                     )
                     for column, label, exporter, extension, mime in (
                         (exports[0], "CSV", _qualified_store_csv, "csv", "text/csv"),
@@ -3076,6 +3167,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                             year=active_year, sort_by=sort_filter, direction=sort_direction,
                             contract_open_interest=dict(contract_open_interest),
                             max_strike_distance_pct=result.get("max_strike_distance_pct"),
+                            max_breakeven_move_pct=result.get("max_breakeven_move_pct"),
                         ),
                         file_name=f'{result["symbol"]}_ric_ric_all.html', mime="text/html",
                         key="ric_export_qualified_html", on_click="ignore", use_container_width=True,
@@ -3241,7 +3333,8 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                     # Trade review is the first action after selecting a spread.
                     with st.expander("E*TRADE ORDER // REVIEW → PLACE", expanded=True):
                         _render_selected_order(client, touch_session, chosen,
-                                               {**result, "max_cost": active_max_cost}, broker_live)
+                                               {**result, "max_cost": _ric_review_max_cost(
+                                                   chosen, result, active_max_cost)}, broker_live)
                     os_col, tv_col = st.columns(2, gap="small")
                     with os_col:
                         st.link_button(
