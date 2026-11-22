@@ -60,6 +60,32 @@ _DETAILS = (
     "buy_bid", "buy_ask", "sell_bid", "sell_ask", "debit", "basis", "orderable",
     "spread_bid", "spread_mid", "spread_ask", "last_debit", "liquidity_signal",
 )
+_RECONSTRUCTED_FIELDS = frozenset(_DETAILS) | {
+    "id", "symbol", "spot_last", "year", "call_put", "buy_strike", "sell_strike",
+    "buy_osi", "sell_osi", "buy_last", "sell_last", "pricing_mode", "grade", "cost",
+    "width", "max_profit", "max_loss", "breakeven", "reward_risk",
+}
+
+
+def _stored_extras(row: dict[str, Any]) -> dict[str, Any]:
+    """Omit only safe scalar copies that _decode already reconstructs."""
+    extras = {}
+    for key, value in row.items():
+        if key == "expiry":
+            continue
+        if key in _RECONSTRUCTED_FIELDS:
+            if value is None or type(value) in (str, bool):
+                continue
+            if type(value) is float and math.isfinite(value):
+                continue
+            if type(value) is int and -(1 << 63) <= value < (1 << 63):
+                continue
+        # Keep unusual values so the existing JSON encoder still rejects
+        # nonfinite numbers, unsupported objects and invalid nested values.
+        extras[key] = value
+    return extras
+
+
 _NUMERIC_FILTERS = {
     "buy": "buy", "sell": "sell", "buy_last": "buy_last",
     "sell_last": "sell_last", "cost": "cost", "breakeven": "breakeven",
@@ -295,7 +321,7 @@ class RICResultStore:
                         row["breakeven"], row["max_profit"], row["width"],
                         row["buy_strike"], row["sell_strike"], row["buy_last"], row["sell_last"],
                         row["buy_osi"], row["sell_osi"],
-                        json.dumps([row.get(key) for key in _DETAILS] + [{key: value for key, value in row.items() if key != "expiry"}], separators=(",", ":"), allow_nan=False),
+                        json.dumps([row.get(key) for key in _DETAILS] + [_stored_extras(row)], separators=(",", ":"), allow_nan=False),
                     ))
                     if len(batch) >= 512:
                         flush()

@@ -9,6 +9,7 @@ not complex-book depth or fill probabilities.
 from __future__ import annotations
 
 from bisect import bisect_left
+from dataclasses import dataclass
 from datetime import date, datetime
 from functools import lru_cache
 import math
@@ -148,6 +149,47 @@ def _greek(row: dict[str, Any], key: str) -> float | None:
     return _number(row.get(key, nested.get(key) if isinstance(nested, dict) else None), signed=True)
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedLeg:
+    strike: float
+    bid: float
+    ask: float
+    last: float | None
+    interest: float | None
+    volume: float | None
+    greeks: tuple[float | None, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedWing:
+    buy: _PreparedLeg
+    sell: _PreparedLeg
+    width: float
+    market_valid: bool
+    buy_fields: dict[str, Any] | None = None
+    sell_fields: dict[str, Any] | None = None
+    identity: str = ""
+
+
+def _prepare_leg(row: dict[str, Any], quote: tuple[float, float]) -> _PreparedLeg:
+    """Normalize immutable analytics once; this does not approve a quote identity."""
+    return _PreparedLeg(
+        float(row["strike"]), quote[0], quote[1],
+        _number(row.get("last"), positive=True), _number(row.get("open_interest")),
+        _number(row.get("volume")),
+        tuple(_greek(row, key) for key in ("delta", "gamma", "theta", "vega")),
+    )
+
+
+def _prepared_wing(buy: _PreparedLeg, sell: _PreparedLeg, width: float,
+                   buy_fields=None, sell_fields=None, identity="") -> _PreparedWing:
+    return _PreparedWing(
+        buy, sell, round(width, 8),
+        buy.ask - sell.bid > 0 and buy.bid + buy.ask > sell.bid + sell.ask,
+        buy_fields, sell_fields, identity,
+    )
+
+
 def price_ric_quote(
     *, buy_call: dict[str, Any], sell_call: dict[str, Any],
     buy_put: dict[str, Any], sell_put: dict[str, Any],
@@ -176,11 +218,30 @@ def price_ric_quote(
     if any(buy[1] - sell[0] <= 0 or buy[0] + buy[1] <= sell[0] + sell[1]
            for buy, sell in ((cb, cs), (pb, ps))):
         return None
-    bid = round(cb[0] - cs[1] + pb[0] - ps[1], 8)
-    ask = round(cb[1] - cs[0] + pb[1] - ps[0], 8)
+    return _price_prepared_ric(
+        _prepared_wing(_prepare_leg(buy_call, cb), _prepare_leg(sell_call, cs),
+                       float(sell_call["strike"]) - float(buy_call["strike"])),
+        _prepared_wing(_prepare_leg(buy_put, pb), _prepare_leg(sell_put, ps),
+                       float(buy_put["strike"]) - float(sell_put["strike"])),
+        minimum=minimum, fee=fee, max_cost=max_cost, pricing_mode=pricing_mode,
+    )
+
+
+def _price_prepared_ric(call: _PreparedWing, put: _PreparedWing, *, minimum: float,
+                        fee: float, max_cost: float | None, pricing_mode: str) -> dict[str, Any] | None:
+    """Shared economics for validated direct quotes and scan-local prepared legs.
+
+    Preserve the public pricer's operation order, including cancellation before
+    eight-decimal quote rounding. Prepared records never survive the scan that
+    validated their contracts and never bypass direct broker requote checks.
+    """
+    if not call.market_valid or not put.market_valid:
+        return None
+    cb, cs, pb, ps = call.buy, call.sell, put.buy, put.sell
+    bid = round(cb.bid - cs.ask + pb.bid - ps.ask, 8)
+    ask = round(cb.ask - cs.bid + pb.ask - ps.bid, 8)
     midpoint = round((bid + ask) / 2, 8)
-    call_width = round(float(sell_call["strike"]) - float(buy_call["strike"]), 8)
-    put_width = round(float(buy_put["strike"]) - float(sell_put["strike"]), 8)
+    call_width, put_width = call.width, put.width
     width = min(call_width, put_width)
     bounds = ric_limit_bounds(
         width=width, max_cost=max_cost, spread_mid=midpoint, spread_ask=ask,
@@ -198,14 +259,15 @@ def price_ric_quote(
             or min(downside, upside) + 1e-8 < minimum * cost):
         return None
     basis = ("ASK" if abs(debit - ask) < 1e-8 else "SMART") if pricing_mode == "SMART FILL" else "LIMIT"
-    interests = [_number(row.get("open_interest")) for row in rows]
-    volumes = [_number(row.get("volume")) for row in rows]
+    rows = (cb, cs, pb, ps)
+    interests = [row.interest for row in rows]
+    volumes = [row.volume for row in rows]
     liquidity = "UNVERIFIED"
     if all(value is not None for value in interests + volumes):
         liquidity = ("ACTIVE LEGS" if min(interests) >= 100 and min(volumes) >= 20
                      else "THIN LEGS" if min(interests) < 20 or min(volumes) < 5
                      else "MODERATE LEGS")
-    lasts = [_number(row.get("last"), positive=True) for row in rows]
+    lasts = [row.last for row in rows]
     last_debit = (round(lasts[0] - lasts[1] + lasts[2] - lasts[3], 8)
                   if all(value is not None for value in lasts) else None)
     result = {
@@ -217,14 +279,14 @@ def price_ric_quote(
         "max_loss": cost, "max_profit": min(downside, upside),
         "downside_profit": downside, "upside_profit": upside,
         "reward_risk": min(downside, upside) / cost,
-        "lower_breakeven": round(float(buy_put["strike"]) - debit - fee / 100, 8),
-        "upper_breakeven": round(float(buy_call["strike"]) + debit + fee / 100, 8),
+        "lower_breakeven": round(pb.strike - debit - fee / 100, 8),
+        "upper_breakeven": round(cb.strike + debit + fee / 100, 8),
         "min_open_interest": min(interests) if all(v is not None for v in interests) else None,
         "min_volume": min(volumes) if all(v is not None for v in volumes) else None,
     }
     result["breakeven"] = result["upper_breakeven"]
-    for key in ("delta", "gamma", "theta", "vega"):
-        values = [_greek(row, key) for row in rows]
+    for index, key in enumerate(("delta", "gamma", "theta", "vega")):
+        values = [row.greeks[index] for row in rows]
         result["net_" + key] = (_number(values[0] - values[1] + values[2] - values[3], signed=True)
                                 if all(value is not None for value in values) else None)
     return result
@@ -256,19 +318,37 @@ def _parsed_contract_root(osi: str, expiry: date, side: str, strike: float) -> s
 
 
 def _wing_pairs(rows: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
+    prefixes = ("buy", "sell") if side == "CALL" else ("put_buy", "put_sell")
+    fields = ("strike", "osi", "last", "bid", "ask", "open_interest", "volume")
+    # These records and two small export maps are per contract, not per wing
+    # or four-leg result. Only this scan's normalized, validated rows enter.
+    legs = [
+        (row, _prepare_leg(row, (row["bid"], row["ask"])),
+         {prefixes[0] + "_" + field: row.get(field) for field in fields},
+         {prefixes[1] + "_" + field: row.get(field) for field in fields},
+         f'{row["strike"]:.6f}')
+        for row in rows
+    ]
     pairs = []
-    for index, lower in enumerate(rows):
-        for higher in rows[index + 1:]:
+    for index, lower_leg in enumerate(legs):
+        lower = lower_leg[0]
+        for higher_leg in legs[index + 1:]:
+            higher = higher_leg[0]
             if lower["strike"] == higher["strike"]:
                 continue
-            buy, sell = (lower, higher) if side == "CALL" else (higher, lower)
+            buy_leg, sell_leg = (lower_leg, higher_leg) if side == "CALL" else (higher_leg, lower_leg)
+            buy, sell = buy_leg[0], sell_leg[0]
             bid = buy["bid"] - sell["ask"]
             ask = buy["ask"] - sell["bid"]
             midpoint = (bid + ask) / 2
             if ask <= 0 or midpoint <= 0:
                 continue
+            width = higher["strike"] - lower["strike"]
             pairs.append({"buy": buy, "sell": sell, "mid": midpoint, "ask": ask,
-                          "width": higher["strike"] - lower["strike"]})
+                          "width": width,
+                          "prepared": _prepared_wing(
+                              buy_leg[1], sell_leg[1], width, buy_leg[2], sell_leg[3],
+                              lower_leg[4] + "|" + higher_leg[4])})
     return pairs
 
 
@@ -386,17 +466,18 @@ def scan_ric_candidates(
             continue
         tree = _pair_tree(put_pairs, minimum, fee)
         top = retained.setdefault(expiry, [])
+        identity_prefix = "|".join((ticker, expiry.isoformat(), "RIC", root)) + "|"
         for call in call_pairs:
+            prepared_call = call["prepared"]
             for put in _compatible_puts(tree, call, minimum=minimum, fee=fee,
                                         max_cost=budget, smart=pricing_mode == "SMART FILL"):
                 checked += 1
                 if progress is not None and checked % 4096 == 0:
                     progress(checked)
-                price = price_ric_quote(
-                    buy_call=call["buy"], sell_call=call["sell"],
-                    buy_put=put["buy"], sell_put=put["sell"], max_cost=budget,
-                    pricing_mode=pricing_mode, min_reward_risk=minimum,
-                    spot_last=spot, fee_per_spread=fee, desktop_fast_fill=desktop_fast_fill,
+                prepared_put = put["prepared"]
+                price = _price_prepared_ric(
+                    prepared_call, prepared_put, max_cost=budget,
+                    pricing_mode=pricing_mode, minimum=minimum, fee=fee,
                 )
                 if price is None:
                     continue
@@ -404,12 +485,11 @@ def scan_ric_candidates(
                 candidate = {"symbol": ticker, "spot_last": spot, "expiry": expiry,
                              "year": expiry.year, "call_put": "RIC", "option_root": root,
                              "pricing_mode": pricing_mode, **price}
-                for prefix, leg in (("buy", call["buy"]), ("sell", call["sell"]),
-                                    ("put_buy", put["buy"]), ("put_sell", put["sell"])):
-                    for field in ("strike", "osi", "last", "bid", "ask", "open_interest", "volume"):
-                        candidate[prefix + "_" + field] = leg.get(field)
-                identity = "|".join((ticker, expiry.isoformat(), "RIC", root,
-                                    *(f'{candidate[key + "_strike"]:.6f}' for key in ("put_sell", "put_buy", "buy", "sell"))))
+                candidate.update(prepared_call.buy_fields)
+                candidate.update(prepared_call.sell_fields)
+                candidate.update(prepared_put.buy_fields)
+                candidate.update(prepared_put.sell_fields)
+                identity = identity_prefix + prepared_put.identity + "|" + prepared_call.identity
                 candidate["id"] = identity
                 distance = min(abs(price["upper_breakeven"] - target), abs(price["lower_breakeven"] - target)) if target is not None else 0
                 rank = (price["grade"], distance, price["cost"], -price["reward_risk"], expiry,

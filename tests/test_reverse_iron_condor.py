@@ -3,11 +3,13 @@
 from copy import deepcopy
 from datetime import date, timedelta
 from decimal import Decimal
-from itertools import combinations
+from itertools import combinations, product
 import math
 import random
 import unittest
+from unittest.mock import patch
 
+from src import reverse_iron_condor as ric
 from src.reverse_iron_condor import (
     build_place_payload,
     build_ric_preview_payload,
@@ -46,6 +48,55 @@ def scan(rows, **kwargs):
 def identity(row):
     return tuple(row[key] for key in ("expiry", "buy_strike", "sell_strike",
                                       "put_buy_strike", "put_sell_strike"))
+
+
+def reference_candidates(rows, *, mode="NORMAL", fee=0, budget=None, minimum=2, target=None):
+    """Unpruned public-price oracle for unique, standard test contracts."""
+    def number(value, *, positive=False):
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return value if math.isfinite(value) and (value > 0 if positive else value >= 0) else None
+
+    classes = {}
+    for row in rows:
+        expiry = row["expiry"]
+        root = row["osi"].upper().replace(" ", "").lstrip(".").split(expiry.strftime("%y%m%d"))[0].rstrip("-")
+        classes.setdefault((expiry, root), []).append(row)
+    expected = []
+    for (expiry, root), contracts in classes.items():
+        calls = sorted((row for row in contracts if row["call_put"].upper() == "CALL" and float(row["strike"]) > 100),
+                       key=lambda row: float(row["strike"]))
+        puts = sorted((row for row in contracts if row["call_put"].upper() == "PUT" and float(row["strike"]) < 100),
+                      key=lambda row: -float(row["strike"]))
+        for cb, cs in combinations(calls, 2):
+            for pb, ps in combinations(puts, 2):
+                price = price_ric_quote(buy_call=cb, sell_call=cs, buy_put=pb, sell_put=ps,
+                                        spot_last=100, max_cost=budget, pricing_mode=mode,
+                                        min_reward_risk=minimum, fee_per_spread=fee)
+                if price is None:
+                    continue
+                row = {"symbol":"XYZ", "spot_last":100.0, "expiry":expiry, "year":expiry.year,
+                       "call_put":"RIC", "option_root":root, "pricing_mode":mode, **price}
+                for prefix, leg in (("buy", cb), ("sell", cs), ("put_buy", pb), ("put_sell", ps)):
+                    row[prefix+"_strike"] = float(leg["strike"])
+                    row[prefix+"_osi"] = str(leg["osi"]).strip()
+                    row[prefix+"_bid"], row[prefix+"_ask"] = float(leg["bid"]), float(leg["ask"])
+                    row[prefix+"_last"] = number(leg.get("last"), positive=True)
+                    row[prefix+"_open_interest"] = number(leg.get("open_interest"))
+                    row[prefix+"_volume"] = number(leg.get("volume"))
+                row["id"] = "|".join(("XYZ", expiry.isoformat(), "RIC", root,
+                                      *(f'{row[key+"_strike"]:.6f}' for key in ("put_sell","put_buy","buy","sell"))))
+                expected.append(row)
+    return sorted(expected, key=lambda row: reference_rank(row, target))
+
+
+def reference_rank(row, target):
+    distance = (min(abs(row["upper_breakeven"]-target), abs(row["lower_breakeven"]-target))
+                if target is not None else 0)
+    return (row["grade"], distance, row["cost"], -row["reward_risk"], row["expiry"],
+            row["buy_strike"], row["sell_strike"], row["put_buy_strike"], row["put_sell_strike"], row["option_root"])
 
 
 class ReverseIronCondorMathTests(unittest.TestCase):
@@ -335,6 +386,161 @@ class ReverseIronCondorScannerTests(unittest.TestCase):
         self.assertEqual(stats["priced_condors"], 0)
         self.assertEqual(stats["pruned_combinations"], stats["possible_condors"])
         self.assertEqual(stats["qualified_condors"], 0)
+
+
+class ReverseIronCondorPreparedScanTests(unittest.TestCase):
+    def varied_chain(self, *, expiry=EXPIRY, root="XYZ"):
+        rng = random.Random(2731)
+        rows = []
+        for side in ("CALL", "PUT"):
+            for index, distance in enumerate((.125, .75, 1.25, 2.375, 4.5, 7.625)):
+                premium = 1.2 * math.exp(-distance/2.1) + .015
+                gap = rng.uniform(.002, .025)
+                row = contract(side, 100+distance if side == "CALL" else 100-distance,
+                               max(0, premium-gap), premium+gap, expiry=expiry, root=root)
+                patterns = (
+                    {"greeks":{"delta":.3,"gamma":.02,"theta":-.04,"vega":.1}},
+                    {"OptionGreeks":{"delta":"-.2","gamma":".01","theta":"-.03","vega":".05"}},
+                    {"greeks":{},"OptionGreeks":{"delta":.15,"theta":-.015}},
+                    {"delta":None,"gamma":"nan","theta":"-.02","vega":"bad",
+                     "greeks":{"delta":.7,"gamma":.4,"theta":-.4,"vega":.5}},
+                    {"greeks":{"delta":float("inf"),"gamma":-.005,"theta":-.001,"vega":True}},
+                    {"greeks":"unavailable","OptionGreeks":{"delta":.8}},
+                )
+                row.update(deepcopy(patterns[index]))
+                row["open_interest"] = (0,"1000",None,-1,float("inf"),200.5)[index]
+                row["volume"] = (30,"40.5",None,-1,float("nan"),True)[index]
+                row["last"] = (premium,".25",None,0,-1,"nan")[index]
+                if index in (1,3):
+                    for key in ("strike","bid","ask"):
+                        row[key] = str(row[key])
+                rows.append(row)
+        return rows
+
+    def test_full_candidate_dictionaries_match_unpruned_public_quote_oracle(self):
+        rows = self.varied_chain()
+        before = repr(rows)
+        rng = random.Random(7139)
+        qualified = 0
+        for mode,fee,minimum in product(("NORMAL","SMART FILL"),(0,.01,2.6,10),(2,2.5,3.25)):
+            options = dict(mode=mode,fee=fee,
+                           budget=(None,40,100,250)[rng.randrange(4)],
+                           minimum=minimum,
+                           target=(None,98.875,102.5)[rng.randrange(3)])
+            with self.subTest(options=options):
+                expected = reference_candidates(rows, **options)
+                actual, annual = scan(rows, pricing_mode=options["mode"], fee_per_spread=options["fee"],
+                                      max_cost=options["budget"], min_reward_risk=options["minimum"],
+                                      target_breakeven=options["target"], max_per_expiration=None)
+                self.assertEqual(actual,expected)
+                self.assertEqual(annual,{expected[0]["id"]} if expected else set())
+                qualified += len(actual)
+        self.assertGreater(qualified,0)
+        self.assertEqual(repr(rows),before)
+
+    def test_fractional_half_cent_and_cancellation_preserve_every_public_price_field(self):
+        legs = {
+            "buy_call":contract("CALL",105.125,1,1.005),
+            "sell_call":contract("CALL",108.170,.5,.5),
+            "buy_put":contract("PUT",94.875,1,1.005),
+            "sell_put":contract("PUT",91.830,.5,.5),
+        }
+        for row, delta, last in zip(legs.values(),(.3,.2,.1,.01),(1e8+.015,1e8+.01,.2,.1)):
+            row["delta"] = delta
+            row["gamma"] = delta/10
+            row["theta"] = -delta
+            row["vega"] = delta*2
+            row["last"] = last
+        self.assertNotEqual(.3-.2+.1-.01,(.3-.2)+(.1-.01))
+        seen = 0
+        for mode in ("NORMAL","SMART FILL"):
+            for fee in (0,.5,.51,2.605):
+                for budget in (None,101.5,104):
+                    expected = reference_candidates(list(legs.values()),mode=mode,fee=fee,budget=budget)
+                    actual, _ = scan(list(legs.values()),pricing_mode=mode,fee_per_spread=fee,
+                                      max_cost=budget,max_per_expiration=None)
+                    self.assertEqual(actual,expected)
+                    seen += len(actual)
+                    if actual:
+                        self.assertEqual(actual[0]["net_delta"],.3-.2+.1-.01)
+        self.assertGreater(seen,0)
+
+    def test_root_classes_duplicate_metadata_and_conflicting_quotes_preserve_exact_results(self):
+        base = self.varied_chain()
+        weekly = self.varied_chain(root="XYZW---")
+        rows = base+weekly
+        expected = reference_candidates(rows)
+        actual, _ = scan(rows,max_per_expiration=None)
+        self.assertEqual(actual,expected)
+        self.assertEqual({row["option_root"] for row in actual},{"XYZ","XYZW"})
+        duplicate = deepcopy(base[0])
+        duplicate.update(last=999,open_interest=99999,greeks={"delta":.999})
+        self.assertEqual(scan(rows+[duplicate],max_per_expiration=None)[0],expected)
+        conflict = deepcopy(base[0])
+        conflict["ask"] += .01
+        surviving = [row for row in rows if row is not base[0]]
+        expected_conflict = reference_candidates(surviving)
+        self.assertEqual(scan(rows+[conflict],max_per_expiration=None)[0],expected_conflict)
+        self.assertEqual(scan([conflict]+rows,max_per_expiration=None)[0],expected_conflict)
+        for field,value in (("osi",""),("osi","XYZ1290119C00105125"),("underlying","OTHER"),
+                            ("multiplier",10),("adjusted",True),("bid",None),("ask",float("nan"))):
+            altered = deepcopy(base)
+            altered[0][field] = value
+            with self.subTest(field=field,value=value):
+                self.assertEqual(scan(altered,max_per_expiration=None)[0],reference_candidates(base[1:]))
+
+    def test_annual_top_k_and_complete_sink_keep_full_dictionary_parity(self):
+        rows = self.varied_chain()+self.varied_chain(expiry=date(2030,1,18),root="XYZW---")
+        target = 97.625
+        expected = reference_candidates(rows,target=target,fee=2.6)
+        expected_annual = {next(row["id"] for row in expected if row["year"]==year)
+                           for year in {row["year"] for row in expected}}
+        complete, annual = scan(rows,target_breakeven=target,fee_per_spread=2.6,max_per_expiration=None)
+        self.assertEqual(complete,expected)
+        self.assertEqual(annual,expected_annual)
+        streamed, progress = [],[]
+        retained, sink_annual = scan(rows,target_breakeven=target,fee_per_spread=2.6,max_per_expiration=None,
+                                     candidate_sink=streamed.append,progress=progress.append)
+        self.assertEqual(retained,[])
+        self.assertEqual(sorted(streamed,key=lambda row:reference_rank(row,target)),expected)
+        self.assertEqual(sink_annual,expected_annual)
+        limited, limited_annual = scan(rows,target_breakeven=target,fee_per_spread=2.6,max_per_expiration=3)
+        winners, per_expiry = [],{}
+        for row in expected:
+            count = per_expiry.get(row["expiry"],0)
+            if count<3:
+                winners.append(row)
+                per_expiry[row["expiry"]] = count+1
+        self.assertEqual(limited,winners)
+        self.assertEqual(limited_annual,expected_annual)
+        self.assertTrue(progress)
+        self.assertGreaterEqual(progress[-1],len(streamed))
+
+    def test_scan_quote_identity_and_metadata_work_scale_with_input_contracts(self):
+        for per_side in (8,12):
+            rows = []
+            for side in ("CALL","PUT"):
+                for step in range(1,per_side+1):
+                    premium = .01*(per_side+1-step)
+                    row = contract(side,100+step if side=="CALL" else 100-step,premium,premium)
+                    row["greeks"] = {"delta":.3,"gamma":.02,"theta":-.01,"vega":.1}
+                    rows.append(row)
+            count = 0
+            def discard(row):
+                nonlocal count
+                count += 1
+            with (patch.object(ric,"_quotes",wraps=ric._quotes) as quotes,
+                  patch.object(ric,"_greek",wraps=ric._greek) as greeks,
+                  patch.object(ric,"_matching_quote_identities",wraps=ric._matching_quote_identities) as identities,
+                  patch.object(ric,"validate_ric",wraps=ric.validate_ric) as strikes):
+                retained, _ = scan(rows,fee_per_spread=2.6,max_per_expiration=None,candidate_sink=discard)
+            self.assertEqual(retained,[])
+            self.assertEqual(count,math.comb(per_side,2)**2)
+            self.assertGreater(count,10*len(rows))
+            self.assertLessEqual(quotes.call_count,len(rows))
+            self.assertLessEqual(greeks.call_count,4*len(rows))
+            self.assertLessEqual(identities.call_count,len(rows))
+            self.assertLessEqual(strikes.call_count,len(rows))
 
 
 class ReverseIronCondorPayloadTests(unittest.TestCase):

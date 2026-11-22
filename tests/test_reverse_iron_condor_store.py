@@ -13,6 +13,7 @@ import subprocess
 import unittest
 
 from src.reverse_iron_condor import scan_ric_candidates
+from src import reverse_iron_condor_store as store_module
 from src.reverse_iron_condor_store import RICResultStore, filterable_ric_html, indicative_fill_score, ric_strike_distance_pct
 
 
@@ -64,6 +65,98 @@ class RICStoreTests(unittest.TestCase):
         self.assertEqual(len(final), 1)
         self.assertEqual(list(store.iter_rows())[-1], final[0])
         self.assertEqual(len(list(store.iter_ranked())), len(store))
+
+    def test_compact_details_omit_reconstructed_copies_and_keep_financial_extras(self):
+        store, _ = self.store(fee=2.6, count=5)
+        candidate = store.page(limit=1)[0]
+        with store._connect() as db:
+            packed = db.execute("SELECT details FROM spreads WHERE id=?", [candidate["id"]]).fetchone()[0]
+        values = json.loads(packed)
+        legacy = json.dumps([candidate.get(key) for key in store_module._DETAILS]
+                            + [{key: value for key, value in candidate.items() if key != "expiry"}],
+                            separators=(",", ":"), allow_nan=False)
+        self.assertEqual(len(values), 13)
+        self.assertEqual(values[:12], [candidate.get(key) for key in store_module._DETAILS])
+        self.assertLess(len(packed), len(legacy) * .75)
+        for key in ("id", "symbol", "spot_last", "grade", "cost", "max_loss", "debit",
+                    "breakeven", "buy_strike", "sell_osi"):
+            self.assertNotIn(key, values[12])
+        for key in ("upper_breakeven", "lower_breakeven", "put_buy_strike", "put_sell_osi",
+                    "call_width", "put_width", "option_root", "fee_per_spread", "net_delta"):
+            self.assertEqual(values[12][key], candidate[key])
+
+    def test_unknown_future_extras_and_json_containers_survive_full_roundtrip(self):
+        rows = chain(self.expiry, count=4)
+        expected, _ = scan_ric_candidates(symbol="TEST", spot_last=100, option_rows=rows,
+                                          target_breakeven=None, max_cost=None, max_per_expiration=None)
+        extras = {"future_metric": {"version": 2, "values": [1, None, True, "retained"]},
+                  "future_flag": False, "future_total": 1 << 100}
+        store = RICResultStore("TEST", 100, None, None, "NORMAL")
+        self.addCleanup(store._directory.cleanup)
+        def enriched(**kwargs):
+            for candidate in expected:
+                kwargs["candidate_sink"](candidate | extras)
+        store.add_expiration(self.expiry, rows, enriched)
+        restored = store.get_many([candidate["id"] for candidate in expected])
+        self.assertEqual(restored, {candidate["id"]: candidate | extras for candidate in expected})
+
+    def test_legacy_and_compact_json_rows_share_unchanged_decoder_and_queries(self):
+        store, _ = self.store(count=5)
+        expected = list(store.iter_rows())
+        candidate = expected[0]
+        legacy = json.dumps([candidate.get(key) for key in store_module._DETAILS]
+                            + [{key: value for key, value in candidate.items() if key != "expiry"}],
+                            separators=(",", ":"), allow_nan=False)
+        with store._connect() as db:
+            db.execute("UPDATE spreads SET details=? WHERE id=?", [legacy, candidate["id"]])
+        self.assertEqual(list(store.iter_rows()), expected)
+        self.assertEqual(store.get_many([candidate["id"]])[candidate["id"]], candidate)
+        self.assertEqual(store.count(column_filters={"put_buy": {"min": candidate["put_buy_strike"]}}),
+                         sum(row["put_buy_strike"] >= candidate["put_buy_strike"] for row in expected))
+        self.assertEqual(list(store.iter_rows(sort_by="LOWER BREAKEVEN")),
+                         sorted(expected, key=lambda row: (row["lower_breakeven"], row["id"])))
+
+    def test_reconstructed_field_invalid_json_values_still_reject_and_rollback(self):
+        rows = chain(self.expiry, count=4)
+        candidate = scan_ric_candidates(symbol="TEST", spot_last=100, option_rows=rows,
+                                        target_breakeven=None, max_cost=None)[0][0]
+        for key in store_module._RECONSTRUCTED_FIELDS | {"future_metric"}:
+            for invalid in (float("nan"), float("inf"), -float("inf"), object(),
+                            [float("nan")], {"nested": object()}):
+                with self.subTest(key=key, value_type=type(invalid).__name__):
+                    changed = candidate | {key: invalid}
+                    store = RICResultStore("TEST", 100, None, None, "NORMAL")
+                    try:
+                        def invalid_sink(**kwargs):
+                            kwargs["candidate_sink"](changed)
+                        with self.assertRaises((TypeError, ValueError)):
+                            store.add_expiration(self.expiry, rows, invalid_sink)
+                        self.assertEqual(len(store), 0)
+                        self.assertEqual(store.ranked_expirations, 0)
+                        self.assertFalse(store.annual_ids)
+                    finally:
+                        store._directory.cleanup()
+
+    def test_json_failure_after_flushed_batch_rolls_back_all_rows_before_retry(self):
+        rows = chain(self.expiry, count=4)
+        candidate = scan_ric_candidates(symbol="TEST", spot_last=100, option_rows=rows,
+                                        target_breakeven=None, max_cost=None)[0][0]
+        store = RICResultStore("TEST", 100, None, None, "NORMAL")
+        self.addCleanup(store._directory.cleanup)
+        def emit(*, invalid, **kwargs):
+            for index in range(513):
+                row = candidate | {"id": candidate["id"] + f"|{index}"}
+                if invalid and index == 512:
+                    row["max_loss"] = float("nan")
+                kwargs["candidate_sink"](row)
+        with self.assertRaises(ValueError):
+            store.add_expiration(self.expiry, rows, lambda **kwargs: emit(invalid=True, **kwargs))
+        self.assertEqual(store.count(column_filters={"side": ["RIC"]}), 0)
+        self.assertEqual(store.ranked_expirations, 0)
+        self.assertFalse(store.annual_ids)
+        self.assertTrue(store.add_expiration(self.expiry, rows, lambda **kwargs: emit(invalid=False, **kwargs)))
+        self.assertEqual(len(store), 513)
+        self.assertEqual(len(list(store.iter_rows())), 513)
 
     def test_put_fields_and_lower_breakeven_filter_the_entire_universe(self):
         store, _ = self.store()
