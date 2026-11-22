@@ -2242,6 +2242,8 @@ def _restore_scan_memory(vault_key: str) -> None:
     memory = _scan_memory(vault_key)
     st.session_state["_ric_memory"] = memory
     for key, value in memory.items():
+        if key == "ric_scan_result" and st.session_state.get("_ric_scan_pending"):
+            continue  # A submitted replacement must not resurrect the old grid.
         if key not in st.session_state:
             st.session_state[key] = dict(value) if isinstance(value, dict) else value
 
@@ -2272,6 +2274,27 @@ def _remember_scan_inputs() -> None:
     for key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
                 "ric_max_strike_distance_pct", "ric_strike_distance_filter", "ric_max_breakeven_move_pct"):
         _remember_presentation(key)
+
+
+@finance_callback
+def _queue_ric_scan() -> None:
+    _remember_scan_inputs()
+    previous = st.session_state.pop("ric_scan_result", None)
+    if previous is not None:
+        st.session_state["_ric_previous_scan_result"] = previous
+    st.session_state["_ric_scan_pending"] = {
+        "symbol": str(st.session_state.get("ric_symbol_value") or "").strip().upper(),
+        "ratio": st.session_state.get("ric_min_reward_risk", "2"),
+        "fees": st.session_state.get("ric_fee_per_spread", "0"),
+        "strike": st.session_state.get("ric_max_strike_distance_pct", ""),
+        "breakeven": st.session_state.get("ric_max_breakeven_move_pct", ""),
+        "pricing_mode": st.session_state.get("_ric_pricing_mode_preference", "NORMAL"),
+        "submitted_at": time.time(),
+        "cache_ids": {key: value.get("scan_id") for key, value in
+                      (st.session_state.get("_ric_chain_cache") or {}).items()
+                      if isinstance(value, dict)},
+    }
+    st.session_state.pop("_ric_scan_error", None)
 
 
 def _strike_distance_column_bounds(filters: dict[str, Any]) -> dict[str, float]:
@@ -2721,7 +2744,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             with scan_fields[3]:
                 scan_clicked = st.form_submit_button(
                     "SCAN ALL YEARS", type="primary", use_container_width=True,
-                    on_click=_remember_scan_inputs,
+                    on_click=_queue_ric_scan,
                 )
         for form_key in ("ric_symbol_value", "ric_target_breakeven", "ric_min_reward_risk", "ric_fee_per_spread",
                          "ric_max_strike_distance_pct", "ric_strike_distance_filter", "ric_max_breakeven_move_pct"):
@@ -2733,10 +2756,9 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
 
         if scan_clicked:
             # Clear the old grid in a fast rerun before any broker call begins.
-            st.session_state["_ric_previous_scan_result"] = st.session_state.pop("ric_scan_result", None)
-            st.session_state["_ric_scan_pending"] = True
             st.rerun()
-        scan_clicked = bool(st.session_state.pop("_ric_scan_pending", False))
+        request = st.session_state.get("_ric_scan_pending")
+        scan_clicked = isinstance(request, dict)
         if scan_clicked:
             last_result = st.session_state.get("_ric_previous_scan_result") or {}
         if scan_clicked:
@@ -2760,8 +2782,11 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 key="ric_resume_partial_scan",
             )
         if scan_clicked or resume_clicked:
+            scan_symbol = request["symbol"] if scan_clicked else symbol
+            scan_mode = request["pricing_mode"] if scan_clicked else pricing_mode
             if scan_clicked:
-                st.caption(f"SCANNING ALL YEARS // {symbol} // results appear when complete")
+                st.caption(f"SCANNING ALL YEARS // {scan_symbol} // results appear when complete")
+            st.session_state.pop("_ric_scan_error", None)
             st.session_state.pop("_ric_auto_scan_error", None)
             st.session_state.pop("ric_review_bundle", None)
             st.session_state.pop("ric_live_confirm", None)
@@ -2769,7 +2794,7 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
             st.session_state.pop("ric_last_send_results", None)
             scan_started = time.monotonic()
             try:
-                if not symbol:
+                if not scan_symbol:
                     raise ValueError("Enter a ticker to scan.")
                 max_cost = None
                 if resume_clicked:
@@ -2781,48 +2806,62 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 else:
                     # Target ranking is now a column-menu query over retained results.
                     target = None
-                    min_reward_risk = _entered_reward_risk(ratio_text)
-                    fee_per_spread = _entered_fee(fee_text)
-                    max_strike_distance_pct = _entered_strike_distance(
-                        st.session_state.get("ric_max_strike_distance_pct", ""))
-                    max_breakeven_move_pct = _entered_breakeven_move(breakeven_move_text)
+                    min_reward_risk = _entered_reward_risk(request["ratio"])
+                    fee_per_spread = _entered_fee(request["fees"])
+                    max_strike_distance_pct = _entered_strike_distance(request["strike"])
+                    max_breakeven_move_pct = _entered_breakeven_move(request["breakeven"])
                 repeat_scan = (
-                    last_result.get("symbol") == symbol
+                    last_result.get("symbol") == scan_symbol
                     and last_result.get("max_cost") == max_cost
                     and last_result.get("min_reward_risk", _DEFAULT_MIN_REWARD_RISK) == min_reward_risk
                     and last_result.get("max_strike_distance_pct") == max_strike_distance_pct
                     and last_result.get("max_breakeven_move_pct") == max_breakeven_move_pct
                 )
-                with st.spinner(f"LOADING {symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
-                    raw = _scan_all_years(
-                        client, symbol, touch_session,
-                        refresh=scan_clicked and (
-                            (repeat_scan and bool(last_result.get("scan_complete", True)))
-                            or bool(last_result.get("failed_expirations"))
-                        ),
-                    )
+                refresh = scan_clicked and ((repeat_scan and bool(last_result.get("scan_complete", True)))
+                                            or bool(last_result.get("failed_expirations")))
+                raw = request.get("raw") if scan_clicked else None
+                if raw is None:
+                    if scan_clicked and request.get("source_started") and refresh:
+                        source_key = f'{"E*TRADE" if broker_live else "PUBLIC"}:{scan_symbol}'
+                        acquired = (st.session_state.get("_ric_chain_cache") or {}).get(source_key)
+                        if (isinstance(acquired, dict)
+                                and acquired.get("scan_id") != request["cache_ids"].get(source_key)
+                                and float(acquired.get("loaded_at") or 0) >= request["submitted_at"]
+                                and time.time() - float(acquired["loaded_at"]) < _SCAN_CACHE_SECONDS):
+                            refresh = False  # A new source batch committed before the interruption.
+                    if scan_clicked:
+                        request["source_started"] = True
+                    with st.spinner(f"LOADING {scan_symbol} // QUOTE + EXPIRATION CHAINS", show_time=True):
+                        raw = _scan_all_years(client, scan_symbol, touch_session, refresh=refresh)
+                    if scan_clicked:
+                        request["raw"] = raw
+                if (scan_clicked and not (raw["scan_complete"] and not raw.get("failed_expirations"))
+                        and time.time() - raw["loaded_at"] >= _SCAN_CACHE_SECONDS):
+                    raise ValueError("QUOTE SNAPSHOT EXPIRED // Press SCAN ALL YEARS again.")
                 preview_source = "E*TRADE" if broker_live else "YFINANCE"
-                st.session_state.setdefault("_ric_ticker_quotes", {})[f"{preview_source}:{symbol}"] = {
+                st.session_state.setdefault("_ric_ticker_quotes", {})[f"{preview_source}:{scan_symbol}"] = {
                     "last": raw["spot"], "name": raw["name"], "source": preview_source,
                     "loaded_at": raw["loaded_at"],
                 }
                 candidates, annual_ids, safe_limit, potential_pairs = _rank_cached_ric_chains(
-                    raw, target, max_cost, pricing_mode, min_reward_risk, fee_per_spread,
+                    raw, target, max_cost, scan_mode, min_reward_risk, fee_per_spread,
                     max_strike_distance_pct, max_breakeven_move_pct,
                 )
+                if scan_clicked and st.session_state.get("_ric_scan_pending") is not request:
+                    st.rerun()  # A newer explicit submission owns the results.
                 scope = hashlib.sha256(
-                    repr((raw["scan_id"], target, max_cost, min_reward_risk, fee_per_spread, pricing_mode,
+                    repr((raw["scan_id"], target, max_cost, min_reward_risk, fee_per_spread, scan_mode,
                           max_strike_distance_pct,
                           max_breakeven_move_pct,
                           RIC_PRICING_POLICY, safe_limit is not None)).encode("utf-8")
                 ).hexdigest()[:16]
                 st.session_state["ric_scan_result"] = {
-                    "symbol": symbol, "name": raw["name"], "source": raw["source"],
+                    "symbol": scan_symbol, "name": raw["name"], "source": raw["source"],
                     "spot": raw["spot"], "target": target, "max_cost": max_cost,
                     "min_reward_risk": min_reward_risk, "fee_per_spread": fee_per_spread,
                     "max_strike_distance_pct": max_strike_distance_pct,
                     "max_breakeven_move_pct": max_breakeven_move_pct,
-                    "pricing_mode": pricing_mode, "raw_scan_id": raw["scan_id"],
+                    "pricing_mode": scan_mode, "raw_scan_id": raw["scan_id"],
                     "pricing_policy": RIC_PRICING_POLICY,
                     "target_defaulted": False,
                     "target_basis": "NOT PROVIDED" if target is None else "CUSTOM",
@@ -2846,16 +2885,26 @@ def _render_reverse_iron_condor_fragment(client, touch_session, vault_key: str =
                 }
                 st.session_state.pop("_ric_auto_target", None)
                 if scan_clicked:
+                    st.session_state.pop("_ric_scan_pending", None)
                     st.session_state["ric_results_view"] = "BEST PER YEAR"
                     _remember_presentation("ric_results_view")
                     st.session_state.pop("_ric_previous_scan_result", None)
                 _remember_scan_snapshot()
                 st.rerun()  # Mount/stop the feature-owned continuation timer.
             except Exception as exc:
-                st.error(f"R.I.C. SCAN UNAVAILABLE // {exc}")
+                if scan_clicked and st.session_state.get("_ric_scan_pending") is not request:
+                    st.rerun()
+                st.session_state["_ric_scan_error"] = f"R.I.C. SCAN UNAVAILABLE // {scan_symbol} // {exc}"
                 # Preserve the last successful snapshot if a new scan fails.
                 if scan_clicked:
+                    st.session_state.pop("_ric_scan_pending", None)
                     st.session_state["ric_scan_result"] = st.session_state.pop("_ric_previous_scan_result", None)
+                    if st.session_state["ric_scan_result"]:
+                        st.session_state["_ric_scan_error"] += " // Previous results retained; new settings were not applied."
+                _remember_scan_snapshot()
+
+        if st.session_state.get("_ric_scan_error"):
+            st.error(st.session_state["_ric_scan_error"])
 
         with results_slot.container():
             result = st.session_state.get("ric_scan_result")
@@ -3841,6 +3890,7 @@ def _recover_ric_pricing_without_blocking() -> None:
 def _render_ric_scan_continuation(client, touch_session) -> None:
     result = st.session_state.get("ric_scan_result") or {}
     if (not result or result.get("max_cost") is not None or result.get("scan_complete", True)
+            or st.session_state.get("_ric_scan_pending") or st.session_state.get("_ric_scan_error")
             or result.get("symbol") != str(st.session_state.get("ric_symbol_value") or "").strip().upper()
             or not st.session_state.get("ric_auto_finish", True)
             or result.get("stopped_on_errors")
@@ -3869,6 +3919,7 @@ def render_reverse_iron_condor(client, touch_session, *, vault_key: str = "defau
         _recover_ric_pricing_without_blocking()
     result = st.session_state.get("ric_scan_result") or {}
     if (result.get("max_cost") is None
+            and not st.session_state.get("_ric_scan_pending") and not st.session_state.get("_ric_scan_error")
             and result.get("symbol") == str(st.session_state.get("ric_symbol_value") or "").strip().upper()
             and not result.get("scan_complete", True) and st.session_state.get("ric_auto_finish", True)
             and not result.get("stopped_on_errors")

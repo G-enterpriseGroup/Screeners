@@ -5,9 +5,11 @@ import csv
 from datetime import date, timedelta
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import time
+import tempfile
 from types import ModuleType
 import unittest
 from unittest.mock import MagicMock, patch
@@ -1112,6 +1114,152 @@ class PortfolioAndIsolationTests(unittest.TestCase):
         self.assertNotIn('key="vo_', source)
         self.assertIn('@finance_callback\ndef _refresh_live_quotes', source)
         self.assertIn('@finance_fragment\ndef _render_reverse_iron_condor_fragment', source)
+
+
+class SubmittedScanRecoveryTests(unittest.TestCase):
+    @contextmanager
+    def app(self, stage, *, initial="5"):
+        from streamlit.testing.v1 import AppTest
+        from scripts.test_reverse_iron_condor_browser import FIXTURE
+        injected = '''
+from unittest.mock import patch
+original_source, original_rank = ric._scan_all_years, ric._rank_cached_ric_chains
+def interrupt(stage):
+    if st.session_state.get('fixture_interrupt') == stage and not st.session_state.get('fixture_interrupted'):
+        st.session_state['fixture_interrupted'] = True
+        if st.session_state.get('fixture_change_draft'):
+            st.session_state['_ric_presentation'].update(ric_symbol_value='SPY',ric_min_reward_risk='3',ric_fee_per_spread='1',ric_max_breakeven_move_pct='10')
+            st.session_state['_ric_pricing_mode_preference'] = 'SMART FILL'
+        st.rerun()
+def source(*args,**kwargs):
+    interrupt('source')
+    value = original_source(*args,**kwargs)
+    interrupt('source_commit')
+    return value
+def rank(*args,**kwargs):
+    record('rank_policy',symbol=args[0]['symbol'],mode=args[3],ratio=args[4],fees=args[5],scope=args[7])
+    if st.session_state.get('fixture_age_raw') and not st.session_state.get('fixture_raw_aged'):
+        st.session_state['fixture_raw_aged'] = True
+        args[0]['loaded_at'] -= 301
+        if st.session_state.get('fixture_incomplete_raw'):
+            args[0]['scan_complete'] = False
+        st.rerun()
+    if st.session_state.get('fixture_supersede') and not st.session_state.get('fixture_superseded'):
+        st.session_state['fixture_superseded'] = True
+        st.session_state['_ric_scan_pending'] = dict(st.session_state['_ric_scan_pending'],breakeven='10')
+    interrupt('rank')
+    if st.session_state.get('fixture_interrupt') == 'error':
+        raise ValueError('SYNTHETIC SCAN FAILURE')
+    return original_rank(*args,**kwargs)
+'''
+        with tempfile.TemporaryDirectory(prefix="ric_submit_test_") as directory:
+            directory = Path(directory)
+            fixture, events = directory / "app.py", directory / "events.jsonl"
+            call = "    ric.render_reverse_iron_condor(SyntheticBroker(),lambda:None,vault_key='ric-synthetic-browser')"
+            code = FIXTURE.replace("order,active=render_terminal_tab_bar", injected + "\norder,active=render_terminal_tab_bar")
+            code = code.replace(call, "    with patch.object(ric,'_scan_all_years',source), patch.object(ric,'_rank_cached_ric_chains',rank):\n    " + call)
+            fixture.write_text(code.replace("ric-synthetic-browser", directory.name))
+            with (patch.dict(os.environ,{"RIC_BROWSER_ROOT":str(Path(__file__).resolve().parents[1]),"RIC_BROWSER_TEST_LOG":str(events)}),
+                  patch("requests.sessions.Session.request",side_effect=AssertionError("Network disabled")),
+                  patch("curl_cffi.requests.Session.request",side_effect=AssertionError("Network disabled")),
+                  patch("socket.create_connection",side_effect=AssertionError("Network disabled"))):
+                app = AppTest.from_file(str(fixture),default_timeout=30).run()
+                app.text_input(key="ric_symbol_value").set_value("QQQ")
+                app.text_input(key="ric_max_breakeven_move_pct").set_value(initial)
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                app.session_state["fixture_interrupt"] = stage
+                yield app, events
+
+    def test_submitted_scope_survives_source_and_ranking_interruptions(self):
+        for stage in ("source", "source_commit", "rank"):
+            for initial, entered, expected, rows in (("5","",None,20),("","10",10,8)):
+                with self.subTest(stage=stage,entered=entered),self.app(stage,initial=initial) as (app,events):
+                    app.text_input(key="ric_max_breakeven_move_pct").set_value(entered)
+                    next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                    self.assertFalse(app.exception)
+                    result = app.session_state["ric_scan_result"]
+                    self.assertEqual(result["max_breakeven_move_pct"],expected)
+                    self.assertEqual(len(result["candidates"]),rows)
+                    self.assertTrue(result["scan_complete"])
+                    self.assertFalse(any("MAX BREAKEVEN MOVE CHANGED" in value.value for value in app.info))
+
+    def test_pending_scan_keeps_submitted_values_when_draft_changes(self):
+        with self.app("rank") as (app,events):
+            app.session_state["fixture_change_draft"] = True
+            app.text_input(key="ric_max_breakeven_move_pct").set_value("")
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            self.assertFalse(app.exception)
+            result = app.session_state["ric_scan_result"]
+            self.assertEqual((result["symbol"],result["pricing_mode"],result["min_reward_risk"],result["fee_per_spread"],result["max_breakeven_move_pct"]),("QQQ","NORMAL",2,0,None))
+            self.assertEqual(app.text_input(key="ric_symbol_value").value,"SPY")
+
+    def test_manual_refresh_reuses_only_committed_new_source_after_interruption(self):
+        for stage in ("source", "source_commit", "rank"):
+            with self.subTest(stage=stage),self.app(stage) as (app,events):
+                old_id = app.session_state["ric_scan_result"]["raw_scan_id"]
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                self.assertNotEqual(app.session_state["ric_scan_result"]["raw_scan_id"],old_id)
+                logged = [json.loads(line) for line in events.read_text().splitlines()]
+                self.assertEqual(sum(event["event"] == "chain" for event in logged),8)
+                self.assertFalse(any(event["event"] in {"preview","place"} for event in logged))
+
+    def test_failed_new_request_stays_visible_without_automatic_retry(self):
+        with self.app("error") as (app,events):
+            app.text_input(key="ric_max_breakeven_move_pct").set_value("")
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            self.assertTrue(any("SYNTHETIC SCAN FAILURE" in value.value for value in app.error))
+            before = [line for line in events.read_text().splitlines()
+                      if json.loads(line)["event"] in {"rank_policy","chain","expirations"}]
+            app.run()
+            self.assertTrue(any("SYNTHETIC SCAN FAILURE" in value.value for value in app.error))
+            self.assertEqual(app.session_state["ric_scan_result"]["max_breakeven_move_pct"],5)
+            self.assertEqual([line for line in events.read_text().splitlines()
+                              if json.loads(line)["event"] in {"rank_policy","chain","expirations"}],before)
+            app.session_state["fixture_interrupt"] = None
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertIsNone(app.session_state["ric_scan_result"]["max_breakeven_move_pct"])
+            self.assertEqual(app.session_state["ric_scan_result"]["min_reward_risk"],2)
+
+    def test_failed_replacement_does_not_automatically_resume_previous_partial_scan(self):
+        with self.app("error") as (app,events):
+            app.session_state["ric_scan_result"]["scan_complete"] = False
+            app.text_input(key="ric_max_breakeven_move_pct").set_value("")
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            self.assertTrue(any("QQQ // SYNTHETIC SCAN FAILURE" in value.value for value in app.error))
+            self.assertFalse(app.session_state["ric_scan_result"]["scan_complete"])
+            count = sum(json.loads(line)["event"] == "rank_policy" for line in events.read_text().splitlines())
+            app.run()
+            self.assertEqual(sum(json.loads(line)["event"] == "rank_policy" for line in events.read_text().splitlines()),count)
+
+    def test_latched_raw_keeps_incomplete_freshness_guard_and_complete_research_timestamp(self):
+        for incomplete in (True,False):
+            with self.subTest(incomplete=incomplete),self.app(None) as (app,events):
+                old_time = app.session_state["ric_scan_result"]["loaded_at"]
+                app.session_state["fixture_age_raw"] = True
+                app.session_state["fixture_incomplete_raw"] = incomplete
+                app.text_input(key="ric_max_breakeven_move_pct").set_value("")
+                next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+                self.assertFalse(app.exception)
+                if incomplete:
+                    self.assertTrue(any("QUOTE SNAPSHOT EXPIRED" in value.value for value in app.error))
+                    self.assertEqual(app.session_state["ric_scan_result"]["max_breakeven_move_pct"],5)
+                else:
+                    self.assertFalse(app.error)
+                    self.assertIsNone(app.session_state["ric_scan_result"]["max_breakeven_move_pct"])
+                    self.assertLessEqual(app.session_state["ric_scan_result"]["loaded_at"],old_time-300)
+
+    def test_superseded_request_cannot_publish_over_new_submission(self):
+        with self.app(None) as (app,events):
+            app.session_state["fixture_supersede"] = True
+            app.text_input(key="ric_max_breakeven_move_pct").set_value("")
+            next(button for button in app.button if button.label == "SCAN ALL YEARS").click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.session_state["ric_scan_result"]["max_breakeven_move_pct"],10)
+            self.assertEqual(len(app.session_state["ric_scan_result"]["candidates"]),8)
 
 
 if __name__ == "__main__":
